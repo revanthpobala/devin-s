@@ -1,0 +1,52 @@
+# --- Secrets (NEVER track) ---
+.env
+service_account.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# --- Virtual env ---
+.venv/
+
+# --- TradingView browser profiles (auto-cloned at runtime) ---
+/tv_chrome_profile*/
+
+# --- Research output / data (root only; NOT src/data) ---
+/data/
+/finetune_dataset/
+/logs/
+/.cache/
+
+# --- LLM model weights (large binaries, kept locally only) ---
+/models/
+
+# --- llama.cpp server build artifacts ---
+/llama-cpp-server/
+
+# --- unsloth compiled cache ---
+/unsloth_compiled_cache/
+
+# --- Logs ---
+*.log
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.kilo/*
+
+# --- Temporary/Scratch Scripts ---
+/scratch/
+pine-script-indicators/*
+.playwright/*
+.playwright-*
+.kilo/*
+reports/*

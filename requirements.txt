@@ -1,0 +1,18 @@
+# Core Alert Tracker Dependencies
+python-dotenv==1.2.2
+requests==2.34.2
+google-auth==2.55.2
+google-auth-oauthlib==1.4.0
+gspread==6.2.1
+yfinance==1.5.1
+pandas==3.0.3
+numpy==2.5.1
+beautifulsoup4==4.15.0
+cryptography==49.0.0
+tzdata==2026.2
+
+# Local LLM & API Server Dependencies (FastAPI/Uvicorn)
+fastapi==0.139.0
+uvicorn==0.51.0
+pydantic==2.13.4
+google-genai==2.14.0

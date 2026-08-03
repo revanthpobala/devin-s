@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-research"
+version = "0.1.0"
+description = "TradingView alert ingestion, market data triage, and LLM-assisted trading workflow"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Revanth Pobala" }
+]
+dependencies = [
+    "requests",
+    "yfinance",
+    "pandas",
+    "alpaca-py",
+    "python-dotenv",
+    "google-api-python-client",
+    "google-auth-httplib2",
+    "google-auth-oauthlib",
+    "openpyxl"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff>=0.1.0",
+    "mypy>=1.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E402", "E741", "E722", "F841", "W291"]
+
+[tool.pyright]
+include = ["."]
+extraPaths = ["."]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
+pythonpath = [
+    "."
+]

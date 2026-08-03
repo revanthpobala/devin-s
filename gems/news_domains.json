@@ -1,0 +1,35 @@
+﻿{
+  "_comment": "news_domains.json — Default research domain configuration. Path set via NEWS_DOMAINS_CONFIG in .env. {ticker} and {ticker_lower} are replaced at runtime.",
+
+  "template_urls": [
+    { "url": "https://marketchameleon.com/Overview/{ticker}/OptionSummary/",         "label": "Options Summary" },
+    { "url": "https://marketchameleon.com/Overview/{ticker}/Earnings/Earnings-Dates/","label": "Earnings Dates" },
+    { "url": "https://www.quiverquant.com/stock/{ticker}/",                           "label": "Quiver Quant (Congress/Insider Flow)" },
+    { "url": "https://optioncharts.io/options/{ticker}/max-pain",                     "label": "Max Pain" },
+    { "url": "https://unusualwhales.com/stock/{ticker}/overview?chart=options-volume","label": "Unusual Whales Options Volume" },
+    { "url": "https://seekingalpha.com/symbol/{ticker}/",                             "label": "Seeking Alpha Overview" },
+    { "url": "https://www.morningstar.com/stocks/xnas/{ticker_lower}/quote",          "label": "Morningstar Quote" },
+    { "url": "https://public.com/stocks/{ticker_lower}/earnings",                     "label": "Public.com Earnings" }
+  ],
+
+  "domain_searches": [
+    { "domain": "finviz.com",            "label": "Finviz",           "query": "{ticker} finviz stock screener" },
+    { "domain": "businessinsider.com",   "label": "Business Insider", "query": "{ticker} stock news {date}" },
+    { "domain": "barchart.com",          "label": "Barchart",         "query": "{ticker} options IV rank implied volatility {date}" },
+    { "domain": "investing.com",         "label": "Investing.com",    "query": "{ticker} earnings analyst forecast {date}" },
+    { "domain": "wallstreethorizon.com", "label": "Wall St Horizon",  "query": "{ticker} earnings calendar corporate events" },
+    { "domain": "reuters.com",           "label": "Reuters",          "query": "{ticker} news {date}" },
+    { "domain": "marketwatch.com",       "label": "MarketWatch",      "query": "{ticker} stock analysis {date}" },
+    { "domain": "benzinga.com",          "label": "Benzinga",         "query": "{ticker} news analyst rating {date}" },
+    { "domain": "kalshi.com",            "label": "Kalshi Markets",   "query": "DXY S&P500 prediction market odds {date}" }
+  ],
+
+  "fixed_urls": [
+    { "url": "https://fred.stlouisfed.org/series/VIXCLS",  "label": "VIX (FRED St. Louis)" },
+    { "url": "https://finviz.com/news.ashx",               "label": "Finviz Market News Feed" }
+  ],
+
+  "max_workers": 8,
+  "max_results_per_domain": 3,
+  "scrape_timeout_seconds": 15
+}
