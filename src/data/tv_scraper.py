@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from playwright.sync_api import sync_playwright
 
@@ -11,8 +11,32 @@ from src import config
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-EXPECTED_MIN_FIELDS = 65
+# TradingView chart controls. These exact selectors are the ones proven to work in
+# data-windows/scripts/tv_export.py; do not "simplify" them.
+MENU_BTN = 'button[data-name="save-load-menu"]'
+DL_ITEM = 'text=/Download chart data/i'
+DL_BTN = 'button[data-qa-id="download-btn"]'
+GOTO_BTN = 'button[data-name="go-to-date"]'
+GOTO_START = 'input[data-name="start-date-range"]'
+GOTO_END = 'input[data-name="end-date-range"]'
+GOTO_SUBMIT = 'button[data-name="submit-button"]'
 
+# MEASURED: this does NOT control how many rows the CSV contains. TradingView
+# exports whatever it has LOADED, which is 300 daily bars, and 35d vs 90d were
+# verified byte-identical - 300 rows both times, all 14 indicator fields equal.
+# Depth only changes once the range reaches past the loaded window (the corpus
+# builder asks for 2017 and gets ~2400 rows).
+#
+# So for live use this is really a SCREENSHOT ZOOM setting: it sets the visible
+# range the zoomed image is taken from. 90d ~= 63 candles, which stays legible
+# per-bar while still showing swing structure; 30d ~= 21 candles loses the
+# structure for no gain, since any shorter window can be sliced out of the same
+# CSV in pandas for free.
+#
+# 300 rows also clears the 260-bar floor the indicator's 250-bar z-scores need,
+# so the live pull never has to go deeper.
+DEFAULT_LOOKBACK_DAYS = 90
+SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 
 class TVScraper:
     def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None):
@@ -30,7 +54,8 @@ class TVScraper:
         self.screenshots_dir = config.BASE_DIR / "data" / "raw" / today_str
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    def capture_ticker(self, symbol: str):
+    def capture_ticker(self, symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+                       settle_s: float = SETTLE_SECONDS):
         """
         Navigates to the chart for the symbol and captures:
         1. {symbol}_chart.png      — Full 1Y daily view
@@ -200,214 +225,78 @@ class TVScraper:
             except Exception as e:
                 logger.warning(f"Error while ensuring Data Window is active: {e}")
 
-            # ── Position crosshair on the LATEST (non-future) bar ─────────────────
-            # The chart has a right margin of empty/future bars, so a fixed
-            # fraction can land on a future bar. Step right-to-left and lock onto
-            # the most-recent bar whose date is NOT in the future (prefer today).
-            # We must NOT accept the first parseable bar blindly: `d <= now` is
-            # true for yesterday too, and a parse failure must be skipped (not
-            # accepted), otherwise the Data Window captures the wrong day.
-            try:
-                box = page.evaluate("""() => {
-                    let cv = document.querySelector('canvas');
-                    if (!cv) return null;
-                    const r = cv.getBoundingClientRect();
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                }""")
-                if box:
-                    today = datetime.now().date()
-                    _date_fmts = ["%a %d %b '%y", "%a %d %b %Y", "%d %b '%y", "%d %b %Y"]
-                    best = None  # (date_obj, mx, my)
-
-                    for frac in [
-                        0.92,
-                        0.90,
-                        0.88,
-                        0.86,
-                        0.84,
-                        0.82,
-                        0.80,
-                        0.78,
-                        0.76,
-                        0.74,
-                        0.72,
-                        0.70,
-                        0.68,
-                        0.66,
-                        0.64,
-                        0.62,
-                        0.60,
-                    ]:
-                        mx = box["x"] + box["w"] * frac
-                        my = box["y"] + box["h"] * 0.5
-                        page.mouse.move(box["x"] + 5, box["y"] + 5)
-                        time.sleep(0.15)
-                        page.mouse.move(mx, my)
-                        time.sleep(0.4)
-                        date_str = page.evaluate("""() => {
-                            let el = document.querySelector('.chart-data-window [data-test-id-value-title="Date"]');
-                            return el && el.nextElementSibling ? el.nextElementSibling.textContent.trim() : null;
-                        }""")
-                        if not date_str:
-                            continue
-                        d = None
-                        for _fmt in _date_fmts:
-                            try:
-                                d = datetime.strptime(date_str, _fmt)
-                                break
-                            except Exception:
-                                continue
-                        if d is None:
-                            # Unparseable date: skip this bar, do NOT accept it.
-                            continue
-                        if d.date() > today:
-                            # Future/empty bar in the right margin — skip.
-                            continue
-                        # Most-recent non-future bar; first one found (scanning
-                        # right->left) is the latest, so keep the max defensively.
-                        if best is None or d.date() >= best[0].date():
-                            best = (d, mx, my)
-                            if d.date() == today:
-                                logger.info(f"Positioned crosshair on TODAY's bar ({date_str}).")
-                                break
-
-                    if best is not None:
-                        # Re-assert the chosen crosshair position before capture.
-                        page.mouse.move(box["x"] + 5, box["y"] + 5)
-                        time.sleep(0.15)
-                        page.mouse.move(best[1], best[2])
-                        time.sleep(0.6)
-                        logger.info(
-                            f"Crosshair locked to latest bar date={best[0].strftime('%a %d %b %y')}."
-                        )
-                    else:
-                        # Fallback: no valid bar resolved — use a sane default.
-                        logger.warning(
-                            "Could not resolve any valid bar via crosshair; using default position."
-                        )
-                        page.mouse.move(box["x"] + 5, box["y"] + 5)
-                        time.sleep(0.15)
-                        page.mouse.move(box["x"] + box["w"] * 0.84, box["y"] + box["h"] * 0.5)
-                        time.sleep(0.6)
-                else:
-                    logger.warning("No chart canvas found for crosshair positioning.")
-            except Exception as e:
-                logger.warning(f"Crosshair positioning failed: {e}")
-
-            # ── Clear crosshair → force Data Window to latest (today's) bar ────────
-            # Moving the mouse to the bottom-right corner of the viewport takes the
-            # pointer off the chart, which clears any manual crosshair and makes the
-            # Data Window snap to the most recent bar (today) — the reliable way to
-            # guarantee the captured values are for today, not yesterday.
-            try:
-                vp = page.viewport_size or {"width": 1920, "height": 1080}
-                page.mouse.move(box["x"] + 5, box["y"] + 5) if box else page.mouse.move(2, 2)
-                time.sleep(0.15)
-                page.mouse.move(vp["width"] - 2, vp["height"] - 2)
-                time.sleep(1.0)
-                logger.info(
-                    "Cleared crosshair (moved to bottom-right); Data Window now on latest bar."
-                )
-            except Exception as e:
-                logger.warning(f"Crosshair clear failed: {e}")
-
             logger.info("Capture initiated!")
             safe_symbol = symbol.replace(":", "_")
 
-            # ── 1. Full-view chart screenshot (1Y daily) ───────────────────────────
+            # ── 1. Wide-view chart screenshot (default range) ─────────────────────
+            # Taken BEFORE the Go-to, so it keeps the long structural view: where price
+            # sits against the 200MA, prior swings, the overall stage. The gem needs that
+            # context and it is not visible once we zoom in.
             chart_path = self.screenshots_dir / f"{safe_symbol}_chart.png"
-            logger.info("Taking full-view chart screenshot...")
+            logger.info("Taking wide-view chart screenshot...")
             page.screenshot(path=str(chart_path))
 
-            # ── 2. Export Chart CSV Data Window & Parse Snapshot ─────────────────
-            logger.info("Exporting Chart CSV data...")
+            # ── 2. Download chart CSV (last ~1 month of daily bars) ───────────────
+            # Ported from data-windows/scripts/tv_export.py, which is the version that
+            # actually works. Three things it gets right and a naive attempt does not:
+            #   * page.click() AUTO-WAITS for the element. query_selector() returns
+            #     immediately, so the dropdown has not rendered yet and the download
+            #     button is reported missing - that was the previous failure.
+            #   * It is a THREE-click sequence: menu -> "Download chart data" -> submit.
+            #   * "Go to" is the only safe way to set the range. The range tabs let
+            #     TradingView pick its own resolution and it silently switches to 1M,
+            #     overriding interval=D, which would make realvol_10d a 10-MONTH number.
+            # We only need the last row + 11 trailing closes, so one month is enough.
+            start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            logger.info(f"Downloading chart CSV (range: {start_date} -> today)...")
             csv_path = self.screenshots_dir / f"{safe_symbol}_datawindow.csv"
             data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"
-            csv_success = False
 
-            try:
-                page.keyboard.press("Escape")
-                time.sleep(0.3)
+            page.wait_for_selector(GOTO_BTN, state="visible", timeout=30000)
+            page.click(GOTO_BTN, timeout=15000)
+            page.fill(GOTO_START, start_date, timeout=15000)
+            page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=15000)
+            page.click(GOTO_SUBMIT, timeout=15000)
+            time.sleep(settle_s)   # let the new range load and the indicator recompute
 
-                menu_btn = page.query_selector('button[data-name="save-load-menu"]')
-                if menu_btn:
-                    menu_btn.click()
-                    time.sleep(0.3)
-                    dl_btn = page.query_selector('button[data-qa-id="download-btn"], [data-name="export-data"]')
-                    if dl_btn:
-                        with page.expect_download(timeout=15000) as download_info:
-                            dl_btn.click()
-                            export_modal_btn = page.query_selector('button[data-name="submit"], button:has-text("Export")')
-                            if export_modal_btn:
-                                export_modal_btn.click()
-                        download = download_info.value
-                        download.save_as(str(csv_path))
-                    else:
-                        raise ValueError("Download button 'button[data-qa-id=\"download-btn\"]' not found in layout menu")
-                else:
-                    with page.expect_download(timeout=15000) as download_info:
-                        page.keyboard.press("Alt+s")
-                        time.sleep(0.5)
-                        export_modal_btn = page.query_selector('button[data-name="submit"], button:has-text("Export")')
-                        if export_modal_btn:
-                            export_modal_btn.click()
-                    download = download_info.value
-                    download.save_as(str(csv_path))
+            # ── 2b. Zoomed screenshot, taken from the SAME Go-to view ─────────────
+            # The gem uses the image only for visual pattern context (candles, zone
+            # boxes, signal labels) and is forbidden from reading numbers off it, so
+            # per-bar resolution is what matters here. On the wide default view a daily
+            # candle is a few pixels and no label text is legible. This costs one extra
+            # page.screenshot() because the browser and the Go-to are already here.
+            zoom_path = self.screenshots_dir / f"{safe_symbol}_chart_zoom.png"
+            page.screenshot(path=str(zoom_path))
+            logger.info(f"Saved zoomed chart screenshot to {zoom_path}")
 
-                logger.info(f"Saved chart data CSV to {csv_path}")
+            page.click(MENU_BTN, timeout=15000)
+            page.click(DL_ITEM, timeout=15000)
+            with page.expect_download(timeout=90000) as info:
+                page.click(DL_BTN, timeout=15000)
+            dl = info.value
 
-                from src.data.csv_adapter import csv_to_datawindow
-                data_dict, hist_df, realvol_10d, ret_10d = csv_to_datawindow(str(csv_path), str(data_window_path))
-                csv_success = True
-                logger.info(f"Successfully processed CSV snapshot into {data_window_path} (10d realvol={realvol_10d}, 10d ret={ret_10d})")
-            except Exception as csv_err:
-                logger.warning(f"CRITICAL: CSV export download failed for {symbol}: {csv_err}. Falling back to DOM extraction...")
+            # The saved filename carries whatever symbol was ACTUALLY charted. If the
+            # URL symbol never applied, the layout is still on its own default and we
+            # would file another company's data under this ticker - a silent
+            # wrong-data bug, so refuse it rather than write it.
+            name = dl.suggested_filename or f"{safe_symbol}, 1D.csv"
+            charted = name.split(",")[0].split("_")[-1].strip()
+            wanted = symbol.split(":")[-1].strip()
+            if charted.upper() != wanted.upper():
+                raise ValueError(f"charted {charted}, not {wanted} - symbol never applied")
 
-            if not csv_success:
-                # ── DOM Extraction Fallback ───────────────────────────────────────
-                try:
-                    data_dict = page.evaluate("""() => {
-                        let data = {};
-                        let container = document.querySelector('.chart-data-window') ||
-                                        document.querySelector('[data-name="data-window-container"]') ||
-                                        document.querySelector('div[class*="data-window"]') ||
-                                        document.querySelector('.widgetbar-widget-datawindow') ||
-                                        document.querySelector('.widgetbar-pages');
-                        if (!container) {
-                            return { "ERROR": "Data Window container not found. It might be closed." };
-                        }
-                        let titleEls = container.querySelectorAll('[data-test-id-value-title]');
-                        titleEls.forEach(el => {
-                            let key = el.getAttribute('data-test-id-value-title');
-                            let nextSib = el.nextElementSibling;
-                            if (key && nextSib) {
-                                data[key.trim()] = nextSib.textContent.trim();
-                            }
-                        });
-                        return data;
-                    }""")
+            dl.save_as(str(csv_path))
+            logger.info(f"Saved chart CSV to {csv_path}")
 
-                    if not data_dict or "ERROR" in data_dict:
-                        logger.error(
-                            f"Structured extraction failed for {symbol}. Data Window may be closed or UI changed."
-                        )
-                        raise ValueError(f"Failed to extract structured data window for {symbol}.")
-
-                    if len(data_dict) < EXPECTED_MIN_FIELDS:
-                        msg = (
-                            f"Data window for {symbol} returned {len(data_dict)} fields, "
-                            f"which is less than EXPECTED_MIN_FIELDS ({EXPECTED_MIN_FIELDS})."
-                        )
-                        logger.error(msg)
-                        raise ValueError(msg)
-
-                    with open(data_window_path, "w", encoding="utf-8") as f:
-                        json.dump(data_dict, f, indent=4)
-                    logger.info(f"Saved pristine Data Window JSON to {data_window_path}")
-
-                except Exception as e:
-                    logger.error(f"Failed to scrape data window text: {e}")
-                    raise e
+            from src.data.csv_adapter import csv_to_datawindow
+            data_dict, hist_df, realvol_10d, ret_10d = csv_to_datawindow(
+                str(csv_path), str(data_window_path)
+            )
+            logger.info(
+                f"Snapshot -> {data_window_path} "
+                f"(bar_date={data_dict.get('bar_date')}, rows={len(hist_df)}, "
+                f"realvol_10d={realvol_10d}, ret_10d={ret_10d})"
+            )
 
             # ── 3. Zoomed-in screenshot (DISABLED) ────────────────────────────────
             # logger.info("Taking zoomed-in chart screenshot...")

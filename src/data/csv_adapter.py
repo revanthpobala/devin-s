@@ -16,8 +16,8 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-MIN_COLS = 10
-MIN_ROWS = 15
+MIN_COLS = 60
+MIN_ROWS = 260
 MAX_BAR_GAP_DAYS = 4.0
 
 
