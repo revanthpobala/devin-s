@@ -270,19 +270,32 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             pass
 
     json_path = _find_artifact(out_dir, f"{safe_ticker}_datawindow.json")
+    csv_path = _find_artifact(out_dir, f"{safe_ticker}_datawindow.csv")
     data_window = {}
-    if json_path.exists():
+    realvol_10d = ret_10d = None
+
+    if csv_path.exists():
+        try:
+            from src.data.csv_adapter import csv_to_datawindow
+            data_window, _, realvol_10d, ret_10d = csv_to_datawindow(
+                str(csv_path), str(json_path)
+            )
+        except Exception as e:
+            logger.warning(f"[Prefilter-{worker_id}] CSV parse failed for {ticker}: {e}")
+
+    if not data_window and json_path.exists():
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data_window = json.load(f)
         except Exception as e:
             logger.error(f"[Prefilter-{worker_id}] Failed to read datawindow for {ticker}: {e}")
-    else:
+
+    if not data_window:
         logger.warning(f"[Prefilter-{worker_id}] Data window missing for {ticker}, metrics 0.")
 
     from src.logic.data_window_filter import triage_ticker
 
-    triage = triage_ticker(ticker, data_window)
+    triage = triage_ticker(ticker, data_window, realvol_10d=realvol_10d, ret_10d=ret_10d)
     sentiment = triage.get("sentiment", {})
     # News at prefilter time: we first check the gate using cheap headline sentiment.
     news_negative = bool(triage.get("news_negative"))
@@ -426,8 +439,20 @@ def generate_thesis_task(
 
     # B. Load Data Window
     json_path = _find_artifact(out_dir, f"{safe_ticker}_datawindow.json")
+    csv_path = _find_artifact(out_dir, f"{safe_ticker}_datawindow.csv")
     data_window = {}
-    if json_path.exists():
+    realvol_10d = ret_10d = None
+
+    if csv_path.exists():
+        try:
+            from src.data.csv_adapter import csv_to_datawindow
+            data_window, _, realvol_10d, ret_10d = csv_to_datawindow(
+                str(csv_path), str(json_path)
+            )
+        except Exception as e:
+            logger.warning(f"[ThesisWorker-{worker_id}] CSV parse failed for {ticker}: {e}")
+
+    if not data_window and json_path.exists():
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data_window = json.load(f)
@@ -435,7 +460,8 @@ def generate_thesis_task(
             logger.error(
                 f"[ThesisWorker-{worker_id}] Failed to read datawindow JSON for {ticker}: {e}"
             )
-    else:
+
+    if not data_window:
         logger.warning(
             f"[ThesisWorker-{worker_id}] Data window JSON not found for {ticker}, metrics will be 0."
         )
@@ -448,7 +474,7 @@ def generate_thesis_task(
     # blocks pursuit. Only a non-PASS technical verdict skips the LLM triage.
     from src.logic.data_window_filter import triage_ticker
 
-    triage = triage_ticker(ticker, data_window)
+    triage = triage_ticker(ticker, data_window, realvol_10d=realvol_10d, ret_10d=ret_10d)
     sentiment = triage.get("sentiment", {})
     logger.info(
         f"[ThesisWorker-{worker_id}] Pre-filter {ticker}: triage={triage['triage']} "

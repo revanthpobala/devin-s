@@ -319,52 +319,78 @@ class TVScraper:
             logger.info("Taking full-view chart screenshot...")
             page.screenshot(path=str(chart_path))
 
-            # ── 2. Data Window JSON (crosshair on today's bar) ─────────────────────
-            logger.info("Scraping Data Window HTML into JSON...")
+            # ── 2. Export Chart CSV Data Window & Parse Snapshot ─────────────────
+            logger.info("Exporting Chart CSV data...")
+            csv_path = self.screenshots_dir / f"{safe_symbol}_datawindow.csv"
+            data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"
+            csv_success = False
+
             try:
-                data_dict = page.evaluate("""() => {
-                    let data = {};
-                    let container = document.querySelector('.chart-data-window') ||
-                                    document.querySelector('[data-name="data-window-container"]') ||
-                                    document.querySelector('div[class*="data-window"]') ||
-                                    document.querySelector('.widgetbar-widget-datawindow') ||
-                                    document.querySelector('.widgetbar-pages');
-                    if (!container) {
-                        return { "ERROR": "Data Window container not found. It might be closed." };
-                    }
-                    let titleEls = container.querySelectorAll('[data-test-id-value-title]');
-                    titleEls.forEach(el => {
-                        let key = el.getAttribute('data-test-id-value-title');
-                        let nextSib = el.nextElementSibling;
-                        if (key && nextSib) {
-                            data[key.trim()] = nextSib.textContent.trim();
+                with page.expect_download(timeout=15000) as download_info:
+                    page.keyboard.press("Alt+s")
+                    time.sleep(0.5)
+                    export_btn = page.query_selector(
+                        'button[data-name="submit"], button:has-text("Export"), [data-dialog-name] button.submit-button'
+                    )
+                    if export_btn:
+                        export_btn.click()
+
+                download = download_info.value
+                download.save_as(str(csv_path))
+                logger.info(f"Saved chart data CSV to {csv_path}")
+
+                from src.data.csv_adapter import csv_to_datawindow
+                data_dict, hist_df, realvol_10d, ret_10d = csv_to_datawindow(str(csv_path), str(data_window_path))
+                csv_success = True
+                logger.info(f"Successfully processed CSV snapshot into {data_window_path} (10d realvol={realvol_10d}, 10d ret={ret_10d})")
+            except Exception as csv_err:
+                logger.warning(f"CSV export download skipped or failed for {symbol}: {csv_err}. Falling back to DOM extraction...")
+
+            if not csv_success:
+                # ── DOM Extraction Fallback ───────────────────────────────────────
+                try:
+                    data_dict = page.evaluate("""() => {
+                        let data = {};
+                        let container = document.querySelector('.chart-data-window') ||
+                                        document.querySelector('[data-name="data-window-container"]') ||
+                                        document.querySelector('div[class*="data-window"]') ||
+                                        document.querySelector('.widgetbar-widget-datawindow') ||
+                                        document.querySelector('.widgetbar-pages');
+                        if (!container) {
+                            return { "ERROR": "Data Window container not found. It might be closed." };
                         }
-                    });
-                    return data;
-                }""")
+                        let titleEls = container.querySelectorAll('[data-test-id-value-title]');
+                        titleEls.forEach(el => {
+                            let key = el.getAttribute('data-test-id-value-title');
+                            let nextSib = el.nextElementSibling;
+                            if (key && nextSib) {
+                                data[key.trim()] = nextSib.textContent.trim();
+                            }
+                        });
+                        return data;
+                    }""")
 
-                if not data_dict or "ERROR" in data_dict:
-                    logger.error(
-                        f"Structured extraction failed for {symbol}. Data Window may be closed or UI changed."
-                    )
-                    raise ValueError(f"Failed to extract structured data window for {symbol}.")
+                    if not data_dict or "ERROR" in data_dict:
+                        logger.error(
+                            f"Structured extraction failed for {symbol}. Data Window may be closed or UI changed."
+                        )
+                        raise ValueError(f"Failed to extract structured data window for {symbol}.")
 
-                if len(data_dict) < EXPECTED_MIN_FIELDS:
-                    msg = (
-                        f"Data window for {symbol} returned {len(data_dict)} fields, "
-                        f"which is less than EXPECTED_MIN_FIELDS ({EXPECTED_MIN_FIELDS})."
-                    )
-                    logger.error(msg)
-                    raise ValueError(msg)
+                    if len(data_dict) < EXPECTED_MIN_FIELDS:
+                        msg = (
+                            f"Data window for {symbol} returned {len(data_dict)} fields, "
+                            f"which is less than EXPECTED_MIN_FIELDS ({EXPECTED_MIN_FIELDS})."
+                        )
+                        logger.error(msg)
+                        raise ValueError(msg)
 
-                data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"
-                with open(data_window_path, "w", encoding="utf-8") as f:
-                    json.dump(data_dict, f, indent=4)
-                logger.info(f"Saved pristine Data Window JSON to {data_window_path}")
+                    with open(data_window_path, "w", encoding="utf-8") as f:
+                        json.dump(data_dict, f, indent=4)
+                    logger.info(f"Saved pristine Data Window JSON to {data_window_path}")
 
-            except Exception as e:
-                logger.error(f"Failed to scrape data window text: {e}")
-                raise e
+                except Exception as e:
+                    logger.error(f"Failed to scrape data window text: {e}")
+                    raise e
 
             # ── 3. Zoomed-in screenshot (DISABLED) ────────────────────────────────
             # logger.info("Taking zoomed-in chart screenshot...")

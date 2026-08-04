@@ -1,0 +1,83 @@
+CSV pipeline + evidence-based filter
+
+Two coupled changes. The scraper swap is a prerequisite for the filter's only validated exclusion, so do it first.
+
+Part A: swap the DOM scrape for the CSV download
+
+Repurpose, do not rebuild
+
+data-windows/scripts/tv_export.py already does this and is hardened. It produced the 547-file corpus every number below is measured on. It carries fixes for traps that are not obvious:
+
+"Go to" is the only chart control used. Range tabs let TradingView pick its own resolution and it silently switches to 1M, overriding interval=D. Zooming does the same.
+
+One browser per ticker, torn down after each download. Reusing a chart and swapping the symbol keeps the previous view's loaded range, so a later symbol exports truncated history that still looks valid (AMZN came back 704 bars vs 2203 on a clean load).
+
+Process-parallel, not threads - Playwright's sync API is bound to its creating thread.
+
+storage_state auth, not a shared profile - a Chromium user-data dir is locked to one process.
+
+Every file verified from the FILE (check(), line 104): ncols >= MIN_COLS, nrows >= MIN_ROWS, and median bar gap <= MAX_BAR_GAP_DAYS. The bar-spacing check exists because a coarser interval reaches FURTHER back, so it passes a naive depth check by looking better rather than worse. Failures go to _suspect/, never into the panel.
+
+Resumability via done_tickers(), plus --workers / --limit / --tier / --tickers / --outdir.
+
+What today's scraper does, and what changes
+
+devin-s/src/data/tv_scraper.py does three things per ticker: a chart screenshot, a Data Window DOM scrape into <ticker>_datawindow.json, and a disabled zoom shot. The DOM scrape (line 325) depends on [data-test-id-value-title] selectors, a mouse-move to the bottom-right to snap the crosshair onto the latest bar, and an EXPECTED_MIN_FIELDS count.
+
+Replace only the Data Window scrape. Keep the screenshot - the agent uses the chart image for pattern context.
+
+What the CSV buys:
+
+No DOM dependency. Selectors, crosshair positioning and field-count heuristics all disappear.
+
+Exact numerics instead of parsed display strings.
+
+History for free - this is the point. Trailing bars make ret_10d and realvol_10d computable, and those are the only features that separate on the screener population.
+
+Format parity with the corpus, so the filter can be replayed against 1.9M historical bars for validation.
+
+Adapter keeps everything downstream working
+
+process_survivor.py consumes <ticker>_datawindow.json in two places - it passes the dict to triage_ticker (line 289) and also reads raw label strings directly for the LLM payload (lines 529-628). Do not break either.
+
+Write csv_to_datawindow(csv_path) -> (snapshot: dict, history: DataFrame):
+
+snapshot = the last row, keyed by the CSV header names, matching the shape parse_data_window already accepts. _FIELD_LABELS matching is substring/alnum-based, so header names like "RR To Target" resolve without change.
+
+history = the trailing rows for the new exclusion.
+
+Keep writing <ticker>_datawindow.json from snapshot so the LLM payload path is untouched.
+
+Note the CSV column order is about to change if the plot-sort is done; everything reads by header name, so that is safe.
+
+Design
+flowchart TD
+    CSV[TradingView CSV] --> ADP[csv_to_datawindow]
+    ADP --> SNAP[snapshot = last row]
+    ADP --> HIST[history = trailing bars]
+    SNAP --> P[parse_data_window]
+    HIST --> HF[realvol_10d, ret_10d]
+    P --> V{core fields present?}
+    V -->|no| BAD[CUT bad_data]
+    V -->|yes| X{hard exclusions}
+    HF --> X
+    X -->|hit| CUTX[CUT + reason]
+    X -->|clear| R{code 20 REVERSAL BUY?}
+    R -->|yes| PASSR[PASS: HIGH if rev>=10 else MED]
+    R -->|no| W[WATCH, ordered by tiebreak]
+Hard CUT (each significantly negative in both eras, plus safety):
+- Ext Pct vs MA200 >= 25
+- price >= P_RICH and HV20 >= HV_HIGH
+- realvol_10d >= 42.8 or ret_10d >= 12.9%
+- action code in {17 PARABOLIC, 18 TOXIC}
+- Stage == 0 (Hull MA not converged; ~25% of a listing's first 150 bars)
+Soft demote to WATCH: codes 11/12/13/16/19, Ext Z >= 1.5, MTF 3/3.The single PASS lane: action == 20, conviction HIGH when rev_l >= 10, else MED.Everything else is WATCH, ordered by an explicitly unvalidated tiebreak_score(). Its docstring must say it is era-dependent and exists to make the DEEP_RESEARCH_CAP cut deterministic, not because it predicts.Do not gate PASS on codes 1/2 - not significant in either era, and adding it to a working screen collapsed +0.36 to +0.08.Sides: long-only for PASS (short codes 1/2 are structurally impossible - f_finalizeActionShort demotes every one to WATCH). Emit the short read as context and keep short_plan populated.API compatibility
+Four callers: process_survivor.py (x2), deep_research.py, run_local_research.py, scripts/triage/retriage_datawindows.py. Keep exact signatures for triage_ticker, run_data_window_filter, parse_data_window, decode_action, action_is_actionable, rank_pass_tickers, deep_research_sort_key, normalize_number_str, _CORE_FIELDS, _BEAR_MASK_BITS, _REV_MASK_BITS, _WEAK_MASK_BITS.Verdict dict must keep every consumed key: triage, chosen_side, mode, reason, conviction, rr, ev_r, win_prob, in_zone, flags, regime, rev, recency, long_plan, short_plan, pursue, pursue_reason, news_negative, sentiment. Compute ev_r/win_prob locally from Dir Prob + RR To Target per bible section 8.4 rather than reading cut exports.Traps to encode
+
+- RR To Target is the dominant side's ratio, not always the long.
+- Long RR Valid reads 1 on 88.8% of bars that have no zone at all - never a standalone quality gate.
+- Read exported Long In Zone; do not recompute zbot <= price <= ztop (the real test is ATR-tolerant on one side).
+- The anchor name can be stale relative to a moved zone - never infer a price from it.
+- full_v2 predates the $1 sentinel fix; exclude Long Entry == 0 bars when replaying.
+Open risk
+Every figure is measured on all bars or on the Long Ignition proxy, never on true screener output. The proxy is underpowered (21,600 bars, CI roughly +/-0.4), so the design is "unproven", not "disproven". The fix is the durable log in the final todo - after a few hundred alerts, re-run the whole analysis on the real population.

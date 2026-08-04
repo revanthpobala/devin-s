@@ -534,7 +534,9 @@ def _log_data_window_scrape(ticker: str, raw: dict, verdict: dict) -> None:
 # ---------------------------------------------------------------------------
 # 4. Orchestrator
 # ---------------------------------------------------------------------------
-def run_data_window_filter(ticker: str, raw: dict) -> Dict[str, Any]:
+def run_data_window_filter(
+    ticker: str, raw: dict, realvol_10d: Optional[float] = None, ret_10d: Optional[float] = None
+) -> Dict[str, Any]:
     """Run the era-robust pre-filter for one ticker. Returns STEP 5 output dict."""
     f = parse_data_window(raw)
 
@@ -566,6 +568,8 @@ def run_data_window_filter(ticker: str, raw: dict) -> Dict[str, Any]:
             "action_actionable": False,
             "mtf_long": f.get("mtf_long"),
             "mtf_short": None,
+            "realvol_10d": realvol_10d,
+            "ret_10d": ret_10d,
             "bad_data": True,
         }
         _log_data_window_scrape(ticker, raw, verdict)
@@ -586,6 +590,10 @@ def run_data_window_filter(ticker: str, raw: dict) -> Dict[str, Any]:
         triage, reason = "CUT", "extreme_extension"
     elif price >= P_RICH and hv20 >= HV_HIGH:
         triage, reason = "CUT", "rich_high_volatility"
+    elif realvol_10d is not None and realvol_10d >= 42.8:
+        triage, reason = "CUT", "high_10d_volatility"
+    elif ret_10d is not None and ret_10d >= 12.9:
+        triage, reason = "CUT", "high_10d_return"
     elif act_code in _ACTION_HARD_CUT_CODES:
         triage, reason = "CUT", "parabolic_or_toxic"
     elif stage == 0:
@@ -640,6 +648,8 @@ def run_data_window_filter(ticker: str, raw: dict) -> Dict[str, Any]:
         "action_actionable": action_is_actionable(f.get("action_long") if W["side"] == "long" else f.get("action_short")),
         "mtf_long": f.get("mtf_long"),
         "mtf_short": None,
+        "realvol_10d": realvol_10d,
+        "ret_10d": ret_10d,
         "tiebreak": tiebreak_score(W, f),
         "bad_data": False,
     }
@@ -813,8 +823,14 @@ def classify_sentiment(ticker: str, headlines: List[str]) -> Dict[str, Any]:
     return {"label": "neutral", "summary": "classification unavailable"}
 
 
-def triage_ticker(ticker: str, data_window: dict, fetch_news: bool = True) -> Dict[str, Any]:
-    verdict = run_data_window_filter(ticker, data_window)
+def triage_ticker(
+    ticker: str,
+    data_window: dict,
+    fetch_news: bool = True,
+    realvol_10d: Optional[float] = None,
+    ret_10d: Optional[float] = None,
+) -> Dict[str, Any]:
+    verdict = run_data_window_filter(ticker, data_window, realvol_10d=realvol_10d, ret_10d=ret_10d)
     sentiment: Dict[str, Any] = {"label": "neutral", "summary": "", "headlines": []}
     if fetch_news:
         headlines = fetch_alpaca_news(ticker)
