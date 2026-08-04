@@ -20,6 +20,10 @@ GOTO_BTN = 'button[data-name="go-to-date"]'
 GOTO_START = 'input[data-name="start-date-range"]'
 GOTO_END = 'input[data-name="end-date-range"]'
 GOTO_SUBMIT = 'button[data-name="submit-button"]'
+MOVE_RIGHT_BTN = 'div.control-bar__btn--move-right'
+ZOOM_OUT_BTN = 'div.control-bar__btn--zoom-out'
+MOVE_RIGHT_TIMES = 4
+ZOOM_OUT_TIMES = 3
 
 # MEASURED: this does NOT control how many rows the CSV contains. TradingView
 # exports whatever it has LOADED, which is 300 daily bars, and 35d vs 90d were
@@ -53,6 +57,52 @@ class TVScraper:
         today_str = target_date or datetime.now().strftime("%Y-%m-%d")
         self.screenshots_dir = config.BASE_DIR / "data" / "raw" / today_str
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    def _pan_zoom_chart(self, page, move_right: int = MOVE_RIGHT_TIMES,
+                        zoom_out: int = ZOOM_OUT_TIMES):
+        # Scroll the chart forward (into future / projection space) and zoom out
+        # so the captured view shows more context. Two equivalent input paths
+        # (same as a human): click the chart control-bar button, or use the
+        # keyboard shortcut (ArrowRight to pan right, Ctrl+ArrowDown to zoom
+        # out). The control bar can be lazy-rendered, so we make sure the
+        # button is visible (hover) before clicking.
+        def _click_btn(selector, times):
+            btn = page.query_selector(selector)
+            if btn is None:
+                return False
+            box = btn.bounding_box()
+            if box is None:
+                return False
+            cx = box["x"] + box["width"] / 2
+            cy = box["y"] + box["height"] / 2
+            try:
+                page.mouse.move(cx, cy)
+                page.wait_for_selector(selector, state="visible", timeout=5000)
+            except Exception:
+                pass
+            for _ in range(times):
+                try:
+                    page.mouse.click(cx, cy)
+                except Exception:
+                    return False
+                time.sleep(0.15)
+            return True
+
+        if not _click_btn(MOVE_RIGHT_BTN, move_right):
+            logger.warning("move-right button unavailable; using ArrowRight key")
+            for _ in range(move_right):
+                page.keyboard.press("ArrowRight")
+                time.sleep(0.15)
+
+        if not _click_btn(ZOOM_OUT_BTN, zoom_out):
+            logger.warning("zoom-out button unavailable; using Ctrl+ArrowDown key")
+            for _ in range(zoom_out):
+                page.keyboard.press("Control+ArrowDown")
+                time.sleep(0.15)
+
+        # Clear any hover tooltip and let the view settle before screenshotting.
+        page.mouse.move(5, 5)
+        time.sleep(1.0)
 
     def capture_ticker(self, symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS,
                        settle_s: float = SETTLE_SECONDS):
@@ -231,7 +281,9 @@ class TVScraper:
             # ── 1. Wide-view chart screenshot (default range) ─────────────────────
             # Taken BEFORE the Go-to, so it keeps the long structural view: where price
             # sits against the 200MA, prior swings, the overall stage. The gem needs that
-            # context and it is not visible once we zoom in.
+            # context and it is not visible once we zoom in. Pan right + zoom out first so
+            # the view scrolls into future space and widens the context window.
+            self._pan_zoom_chart(page)
             chart_path = self.screenshots_dir / f"{safe_symbol}_chart.png"
             logger.info("Taking wide-view chart screenshot...")
             page.screenshot(path=str(chart_path))
@@ -265,6 +317,8 @@ class TVScraper:
             # per-bar resolution is what matters here. On the wide default view a daily
             # candle is a few pixels and no label text is legible. This costs one extra
             # page.screenshot() because the browser and the Go-to are already here.
+            # Pan right 4x so the zoom view also scrolls into future/projection space.
+            self._pan_zoom_chart(page, move_right=4, zoom_out=0)
             zoom_path = self.screenshots_dir / f"{safe_symbol}_chart_zoom.png"
             page.screenshot(path=str(zoom_path))
             logger.info(f"Saved zoomed chart screenshot to {zoom_path}")
