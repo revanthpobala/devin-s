@@ -326,17 +326,34 @@ class TVScraper:
             csv_success = False
 
             try:
-                with page.expect_download(timeout=15000) as download_info:
-                    page.keyboard.press("Alt+s")
-                    time.sleep(0.5)
-                    export_btn = page.query_selector(
-                        'button[data-name="submit"], button:has-text("Export"), [data-dialog-name] button.submit-button'
-                    )
-                    if export_btn:
-                        export_btn.click()
+                page.keyboard.press("Escape")
+                time.sleep(0.3)
 
-                download = download_info.value
-                download.save_as(str(csv_path))
+                menu_btn = page.query_selector('button[data-name="save-load-menu"]')
+                if menu_btn:
+                    menu_btn.click()
+                    time.sleep(0.3)
+                    dl_btn = page.query_selector('button[data-qa-id="download-btn"], [data-name="export-data"]')
+                    if dl_btn:
+                        with page.expect_download(timeout=15000) as download_info:
+                            dl_btn.click()
+                            export_modal_btn = page.query_selector('button[data-name="submit"], button:has-text("Export")')
+                            if export_modal_btn:
+                                export_modal_btn.click()
+                        download = download_info.value
+                        download.save_as(str(csv_path))
+                    else:
+                        raise ValueError("Download button 'button[data-qa-id=\"download-btn\"]' not found in layout menu")
+                else:
+                    with page.expect_download(timeout=15000) as download_info:
+                        page.keyboard.press("Alt+s")
+                        time.sleep(0.5)
+                        export_modal_btn = page.query_selector('button[data-name="submit"], button:has-text("Export")')
+                        if export_modal_btn:
+                            export_modal_btn.click()
+                    download = download_info.value
+                    download.save_as(str(csv_path))
+
                 logger.info(f"Saved chart data CSV to {csv_path}")
 
                 from src.data.csv_adapter import csv_to_datawindow
@@ -344,7 +361,7 @@ class TVScraper:
                 csv_success = True
                 logger.info(f"Successfully processed CSV snapshot into {data_window_path} (10d realvol={realvol_10d}, 10d ret={ret_10d})")
             except Exception as csv_err:
-                logger.warning(f"CSV export download skipped or failed for {symbol}: {csv_err}. Falling back to DOM extraction...")
+                logger.warning(f"CRITICAL: CSV export download failed for {symbol}: {csv_err}. Falling back to DOM extraction...")
 
             if not csv_success:
                 # ── DOM Extraction Fallback ───────────────────────────────────────

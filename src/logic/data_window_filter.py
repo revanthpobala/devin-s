@@ -51,10 +51,10 @@ def normalize_number_str(val) -> str:
 # ---------------------------------------------------------------------------
 # 0. Measured Era-Robust Constants
 # ---------------------------------------------------------------------------
-# Provenance: 2016-2026 bar universe cut points.
+# Provenance: 2016-2026 bar universe cut points (close >= $20).
 EXT_MAX = 25.0       # Ext Pct vs MA200 >= 25% (era-robust hard exclusion: -1.78% / -1.00% 21d excess)
-P_RICH = 65.0        # Price 2/3 quantile (2016-2026 bars; post-inflation/drift price threshold)
-HV_HIGH = 45.0       # HV20 80th percentile (ann %; high-volatility threshold)
+P_RICH = 125.4       # Price 2/3 quantile (2016-2026 bars, close >= $20; measured threshold)
+HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -585,25 +585,27 @@ def run_data_window_filter(
     stage = int(round(f["stage"] or 0))
     act_code = W["act_code"]
 
-    # HARD EXCLUSIONS (CUT)
+    # HARD EXCLUSIONS (CUT for all setups)
     if ext_pct >= EXT_MAX:
         triage, reason = "CUT", "extreme_extension"
     elif price >= P_RICH and hv20 >= HV_HIGH:
         triage, reason = "CUT", "rich_high_volatility"
-    elif realvol_10d is not None and realvol_10d >= 42.8:
-        triage, reason = "CUT", "high_10d_volatility"
-    elif ret_10d is not None and ret_10d >= 12.9:
-        triage, reason = "CUT", "high_10d_return"
     elif act_code in _ACTION_HARD_CUT_CODES:
         triage, reason = "CUT", "parabolic_or_toxic"
     elif stage == 0:
         triage, reason = "CUT", "warmup_stage_0"
     elif W["target"] is None and W["chased"]:
         triage, reason = "CUT", "chasing_without_target"
-    # SINGLE PASS LANE: action code 20 (REVERSAL BUY)
+    # SINGLE PASS LANE: action code 20 (REVERSAL BUY) — evaluated BEFORE 10d trailing exclusions.
+    # Capitulation buys are high-volatility by construction; trailing volatility exclusions apply to trend/breakouts only.
     elif act_code == 20:
         triage = "PASS"
         reason = "reversal_buy_lane"
+    # NON-REVERSAL EXCLUSIONS (CUT for breakout/trend setups)
+    elif realvol_10d is not None and realvol_10d >= 42.8:
+        triage, reason = "CUT", "high_10d_volatility"
+    elif ret_10d is not None and ret_10d >= 12.9:
+        triage, reason = "CUT", "high_10d_return"
     else:
         # All other non-excluded setups clear to WATCH
         triage = "WATCH"
@@ -622,8 +624,11 @@ def run_data_window_filter(
     else:
         conviction_str = "HIGH" if (conviction or 0.0) >= 75 else ("MED" if (conviction or 0.0) >= 50 else "LOW")
 
+    bar_date = raw.get("bar_date") or raw.get("time") or raw.get("Time") or raw.get("Date")
+
     verdict = {
         "ticker": ticker,
+        "bar_date": str(bar_date) if bar_date is not None else None,
         "chosen_side": W["side"],
         "mode": W["mode"],
         "triage": triage,

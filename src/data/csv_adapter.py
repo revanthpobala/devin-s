@@ -16,6 +16,41 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+MIN_COLS = 10
+MIN_ROWS = 15
+MAX_BAR_GAP_DAYS = 4.0
+
+
+def verify_csv_integrity(df: pd.DataFrame) -> Tuple[pd.Series, Optional[str]]:
+    """Assert minimum column/row depth and verify daily bar interval (median gap <= 4 days)."""
+    nrows, ncols = df.shape
+    if ncols < MIN_COLS:
+        raise ValueError(f"CSV has {ncols} columns, expected at least {MIN_COLS}")
+    if nrows < MIN_ROWS:
+        raise ValueError(f"CSV has {nrows} rows, expected at least {MIN_ROWS}")
+
+    # Locate time/date column
+    time_col = None
+    for col in df.columns:
+        if col.lower() in ("time", "date", "datetime", "timestamp"):
+            time_col = col
+            break
+
+    last_bar_date = None
+    if time_col:
+        time_series = pd.to_datetime(df[time_col], errors="coerce").dropna()
+        if len(time_series) >= 2:
+            gaps = time_series.diff().dt.total_seconds() / 86400.0
+            median_gap = float(gaps.median())
+            if median_gap > MAX_BAR_GAP_DAYS:
+                raise ValueError(
+                    f"CSV interval appears weekly or monthly (median bar gap {median_gap:.1f} days > {MAX_BAR_GAP_DAYS} days)"
+                )
+            last_bar_date = time_series.iloc[-1].strftime("%Y-%m-%d")
+
+    return df, last_bar_date
+
+
 def csv_to_datawindow(
     csv_path: str, json_out_path: Optional[str] = None
 ) -> Tuple[Dict[str, Any], pd.DataFrame, Optional[float], Optional[float]]:
@@ -38,6 +73,9 @@ def csv_to_datawindow(
     # Clean column names (strip whitespace)
     df.columns = [str(c).strip() for c in df.columns]
 
+    # Verify column depth, row depth, and bar interval (daily)
+    verify_csv_integrity(df)
+
     # Extract last row as snapshot dict (keyed by CSV header names)
     last_row = df.iloc[-1]
     snapshot = {}
@@ -47,6 +85,15 @@ def csv_to_datawindow(
             snapshot[col] = None
         else:
             snapshot[col] = str(val)
+
+    # Extract & stamp last bar date onto snapshot
+    time_col = next((c for c in df.columns if c.lower() in ("time", "date", "datetime")), None)
+    if time_col:
+        try:
+            last_dt = pd.to_datetime(last_row[time_col])
+            snapshot["bar_date"] = last_dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
 
     # Write snapshot to JSON if path provided
     if json_out_path:
@@ -87,14 +134,15 @@ def csv_to_datawindow(
                 if not np.isnan(calc_ret):
                     ret_10d = calc_ret
 
-        # 10-day annualized volatility: std(daily_returns) * sqrt(252) * 100.0
+        # 10-day annualized volatility via daily LOG returns (matching 42.8 calibration)
         if n >= 11:
             trailing_closes = close_series.iloc[-11:]
-            pct_returns = trailing_closes.pct_change().dropna()
-            if len(pct_returns) >= 10:
-                std_daily = float(pct_returns.std(ddof=1))
-                calc_vol = float(std_daily * np.sqrt(252) * 100.0)
-                if not np.isnan(calc_vol):
-                    realvol_10d = calc_vol
+            if (trailing_closes > 0).all():
+                log_returns = np.log(trailing_closes / trailing_closes.shift(1)).dropna()
+                if len(log_returns) >= 10:
+                    std_daily = float(log_returns.std(ddof=1))
+                    calc_vol = float(std_daily * np.sqrt(252) * 100.0)
+                    if not np.isnan(calc_vol):
+                        realvol_10d = calc_vol
 
     return snapshot, df, realvol_10d, ret_10d
