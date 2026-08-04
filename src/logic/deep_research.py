@@ -137,6 +137,30 @@ def _format_flags_block(flags: list) -> str:
         lines.append(f"- {fl}: {FLAG_LEGEND.get(fl, '(no legend — infer from name)')}")
     return "\n".join(lines)
 
+def _format_engine_math_block(rec: dict) -> str:
+    """Deterministic values the filter already computed, so the model reads them
+    instead of doing the arithmetic. EV/Win-Prob are NOT Data Window exports —
+    they are derived in data_window_filter (rrHaircut 0.5) and would otherwise
+    have to be recomputed by the LLM, which is where it silently gets them wrong.
+    """
+    if not isinstance(rec, dict) or not rec:
+        return "(unavailable — triage record not found; derive EV yourself if needed)"
+
+    def f(key: str, fmt: str = "{:.2f}") -> str:
+        v = rec.get(key)
+        return fmt.format(v) if isinstance(v, (int, float)) else "n/a"
+
+    lines = [
+        f"- Triage verdict: {rec.get('triage') or 'n/a'} ({rec.get('reason') or 'n/a'})",
+        f"- Chosen side / mode: {rec.get('chosen_side') or 'n/a'} / {rec.get('mode') or 'n/a'}",
+        f"- Win Prob: {f('win_prob')}   (Dir-Prob mapped through the EV gate, haircut 0.5)",
+        f"- Expected Value: {f('ev_r')} R   (= Win Prob x R:R - (1 - Win Prob))",
+        f"- R:R used: {f('rr')}   |  Rev score: {f('rev', '{:.1f}')}",
+        f"- In zone: {rec.get('in_zone')}   |  Missed (above/below zone): {rec.get('missed')}",
+        "(deterministic — these are computed, not model output. Do NOT recompute them.)",
+    ]
+
+    return "\n".join(lines)
 
 def _format_unmasked_recency_block(dw_dict: dict) -> str:
     """Format raw recency integer bitmasks (rev_mask, bear_mask, weak_mask) into
@@ -408,14 +432,33 @@ def run_deep_research(date_str, target_ticker=None):
         dossier_path = tdir / f"{ticker}_news_research.md"
 
         triage_record = _load_triage_record(raw_dir, deep_dir, ticker) or {}
-        if not triage_record.get("flags") and (tdir / f"{ticker}_thesis.json").exists():
+
+        # Snapshot the deterministic verdict BEFORE the flags fallback below. An empty
+        # `flags` list is normal on a clean bar, so that fallback can replace a perfectly
+        # good filter record — potentially with `llm_data`, which is model output. EV /
+        # Win Prob must never come from that, so the math block only ever reads a record
+        # that carries the filter's own `triage` verdict.
+        verdict_record = triage_record if triage_record.get("triage") else {}
+
+        thesis_file = tdir / f"{ticker}_thesis.json"
+        if not triage_record.get("flags") and thesis_file.exists():
             try:
-                tdata = json.loads((tdir / f"{ticker}_thesis.json").read_text(encoding="utf-8"))
+                tdata = json.loads(thesis_file.read_text(encoding="utf-8"))
                 triage_record = tdata.get("triage") or tdata.get("llm_data") or {}
-            except Exception:
+
+                if not verdict_record and isinstance(tdata.get("triage"), dict):
+                    verdict_record = tdata["triage"]
+            except (json.JSONDecodeError, OSError):
                 pass
-        flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
+
+            flags = (
+                triage_record.get("flags")
+                if isinstance(triage_record, dict)
+                else None
+            ) or []
+
         flags_block = _format_flags_block(flags)
+        engine_math_block = _format_engine_math_block(verdict_record)
 
         # Load data window JSON (math state)
         data_window_str = "{}"
@@ -494,82 +537,105 @@ def run_deep_research(date_str, target_ticker=None):
         from src.clients import options_client
 
         options_client.set_active_ticker(ticker)
+        # Pre-fetch the live quote rather than relying on the model to call the tool.
+        # The Data Window is the last CLOSED bar, so without this the thesis can be
+        # built on a stale anchor whenever the model skips get_realtime_quote — and
+        # whether it did is not auditable after the fact. The tool stays enabled for
+        # refresh; this just guarantees a deterministic price is always in the payload.
+        try:
+            live_quote_block = options_client.get_realtime_quote(ticker) or ""
+        except Exception as e:
+            logger.warning(f"[{ticker}] Live quote pre-fetch failed: {e}")
+            live_quote_block = ""
+        if not live_quote_block:
+            live_quote_block = (
+                "(unavailable — say so explicitly and anchor on the Data Window bar close; "
+                "do NOT invent a live price)"
+            )
 
         options_block = ""
         user_prompt = f"""
-RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
-VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
-prior-session news is current — the FRESH LIVE NEWS block below is the authoritative,
-dated source for today's economy/earnings context.
+        RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
+        VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
+        prior-session news is current — the FRESH LIVE NEWS block below is the authoritative,
+        dated source for today's economy/earnings context.
 
-I am requesting a Deep Research Validation for the ticker: {ticker}.
+        I am requesting a Deep Research Validation for the ticker: {ticker}.
 
---- 0. REVANTH BIBLE (Rules & Framework) ---
-{bible_text}
+        --- 0. REVANTH BIBLE (Rules & Framework) ---
+        {bible_text}
 
---- 1. DATA WINDOW (Exact Math State from TradingView) ---
-{data_window_str}
+        --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
+        {data_window_str}
 
-{unmasked_recency_block}
+        --- 1a. LIVE QUOTE (pre-fetched at run time — where the market is NOW) ---
+        {live_quote_block}
 
-⚠️ CRITICAL BITMASK RULE FOR REVERSAL PATTERN MASK:
-When filling the Reversal Pattern Mask table row in your output report, you MUST copy the exact pattern names and polarities from Section 1b (UNMASKED PATTERN & RECENCY SIGNALS). Do NOT infer or change suffixes.
-- Bit 256 IS HIKKAKE_BULL (Bullish) — NOT Hikkake Bear
-- Bit 1024 IS OOPS_BULL (Bullish) — NOT Oops Bear
-- Bit 512 IS HIKKAKE_BEAR (Bearish)
-- Bit 2048 IS OOPS_BEAR (Bearish)
-For Mask 1473 (= 1024 + 256 + 128 + 64 + 1), the exact decoded sequence is: OOPS_BULL (1024) + HIKKAKE_BULL (256) + TRAP_BEAR (128, Bullish) + TRAP_BULL (64, Bearish) + KEY_REV_BULL (1, Bullish) = 4 Bullish vs 1 Bearish signals.
+        {unmasked_recency_block}
+
+        ⚠️ CRITICAL BITMASK RULE FOR REVERSAL PATTERN MASK:
+        When filling the Reversal Pattern Mask table row in your output report, you MUST copy the exact pattern names and polarities from Section 1b (UNMASKED PATTERN & RECENCY SIGNALS). Do NOT infer or change suffixes.
+        - Bit 256 IS HIKKAKE_BULL (Bullish) — NOT Hikkake Bear
+        - Bit 1024 IS OOPS_BULL (Bullish) — NOT Oops Bear
+        - Bit 512 IS HIKKAKE_BEAR (Bearish)
+        - Bit 2048 IS OOPS_BEAR (Bearish)
+        For Mask 1473 (= 1024 + 256 + 128 + 64 + 1), the exact decoded sequence is: OOPS_BULL (1024) + HIKKAKE_BULL (256) + TRAP_BEAR (128, Bullish) + TRAP_BULL (64, Bearish) + KEY_REV_BULL (1, Bullish) = 4 Bullish vs 1 Bearish signals.
 
 
---- 2. NEWS RESEARCH DOSSIER (Pre-compiled by Local Pipeline) ---
-{news_dossier}
-{"(NOTE: this cached dossier is STALE — written on a different date. Prefer the FRESH LIVE NEWS block below.)" if stale else ""}
+        --- 2. NEWS RESEARCH DOSSIER (Pre-compiled by Local Pipeline) ---
+        {news_dossier}
+        {"(NOTE: this cached dossier is STALE — written on a different date. Prefer the FRESH LIVE NEWS block below.)" if stale else ""}
 
         --- 2b. FRESH LIVE NEWS (pulled at run time — AUTHORITATIVE for today) ---
-{macro_news}
+        {macro_news}
 
-{fresh_news}
+        {fresh_news}
 
-{market_sentiment_block}
+        {market_sentiment_block}
 
---- 2c. FUNDAMENTAL & PER-TICKER SOCIAL (fetched live for this ticker) ---
-{av_block}
-{social_block}
+        --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL (fetched live for this ticker) ---
+        {av_block}
+        {social_block}
 
---- 2d. ENGINE FLAGS (deterministic) ---
-{flags_block}
+        --- 2d. ENGINE FLAGS (deterministic) ---
+        {flags_block}
 
---- 2e. GOOGLE-GROUNDED RESEARCH (Gemini + Google Search, cited) ---
-{grounded_block}
+        --- 2d-i. ENGINE MATH (deterministic — already computed, do not recompute) ---
+        {engine_math_block}
 
---- 2f. EARNINGS DATE (deterministic where available) ---
-{earnings_fact_block}
+        --- 2e. GOOGLE-GROUNDED RESEARCH (Gemini + Google Search, cited) ---
+        {grounded_block}
 
-{options_block}
-You have access to LIVE TOOLS. BEFORE you finalize the thesis you MUST call them to
-pull real, current data (do not rely on the stale dashboard numbers above). For all
-macro/economy/CPI/Fed and earnings context, USE the FRESH LIVE NEWS block (section 2b)
-first, and you MAY call search_web(...) to refresh anything specific:
+        --- 2f. EARNINGS DATE (deterministic where available) ---
+        {earnings_fact_block}
 
-  - get_realtime_quote("{ticker}")  -> live last price, bid/ask, day range, 52-week range, volume.
-  - fetch_options_chain("{ticker}", direction="CALL"|"PUT", strike_low=..., strike_high=...,
-        min_dte=..., max_dte=...)    -> live option strikes, bids/asks, mid, volume, and greeks
-        (delta/gamma/theta/vega) from Alpaca. NOTE: IV and open interest are NOT returned.
-        Derive direction/strike band from the chart + live quote; widen if needed.
-  - search_web(...)                  -> latest earnings date, catalyst, analyst/macro context.
+        {options_block}
+        You have access to LIVE TOOLS. BEFORE you finalize the thesis you MUST call them for the
+        option chain and for anything time-sensitive you still need. What is already pre-fetched
+        above and must NOT be re-derived: the live price (section 1a), the engine math (2d-i), the
+        earnings date (2f), and macro/CPI/Fed/earnings context (2b). The Data Window state itself
+        (scores, action codes, stage, zones, geometry) is NOT stale and is NOT superseded by any
+        tool - it is the bar you are analysing. Only PRICE moves after the close.
 
-Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
-assume any prior read is correct. Then synthesize the FINAL thesis and
-EMIT a concrete trade plan with ALL of:
-  - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected
-    14-120 day trading range, justified from the chart + live data.
-  - OPTIONS PLAN: direction, specific strike(s), expiry/DTE window, and why that
-    structure fits the range + catalyst.
-  - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) derived from the live chain
-    and the expected range.
-  - CONVICTION and the risk/reward rationale.
-Emit your final Portfolio Manager Thesis exactly as instructed in the response format.
-"""
+        - get_realtime_quote("{ticker}")  -> refresh the live quote if section 1a is unavailable or you need bid/ask depth.
+        - fetch_options_chain("{ticker}", direction="CALL"|"PUT", strike_low=..., strike_high=...,
+                min_dte=..., max_dte=...)    -> live option strikes, bids/asks, mid, volume, and greeks
+                (delta/gamma/theta/vega) from Alpaca. NOTE: IV and open interest are NOT returned.
+                Derive direction/strike band from the chart + live quote; widen if needed.
+        - search_web(...)                  -> latest earnings date, catalyst, analyst/macro context.
+
+        Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
+        assume any prior read is correct. Then synthesize the FINAL thesis and
+        EMIT a concrete trade plan with ALL of:
+        - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected
+            14-120 day trading range, justified from the chart + live data.
+        - OPTIONS PLAN: direction, specific strike(s), expiry/DTE window, and why that
+            structure fits the range + catalyst.
+        - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) derived from the live chain
+            and the expected range.
+        - CONVICTION and the risk/reward rationale.
+        Emit your final Portfolio Manager Thesis exactly as instructed in the response format.
+        """
 
         provider_model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3")
         logger.info(

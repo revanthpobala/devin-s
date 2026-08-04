@@ -625,24 +625,48 @@ def generate_thesis_task(
         earnings_gate = "CAUTION"
     else:
         earnings_gate = "PASS"
+    # Resolve the math fields through the FILTER'S OWN label matcher, never by exact key.
+    # The nine fields below were read with hardcoded legacy titles ("Ext% (vs MA200)",
+    # "Stage (1=Base,2=Up,3=Top,4=Dn)", "Dir Prob % (>50 bull)", ...). The Pine export
+    # titles changed, so every one of them missed and safe_float(None) handed the model
+    # 0.0 — dir_prob 0 made TREND_LONG unreachable and TREND_SHORT always true, stage 0
+    # disabled both REVERSION modes, and regime 0 read as "Healthy" on every ticker.
+    # parse_data_window carries both old and new variants for each label, so it survives
+    # the next rename too.
+    try:
+        from src.logic.data_window_filter import parse_data_window
+
+        _pf = parse_data_window(data_window) or {}
+    except Exception as e:
+        logger.warning(
+            f"[ThesisWorker-{worker_id}] parse_data_window failed for {ticker}: {e}"
+        )
+        _pf = {}
+
+
+    def _pget(key, default=0.0):
+        v = _pf.get(key)
+        return v if isinstance(v, (int, float)) else default
+
 
     llm_input = {
         "ticker": ticker,
         "price": current_price,
         "buy": buy_score,
         "sell": sell_score,
-        "dir_prob": safe_float(data_window.get("Dir Prob % (>50 bull)")),
-        "stage": int(safe_float(data_window.get("Stage (1=Base,2=Up,3=Top,4=Dn)"))),
-        "regime": int(safe_float(data_window.get("Regime (0Hlt1Ext2Clmx3Dist4Dn5Ign6Sqz)"))),
-        "ext_pct": safe_float(data_window.get("Ext% (vs MA200)")),
-        "exhaustion": safe_float(data_window.get("Exhaustion Gradient 0-1")),
-        "exp_move_pct": safe_float(data_window.get("Exp Move % (21b)")),
-        "ignition_long": safe_float(data_window.get("Long Ignition (1=fresh breakout)")),
+        "dir_prob": _pget("dir_prob"),
+        "stage": int(round(_pget("stage"))),
+        "regime": int(round(_pget("regime"))),
+        "ext_pct": _pget("ext_pct"),
+        "exhaustion": _pget("exhaustion"),
+        "exp_move_pct": _pget("exp_move_pct"),
+        "ignition_long": _pget("ignition_long"),
         "rev_zone_l": safe_float(data_window.get("Long Rev Zone")),
         "rev_zone_s": safe_float(data_window.get("Short Rev Zone")),
         "long_zone": [zone_bot, zone_top],
         "long_target": safe_float(data_window.get("Long Target")),
-        "ma200": safe_float(data_window.get("MA 200")),
+        "long_stop": safe_float(data_window.get("Long Stop Loss")),
+        "ma200": _pget("ma200"),
         "avwap_res": safe_float(data_window.get("AVWAP Resistance")),
         "avwap_sup": safe_float(data_window.get("AVWAP Support")),
         "golden_cross": safe_float(data_window.get("Golden Cross")),
@@ -651,7 +675,18 @@ def generate_thesis_task(
         "opposite_score": sell_score if side == "LONG" else buy_score,
         "zone_state": zone_state,
         "rr_from_current": rr_from_current,
-        "rr_to_target": safe_float(data_window.get("R:R to target")),
+        "rr_to_target": _pget("rr_to_target"),
+        # R-VRVP companion. The local gem documents these and builds five soft flags on
+        # them (into_supply / below_value / above_value / volume_confirmed /
+        # low_volume_breakout), but they were never sent — so those rules could not fire.
+        # None (not 0.0) when the companion is off the chart, since the gem is told not to
+        # infer a missing VP field and 0.0 would read as a real price.
+        "poc": safe_float(data_window.get("VP POC"), None),
+        "vah": safe_float(data_window.get("VP VAH"), None),
+        "val": safe_float(data_window.get("VP VAL"), None),
+        "hvn_above": safe_float(data_window.get("VP HVN Above"), None),
+        "hvn_below": safe_float(data_window.get("VP HVN Below"), None),
+        "rvol": safe_float(data_window.get("RVOL Vs Avg"), None),
         "ev_r": safe_float(triage.get("ev_r")),
         "win_prob": safe_float(triage.get("win_prob")),
         "computed_flags": list(triage.get("flags") or []),
@@ -663,7 +698,6 @@ def generate_thesis_task(
         "today": today_str,
         "headlines": headlines[:5],
     }
-
     # G. Query Local LLM (FREE — local Qwen 9B). This is the cheap, wide-net
     # first pass that decides whether a ticker is strong enough to justify the
     # paid Minimax deep-research pass downstream. No OpenRouter call here.

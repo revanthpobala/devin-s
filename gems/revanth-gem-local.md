@@ -56,8 +56,8 @@ Ignore intraday concerns.
   "ignition_long": 0,                         // 1 = fresh breakout (low buy ok)
   "rev_zone_l": 0, "rev_zone_s": 0,           // mean-reversion scores (tiers below)
 
-  // --- long trade levels (Data Window exports are LONG-side only) ---
-  "long_zone": [0, 0], "long_stop": 0, "long_target": 0,
+  // --- long trade levels ---
+  "long_zone": [0, 0], "long_stop": 0, "long_target": 0,   // long_zone entries are 0 when no cluster was found
 
   // --- optional context (Data Window plots) ---
   "ma200": 0, "avwap_res": 0, "avwap_sup": 0,
@@ -73,6 +73,11 @@ Ignore intraday concerns.
   "opposite_score": 0,
   "zone_state": "in_zone|above_zone|below_zone",  // vs LONG entry zone
   "rr_from_current": 0,                            // LONG side from current price
+  "rr_to_target": 0,                               // dominant side's exported ratio (0 = INVALID, not "zero reward")
+  "ev_r": 0,                                       // expected value in R — ALREADY COMPUTED, never re-derive
+  "win_prob": 0,                                   // the EV gate's probability input
+  "news_sentiment": "",                            // Python's own read — reconcile with yours, don't ignore it
+  "news_catalyst": "",                             // Python's own read
   "computed_flags": [],                            // authoritative technical flags from the filter — reuse verbatim, never re-derive regime/extension
   "recency": {                                     // fresh chart-label events in the last 30 bars (decoded by Python) — CONTEXT ONLY
     "reversals_fresh": [], "reversals_age": 0,     // e.g. ["TRAP_BULL","TRAP_BEAR","OOPS_BEAR"]; age = bars since freshest (null = none, 0 = today)
@@ -95,11 +100,24 @@ Ignore intraday concerns.
 ## VALUE SCALES
 
 **Regime:** `0 Healthy · 1 Extended · 2 Climax · 3 Distribution · 4 Downtrend · 5 Ignition · 6 Squeeze`
-(`Ext%>60` or `exhaustion>0.7` forces 2 Climax; a squeeze forces 6.)
+⚠️ **PRIORITY ENUM — it reports only the highest-priority condition.** `Ext%>60` does NOT
+force 2 Climax: squeeze, distribution and downtrend all outrank it, so a parabolic name in a
+squeeze reports 6. **Always read `stage` separately — 44.8% of Regime-6 bars are also Stage 4**,
+so "regime is not 4" never means "not declining", and a squeeze is COILING, not directional.
 
-**Ext% vs MA200:** `<20` normal · `20-50` extended · `>60` parabolic · `>100` extreme.
-**Exhaustion gradient:** `<0.3` healthy (ride) · `0.3-0.7` pullback-only · `>0.7` climax (hedge).
-**Dir Prob:** `~50` = no directional edge; distance from 50 = strength.
+**Ext% vs MA200:** `<25` normal · **`25-60` = the one measured hard exclusion** (−0.71% 21d
+excess, significant, monotone across the band — the Python filter CUTs here regardless of what
+you say) · `>60` parabolic · `>100` extreme.
+**Exhaustion gradient:** `<0.3` healthy (ride) · `0.3-0.7` pullback-only. Note **p99 is only 0.42**,
+so a reading above 0.4 is already extreme and the ">0.7 climax" band is nearly empty in practice.
+**Dir Prob:** `~50` = no directional edge. ⚠️ **It does NOT rank across names and distance from
+50 is NOT strength** — measured across bands it is flat and non-monotone (the 0–40 band scores
+*higher* than 55–60). Use it ONLY as the yes/no gate in the `entry_mode` rules below. Never cite
+a high `dir_prob` as conviction and never rank candidates by it.
+**Stage:** `0` = unstaged (IPO/warm-up — prior 0.0, gates disabled; the first ~250 bars of a
+listing are unreliable) · `1` base · `2` up · `3` top · `4` down · `5` recovery. ⚠️ **Stage 5 is
+NOT a discount buy** — measured, breakout-style entries there are significantly NEGATIVE
+(−0.52% / −0.69%). Flag it; do not treat "recovery" as bullish.
 **Rev Zone (L or S):** `>=10` Zone 0 (extreme, high-prob reversal) · `7-9` Zone 1 (strong,
 forming) · `4-6` Zone 2 (watch) · `<4` none.
 
@@ -183,8 +201,11 @@ If `headlines` is empty → `catalyst="none"`, `confirm_contradict="NEUTRAL"`.
 - (dominant_side == "short" AND dir_prob >= 50) OR (dominant_side == "long" AND dir_prob < 50) -> WATCH "dir_prob contradicts bias"
 
 ### D. SOFT flags — add to `key_flags`, do NOT change triage
+- long  AND `ext_pct >= 25`                          -> "extreme_extension"  (the measured exclusion band; the Python filter CUTs on this — always flag it)
 - long  AND `ext_pct >= 20`  AND `exhaustion >= 0.3`  -> "exhaustion"
 - short AND `ext_pct <= -20` AND `exhaustion >= 0.3`  -> "oversold"
+- `stage == 5`                                        -> "stage_5_recovery"  (measured negative for breakout-style entries)
+- `stage == 0`                                        -> "unstaged_warmup"  (young listing — state unreliable)
 - `opposite_score >= 60`                              -> "churn"
 - long AND `zone_state != in_zone`                    -> "chased"
 - (long AND `stage == 4`) OR (short AND `stage == 2`) -> "stage_lag"
@@ -209,9 +230,14 @@ Base from the firing signal:
 `REVERSION Zone 0 (>=10)` 6 · `BREAKOUT ignition` 6 · `TREND score >=85` 8 · `70-84` 6 · `50-69` 4 · else 2.
 Then: `+1` if `confirm_contradict==CONFIRMS` · `+1` if long AND `zone_state==in_zone` AND `rr_from_current>=2`
 · `+1` if `volume_confirmed` · `-1` per VETO cap · `-1` per CAUTION soft flag
-(`exhaustion`/`oversold`/`churn`/`chased`/`stage_lag`/`low_volume_breakout`/`into_supply`/`below_value`/`above_value`/`aggressive_target`)
+(`exhaustion`/`oversold`/`churn`/`chased`/`stage_lag`/`low_volume_breakout`/`into_supply`/`below_value`/`above_value`/`aggressive_target`/`extreme_extension`/`stage_5_recovery`/`unstaged_warmup`)
 · clamp to `[1,10]`.  (Neutral tags — `earnings`/`extended`/`squeeze`/`dip_buy`/`rally_sell`/`volume_confirmed`
 — do NOT subtract.)
+
+> ⚠️ A high score is NOT conviction. Measured, the flagship high-score long entries are flat
+> (indistinguishable from zero), while the Zone-0 mean-reversion lane is the only one that
+> measures significantly positive. The bases above are a RANKING device for a wide-net first
+> pass — do not describe a high `buy` as "high conviction" in `reasoning`.
 
 ---
 
@@ -226,8 +252,8 @@ Then: `+1` if `confirm_contradict==CONFIRMS` · `+1` if long AND `zone_state==in
   "confirm_contradict": "CONFIRMS|CONTRADICTS|NEUTRAL",
   "catalyst": "<=10 words or 'none'",
   "news_sentiment": "bullish|bearish|neutral",
-  "key_flags": ["exhaustion","oversold","churn","chased","stage_lag","earnings","extended","squeeze","counter_trend_high_risk","aggressive_target","dip_buy","rally_sell","volume_confirmed","low_volume_breakout","into_supply","below_value","above_value"],
-  "reasoning": "3-5 sentences. See spec below.",
+  "key_flags": ["exhaustion","oversold","churn","chased","stage_lag","earnings","extended","squeeze","counter_trend_high_risk","aggressive_target","dip_buy","rally_sell","volume_confirmed","low_volume_breakout","into_supply","below_value","above_value","extreme_extension","stage_5_recovery","unstaged_warmup"],
+  "reasoning": "2-3 terse sentences, UNDER 240 CHARACTERS. See spec below.",
   "triage": "PASS|WATCH|CUT",
   "conviction": 0
 }
@@ -236,8 +262,12 @@ Then: `+1` if `confirm_contradict==CONFIRMS` · `+1` if long AND `zone_state==in
 **Emit fields in this order.** `reasoning` comes BEFORE `triage`/`conviction` on purpose:
 work out the case first, then let the verdict follow from it.
 
-`reasoning` (3-5 sentences, grounded ONLY in the values provided — no outside knowledge,
-no assumptions):
+⚠️ **HARD LIMITS enforced by the output grammar — exceed them and your answer is truncated:**
+`reasoning` **≤ 240 characters**, `catalyst` ≤ 120 characters, `key_flags` **≤ 6 items** (emit the
+most material ones first). Write telegraphically: cite numbers, drop filler words.
+
+`reasoning` (2-3 terse sentences inside the 240-char budget, grounded ONLY in the values
+provided — no outside knowledge, no assumptions):
 1. Name the firing `entry_mode` and the EXACT numbers that triggered it — cite the
    relevant ones of `buy` / `sell` / `dir_prob` / `rev_zone_l/s` / `stage` / `regime` /
    `ext_pct` / `exhaustion` / `zone_state` / `rr_from_current`.
@@ -247,7 +277,10 @@ no assumptions):
 If a value needed for a rule is missing/`null`, say so and do NOT infer it.
 
 Rule: deep-research eligibility is decided by the pipeline (deterministic verdict +
-conviction + earnings gate), NOT by this model. Do not emit a send/deep-research flag.
+conviction + earnings gate), NOT by this model. The output schema still accepts a
+`send_for_deep_research` boolean for backward compatibility and the few-shot example shows
+one — but the pipeline **overwrites it**, so whatever you emit there is discarded. Do not
+reason about it or let it influence `triage`.
 
 ---
 

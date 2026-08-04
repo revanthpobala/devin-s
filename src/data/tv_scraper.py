@@ -100,8 +100,12 @@ class TVScraper:
                 page.keyboard.press("Control+ArrowDown")
                 time.sleep(0.15)
 
-        # Clear any hover tooltip and let the view settle before screenshotting.
-        page.mouse.move(5, 5)
+        # Clear the crosshair by parking the mouse at the bottom-right corner so
+        # it sits outside the main chart area before the screenshot, then let the
+        # view settle. Escape dismisses any lingering tooltips/menus.
+        page.keyboard.press("Escape")
+        vp = page.viewport_size or {"width": 1920, "height": 1080}
+        page.mouse.move(vp["width"] - 5, vp["height"] - 5)
         time.sleep(1.0)
 
     def capture_ticker(self, symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS,

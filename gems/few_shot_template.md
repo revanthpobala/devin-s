@@ -1,6 +1,6 @@
 AAPL | $315.32 | July 12, 2026
-Verified Price Change: -$0.90 (-0.28%) 1
-⚡ TLDR / EXECUTIVE SUMMARY
+Bar close: $315.32 (Data Window) · Live: $315.32 (get_realtime_quote, 09:41 ET) · Change: -$0.90 (-0.28%) 1
+EXECUTIVE SUMMARY
 The Thesis in 2 Sentences: Apple's successful breakout from its $260 technical base is structurally supported by a domestic semiconductor tariff shield and record services growth, fully validating the daily indicator's momentum buy signal.3 While the escalating intellectual property lawsuit against OpenAI introduces short-term headline noise, the underlying institutional capital flow and imminent pre-earnings volatility expansion favor structured long exposure over counter-trend hedging.6
 Verdict: BUY (Trend-Following Momentum)
 Conviction: 8/10
@@ -19,14 +19,21 @@ Row 9 (Energy): 36.69 (75.79%) | ⚡ ENERGY | 🟠 WARMING
 Row 10 (Decision): ▬ 96 Buy | ⚡ ACCELERATION | ▼ 3 Sell
 Row 10 (BIAS LAG?): No (Row 10 Center displays active momentum state: ⚡ ACCELERATION)
 Row 11 (Rev Zone): 🎯 Z2(6) | 🔄 REV ZONE | 🎯 Z2(5)
-Row 12 (MTF): M [check] W [check] D [check] | 100% MTF | XM XW XD
+Row 12 (MTF): MTF Long Aligned 0 To 3 = 3 (Monthly + Weekly + Daily) — full alignment, read as MATURE not confirmed
 Mathematical State (Data Window)
-Ext% (vs MA200): 16.44%
-Exhaustion Gradient (0-1): 0.3007
-Regime: 1.0000 (Extended)
-Exp Move % (21b): 9.95%
-Dir Prob % (>50 bull): 95.03%
-Long Ignition (1=fresh breakout): 0.0000
+Ext Pct vs MA200: 16.44%
+Ext Z Self Relative: 1.12
+Exhaustion Gradient: 0.3007
+Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz: 1 (Extended)
+Exp Move Pct 21b: 9.95%
+Dir Prob Pct Above 50 Bull: 95.03 (gate input only — NOT conviction, and not comparable across names)
+Long Ignition Fresh Breakout: 0
+Entry At Market 0No 1L 2S 3Both: 1 (long entry IS the close, so RR To Target below is the AT-MARKET ratio)
+Action Long Code / Action Short Code: 6 (ACCELERATION) / 10 (WAIT)
+Stage 1 Base 2 Up 3 Top 4 Down: 2 · Stage Age Bars: 21
+Buy Sigma Evidence / Sell Sigma Evidence: 3.96σ / -5.42σ
+CALIBRATION DISCLOSURE
+The firing state is Action Long Code 6 (ACCELERATION), measured at +0.27% ex21 [-0.30, +0.86] — the interval straddles zero, so this is a DESCRIPTION, not a rule, and the code contributes no measured edge. MTF 3/3 (-0.13%, not significant) and Dir Prob 95.03 (flat and non-monotone across bands) likewise carry none. What is actually carrying this thesis is non-indicator evidence: the Intel domestic-fabrication exemption from the 100% semiconductor tariff, the $30B Broadcom supply agreement, and $3.05M net call premium into the July $300 strike. Stage 2 at age 21 bars sits in the one favourable measured cell (16-31 bars, +0.32% SIG). Extension at 16.44% is below the 25-60% exclusion band.
 Macroeconomic and Volatility Indicators
 10-Year Treasury Yield: 4.56% 10
 CBOE VIX Index: 15.03 12
@@ -113,17 +120,17 @@ Long Score: 6 out of 30 | Short Score: 5 out of 30 14
 Key Triggers 27
 High Institutional Trap Bonus (+2.0 points) arising from swept bear traps.27
 ACTION Row Conflict?
-No conflict. Row 8 ACTION is ⚡ ACCELERATION (not "TOXIC RISK"), indicating a highly active trend.
+No conflict — Action Long Code is 6 (ACCELERATION), not a 🛑 danger state. Note code 6 is an UNCONFIRMED thrust measuring +0.27% (flat), so it permits a momentum entry without requiring In Zone, but it is not conviction.
 
 Reversal Thesis and Strategic Application
 Because both long and short reversion zones are active in Zone 2 (scores between 4 and 6), the Revanth Daily Engine indicates a formative, dual-sided consolidation state rather than an actionable counter-trend extreme.14 This dual-sided activity suggests that the market is experiencing balanced, short-term counter-pressures.14
 Under Revanth Rule 7 (Dual REV ZONE), directional reversion trades are strictly suspended because the overlapping signals point to consolidation rather than a clear trend exhaustion. Instead of fading this movement, the portfolio manager should prioritize the primary Stage 2 advancing momentum, using short-term pullbacks toward key support as long entry opportunities.4
 CONVICTION: 8/10
-This high conviction is supported by:
-Perfect multi-timeframe alignment, with Monthly, Weekly, and Daily trends showing 100% bullish synchronization (Row 12 L: M ✔ W ✔ D ✔).14
-An absolute long momentum score of 96 with stable momentum (Row 10 L: ▬ 96 Buy), indicating a highly robust trend.14
-A constructive domestic manufacturing framework (via the Intel and Broadcom alliances) that protects Apple's margins from immediate tariff and supply-chain pressures.3
-A manageable Exhaustion Gradient of 0.3007 and moderate extension (16.44% above the 200-day SMA), showing that the trend has significant room to expand before reaching terminal exhaustion limits.
+The indicator state alone caps at 6. The two non-indicator pillars below are what lift it, and they are named deliberately:
+Pillar 1 — Structural margin protection: the Intel domestic-fabrication alliance secures a 100% exemption from the semiconductor tariff, and the $30B Broadcom agreement de-risks RF/ASIC supply through 2031.3,6
+Pillar 2 — Verified institutional positioning: $3.05M in net premium into the July 17 $300 calls, accumulated under a defensive put skew (Max Pain $282.50 vs spot $315.32) — smart money buying long delta at a discount, not distribution.14,27
+Supporting, NOT carrying: Exhaustion Gradient 0.3007 and extension of 16.44% keep this outside the 25-60% exclusion band, and Stage 2 at 21 bars is the favourable age cell. Deliberately NOT counted toward conviction: the Buy Score of 96 (median is 85 — a high score is the normal condition), MTF 3/3 (reads as a mature move), and Dir Prob 95.03 (does not rank across names).
+Event risk holds it below 9: earnings on July 30 with elevated IV, plus the July 14 CPI print.
 THE TRADE
 If Playing Stock (Trend-Following)
 Entry: $315.32 (Current spot price, positioned at the upper boundary of the daily long entry zone of $311.27 to $315.32).14
