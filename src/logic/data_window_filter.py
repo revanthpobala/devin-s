@@ -681,12 +681,12 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
     if side == "long":
         return {
             "zone": [f["long_zbot"], f["long_ztop"]],
-            "stop": f["long_stop"],
+            "stop": f["long_stop_loss"],
             "target": f["long_target"],
         }
     return {
         "zone": [f["short_zbot"], f["short_ztop"]],
-        "stop": f["short_stop"],
+        "stop": f["short_stop_loss"],
         "target": f["short_target"],
     }
 # ---------------------------------------------------------------------------
