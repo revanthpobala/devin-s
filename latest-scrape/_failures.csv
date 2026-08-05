@@ -1,0 +1,25 @@
+ticker,symbol,ok,reason,info
+BRK-B,BRK-B,False,"charted B, not BRK-B - symbol never applied",
+BK,BK,False,"resolved to TSX - foreign listing, set the exchange in the worklist",
+BF-B,BF-B,False,"charted B, not BF-B - symbol never applied",
+CTRA,CTRA,False,"resolved to IDX - foreign listing, set the exchange in the worklist",
+DOW,DOW,False,"resolved to IG - foreign listing, set the exchange in the worklist",
+DTE,DTE,False,"resolved to XETR - foreign listing, set the exchange in the worklist",
+EQR,EQR,False,"resolved to ASX - foreign listing, set the exchange in the worklist",
+EG,EG,False,"resolved to MYX - foreign listing, set the exchange in the worklist",
+FI,FI,False,"resolved to PYTH - foreign listing, set the exchange in the worklist",
+HAL,HAL,False,"resolved to NSE - foreign listing, set the exchange in the worklist",
+HOLX,HOLX,False,"resolved to PYTH - foreign listing, set the exchange in the worklist",
+IEX,IEX,False,"resolved to NSE - foreign listing, set the exchange in the worklist",
+IPG,IPG,False,"resolved to ASX - foreign listing, set the exchange in the worklist",
+K,K,False,"resolved to TSX - foreign listing, set the exchange in the worklist",
+MMC,MMC,False,"resolved to NEWCONNECT - foreign listing, set the exchange in the worklist",
+WBD,WBD,False,"timeout: Page.click: Timeout 20000ms exceeded.
+Call log:
+  - waiting for locato",
+WM,WM,False,"timeout: Page.click: Timeout 20000ms exceeded.
+Call log:
+  - waiting for locato",
+WAT,WAT,False,"timeout: Page.click: Timeout 20000ms exceeded.
+Call log:
+  - waiting for locato",
