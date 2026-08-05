@@ -68,7 +68,7 @@ LLM_TRIAGE_MAX_TOKENS = int(os.getenv("LLM_TRIAGE_MAX_TOKENS", "2048"))
 # the _DEEP_RESEARCH folder holds only the top-N) and once at the paid pass
 # (deep_research.py, before calling Minimax). Both use the same
 # deep_research_sort_key ranking, so the folder and the paid run agree.
-DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "8"))
+DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
 # ENRICH_TOP_N: optional cap on how many send-eligible tickers receive the local
 # Qwen enrichment. 0 (the default) = NO CAP, enrich every eligible name.
 # Uncapped is the right default because nothing in that pass costs money or burns a

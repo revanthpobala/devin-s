@@ -744,7 +744,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float]
         primary -= 5.0
 
     return (is_pass, is_rev_buy, primary, conviction)
-    
+
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""
     return sorted(pass_records, key=deep_research_sort_key, reverse=True)
@@ -880,11 +880,19 @@ def triage_ticker(
     technical_pass = verdict["triage"] == "PASS"
     sentiment_negative = sentiment.get("label") == "negative"
     verdict["news_negative"] = sentiment_negative
-    pursue = technical_pass
+    # Anything not CUT is worth pursuing. This used to be PASS-only, which made the
+    # WATCH branch of process_survivor._deep_research_gate's `quality_pass`
+    # unreachable: `send` ANDs quality_pass with `pursue`, so a WATCH could satisfy
+    # WATCH_MIN_CONVICTION and still never be promoted. PASS is only the code-20
+    # REVERSAL BUY lane (~0.9 names/day across 490), so deep research was being fed
+    # from <1% of the pool while 300-380 WATCH names/day were discarded unexamined.
+    pursue = verdict["triage"] in ("PASS", "WATCH")
     if technical_pass and sentiment_negative:
         pursue_reason = "data_window_pass_with_negative_news"
     elif technical_pass:
         pursue_reason = "pass"
+    elif pursue:
+        pursue_reason = verdict["reason"] or "constructible_watch"
     else:
         pursue_reason = verdict["reason"] or "no_setup"
 
