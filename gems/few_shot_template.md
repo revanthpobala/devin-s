@@ -1,10 +1,11 @@
-AAPL | $315.32 | July 12, 2026
-Bar close: $315.32 (Data Window) · Live: $315.32 (get_realtime_quote, 09:41 ET) · Change: -$0.90 (-0.28%) 1
-EXECUTIVE SUMMARY
-The Thesis in 2 Sentences: Apple's successful breakout from its $260 technical base is structurally supported by a domestic semiconductor tariff shield and record services growth, fully validating the daily indicator's momentum buy signal.3 While the escalating intellectual property lawsuit against OpenAI introduces short-term headline noise, the underlying institutional capital flow and imminent pre-earnings volatility expansion favor structured long exposure over counter-trend hedging.6
-Verdict: BUY (Trend-Following Momentum)
-Conviction: 8/10
-EARNINGS GATE: PASS (18 Days Remaining | July 30, 2026) 8
+# AAPL | $315.32 | July 12, 2026
+**Bar close:** $315.32 (Data Window) · **Live:** $315.32 (get_realtime_quote, 09:41 ET) · **Change:** -$0.90 (-0.28%)
+
+## ⚡ TLDR / EXECUTIVE SUMMARY
+**The Thesis in 2 Sentences:** Apple's successful breakout from its $260 technical base is structurally supported by a domestic semiconductor tariff shield and record services growth, fully validating the daily indicator's momentum buy signal.3 While the escalating intellectual property lawsuit against OpenAI introduces short-term headline noise, the underlying institutional capital flow and imminent pre-earnings volatility expansion favor structured long exposure over counter-trend hedging.6
+**Verdict:** BUY (Trend-Following Momentum) · **Conviction:** 8/10
+**EARNINGS GATE:** PASS (18 Days Remaining | July 30, 2026)
+**(If User Owns Shares):** HOLD — no CC (Stage 2 advancing, positive momentum)
 🛠️ DATA AUDIT (LITERAL VALUES)
 Revanth Enhanced Strategy Dashboard (v3.3)
 Row 0 (Header): 🟢 LONG Net 3.96σ | DAILY | 🔴 SHORT Net -5.42σ

@@ -366,14 +366,18 @@ def run_deep_research(date_str, target_ticker=None):
         # Deterministic RANK + hard cap: only the top-N setups reach paid research.
         from src.logic.data_window_filter import rank_pass_tickers
 
-        cap = int(os.getenv("DEEP_RESEARCH_CAP", "8"))
+        cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
         ranked = rank_pass_tickers([r for _, r in flagged if r])
-        keep = {str(r.get("ticker", "")).upper() for r in ranked[:cap]}
+        # cap <= 0 means research everything eligible; the rank still sets the ORDER,
+        # so a run that dies partway has already done the strongest names.
+        kept_recs = ranked if cap <= 0 else ranked[:cap]
+        keep = {str(r.get("ticker", "")).upper() for r in kept_recs}
         logger.info(
-            f"Deep-research cap {cap}: {len(flagged)} flagged -> {len(keep)} kept ({sorted(keep)})."
+            f"Deep-research cap {cap or 'uncapped'}: {len(flagged)} flagged -> "
+            f"{len(keep)} kept ({sorted(keep)})."
         )
         for t, rec in flagged:
-            if rec and t.upper() not in keep:
+            if rec and cap > 0 and t.upper() not in keep:
                 logger.info(f"[{t}] Below deep-research cap ({cap}) - deferred.")
                 continue
             tdir = _triage_subdir_for(t) or raw_dir
@@ -386,7 +390,6 @@ def run_deep_research(date_str, target_ticker=None):
     if not chart_files:
         logger.warning("No charts found for deep research.")
         return
-
     # Load the split prompt files
     original_gem_path = config.BASE_DIR / "gems" / "revanth-original-gem.md"
     response_path = config.BASE_DIR / "gems" / "response.md"

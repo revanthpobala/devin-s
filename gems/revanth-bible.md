@@ -1,30 +1,45 @@
-# Revanth Enhanced Strategy v2.0 - Complete Technical Reference Manual
-
----
+# Revanth Enhanced Strategy — Complete Technical Reference Manual
 
 ## Table of Contents
 1. [System Architecture](#1-system-architecture)
 2. [Indicator Reference](#2-indicator-reference)
 3. [Signal Labels & Actions](#3-signal-labels--actions)
-4. [Validation Errors & Fixes](#4-validation-errors--fixes)
-5. [Dashboard Fields](#5-dashboard-fields)
-6. [Clustering Algorithm](#6-clustering-algorithm)
-7. [Risk Management Logic](#7-risk-management-logic)
-8. [Visual Opacity Logic](#8-visual-opacity-logic)
-9. [Quick Reference Card](#9-quick-reference-card)
-10. [Edge Cases & Conflict Resolution](#10-edge-cases--conflict-resolution)
-11. [Timeframe Considerations](#11-timeframe-considerations)
-12. [Troubleshooting Guide](#12-troubleshooting-guide)
-13. [Appendix: Formula Reference](#13-appendix-formula-reference)
-14. [Glossary](#14-glossary)
-15. [Tooltip Field Reference](#15-tooltip-field-reference)
-16. [Visual Element Guide](#16-visual-element-guide)
-17. [Signal Type Definitions](#17-signal-type-definitions)
-18. [Anchor Type Reference](#18-anchor-type-reference)
+4. [Dashboard Fields](#4-dashboard-fields)
+5. [Clustering Algorithm](#5-clustering-algorithm)
+6. [Risk Management Logic](#6-risk-management-logic)
+7. [Visual Opacity Logic](#7-visual-opacity-logic)
+8. [Data Window Exports](#8-data-window-exports-complete-schema)
+9. [Reversal Zones](#9-reversal-zones-deep-dive)
+10. [Quick Reference Card](#10-quick-reference-card)
+11. [Edge Cases & Conflict Resolution](#11-edge-cases--conflict-resolution)
+12. [Timeframe Considerations](#12-timeframe-considerations)
+13. [AI Decision Framework](#13-ai-decision-framework)
+14. [Common Mistakes](#14-common-mistakes)
+15. [Appendix: Formula Reference](#15-appendix-formula-reference)
+16. [**Measured Combinations — what the fields do together**](#16-measured-combinations--what-the-fields-do-together)
+
+> Sections 1–15 define the fields; §16 is what the system
+> actually knows, measured on 2.4M bars. Several intuitive readings (PRIME as a buy signal, MTF 3/3 as
+> confirmation, stage freshness, ignition) are contradicted there by the data.
 
 ---
 
 ## 1. System Architecture
+
+The indicator combines Murphy, de Prado, Elder, Connors, O'Neil, Weinstein, and Livermore
+methodologies into a unified swing/LEAP trading system for large-cap equities.
+
+**Instruments:** Large-cap stocks (AMZN, MSFT, GOOGL, NVDA, etc.)
+**Timeframes:** Daily and Weekly only. Decisions at bar close.
+**Style:** Swing trades and LEAPs.
+
+**What this system is.** It is a **state-description and trade-construction engine**, not an alpha
+engine. It answers "what is true about this stock right now, and if I traded it, where exactly would
+entry, stop and target sit?" — accurately, completely, and identically every time. It does **not**
+answer "will this go up". Measured over 2.4M bars, its positive states are flat and its *negative*
+states are significantly negative (§16): the engine is reliably good at exclusion and geometry, and
+directional conviction must come from catalyst research layered on top. Design every workflow around
+that division of labour.
 
 ```mermaid
 graph TD
@@ -32,39 +47,36 @@ graph TD
         A[OHLCV Data] --> B[HTF Data: Weekly/Monthly]
         A --> C[Indicators]
     end
-    
+
     subgraph Indicator Layer
-        C --> D[Trend: SMA/EMA/Hull]
+        C --> D[Trend: EMA/HMA/SMA]
         C --> E[Momentum: RSI/MACD/Stoch]
-        C --> F[Volume: OBV/MFI/RVOL]
-        C --> G[Volatility: ATR/BB/ADX]
-        C --> H[Structure: Pivots/Fibs/VWAP]
+        C --> F[Volume: OBV/RVOL/MFI]
+        C --> G[Volatility: ATR/ADX/BB]
+        C --> H[Structure: Pivots/VWAP/Fibs]
     end
-    
+
     subgraph Scoring Layer
-        D & E & F & G & H --> I[Trend Score 0-30]
-        D & E & F & G & H --> J[Momentum Score 0-20]
-        D & E & F & G & H --> K[Volume Score 0-20]
-        D & E & F & G & H --> L[Volatility Score 0-15]
-        D & E & F & G & H --> M[Divergence Score 0-15]
-        I & J & K & L & M --> N[Total Score 0-100]
+        D & E & F & G & H --> I[Sigma Z-Scores vs 250-bar history]
+        I --> J[Bayesian Fusion with Weinstein Stage Priors]
+        J --> K[Buy Score / Sell Score 0-100]
     end
-    
-    subgraph Validation Layer
-        N --> O{Score >= 82?}
-        O -->|No| P[No Signal]
-        O -->|Yes| Q[Validation Guards]
-        Q --> R{Triple Screen Pass?}
-        Q --> S{ADX > 18?}
-        Q --> T{FVG Clear?}
-        R & S & T -->|All Pass| U[Signal Generated]
-        R & S & T -->|Any Fail| V[FAILED VALIDATION]
+
+    subgraph Zone Engine
+        H --> L[Clustering: 40+ levels → 2-3 zones]
+        L --> M[Entry / Stop / Target geometry]
+        M --> N[R:R Validation Gate]
     end
-    
-    subgraph Execution Layer
-        U --> W[Clustering Engine]
-        W --> X[Titanium Snap]
-        X --> Y[Final Entry/Stop/Target]
+
+    subgraph Action State
+        K --> O[calcActionState Cascade]
+        N --> O
+        O --> P[Row 8: PRIME / ACTION / WATCH / WAIT / EXTENDED / TOXIC...]
+    end
+
+    subgraph Output
+        P --> Q[Dashboard Table 12 rows]
+        K & M & P --> R[Data Window: 57 indicator + 17 companion exports]
     end
 ```
 
@@ -76,2705 +88,1519 @@ graph TD
 
 | Indicator | Period | Purpose |
 |-----------|--------|---------|
-| **SMA 20** | 20 bars | Short-term trend direction |
-| **SMA 50** | 50 bars | Medium-term trend direction |
-| **SMA 200** | 200 bars | Long-term trend direction (Institutional) |
-| **EMA 5** | 5 bars | Fast momentum (Sprint) |
-| **EMA 8** | 8 bars | "Rocket" line |
-| **EMA 13** | 13 bars | Elder Impulse component |
-| **EMA 50** | 50 bars | Intermediate trend |
-| **Hull MA 20** | 20 bars | Low-lag trend filter |
-| **30-Week SMA** | 150 bars | Weinstein Stage Analysis |
+| **EMA 5** (Sprint) | 5 bars | Fast cloud line |
+| **HMA 20** (Hull) | 20 bars | Slow cloud line, low-lag trend |
+| **EMA 20** | 20 bars | Short-term trend (MA 20 Fast) |
+| **EMA 50** | 50 bars | Medium-term trend (MA 50 Mid) |
+| **EMA 200** | 200 bars | Long-term trend (MA 200 Slow) — Ext% reference |
+| **HMA 150** (Weinstein) | 150 bars | Weinstein Stage Analysis MA |
 
 ### 2.2 Momentum Indicators
 
 | Indicator | Parameters | Interpretation |
 |-----------|------------|----------------|
-| **RSI** | Length: 14 | >50 = Bullish Control, >70 = Overbought |
-| **Stochastic %K** | K:14, D:3 | <20 = Oversold, >80 = Overbought |
-| **MACD Line** | 12/26/9 | Trend momentum (fast EMA minus slow EMA) |
-| **MACD Histogram** | - | Acceleration/Deceleration (MACD minus its signal line) |
-| **Force Index** | 13 bars | Volume-weighted momentum |
-| **Momentum** | 10 bars | Raw price change over 10 bars |
+| **RSI** | 14 | >50 Bullish, >70 Overbought |
+| **Stochastic %K** | K:14, D:3 | <20 Oversold, >80 Overbought |
+| **MACD** | 12/26/9 | Trend momentum |
+| **Force Index** | 13 bars | Volume-weighted momentum (Elder) |
+| **Z Velocity** | `z(roc10, 250)` | 10-bar rate-of-change, z-scored over 250 bars |
+| **Z Elasticity** | `z(distFromMA20, 250)` | distance from EMA20, z-scored over 250 bars |
+
+Both are exported and both gate the action cascade *before* any score branch is reached
+(§3.1 codes 11/12/13/16) — which is why a high-scoring bar can still print STRETCHED or EXTENDED.
 
 ### 2.3 Volume Indicators
 
 | Indicator | Purpose |
 |-----------|---------|
-| **OBV** | Cumulative volume (+/− by close direction) — institutional accumulation/distribution |
-| **Relative Volume** | Volume vs its 20-bar average — abnormal-activity detection |
-| **Chaikin MFI** | Money flow direction |
-| **Volume Z-Score** | Statistical significance of volume (vs its mean/standard-deviation) |
+| **OBV** | Institutional accumulation/distribution |
+| **RVOL** (vs avg) | Volume vs 20-bar average |
+| **Volume Z-Score** | Statistical significance of volume |
 
 ### 2.4 Volatility Indicators
 
 | Indicator | Purpose |
 |-----------|---------|
-| **ATR** | Average candle size over 14 bars (Stop-Loss basis) |
-| **ADX** | Trend strength (not direction), 14 bars |
-| **Bollinger Bands** | Volatility envelope (SMA ± 2 standard deviations) |
-| **BB Width** | Squeeze detection ((upper − lower) / middle) |
-| **Directive** | PRIME / LEAN / STALK | Row 8 Action Label |
-| **HV Rank** | Historical Volatility % | Volatility Energy Rank |
+| **ATR(14)** | Average candle size — stop-loss basis |
+| **ADX(14)** | Trend strength (not direction) |
+| **HV20** | 20-day historical volatility, annualized |
+| **Exp Move %** | Expected ~21-day move from HV20 |
+| **Exhaustion Gradient** | Blended trend-maturity/overheat (0–1) |
 
-### 2.5 Structural Indicators
+### 2.5 Structural Levels (Clustering Inputs)
 
-| Indicator | Description | Weight |
-|-----------|-------------|--------|
-| **Weekly Open** | First price of current week | Titanium (5.0) |
-| **Monthly Open** | First price of current month | Titanium (5.0) |
-| **Yearly Open** | First price of current year | Titanium (5.0) |
-| **52-Week High** | Highest price in 252 bars | Titanium (5.0) |
-| **52-Week Low** | Lowest price in 252 bars | Titanium (5.0) |
-| **Anchored VWAP** | VWAP from highest volume bar (252-day lookback) | Titanium (5.0) |
-| **Daily Pivot** | (H + L + C) / 3 | Gold (3.0) |
-| **Fibonacci 61.8%** | Retracement level | Gold (3.0) |
-| **Swing Low (20)** | Lowest low in 20 bars | Silver (1.0) |
-| **Swing High (20)** | Highest high in 20 bars | Silver (1.0) |
+Weights are **not** a clean three-tier scheme. Some are fixed literals, others are computed per bar by
+`calcEvidenceScore`. The exact fixed weights, and which levels carry the `isTitanium` flag (which
+grants snap-to-level, decay exemption and a larger merge bonus — §5.3):
+
+| Level | Weight | Titanium? |
+|-------|--------|-----------|
+| **Inst Anchor** | **6.0** | ✅ — the single heaviest level in the system |
+| KEY SUP / KEY RES | 5.0 | ✅ |
+| GOLDEN X / DEATH X | 5.0 | ✅ |
+| Yearly Open (`Y.O`) | 5.0 | ✅ |
+| Yearly Low (`Y.L`), 52W Low (`52W.L`) | 5.0 | ✅ |
+| Yearly High (`Y.H`) | 4.5 | ✅ |
+| Quarterly Open (`Q.O`), Monthly Open (`M.O`) | 4.0 | ✅ |
+| Weekly Open (`W.O`) | 3.5 | ❌ |
+| Prior-week High/Low (`PW.H`/`PW.L`) | 3.0 | ❌ |
+| Weekly Expected-move band (`W.EXP`) | 2.5 | ❌ |
+| Darvas box edge | 2.0 | ✅ |
+| Whale AVWAP | 0.5 | ❌ |
+| Sweeps, MAs, pivots, Fibs, bands | **dynamic** via `calcEvidenceScore` | varies |
+
+Master levels are only admitted when they are on the correct side of price **and** within 70% of price
+(`|level − close| < close × 0.7`), which discards stale multi-year levels on collapsed names.
 
 ---
 
 ## 3. Signal Labels & Actions
 
-### 3.1 BUY Signals
+### 3.1 Action State Table (Row 8 — the primary directive)
 
-| Label | Trigger Condition | Action Required |
-|-------|-------------------|-----------------|
-| **🚀 ROCKET** | Score ≥95, Velocity Z >2.0, Parabolic | **HOLD/ADD**: Momentum confirmed. If already in trade, HOLD. If missed entry, wait for pullback to zone before adding. Do NOT chase at signal bar - move already started. |
-| **💎 STRONG BUY** | Score ≥82, All Filters Pass | **STANDARD ENTRY**: Enter at blue zone. Stop at KEY SUP. |
-| **📈 BUY** | Score ≥82, Some Filters Weak | **CAUTIOUS ENTRY**: Reduce size. Monitor closely. |
-| **📈 BUY ⚠️** | Score ≥80 but Filters Failed | **WAIT**: Do not enter. Wait for filter confirmation. |
+| State | Code | Color | Meaning | What to Do |
+|-------|------|-------|---------|------------|
+| **✓ PRIME BUY** | 1 | Green | Score ≥85 + In Zone + RR Valid | Entry candidate at zone. Agent confirms direction. |
+| **✓ ACTION BUY** | 2 | Green | In Zone + RR Valid, reached EITHER via score 70–84 OR via score ≥85 with Z Elasticity 1.0–1.5 | Standard entry candidate |
+| **✓ POWER MOVE** | 3 | Green | Strong momentum breakout | Momentum entry (aggressive) |
+| **✓ POWER (EXT)** | 4 | Yellow | Power move but overextended | Reduced size |
+| **⚠️ LOW R:R** | 5 | Red | In zone, score high, but RR gate fails | Wait for better geometry |
+| **⚡ ACCELERATION** | 6 | Green | Velocity Z >2 + young trend + score confirms + RVOL ≥0.75 + room to target ≥0.25R | Momentum entry OK |
+| **⚡ EARLY** | 7 | Amber | Same thrust but RVOL <0.75 | Unconfirmed thrust — wait |
+| **👀 WATCH** | 8 | Yellow | Catch-all "no entry right now": most often a strong score with price NOT in the zone, but also score 50–69, or elasticity 1.5–2.0 with score <70. 63% of long bars | Stalk — limit at zone if approaching |
+| **⏳ FORMING** | 9 | Orange | LTF confirm pending (last bar only) | Wait for bar close |
+| **WAIT** | 10 | Gray | No setup | No action |
+| **⚠️ EXTENDED** | 11 | Orange | TWO sources: Z Elasticity >2.0 inside the cascade, OR the post-pass demotion of any bullish long label when Ext Z ≥1.5 | Wait for pullback |
+| **⚠️ STRETCHED** | 12 | Orange | Elasticity Z 1.5–2.0 | Caution |
+| **⚠️ VOLATILE** | 13 | Orange | RAM <1.0 + high velocity | Unstable — wait |
+| **⚠️ COUNTER-TREND** | 14 | Orange | Signal in wrong Weinstein stage | High risk if taken |
+| **⚠️ TOP/BOT WARNING** | 15 | Red | Topping/bottoming pattern | Exit existing positions |
+| **⚠️ BLOW-OFF/CAPITULATION** | 16 | Red | Velocity Z >2 on mature trend | Do not enter |
+| **⚠️ PARABOLIC** | 17 | Red | >60% from MA200 + exhaustion | No fresh entry — outranks PRIME |
+| **🛑 TOXIC RISK** | 18 | Red | Stop inside noise floor / global danger | Skip entirely |
+| **🔒 SCREEN BLOCK** | 19 | Amber | Qualified as PRIME but Elder triple-screen vetoed | Blocked signal — not WATCH |
+| **✓ REVERSAL BUY** | 20 | Green | Capitulation long: rev≥7, buy<30, below EMA200, RVOL>1.5 | Counter-trend long — agent evaluates catalyst |
+| **⚠️ CHASE** | 21 | Amber | ACCELERATION with room-to-target < 0.25× at-market risk | Missed the move — wait for zone |
 
-### 3.2 SELL Signals
+### 3.2 Critical Notes on Action Codes
 
-| Label | Trigger Condition | Action Required |
-|-------|-------------------|-----------------|
-| **☄️ CRASH** | Score ≥95, Velocity Z <-2.0 | **PANIC SHORT**: Fast declining. Short or exit longs immediately. |
-| **💎 STRONG SELL** | Score ≥82, All Filters Pass | **STANDARD SHORT**: Enter at red zone. Stop at KEY RES. |
-| **📉 SELL** | Score ≥82, Some Filters Weak | **CAUTIOUS SHORT**: Reduce size. |
-| **📉 SELL ⚠️** | Score ≥80 but Filters Failed | **WAIT**: Do not short. Wait for confirmation. |
+- **Short side NEVER reports codes 1 or 2.** Every PRIME SELL / ACTION SELL is demoted to WATCH. Short conviction is in the Sell Score and Sell Sigma fields, not in the action code.
+- **Codes 20 and 21 are long-only by construction.**
+- **Code 19 (SCREEN BLOCK)** is a suppressed signal — it qualified for PRIME/ACTION but the Elder triple-screen vetoed it. Distinct from WATCH (which means "no signal exists").
+- **Code 9 (FORMING)** only appears on the current live last bar. In any historical export it reads 0.
+- **The score bands in §3.1 do not partition the way the 50/70/85 literals suggest.** On bars that
+  actually reach In Zone + RR Valid, Buy Score runs p25 90.7 / median 95.8 — only 0.08% land under 50
+  and 0.04% in 50–70, so those boundaries are effectively dead. Elasticity is tested BEFORE the score
+  branches, so a score-98 bar with Z Elasticity 1.0–1.5 prints ACTION, not PRIME; 72% of observed
+  ACTION bars arrive that way. Read ACTION as "PRIME-grade score, elevated elasticity", not "weaker score".
+- **Measured code frequency** over 1.28M corpus bars — the field is dominated by two passive states:
 
-### 3.3 Warning Labels
+| Side | 1 | 2 | 8 WATCH | 10 WAIT | Everything else |
+|------|---|---|---------|---------|-----------------|
+| Long | 0.94% | 0.12% | 62.7% | 22.9% | each ≤3% |
+| Short | 0.00% (impossible) | 0.00% (impossible) | 52.8% | 33.6% | each ≤5% |
 
-| Label | Meaning | Action Required |
-|-------|---------|-----------------|
-| **⏳ PENDING** | Signal forming but bar not closed | **WATCH**: Signal is likely. Wait for bar close to confirm. Prepare entry. |
-| **⚠️ FAILED VALIDATION** | Signal blocked by guards | **DO NOT TRADE**. See Section 4 for specific error. |
-| **🛑 TOXIC RISK** | Stop loss inside noise zone OR global danger override (drawdown/volatility) | **DO NOT TRADE**. R:R is invalid or asset is too volatile. |
-| **⚠️ TOP WARNING** | RSI >70 + Topping Pattern | **EXIT LONGS**. Prepare for reversal. |
-| **📉 INTERNAL WEAKNESS** | Score divergence — price rising but Buy Score declining. Hidden distribution. **Regime-gated:** suppressed on healthy Stage-2 breakouts (Stage 2 with Buy Score ≥ 70) so it no longer fires on a leader digesting near highs; a real Stage-3 top or a decayed Stage-2 (Buy Score < 70) still fires. | **CAUTION**: Reduce longs. Stealth selling underway. |
-| **📈 BEAR WEAKNESS** | Bearish score divergence — price falling but sell score declining. Hidden accumulation. | **WATCH**: Smart money may be accumulating. |
-| **🌊 RSI CASCADE** | Multi-timeframe RSI cascade (daily + intraday + weekly alignment at extremes). | **EXIT**: Exhaustion across all timeframes. High reversal probability. |
-| **⚡ EXTREME EXTENSION** | Severely overextended price (Z-score extreme). | **DO NOT CHASE**. Parabolic exhaustion imminent. |
-| **! EXTENDED LONG** | Price far above support | **REDUCE SIZE**. Wait for pullback. |
-| **! EXTENDED SHORT** | Price far below resistance | **REDUCE SIZE**. Wait for bounce. |
-| **TRAP** | False breakout detected | **FADE THE MOVE**. Trade opposite direction. |
-| **SWEEP** | Liquidity grab reversal. Green = Bullish floor reclaim. Red = Bearish ceiling rejection. | **REVERSAL PLAY**: Enter opposite direction. |
-| **💎 FAILURE SWEEP** | Previous sweep level is broken. High probability momentum explosion. | **AGGRESSIVE ENTRY**: Teal = Long Squeeze. Red = Bearish Trapdoor. |
-| **BOUNCE XX%** | Price touched KEY SUP and bounced. Confidence scored (trend+RSI+vol+candle). Green ≥70%, Yellow ≥40%, Gray <40%. | **CONFIRMATION**: Validates support. Higher % = stronger. |
-| **REJECT XX%** | Price touched KEY RES and rejected. Same confidence scoring. Red ≥70%, Orange ≥40%. | **CONFIRMATION**: Validates resistance. Higher % = stronger. |
-| **GOLDEN CROSS** | EMA 50 crosses above SMA 200. Yellow X below bar. | **BULLISH STRUCTURE**: Long-term trend shift. |
-| **DEATH CROSS** | EMA 50 crosses below SMA 200. Black X above bar. | **BEARISH STRUCTURE**: Long-term trend breakdown. |
-| **QUAD 🧙** | Quadruple witching options expiration day. Purple label + dotted vertical line. | **CAUTION**: High volume/volatility from expiry. |
-| **HIKKAKE** | Inside bar fake-out pattern. Green = Bullish (fake breakdown reversed up), Red = Bearish (fake breakout reversed down). | **REVERSAL**: Trapped traders on wrong side. Trade the reversal. |
-| **OOPS** | Larry Williams gap reversal. Green = Gap down recovered above prior low, Red = Gap up failed below prior high. | **REVERSAL**: Institutional absorption of gap. High-probability signal. |
-| **🔑 KEY REV** | Key Reversal Bar — violent institutional rejection. Green = Bullish (new low → close above prior high), Red = Bearish (new high → close below prior low). | **STRONG REVERSAL**: Full-range institutional rejection. |
-| **🧱 WEAK RES** | Key resistance tested >3 times in 25 bars. Each test weakens it. | **WATCH**: Breakout may be imminent. |
-| **🧱 WEAK SUPPORT** | Key support tested >3 times in 25 bars. Each test weakens it. | **WATCH**: Breakdown may be imminent. |
-| **ANCHOR RES / SUP** | Price touching institutional AVWAP anchor. Red = Resistance, Green = Support. | **KEY LEVEL**: Institutional cost basis. |
+- **Demotion order matters.** After the cascade, the post-passes run: Ext Z ≥1.5 → EXTENDED, then
+  room-to-target → CHASE, then RVOL → EARLY, then capitulation → REVERSAL BUY. Because EXTENDED runs
+  first and overwrites the `⚡ ACCELERATION` string, a stretched bar becomes EXTENDED and can never
+  reach CHASE. REVERSAL BUY runs last and overrides everything except a 🛑 state.
 
-### 3.4 Confirmation Labels (v3.1)
+### 3.3 What Each Code Already Implies (read this before writing any filter)
 
-Confirmation patterns are **independent** — they display alongside warning labels when conditions are met.
+An action code is not just a label — several codes are only *reachable* when the geometry fields are
+already true. Measured on the full corpus, share of bars with each condition set:
+
+| Code | In Zone | RR Valid | Target | Consequence |
+|------|---------|----------|--------|-------------|
+| **1 PRIME** | **100%** | **100%** | **100%** | geometry is implied |
+| **2 ACTION** | **100%** | **100%** | **100%** | geometry is implied |
+| **19 SCREEN BLOCK** | **100%** | **100%** | **100%** | a fully-qualified signal that was vetoed |
+| **5 LOW R:R** | **100%** | **0%** | 99.9% | in-zone by definition, failed the EV gate by definition |
+| 6 ACCELERATION | 6.6% | 73.6% | 100% | a breakout — normally NOT in the zone |
+| 20 REVERSAL BUY | 6.5% | 97.0% | 100% | fires away from the zone |
+| 3 POWER MOVE | 4.2% | 39.5% | 71.4% | momentum state, geometry often absent |
+| 8 WATCH | 0.9% | 76.8% | 96.4% | by construction "not at entry" |
+
+**This makes the usual promotion rule partly redundant.** `code ∈ {1,2} AND In Zone AND RR Valid AND
+Target` selects exactly 25,165 bars — the *identical* set as `code ∈ {1,2}` alone (22,355 PRIME +
+2,810 ACTION). The three extra clauses filter nothing. Keep them only as assertions/regression checks,
+and understand that they add no selectivity.
+
+Conversely, **never require In Zone for codes 3, 6, 20** — you would discard 93–96% of them, and for
+REVERSAL BUY the in-zone subset is the *worse* half (see §16.4).
+
+### 3.4 Warning Labels (On-Chart)
+
+| Label | Meaning | Action |
+|-------|---------|--------|
+| **🛑 TOXIC RISK** | R:R invalid or asset too volatile | Do not trade |
+| **⚠️ TOP WARNING** | NOT a simple "RSI>70". It is `isToppingFull AND not PowerBreakout AND close ≥ 5-bar high − 1.5×ATR`, where `isToppingFull` is a **disjunction**: Weinstein Stage 3, OR recent RSI cascade, OR internal weakness (`bullDivWeak`), OR RSI failure swing, OR (overextended AND (bearish divergence OR bearish pattern)). The `close ≥ 5-bar high − 1.5 ATR` clause is what makes it a *top* rather than a general warning | Exit longs (it marks mean-reversion — see §16.7) |
+| **📉 INTERNAL WEAKNESS** | Price rising, Buy Score declining (hidden distribution). Suppressed in healthy Stage 2 (Buy≥70). | Reduce longs |
+| **📈 BEAR WEAKNESS** | Price falling, Sell Score declining (hidden accumulation). **Effectively never fires — 31 bars in 2.4M** (see §8.3) | Do not build a rule on it |
+| **🌊 RSI CASCADE** | Multi-timeframe RSI extremes | Exit — exhaustion |
+| **⚡ EXTREME EXTENSION** | Z-score extreme | Do not chase |
+| **TRAP** | False breakout | Fade the move |
+| **SWEEP** | Liquidity grab reversal (Green=Bullish, Red=Bearish) | Reversal play |
+| **💎 FAILURE SWEEP** | Previous sweep broken — momentum explosion | Aggressive entry |
+| **🔑 KEY REV** | Key Reversal Bar — institutional rejection | Strong reversal |
+| **HIKKAKE** | Inside bar fake-out | Reversal |
+| **OOPS** | Larry Williams gap reversal | Institutional absorption |
+| **🧱 WEAK RES/SUP** | Key level tested **more than 2 times (i.e. 3+) within 25 bars**, counting only tests on above-average volume that did NOT successfully defend (support: `low < keySupport×1.01`, and the bar did not close back above it green) | Breakout/breakdown imminent |
+
+### 3.5 Confirmation Patterns (Independent — appear alongside warnings)
 
 | Label | Condition | Meaning |
 |-------|-----------|---------|
-| **📍** (Green below) | Bullish Pin Bar near support (within 5%) | Strong rejection wick. **Confirmation to BUY.** |
-| **📍** (Red above) | Bearish Pin Bar near resistance (within 5%) | Strong rejection wick. **Confirmation to SHORT.** |
-| **🔥** (Green below) | Bullish Engulfing near support (within 5%) | Momentum shift. **Confirmation to BUY.** |
-| **🔥** (Red above) | Bearish Engulfing near resistance (within 5%) | Momentum shift. **Confirmation to SHORT.** |
-
-> **Three-Tier Label System:**
-> - **Top Warnings** (EXTREME EXTENSION, INTERNAL WEAKNESS, BEAR WEAKNESS, RSI CASCADE, TOP WARNING): Priority chain — only one fires per bar. Suppressed during Power Breakout. Priority: Extension > Weakness > RSI Cascade > Topping.
-> - **Pattern Warnings** (TRAP, SWEEP, HIKKAKE, OOPS, KEY REV, FAILURE SWEEP, WEAK RES/SUP): Appear in a separate `else if` chain — only one pattern warning per bar.
-> - **Confirmations** (PIN BAR, ENGULF): Appear independently via separate `if` statements — can appear alongside warnings.
-
-**Removed Labels (v3.1):** `WEAK PULSE` and `CHURN` were removed to save tokens and reduce chart noise.
+| **📍** (Green) | Bullish Pin Bar near support | Rejection wick — confirmation to buy |
+| **📍** (Red) | Bearish Pin Bar near resistance | Rejection wick — confirmation to short |
+| **🔥** (Green) | Bullish Engulfing near support | Momentum shift — confirmation to buy |
+| **🔥** (Red) | Bearish Engulfing near resistance | Momentum shift — confirmation to short |
 
 ---
 
-## 4. Validation Errors & Fixes
+## 4. Dashboard Fields
 
-When you see **"⚠️ FAILED VALIDATION"**, check the tooltip for the specific error:
-
-### 4.1 Triple Screen: HTF Trend Mismatch ❌
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **HTF Trend Mismatch** | Weekly chart opposes your Daily signal | **WAIT** for Weekly MACD to turn. OR trade smaller timeframe (4H) for scalp only. |
-
-**Technical Details:**
-- Checks Weekly MACD Histogram direction
-- Long blocked if Weekly Histogram declining
-- Short blocked if Weekly Histogram rising
-
-### 4.2 Trend Quality: Market Choppy (ADX < 18) ⚠️
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **Market Choppy** | No directional trend. Random noise. | **WAIT** for ADX to rise above 18. OR only take "SWEEP" patterns (Reversal plays work in chop). |
-
-**Technical Details:**
-- ADX measures trend strength, not direction
-- ADX < 18 = Market is ranging/consolidating
-- Breakout signals in low ADX fail 60%+ of time
-
-### 4.3 FVG Filter: Trading against active GAP 🛑
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **Trading against GAP** | Buying directly into overhead gap resistance | **WAIT** for gap to fill. OR wait for breakout ABOVE the gap. |
-
-**Technical Details:**
-- Fair Value Gaps act as magnet + resistance
-- Price tends to fill gaps then reject
-- Never buy INTO a bearish FVG
-
-### 4.4 Entry Zone: Price not at Support
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **Not at Support** | Price is mid-range, not at key level | **WAIT** for pullback to blue zone. Score is high but entry is poor. |
-
-### 4.5 Dedup: Still in previous Signal Zone
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **Still in zone** | You already have a signal here | **HOLD** existing position. No new entry needed. |
-
-### 4.6 Cooldown: Signal active (Bars < 10)
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **Cooldown active** | Signal fired recently | **HOLD**. Prevents overtrading same setup. Wait 10 bars. |
-
-### 4.7 Entry Zone: Price not at Resistance
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **Not at Resistance** | Short signal fired but price is mid-range, not at key resistance | **WAIT** for rally to red zone. Score is high but entry is poor. |
-
-### 4.8 Capital Protection (CapProtect)
-
-| Error | Meaning | Fix |
-|-------|---------|-----|
-| **CapProtect** | Signal blocked by global danger override (drawdown guard, extreme volatility) | **SKIP**. The 🛑 label fires with no text — just the emoji. Wait for danger to clear. |
-
----
-
-## 5. Dashboard Fields
-
-### 5.1 Row Layout (v3.1 - 12-Row AI-Readable Matrix)
+### 4.1 Row Layout (12-Row Matrix)
 
 | Row | Label | Left Cell | Center Cell | Right Cell |
 |-----|-------|-----------|-------------|------------|
-| 0   | **HEADER** | 🟢 LONG + Net σ | Timeframe (DAILY/etc) | 🔴 SHORT + Net σ |
-| 1   | **BIAS** | BULL/BEAR/SIDE | Market Temp (Bias + Score) | BULL/BEAR/SIDE |
-| 2   | **ENTRY ZONE** | Active Zone (Pri/Sec) | 📍 ENTRY ZONE | Active Zone (Pri/Sec) |
-| 3   | **STOP** | Long Stop Price | 🛑 STOP | Short Stop Price |
-| 4   | **TARGET** | Long Target Price | 🎯 TARGET | Short Target Price |
-| 5   | **ANCHOR** | 🎯 Long Anchor Name | ANCHOR | 🎯 Short Anchor Name |
-| 7   | **STAGE** | Weinstein Stage | DMI:+DI▲/-DI▼ | Darvas Status |
-| 8   | **ACTION** | Long Directive | ⚡ ACTION | Short Directive |
-| 9   | **ENERGY** | HV Value (Rank%) | ⚡ ENERGY | SQUEEZE/WARMING/EXPANSION |
-| 10  | **DECISION** | ▲/▼/▬ Score + "Buy" | Final Decision / ⚠️ LAG | ▲/▼/▬ Score + "Sell" |
-| 11  | **REV ZONE** | 🎯 ZONE 0/1/2 or — | 🔄 REV ZONE | 🎯 ZONE 0/1/2 or — |
-| 12  | **MTF** | Long MTF Status | % MTF Aligned | Short MTF Status |
+| 0 | HEADER | 🟢 LONG + Net σ | Timeframe | 🔴 SHORT + Net σ |
+| 1 | BIAS | Trend direction | BULLISH/BEARISH/⚠️ LAG {score} | Trend direction |
+| 2 | ENTRY ZONE | Long zone range | 📍 ENTRY ZONE | Short zone range |
+| 3 | STOP | Long stop price | 🛑 STOP | Short stop price |
+| 4 | TARGET | Long target price | 🎯 TARGET | Short target price |
+| 5 | ANCHOR | Long anchor name (§4.8) | ANCHOR | Short anchor name |
+| 7 | STAGE | Weinstein Stage | DMI:+DI▲/−DI▼/— | Darvas Status |
+| 8 | ACTION | Long directive | ⚡ ACTION | Short directive |
+| 9 | ENERGY | IV30 (IV Rank%) | ⚡ ENERGY | State |
+| 10 | DECISION | ▲/▼/▬ Score Buy | Decision/Bias | ▲/▼/▬ Score Sell |
+| 11 | REV ZONE | 🎯 Zone tier or — | 🔄 REV ZONE | 🎯 Zone tier or — |
+| 12 | MTF | Long MTF status | % MTF | Short MTF status |
 
-> **Note on Entry Zones:** Row 2 now features **Auto-Fallback**. If the Primary Zone is inactive (hidden), the dashboard will display the Secondary Zone range (colored Orange with suffix `(2)`) to ensure you always have actionable levels visible.
+> Row 6 does not exist (gap). Row 7 is the 7th visible row.
 
-### 5.2 AI Signal Matrix Color Coding
+### 4.2 Header Row (Row 0) — "Net σ"
 
-| Color | RGB Value | Meaning | When Used |
-|-------|-----------|---------|-----------|
-| **Emerald Green** | `rgb(16, 185, 129)` | Active Bullish Signal | In-zone Long, Stage 2, ADX >25 |
-| **Rose Red** | `rgb(239, 68, 68)` | Active Bearish Signal | In-zone Short, Stage 4, ADX >25 |
-| **Amber Gold** | `rgb(245, 158, 11)` | Caution/Waiting | Counter-trend, Waiting for zone |
-| **Slate Gray** | `rgb(107, 114, 128)` | Inactive/Neutral | Non-dominant side, choppy market |
-| **Violet Purple** | `rgb(139, 92, 246)` | Institutional | Anchor rows, confluence levels |
+`Net σ` = raw net evidence-sigma per side BEFORE the Bayesian/stage prior.
+- It is NOT the 0–100 score (that's Row 10)
+- It CAN be negative
+- A high Buy Score with Net σ ≈ 0 means trend-prior-driven, not evidence-driven (low conviction)
+- Direction comes from Row 10 score + Dir Prob, not this header number
 
-### 5.3 ACTION Row Logic (Row 8)
+### 4.3 Bias Row (Row 1 Center)
 
-**(See Section 5.7 for detailed Breakdown)**
+| Display | Meaning |
+|---------|---------|
+| `BULLISH {score}` | Score and stage agree on bull direction |
+| `BEARISH {score}` | Score and stage agree on bear direction |
+| `⚠️ LAG {score}` | Stage and score CONFLICT — see the exact test below |
 
-### 5.4 Strategy State Table
+```
+stageExp = Stage2 +1.0 · Stage5 +0.55 · Stage3 −0.5 · Stage4 −1.0 · Stage 0/1 0.0
+scorePred = bull ? +1.0 : −1.0
+conflict  = |stageExp − scorePred| >= 1.5  AND  dominantScore > 50
+```
+Both clauses are required — a conflicting stage with a weak (<50) dominant score prints the ordinary
+`BULLISH/BEARISH {score}` string instead. Stage 5's `0.55` mirrors its Bayesian prior ratio
+(0.25/0.44); it was previously 0.0, which made the conflict test unreachable for Recovery bars.
 
-| State | Column | Color | Meaning | Action |
-|-------|--------|-------|---------|--------|
-| **✓ PRIME BUY** | Long | Green | Score ≥ 85 + In Zone + Valid R:R | **EXECUTE** at zone |
-| **✓ ACTION BUY** | Long | Green | Score 70-84 + In Zone | **ENTER** (Standard) |
-| **👀 WATCH** | Long | Yellow | Score 50-69 + In Zone | **PREPARE** |
-| **⚠️ LOW R:R** | Either | Red | Target/Stop ratio < 1.5 | **SKIP** or wait for dip |
-| **✓ PRIME SELL** | Short | Red | Score ≥ 85 + In Zone + Valid R:R | **EXECUTE** short |
-| **✓ ACTION SELL** | Short | Red | Score 70-84 + In Zone | **ENTER** (Standard) |
-| **👀 WATCH** | Short | Yellow | Score 50-69 + In Zone | **PREPARE** |
-| **⏳ FORMING** | Long | Orange | Score ≥70, awaiting 60m zone confirmation | **WATCH** for 60m confirmation |
-| **⏳ FORMING** | Long | Red | Score ≥70 + Stage 4 or Topping active | **HIGH RISK** - counter-trend forming |
-| **⏳ FORMING** | Short | Orange | Score ≥70, awaiting 60m zone confirmation | **WATCH** for 60m confirmation |
-| **⏳ FORMING** | Short | Red | Score ≥70 + Stage 2 or Bottoming active | **HIGH RISK** - counter-trend forming |
-| **! EXTENDED** | Either | Orange | Price far from zone | **WAIT** for pullback |
-| **⚠️ TOP WARNING** | Long | Red | RSI extreme / Topping pattern | **EXIT** longs |
-| **⚠️ BOT WARNING** | Short | Red | RSI extreme / Bottoming pattern | **EXIT** shorts |
-| **⚠️ VOLATILE** | Either | Orange | RAM < 1.0 + High velocity (choppy) | **WAIT** - Unstable trend |
-| **⚠️ PARABOLIC** | Either | Red | >60% from MA200 + exhaustion confirm (decel/div/reversal/loss of fast MA); score capped ≤60 | **NO FRESH ENTRY** - hold/trail/hedge. Outranks PRIME/POWER (catches smooth parabolas like SNDK). |
-| **⚡ ACCELERATION** | Long | Green | Velocity Z > 2.0 on a YOUNG uptrend (Stage 1/2, <20 bars) **AND score ≥ 50** | **MOMENTUM ENTRY OK** - ignition the evidence trusts, not exhaustion |
-| **⚡ EARLY** | Long | Amber | Same velocity/stage thrust as ACCELERATION **but score < 50** | **DO NOT BUY YET** - unconfirmed thrust; the Bayesian score doesn't back it. Treated as caution, NOT actionable. Never match as a BUY. |
-| **⚡ BREAKDOWN** | Short | Red | Velocity Z < -2.0 on a YOUNG downtrend (Stage 3/4, <20 bars) | **MOMENTUM SHORT OK** - ignition, not capitulation |
-| **⚠️ BLOW-OFF** | Long | Red | Velocity Z > 2.0 on a MATURE/non-ignition trend | **DO NOT BUY** - velocity exhaustion |
-| **⚠️ CAPITULATION** | Short | Red | Velocity Z < -2.0 on a MATURE/non-ignition downtrend | **DO NOT SHORT** - panic exhaustion |
-| **✓ POWER MOVE** | Either | Green | Strong momentum breakout | **EXECUTE** (Aggressive) |
-| **✓ POWER (EXT)** | Either | Yellow | Power move but overextended | **CAUTION** (Red. Size) |
-| **🛑 TOXIC RISK** | Either | Red | Stop inside noise floor OR global danger override | **SKIP** |
-| **⚠️ STRETCHED** | Either | Orange | Elasticity Z 1.5-2.0 + Score ≥70 | **CAUTION** - Overextended |
-| **WAIT** | Either | Gray | No actionable setup | **WAIT** |
+**When LAG shows:** treat it as a prompt to check extension and catalyst rather than an automatic
+veto — see the measured caveat in §11.5.
 
-> **RAM (Risk-Adjusted Momentum)**: Calculated as `ROC(20) / StDev(ROC(1), 20)`. A high RAM (>2.0) indicates a stable, controlled trend. A low RAM (<1.0) combined with high velocity signals choppy, dangerous price action (Kakushadze & Serur, Formula 269).
+### 4.4 Stage/DMI/Darvas Row (Row 7)
 
-### 5.5 Dashboard Row Deep-Dives
-
-#### 5.5.1 Header Row (Row 0) — "Net σ" (NOT the Buy/Sell Score)
-
-The header renders `🟢 LONG / Net {x}σ` and `🔴 SHORT / Net {x}σ`.
-
-- **What it is:** `Net σ` = the **raw net evidence-sigma per side BEFORE the Bayesian/stage prior**. It is **NOT** the 0-100 conviction score (that lives in Row 10 DECISION) and it is **NOT** pure price-stretch.
-- **It can be NEGATIVE.** A blow-off top once printed 9.41σ next to LONG — which is why the old "conviction"/"Stretch" labels were wrong; it was relabeled **"Net σ"** with a tooltip.
-- **How to read it:** a **high Buy Score with Net σ ≈ 0** means the score is **trend-PRIOR-driven, not evidence-driven** (a low-conviction, trend-coasting long). Direction/decision still comes from **Row 10 score + Dir Prob**, not from this header number.
-
-#### 5.6 Stage/DMI/Darvas Row (Row 7)
-
-| Left Cell | Center Cell | Right Cell |
-|-----------|-------------|------------|
-| **Weinstein Stage** | **DMI Trend** | **Darvas Status** |
-| (Stage 1-4) | (+DI/-DI Direction) | (Box Position) |
-
-**What This Row Measures:** Structural trend and price action "boxing."
-
-- **Center Cell (DMI Trend)** — exact strings:
-
-| String | Meaning |
-|--------|---------|
-| `DMI:+DI▲` | Hull DMI bullish (momentum rising) |
-| `DMI:-DI▼` | Hull DMI bearish |
-| `DMI:—` | Neither (flat / no clear DMI trend) |
-
-> **Now a Data Window export** via the `R-VRVP` companion — read `ADX (14)` + `DMI +DI` / `DMI -DI` from the Data Window (`+DI > −DI` ⇒ `+DI▲`); do not OCR this cell. See §5.13.2.
-
-- **Right Cell (Darvas)** — all 6 exact strings:
-
-| String | Meaning |
-|--------|---------|
-| `BREAKOUT 🚀` | Strong breakout (breaking box top on volume **in Stage 2** — best case) |
-| `BREAKING OUT ⬆️` | Breakout of box top on volume (not Stage-2 confirmed) |
-| `IN BOX 📦` | Price inside a valid Darvas box (consolidating) |
-| `ABOVE BOX ✅` | Price above box top (no active breakout bar) |
-| `BELOW BOX ❌` | Price below box bottom (breakdown / structure broken) |
-| `NO BOX` | No valid Darvas box currently formed |
-
-- **Left Cell (Weinstein Stage)** — all exact strings:
+**Left Cell (Weinstein Stage):**
 
 | String | Stage | Meaning |
 |--------|-------|---------|
-| `STAGE 1: BASING ⏳` | 1 | Basing below/near MA, not falling |
+| `STAGE 1: BASING ⏳` | 1 | Basing below/near MA |
 | `STAGE 2: ADVANCING ✅` | 2 | Uptrend, price > rising MA |
-| `STAGE 2: PULLBACK ⚠️` | 2 | Dipped below MA but above swing low — caution |
-| `STAGE 2: BOUNCE 🔄` | 2 | Recovering from pullback (still below MA) — re-entry watch |
-| `STAGE 3: TOPPING ⚠️` | 3 | Sideways after run, MA flattening |
-| `STAGE 4: DECLINING ❌` | 4 | Downtrend, price < falling MA |
-| `STAGE 4: RALLY ⚠️` | 4 | Close > MA within Stage 4 (bear rally — do not trust) |
-| `STAGE 4: CRASH 🛑` | 4 | Crash mode (extreme decline) |
-| `STAGE 4: RECOVERY 🌤️` | 5 | Potential reversal (Stage 5) — buys allowed with caution |
-| `STAGE: IPO/NEW (NO DATA)` | 0 | Insufficient history to stage |
+| `STAGE 2: PULLBACK ⚠️` | 2 | Dipped below MA but above swing low |
+| `STAGE 2: BOUNCE 🔄` | 2 | Recovering from pullback |
+| `STAGE 3: TOPPING ⚠️` | 3 | Sideways, MA flattening |
+| `STAGE 4: DECLINING ❌` | 4 | Downtrend |
+| `STAGE 4: RALLY ⚠️` | 4 | Close > MA within Stage 4 (bear rally) |
+| `STAGE 4: CRASH 🛑` | 4 | Extreme decline |
+| `STAGE 5: RECOVERY 🌤️` | 5 | Price back above the Hull MA while that MA still falls but is decelerating. Buys allowed (same prior lane as Stage 2, weaker) |
+| `STAGE: IPO/NEW (NO DATA)` | 0 | Insufficient history |
 
-> **Weinstein Stage Mechanics (Reactive vs. Predictive)**
-> *   **Standard Stages (Reactive):** Based on Price vs. 30W (200D) MA.
->     *   **Stage 1 (Basing):** Price Sideways near 30W MA.
->     *   **Stage 2 (Advancing):** Price > 30W MA + MA Rising.
->     *   **Stage 2: PULLBACK ⚠️:** Price dipped below MA but above recent swing low. Caution.
->     *   **Stage 2: BOUNCE 🔄:** Price recovering from pullback (rising from lows, still below MA). Re-entry opportunity.
->     *   **Stage 3 (Topping):** Price Sideways after run + MA Flattening.
->     *   **⚠️ DISTRIBUTION:** Proactive override — Stage 2/3 with bearish RSI divergence (smart money exiting). Overrides stage label.
->     *   **Stage 4 (Declining):** Price < 30W MA + MA Falling.
->     *   **Stage 4: RALLY ⚠️:** Close > Weinstein MA while in Stage 4 (bear rally — do not trust).
->     *   **Stage 4: CRASH 🛑:** Crash mode active (extreme decline).
->     *   **Stage 4: RECOVERY 🌤️:** Potential trend reversal (Stage 5). Buys allowed with caution.
-> *   **Predictive Transitions:**
->     *   **Volume Skew:** Rising volume on up-days during Stage 1 predicts Stage 2 breakout.
->     *   **Momentum Divergence:** Falling RSI/OBV during Stage 3 predicts Stage 4 breakdown.
+**Center Cell (DMI):** `DMI:+DI▲` (bullish) · `DMI:-DI▼` (bearish) · `DMI:—` (flat)
 
-#### 5.7 Action Row (Row 8)
+**Right Cell (Darvas):** `BREAKOUT 🚀` · `BREAKING OUT ⬆️` · `IN BOX 📦` · `ABOVE BOX ✅` · `BELOW BOX ❌` · `NO BOX`
 
-The ACTION row (Row 8) displays the **Strategic Directive** for Long and Short sides.
-*   **Left Cell:** Long Signal (e.g., `✓ PRIME BUY`, `⚠️ TOP WARNING`).
-*   **Center Cell:** `⚡ ACTION`.
-*   **Right Cell:** Short Signal (e.g., `✓ PRIME SELL`, `⚠️ BOT WARNING`).
+### 4.5 Energy Row (Row 9)
 
-#### 5.7.1 Zone Proximity Override (v2.1+)
+| Left Cell | Center | Right Cell |
+|-----------|--------|------------|
+| **IV30** value (IV Rank%) | ⚡ ENERGY | State name |
 
-**Problem:** High score + far from zone = misleading ACTION signal.
+> The left cell is the SYNTHETIC IV30 and its 252-bar percentile rank — **not** HV20. HV20 is a
+> separate series and does not appear in this cell at all. The two cells answer different questions
+> (magnitude/rank on the left, IV−HV spread on the right) and routinely disagree: a high IV Rank can
+> still print SQUEEZE. Both are exported by the companion, so never OCR them.
 
-**Solution:** ACTION is overridden to `WAIT` when price is statistically far from entry zone.
+**Energy States:**
 
-| Condition | Threshold | Action |
-|-----------|-----------|--------|
-| Z-score of distance > 2.0 | Statistical (250-bar lookback) | Override to WAIT |
-| Distance > 10% (fallback) | Used when Z-score unreliable | Override to WAIT |
+| State | Code | Meaning |
+|-------|------|---------|
+| 🔵 SQUEEZE | 1 | Volatility compressing — breakout building |
+| 🟠 WARMING | 2 | Volatility rising |
+| 🟣 EXPANSION | 3 | High volatility — price moving fast |
+| ⚪ DORMANT | 0 | Very low volatility |
 
-**Tooltip shows:** `📍 Price X% above Zone (Score: Y valid, wait for pullback)`
+> **This is NOT options IV — never use it for options pricing.** It is a synthetic proxy built from a
+> VIX-Fix style range measure, annualized to HV's units so the two are comparable:
+> `vFix = (highest(close,22) − lowest(low,22)) / max(1, sma(close,22))`, then
+> `IV30 = stdev(vFix,20) × √252 × 100`. It never touches an options chain. Get real IV externally.
 
-**Why this matters:**
-- Score = Trend Quality (Is this a good stock?)
-- ACTION = Entry Timing (Can I enter NOW?)
-- High score + far from zone = Good stock, bad entry point
+### 4.6 Decision Row (Row 10)
 
-#### 5.8 Volatility Energy Row (Row 9)
+**Left/Right Cells — Score Momentum:** `delta = score − score[3]` (a raw 3-bar difference, sized to
+match the EMA(3) smoothing on the score itself)
+- **▲** (Green) = delta > +2.0
+- **▼** (Red) = delta < −2.0 — this also adds a +10 structural opacity penalty (§7)
+- **▬** (Gray) = in between
 
-| Left Cell | Center Cell | Right Cell |
-|-----------|-------------|------------|
-| **HV (Rank%)** | **ENERGY Label** | **Energy State** |
-| e.g., "9.54 (58%)" | "⚡ ENERGY" | SQUEEZE/EXPANSION |
+**Center Cell:**
+- When ACTION is non-critical: Shows bias string (`BULLISH 80`)
+- When ACTION is actionable: Shows the action state
+- `🛑 TOXIC RISK` overrides everything
 
-> **Now a Data Window export** via the `R-VRVP` companion — read `Energy IV30 (ann %)` (value), `Energy IV Rank %` (rank), `Energy IV-HV Spread (ivS)` + `Energy State 3Exp2Warm1Sqz0Dorm` (state code), and `HV20 (ann %)` from the JSON; do not OCR this cell. See §5.13.2.
+### 4.7 REV ZONE Row (Row 11)
 
-**What This Row Measures:** Volatility Expansion vs Contraction (Breakout Timing)
-
-> [!WARNING]
-> This is **NOT Implied Volatility (IV)**. This indicator cannot access options-chain data.
-> **Do NOT use this for options pricing.** For options, use external data (CBOE, brokerage).
-
-**Left Cell (HV Rank):** Where current Historical Volatility sits in its 1-year range.
-- **Cyan (<50%):** Low volatility → Price is calm → Energy building
-- **Orange (50-80%):** Rising volatility → Movement starting
-- **Purple (>80%):** High volatility → Price moving fast
-
-**Right Cell (Energy State):**
-| Color | Background | State | Meaning | Action |
-|-------|------------|-------|---------|--------|
-| 🔵 Cyan | `color.aqua` | **SQUEEZE** | Volatility compressing | Prepare for breakout |
-| 🟠 Orange | `color.orange` | **WARMING** | Volatility rising | Breakout imminent |
-| 🟣 Purple | `color.purple` | **EXPANSION** | Price moving fast | Ride trend, trail stops |
-| ⚪ Gray | `color.gray` | **DORMANT** | Very low volatility | Wait for catalyst |
-
-**Trading Application:** Use this row for **breakout timing** (TTM Squeeze logic), not options pricing.
-
-#### 5.9 Conviction Row (Row 10)
-
-| Left Cell | Center Cell | Right Cell |
-|-----------|-------------|------------|
-| **▲/▼/▬ Score + "Buy"** | **Bias + Score / Decision** | **▲/▼/▬ Score + "Sell"** |
-
-**What This Row Measures:** The high-level synthesis of all scoring engines plus score momentum.
-
-**Left/Right Cells — Score Momentum Arrows:**
-- **▲** (Green) = Score rising. 3-bar EMA delta > +2. Conviction strengthening.
-- **▼** (Red) = Score falling. 3-bar EMA delta < -2. Conviction weakening.
-- **▬** (Gray) = Score stable. Delta between -2 and +2. Steady state.
-- Example: `▲ 71 Buy` = Buy score is 71 and improving. `▼ 20 Sell` = Sell score is 20 and deteriorating.
-- **Trading Impact:** A ▲ arrow on the dominant side adds confidence. A ▼ on a PRIME/ACTION signal should trigger skepticism — consider reducing size or waiting one bar for confirmation.
-
-**Center Cell — Decision Display:**
-- When ACTION is non-critical (WAIT/WATCH): Shows Bias string (e.g., `BULLISH 80`).
-- When ACTION is actionable: Shows the action state (e.g., `✓ PRIME BUY`, `⚠️ TOP WARNING`).
-- **Critical Alerts:** `🛑 TOXIC RISK` overrides all other displays.
-
-**⚠️ BIAS LAG (Orange):**
-- **Trigger:** the gap between the stage-expected direction and the score-predicted direction is ≥ 1.5, AND the dominant score > 50.
-- **Stage Expected Values:** Stage 2 → +1.0, Stage 4 → -1.0, Stage 3 → -0.5, Stage 1 → 0.0.
-- **Score Predicted:** Bullish bias → +1.0, Bearish bias → -1.0.
-- **Format:** `⚠️ LAG 71` — the number is the dominant score.
-- **Interpretation by Stage:**
-  - Stage 3 + Bullish Score: Distribution phase but score hasn't caught up. **Do not trust score — structure is breaking.**
-  - Stage 4 + Bullish Score: Decline but score says buy. **Early reversal or bull trap?** Use tighter stops.
-  - Stage 2 + Bearish Score: Uptrend but score says sell. **Pullback or topping?** Reduce size.
-- **Action:** When LAG shows, prioritize Stage over Score. Do not take full-size entries on the lagging side.
-
-#### 5.10 Mean Reversion Zones (REV ZONE Row - Row 11)
-
-The REV ZONE row (Row 11) provides **independent reversal scoring** using Larry Connors methodology. This row operates separately from the ACTION row and identifies potential mean reversion opportunities even when the main system shows "TOXIC RISK".
-
-#### Zone Display
 | Display | Score | Meaning |
 |---------|-------|---------|
-| **🎯 ZONE 0** | 10+ | Extreme oversold/overbought - High probability reversal |
-| **🎯 ZONE 1** | 7-9 | Strong oversold/overbought - Setup forming |
-| **🎯 ZONE 2** | 4-6 | Forming - Watch for development |
-| **—** | < 4 | No reversal zone |
+| `🎯 Z0(n)` | ≥10 | Extreme reversal |
+| `🎯 Z1(n)` | 7–9 | Strong |
+| `🎯 Z2(n)` | 4–6 | Forming |
+| `—` | <4 | No reversal zone |
 
-#### Scoring Factors (Long Reversal - Oversold Bounce) - Research-Calibrated
-| Tier | Factor | Condition | Points | Source |
-|------|--------|-----------|--------|--------|
-| **T0** | **Titanium Zone** | 52W/Y.O/POC Anchor + In Zone | **+2.5** | Institutional level research |
-| **T0** | **Structural Zone** | Price touching any Zone | **+1.5** | General confluence |
-| T1 | RSI(2) Extreme | `< 10` / `< 15` / `< 25` | +3/+2/+1 | Connors Research (86-91% win rate) |
-| T1 | RSI(14) Extreme | `< 25` / `< 30` | +2/+1 | Standard oversold threshold |
-| T1 | MTF RSI Cascade | Weekly < 40 + Daily < 30 + Intraday < 30 | +3 | Multi-TF oversold confluence |
-| T1 | RSI Divergence | Price lower, RSI higher | +2.5 | Less reliable than raw oversold |
-| **T2** | **Near 52W Low** | within ~5% of the 52-week low | **+2.5** | Institutional magnet |
-| **T2** | **Trap Pattern** | Hikkake / Failed Sweep / Bear Trap / Bull Trap | **+2.0** | Institutional trap validation |
-| T2 | Near Key Support | within ~2% of key support | +1.5 | General key level |
-| T2 | Below BB Lower | below the lower Bollinger Band | +1.5 | Bollinger Band extremes |
-| T2 | Elasticity Extreme | elasticity z-score < −1.5 | +1 | Price stretch |
-| T3 | Stoch Cross | Stochastic oversold + bullish %K/%D cross | +1.5 | Momentum confirmation |
-| T3 | MACD Bullish | MACD bullish | +1.5 | Momentum confirmation |
-| T3 | OBV Divergence | OBV rising, price falling | +1 | Volume divergence |
-| T4 | Hammer Pattern | Candlestick pattern | +1.5 | Pattern recognition |
-| T4 | Bullish Engulfing | Candlestick pattern | +1.5 | Pattern recognition |
-| **T4B** | **"Oops" Pattern** | Gap down + recover above prior low | **+2.0** | Larry Williams (proven edge) |
-| **T4B** | **Key Reversal Bar** | Open < prior low, close > prior high | **+2.5** | Institutional rejection |
-| T5 | Consecutive Down Days | `>= 5` / `>= 4` | +2/+1 | Validated capitulation signal |
-| T5 | Volume Climax | `vol > 2x avg` | +2 | Capitulation signature |
-| T6 | Oscillators | Williams/MFI/CCI OS | +0.5 each | Minor confluence |
-| **Bonus** | **Connors Filter** | Above 200 SMA | **+2.0** | Validated (significantly improves win rate) |
-| **Bonus** | **Trap Volume Spike** | Trap + `ln(V/V_prev) > 0.69` | **+1.0** | Kakushadze (Sec 10.3.1): Validates institutional participation |
-| **Gate** | **Sigma Validation** | Oops/KeyRev + 2-Sigma Move | **Gate** | Kakushadze (Price-SUM): Only allow Gap patterns if Price-SUM > 2.0 |
-| **Penalty** | **Low-Vol Anomaly** | ATR in bottom 10% (252 bars) | **-2.0** | Kakushadze & Serur (Strategy 3.4): Trends persist in low-vol regimes |
+The cell prints the tier with the rounded score in parentheses, e.g. `🎯 Z1(8)` — it is not spelled
+`ZONE 1`. The numeric score is also exported directly as `Long Rev Zone` / `Short Rev Zone`.
 
-#### 5.11 MTF Context Row (Row 12)
+Reversal zones are **independent** from the ACTION row. They fire their own scoring based on
+Connors methodology (RSI extremes, consecutive days, patterns, structural confluence).
 
-| Left Cell | Center Cell | Right Cell |
-|-----------|-------------|------------|
-| **Long MTF** | **% MTF Aligned** | **Short MTF** |
+### 4.8 ANCHOR Row (Row 5) — what the name actually means
 
-**What This Row Measures:** Cumulative alignment across 5 timeframes (Monthly, Weekly, Daily, 4H, 1H).
-- **100% (Green):** Institutional agreement.
-- **<40% (Orange/Red):** Counter-trend or choppy environment.
+The cell shows `array.get(cLds, bIdx)` — the **highest-weight level inside the winning cluster**, i.e.
+*which structural level this entry zone is built on*. It is chart-only; there is no Data Window export
+for it.
 
-### 5.12 Exhaustion Filters (Anti-Chase Logic)
-| Tier | Factor | Condition | Points |
-|------|--------|-----------|--------|
-| T5 | Consecutive Down Days | `>= 5` / `>= 4` | +2/+1 |
-| T5 | Volume Climax | `vol > 2x avg and close < open` | +2 |
-| T6 | Oscillators | Williams/MFI/CCI OS | +0.5 each |
-| Bonus | Above 200 SMA | Connors trend filter | +1.5 |
+The names map to the level table in §2.5: `KEY SUP`/`KEY RES`, `GOLDEN X`/`DEATH X`, `Inst Anchor`,
+`Y.O` / `Q.O` / `M.O` / `W.O`, `Y.L` / `52W.L` / `Y.H`, `PW.L`/`PW.H`, `W.EXP`, `Darvas`,
+`Whale AVWAP`, plus the technical set (`S200`, `S100`, `S50`, `E50`, `BB`, `H1.*`/`H2.*` HTF pivots).
+The fallback when no level is elected is `Rec Str L` / `Rec Str H`.
 
-#### Short Reversal Scoring
-Symmetrical to Long with inverted conditions (RSI > 90, close > weekHigh52 * 0.95, etc.). Includes sell-side category sigma bonus for symmetric scoring with buy side.
+**`GOLDEN X` does NOT mean a golden cross happened.** It is a *price level*: `gcPrice`, the closing
+price on the day of the most recent 50/200 SMA crossover, injected with weight 5.0 and the Titanium
+flag. The crossover **event** is the separate `Golden Cross` export, which is 1 only on the exact bar
+of the cross and 0 on every other bar. Seeing `🎯 GOLDEN X` in Row 5 while `Golden Cross = 0` is normal
+and consistent. `DEATH X` is the short-side equivalent (`dcPrice`).
 
-#### Institutional Trap Integration (v3.4)
-Bear Trap and Bull Trap signals now feed into reversion scoring:
-- **Bear Trap detected** → +2.0 points to Long reversion score (trapped shorts must cover → bullish).
-- **Bull Trap detected** → +2.0 points to Short reversion score (trapped longs must liquidate → bearish).
-- Trap + Volume Spike bonus: Additional +1.0 if `ln(volume / volume[1]) > 0.69` (Kakushadze validation).
-- **High-conviction combo:** Bear Trap + Zone 0 Long + RSI(2) < 10 = institutional capitulation reversal.
-
-#### Cooldown Override (v3.4)
-Strong signals bypass the standard 10-bar cooldown:
-```
-cooldownOKBuy  = cooldownPassedBuy  or buyScore >= 90 or isReversionBuy
-cooldownOKSell = cooldownPassedSell or sellScore >= 90 or isReversionSell
-```
-- Score ≥ 90: High-conviction signals shouldn't be blocked by dedup.
-- Reversion patterns: pattern-based reversion signals (System B) also bypass cooldown.
-- This prevents the cooldown from suppressing legitimate rapid-fire entries during extreme reversals.
-
-#### Chart Icons
-- **🎯 plotshape** appears below bar for Zone 0 Long (score 10+)
-- **🎯 plotshape** appears above bar for Zone 0 Short (score 10+)
-- Only triggers on confirmed (closed) bars
-
-#### Important Notes
-1. **Independence**: REV ZONE scoring (System A: the mean-reversion score) runs independently of reversal zones. But ACTION depends on the combination: high reversion score + zone presence = counter-trend override in DECISION row.
-2. **Two Reversion Systems:**
-   - **System A** (Mean Reversion Score): statistical scoring → Zone 0/1/2 display on dashboard + 🎯 chart icon.
-   - **System B** (Pattern-based Reversion): candlestick + structure reversion patterns → influence cooldown gating and final signal overrides.
-   - Systems are independent but combine at the signal validation layer.
-3. **Risk Awareness**: Zone 0 Long in a "TOXIC RISK" environment is a high-risk reversal play.
-4. **Max Score**: Theoretical max ~30 points. Zone 0 (10+) captures top 33% of setups.
-5. **Marubozu Kill**: If a Marubozu candle is detected (body > 60% of range, close near extreme), reversion score is zeroed out. Do not fade a trend bar.
-
-### 5.13 Data Window Exports (Automated Gemini Analysis)
-
-> ⚑ **PRIMARY SOURCE = the Data Window.** Every numeric value comes from the Data Window (right-side panel), which is the authoritative ground truth. The **dashboard table drawn on the chart image is ADVISORY / visual only** — use it for pattern context (candle shapes, zone boxes, where labels sit), but **NEVER read a number, an ACTION state, a DMI arrow, or an energy value off the dashboard image.** Where a value appears in both, the Data Window wins. This section is self-contained: everything you need to decode every field is here — no external tool or code is required.
-
-The Data Window shows **44 rows in this exact top-to-bottom order**: **12** chart price-levels/flags (also drawn on the chart) followed by **32** dedicated state exports. Read them as NUMBERS (do not estimate by counting chart labels). NOTE: the numbered example table below predates the **Group B+** ACTION/MTF exports (fields 35-38) — those sit right after `Expected Value (R)` and push the recency-mask group to fields 39-44 (see the Group B+ table).
-
-**EXACT Data Window (order + example values from a live GLW read):**
-
-| # | Data Window Field | Example | Notes |
-|---|-------------------|---------|-------|
-| 1 | Sprint Line (EMA 5) | 339.62 | Fast cloud line. |
-| 2 | Hull Baseline (HMA 20) | 346.51 | Slow cloud line. |
-| 3 | MA 20 | 331.38 | `ma1`. |
-| 4 | MA 50 | 324.27 | `ma2`. |
-| 5 | MA 200 | 324.28 | `ma3` (the Ext% reference line). |
-| 6 | Weinstein MA(150) - Stage Analysis 30-week MA | 313.84 | Stage MA. |
-| 7 | Golden Cross | 0.0000 | 1 on the bar EMA50 crosses **above** MA200, else 0. |
-| 8 | Death Cross | 0.0000 | 1 on EMA50 crossing **below** MA200, else 0. |
-| 9 | Zone 0 Long | 0.0000 | 1 when an extreme long reversal (revScoreLong ≥ 10) prints, else 0. |
-| 10 | Zone 0 Short | 0.0000 | 1 when extreme short reversal (revScoreShort ≥ 10), else 0. |
-| 11 | AVWAP Resistance | 339.69 | Anchored VWAP resistance. |
-| 12 | AVWAP Support | 314.75 | Anchored VWAP support. |
-| 13 | Buy Score | 98.22 | see Group A. |
-| 14 | Sell Score | 42.92 | |
-| 15 | Stage (1=Base,2=Up,3=Top,4=Dn) | 2.00 | |
-| 16 | Long Entry Zone Bot | 335.84 | |
-| 17 | Long Entry Zone Top | 337.71 | |
-| 18 | Long Stop Loss | 332.11 | |
-| 19 | Long Target | 346.11 | |
-| 20 | Short Entry Zone Bot | 348.20 | |
-| 21 | Short Entry Zone Top | 351.05 | |
-| 22 | Short Stop Loss | 355.10 | |
-| 23 | Short Target | 340.00 | |
-| 24 | Long Rev Zone | 0.0000 | |
-| 25 | Short Rev Zone | 5.00 | |
-| 26 | Ext% (vs MA200) | 4.31 | see Group B. |
-| 27 | Exhaustion Gradient 0-1 | 0.0260 | |
-| 28 | Regime (0Hlt1Ext2Clmx3Dist4Dn5Ign6Sqz) | 0.0000 | |
-| 29 | Exp Move % (21b) | 7.53 | |
-| 30 | Dir Prob % (>50 bull) | 82.08 | |
-| 31 | Long Ignition (1=fresh breakout) | 0.0000 | |
-| 32 | Win Prob % (EV gate) | 78.5 | |
-| 33 | R:R to target | 1.9 | |
-| 34 | Expected Value (R) | 0.71 | |
-| 35 | Bear Warning Mask | 0.0000 | see Group C. |
-| 36 | Reversal Pattern Mask | 2241.00 | |
-| 37 | Weak Level Mask | 0.0000 | |
-| 38 | Bear Warning Age | ∅ | |
-| 39 | Reversal Pattern Age | 3.00 | |
-| 40 | Weak Level Age | ∅ | |
-
-> Rows 1-12 are ordinary chart plots that also surface in the Data Window. Rows 7-10 are boolean flags (0/1). Rows 13-44 are the **32 dedicated exports** detailed below.
-
-**Group A — Trade-level exports (13):**
-
-| # | Data Window Field | Meaning |
-|---|-------------------|---------|
-| 1 | **Buy Score** | 0-100 long conviction (post-Bayesian, reversion-weighted — quiet at breakouts, loud at dips). |
-| 2 | **Sell Score** | 0-100 short conviction. |
-| 3 | **Stage (1=Base,2=Up,3=Top,4=Dn)** | Weinstein stage integer (also 5 = Recovery internally). |
-| 4 | **Long Entry Zone Bot** | Lower bound of the long entry zone. |
-| 5 | **Long Entry Zone Top** | Upper bound of the long entry zone. |
-| 6 | **Long Stop Loss** | Structure-first stop, capped by the max-risk % (5% stocks / 3% ETFs). |
-| 7 | **Long Target** | Long take-profit = the **nearest real resistance above entry** (structure-first: KEY RES / pivot high / weekly MA / Darvas top / BB upper, whichever is lowest). **No R:R filter** — a wall close to entry is still the honest target (a low R:R is *reported*, not hidden). Only when there is genuinely no resistance overhead (blue-sky / new highs) is a target synthesized (Fib extension, then a 6%/2×ATR sanity cap on the synthetic value ONLY). Whether the trade is worth taking is decided by the **statistical EV gate** (fields 32-34), not by moving the target. |
-| 8 | **Short Entry Zone Bot** | Lower bound of the short entry zone. |
-| 9 | **Short Entry Zone Top** | Upper bound of the short entry zone. |
-| 10 | **Short Stop Loss** | Structure-first stop, capped by the max-risk %, short side. |
-| 11 | **Short Target** | Short take-profit — mirror logic of field 7 (nearest real support below entry). |
-| 12 | **Long Rev Zone** | Mean-reversion (dip-buy) score, long side. |
-| 13 | **Short Rev Zone** | Mean-reversion score, short side. |
-
-**Group B — Mathematical-state exports (6) — these OUTRANK the visual labels:**
-
-| # | Data Window Field | Range | Meaning / How to use |
-|---|-------------------|-------|----------------------|
-| 26 | **Ext% (vs MA200)** | % (can be neg) | Absolute price distance from the plotted MA200. <20% normal · 20-50% extended · **>60% = parabolic** (SNDK/MU) · >100% extreme. |
-| 27 | **Exhaustion Gradient 0-1** | 0.0-1.0 | Blended trend-maturity/overheat (extension + age + velocity + divergence). <0.3 healthy (ride) · 0.3-0.7 extended (pullback-only) · **>0.7 terminal climax** (hedge). |
-| 28 | **Regime (0Hlt1Ext2Clmx3Dist4Dn5Ign6Sqz)** | 0-6 int | 0 Healthy · 1 Extended · 2 Terminal-Climax · 3 Distribution · 4 Stage4-Decline · 5 Ignition/Breakout · 6 Squeeze. Ext% > 60 OR gradient > 0.7 forces **2**; an active volatility squeeze forces **6**. |
-| 29 | **Exp Move % (21b)** | % | ~1-month (21-day) expected move from realized volatility. Sanity-checks targets/strikes. |
-| 30 | **Dir Prob % (>50 bull)** | 0-100 | Buy-minus-Sell spread standardized vs its own 250-bar history, then mapped through the logistic. Informationless spread → ~50. **Damped toward 50** on counter-trend bars (Stage-4 rally / Stage-2 pullback) so a violent counter-trend candle can't fake an edge. |
-| 31 | **Long Ignition (1=fresh breakout)** | 0 / 1 | 1 = EARLY IGNITION (see 5.13.1). Deliberate INVERSE of the reversion-weighted Buy Score — can be **1 while Buy Score is LOW**. A low Buy Score on an Ignition=1 bar is EXPECTED, not a conflict. |
-| 32 | **Win Prob % (EV gate)** | 50-95 | Dir Prob shrunk toward 50 by a haircut (overfit edges decay live). The probability the EV gate actually trusts — raw Dir Prob is the *pre-haircut* view. Side follows the dominant score. |
-| 33 | **R:R to target** | ratio | Honest reward:risk from entry to the structure-first target (field 7 or 11). Can be **< 1** — truthful, not a bug (near resistance in a strong trend). |
-| 34 | **Expected Value (R)** | R multiples | p·RR − (1−p) with p = field 32. **> 0 = positive-EV trade.** The real go/no-go: a 0.9 R:R at 93% Dir Prob is strongly +EV; a 1.4 R:R at a coin-flip is not. Minimum R:R demanded = break-even (1−p)/p × a fractional-Kelly buffer, floored — replaced the old fixed 1.5 (which discarded good near-resistance targets and invented worse ones). |
-
-**Group B+ — ACTION / MTF state exports (4) — the Row 8 "Supreme" cell + Row 12 MTF as NUMBERS:**
-
-These make the two most decision-critical chart-only cells un-hallucinatable (vision models were reading `⏳ FORMING` as "PRIME BUY"). Decode each number with the enum below — this reference is self-contained; no external tool is needed.
-
-| # | Data Window Field | Range | Meaning / How to use |
-|---|-------------------|-------|----------------------|
-| 35 | **Action Long Code** | 0-18 enum | Row 8 LEFT cell as a status enum (decode with the legend below). |
-| 36 | **Action Short Code** | 0-18 enum | Row 8 RIGHT cell — the side is the field name, so a HIGH code here means a strong SHORT, not bullish. |
-| 37 | **MTF Long Aligned (0-3)** | 0-3 | Count of Monthly/Weekly/Daily timeframes in uptrend (3 = full alignment). |
-| 38 | **MTF Short Aligned (0-3)** | 0-3 | Count of timeframes in downtrend. |
-
-**ACTION-code enum (pure status, NOT ordinal):** `1 PRIME · 2 ACTION · 3 POWER MOVE · 4 POWER (EXT) · 5 LOW R:R` = **CONFIRMED actionable entries** (LOW R:R = score≥85 in-zone, only R:R-to-suggested-target thin — still actionable) · `6 ACCELERATION/BREAKDOWN · 7 EARLY` = **UNCONFIRMED thrust** (not a zone entry) · `8 WATCH · 9 FORMING · 10 WAIT` = **NOT triggered** (never treat as a buy, whatever the Buy Score) · `11 EXTENDED · 12 STRETCHED · 13 VOLATILE · 14 COUNTER-TREND · 15 TOP/BOT WARNING · 16 BLOW-OFF/CAPITULATION · 17 PARABOLIC · 18 TOXIC RISK` = **caution/danger** (15–18 forbid fresh entry) · `0 none/unknown`. Per Golden Rule 5 the ACTION cell is SUPREME: codes 8/9/10 mean the setup is not triggered no matter how high the score. BUY/SELL, ACCEL/BREAKDOWN, TOP/BOT-WARNING, BLOW-OFF/CAPITULATION are merged per-pair (side is the field name).
-
-> Note: the gem prompts reference "6 math-state values" — that is Group B fields 26-31. Fields **32-34** (Win Prob / R:R / EV) then **35-38** (Action Long/Short Code + MTF Long/Short) were added later. Group A (**13**) + Group B (6+3) + **Group B+ (4)** + Group C (6) = **32** dedicated exports; add the 12 chart plots above = **44** Data Window rows. Group C (recency masks/ages) now occupies fields **39-44**.
-
-**Group C — Label-recency bitmasks + ages (6) — CONTEXT, not triggers:**
-
-Three integer bitmasks encode WHICH chart labels fired in the **last 30 bars** (each set bit = that label is fresh), paired with three ages = **bars since the freshest member of the group** (blank/∅ = nothing fresh in 30 bars, 0 = fired this bar). Decode a mask by summing its set bits. Example: `Reversal Pattern Mask = 2241 = 2048+128+64+1` → OOPS_BEAR + TRAP_BEAR + TRAP_BULL + KEY_REV_BULL, and `Reversal Pattern Age = 3` = the freshest of those fired 3 bars ago.
-
-| # | Data Window Field | Bit legend |
-|---|-------------------|------------|
-| 39 | **Bear Warning Mask** | 1 TOP · 2 RSI_CASCADE · 4 INTERNAL_WEAKNESS · 8 EXTREME_EXTENSION · **16 BEAR_WEAKNESS**. Bits 1-8 are bearish; **bit 16 is BULLISH** (hidden accumulation) despite the group name. |
-| 40 | **Reversal Pattern Mask** | Each bit's directional meaning is given explicitly below — **do NOT infer polarity from the `_BULL`/`_BEAR` suffix, four bits are INVERTED**: 1 KEY_REV_BULL *(bullish)* · 2 KEY_REV_BEAR *(bearish)* · 4 SWEEP_BULL *(bullish — swept lows, closed back up)* · 8 SWEEP_BEAR *(bearish)* · 16 FAILSWEEP_BULL *(**BEARISH** — a bullish sweep that FAILED = trapped bulls)* · 32 FAILSWEEP_BEAR *(**BULLISH** — a bearish sweep that FAILED = trapped bears)* · 64 TRAP_BULL *(**BEARISH** — failed up-break)* · 128 TRAP_BEAR *(**BULLISH** — failed down-break)* · 256 HIKKAKE_BULL *(bullish)* · 512 HIKKAKE_BEAR *(bearish)* · 1024 OOPS_BULL *(bullish)* · 2048 OOPS_BEAR *(bearish)*. ⚠️ The four inverted bits are **FAILSWEEP_BULL & TRAP_BULL = bearish**, **FAILSWEEP_BEAR & TRAP_BEAR = bullish**. When summarizing a cluster, count net bullish vs bearish by the *(polarity)* tags above, never by the name. |
-| 41 | **Weak Level Mask** | 1 RESISTANCE_WEAKENED (**bullish** — resistance breaking) · 2 SUPPORT_WEAKENED (bearish). |
-| 42 | **Bear Warning Age** | Bars since the freshest Bear-Warning member (∅ = none in 30 bars). |
-| 43 | **Reversal Pattern Age** | Bars since the freshest Reversal-Pattern member. |
-| 44 | **Weak Level Age** | Bars since the freshest Weak-Level member. |
-
-These are timing **CONTEXT only** — they never set direction or triage on their own. Decode a mask by summing its set bits (bit legend above); the paired age = bars since the freshest member fired. Use them to phrase "a bear-trap + bullish OOPS fired ~3 bars ago," not to override Group B.
-
-#### 5.13.1 Long Ignition — the EARLY IGNITION flag
-
-Catches a relative-strength leader breaking out of a base / squeeze-release-up **before** it extends — the setup the reversion-weighted Buy Score stays quiet on. `Long Ignition = 1` only when ALL seven conditions hold:
-
-| Gate | Condition | Why |
-|------|-----------|-----|
-| Breakout trigger | Price above the fast Sprint-over-Hull cloud, OR a fresh upward squeeze release, OR a power breakout | Breakout in progress; self-times-out when price loses the cloud. |
-| Fresh stage | Weinstein Stage 1 or 2 (basing or advancing) | NOT age-gated — mature-leader continuation breakouts qualify. |
-| Accumulation | On-Balance-Volume rising AND volume above ~1.3× its 20-bar average | Smart-money proxy: accumulation + volume expansion. |
-| Relative strength | Leading its benchmark index | Only leaders, not laggards. |
-| Not extended | Price less than **12% above its OWN fast Hull(20) trend** (NOT the 200-day MA) | Distance from the *fast* trend is what matters — leaders 40%+ above their 200-day MA still qualify on a base breakout. |
-| Has edge | **Dir Prob ≥ 55** | Probability confirm — filters extended parabolas whose Dir Prob has collapsed to ~50 (e.g. TECH 50.4 → Ignition 0) while keeping confident base breakouts (e.g. IFF 92.6 → Ignition 1). |
-| Not climax | **Regime ≠ 2** (not a terminal climax) | Rejects an exhausted top. |
-
-**Design intent:** there is **no hard 200-day-MA distance cap** — *edge (Dir Prob), not distance, decides* — so real continuation leaders far above their 200-day MA are not clipped. `Long Ignition = 1` is an actionable fresh-breakout momentum candidate even when Buy Score is quiet; a strong dip-buy (high Buy Score / A+ Trend Long) correctly shows `Long Ignition = 0`. That is the division of labor, not a contradiction.
-
-**Override rule (matches gem):** on a `Long Ignition = 1` bar, do NOT require a high Buy Score and do NOT treat a low Buy Score as a veto — the ignition already carries its own edge proof (Dir Prob ≥ 55) and climax filter.
-
-#### 5.13.2 Companion (R-VRVP) Data Window exports — Volume Profile + Energy + DMI
-
-These come from the **separate** companion indicator (shorttitle `R-VRVP`), NOT the main engine — kept separate for capacity reasons. Add BOTH indicators to the chart; the Data Window shows every indicator's plots, so all of these appear alongside the main indicator's rows.
-
-**Why they exist:** the **Row 9 ENERGY** (HV/IV value + rank + state) and **Row 7 DMI** cells otherwise live ONLY as dashboard cells, so the deep-research models were forced to read them off the chart image and disagreed (e.g. GE read as `EXPANSION 43.76` by one model, `SQUEEZE 10.78` by another; ADX fabricated as `27.65`). These exports make Energy and DMI **JSON ground-truth**. They use the exact same volatility and DMI definitions the main dashboard uses, so a companion value can **never contradict** the dashboard cell.
-
-| Data Window Field | Meaning / How to use |
-|-------------------|----------------------|
-| `VP POC` / `VP VAH` / `VP VAL` | Real intraday volume-profile Point of Control / Value-Area High / Low over the fixed lookback. This is the "TOS Structural Reality" — read it here, not from a TOS screenshot. |
-| `VP HVN Above` / `VP HVN Below` | Nearest High-Volume Node above/below close (`∅` = none). Magnet/again support-resistance shelves. |
-| `RVOL (vs avg)` | Relative volume vs the N-day average. >1 = above-average participation. |
-| `Energy IV30 (ann %)` | The **left ENERGY cell value** — synthetic IV30, annualized. |
-| `Energy IV Rank %` | The **left ENERGY cell rank**, 0-100 percentile over 252 bars. |
-| `Energy IV-HV Spread (ivS)` | The state driver: `>20 EXPANSION · >0 WARMING · >−20 SQUEEZE · else DORMANT`. |
-| `Energy State 3Exp2Warm1Sqz0Dorm` | The **right ENERGY cell** as a code: `3`=🟣 EXPANSION · `2`=🟠 WARMING · `1`=🔵 SQUEEZE · `0`=⚪ DORMANT. Identical thresholds to §5.8. |
-| `HV20 (ann %)` | Realized (historical) volatility, annualized — the HV in the IV-vs-HV spread. |
-| `ADX (14)` | Trend strength. <15 choppy · >25 strong trend. |
-| `DMI +DI` / `DMI -DI` | Directional indicators. `+DI > −DI` ⇒ the dashboard's `DMI:+DI▲` (bullish); `−DI > +DI` ⇒ `DMI:-DI▼`. |
-
-> The Energy/DMI companion values match the dashboard cells exactly (verified: GE `7.51 (46.03%)` / `EXPANSION` and `DMI:+DI▲` reproduced from `Energy IV30 7.51` / `IV Rank 46.03` / `Energy State 3` and `+DI 36.46 > −DI 8.17`). Read Energy (Row 9) and DMI (Row 7) from these fields — never OCR them from the image.
-
-### 5.14 Complete Dashboard Symbol Glossary (every row, every string)
-
-Authoritative list of **every** cell string/emoji the 12-row dashboard can render. This is the master reference — if a symbol appears on the dashboard, it is here.
-
-| Row | Cell | Exact strings it can show |
-|-----|------|---------------------------|
-| **0 HEADER** | Left / Right | `🟢 LONG` / `Net {x}σ` · `🔴 SHORT` / `Net {x}σ` (Net σ can be **negative**; see §5.5.1). Center = timeframe (`DAILY` etc.). |
-| **1 BIAS** | Left / Right | `BULL` · `SIDE` · `BEAR` (left = long-trend, right = short-trend). |
-| **1 BIAS** | Center | `BULLISH {score}` · `BEARISH {score}` · `⚠️ LAG {score}` (stage-vs-score conflict). **Not** "SAFE/CAUTION/TOXIC" — that older wording is retired. |
-| **2 ENTRY ZONE** | L / R | `{lo}-{hi}` (primary) · `{lo}-{hi} (2)` (secondary fallback) · `NONE`. Center = `📍 ENTRY ZONE`. |
-| **3 STOP** | L / R | price `#.##` · `—` (no active zone). Center = `🛑 STOP`. |
-| **4 TARGET** | L / R | price `#.##` (+ ` ⚠️` suffix when target is near S/R) · `—`. Center = `🎯 TARGET`. |
-| **5 ANCHOR** | L / R | `🎯 {anchor name}`. Center = `ANCHOR`. |
-| **7 STAGE** | Left | 10 Weinstein strings — see §5.6 table. |
-| **7 DMI** | Center | `DMI:+DI▲` · `DMI:-DI▼` · `DMI:—`. |
-| **7 DARVAS** | Right | `BREAKOUT 🚀` · `BREAKING OUT ⬆️` · `IN BOX 📦` · `ABOVE BOX ✅` · `BELOW BOX ❌` · `NO BOX`. |
-| **8 ACTION** | L / R | The full action-label set — see §3.2 & §5.3. Includes `✓ PRIME BUY/SELL` · `✓ ACTION BUY/SELL` · `✓ POWER MOVE` · `✓ POWER (EXT)` · `⚡ ACCELERATION` · `⚡ EARLY` · `⚡ BREAKDOWN` · `👀 WATCH` · `⏳ FORMING` · `⚠️ TOP/BOT WARNING` · `⚠️ BLOW-OFF` · `⚠️ CAPITULATION` · `⚠️ PARABOLIC` · `⚠️ EXTENDED` · `⚠️ STRETCHED` · `⚠️ VOLATILE` · `⚠️ LOW R:R` · `🛑 TOXIC RISK` · `BUY @ {p}` · `SELL @ {p}` · `WAIT {p}` · `AVOID` · `—`. Center = `⚡ ACTION`. **Now also a Data Window export** — `Action Long Code`/`Action Short Code` (status enum, §5.13 Group B+). Read the code, don't OCR this cell. |
-| **9 ENERGY** | Left | `{HV} ({rank}%)` e.g. `12.5 (21%)`. Center = `⚡ ENERGY`. |
-| **9 ENERGY** | Right | `🟣 EXPANSION` · `🟠 WARMING` · `🔵 SQUEEZE` · `⚪ DORMANT` (see §5.8). |
-| **10 DECISION** | L / R | `{▲\|▼\|▬} {score} Buy` · `{▲\|▼\|▬} {score} Sell` (arrows = 3-bar EMA score delta; §5.9). |
-| **10 DECISION** | Center | = the Row 8 ACTION label when actionable, else falls back to the Row 1 center bias (`BULLISH/BEARISH/⚠️ LAG {score}`). |
-| **11 REV ZONE** | L / R | `🎯 Z0({n})` · `🎯 Z1({n})` · `🎯 Z2({n})` · `—`. Center = `🔄 REV ZONE`. |
-| **12 MTF** | L / R | MTF status text. Center = `{n}% MTF`. **Now also a Data Window export** — `MTF Long Aligned (0-3)`/`MTF Short Aligned (0-3)` = count of M/W/D timeframes aligned (§5.13 Group B+). |
-
-> **Bias/Base-decision tokens** (used in tooltips / net-bias engine, ~lines 484-500): `🟢 STRONG LONG` · `🟢 Lean Long` · `🟡 Lean Long` · `🟡 EXTENDED LONG` · `⚖️ NEUTRAL` · `🔴 Lean Short` · `🔴 STRONG SHORT` · `🟡 EXTENDED SHORT` · `⚠️ TOP WARNING / WAIT` · `⚠️ BOTTOM WARNING / WAIT` · `⚠️ STAGE 4 RALLY (EXIT?)` · `⚠️ STAGE 2 PULLBACK (BUY?)` · `⏳ STAGE 1 ACCUMULATION` · `⏳ STAGE 1 DISTRIBUTION`.
-
-> **Note on §23.5 worked examples:** those illustrative readings predate the current Row 1 wording and show a `SAFE TO TRADE`-style string in the Row 1 center. The live dashboard puts `BULLISH/BEARISH/⚠️ LAG {score}` there (Row 1) and the decision label in Row 10 center. Trust this glossary and §5.6 over the example prose.
-
+> ⚠️ **The anchor name can be stale relative to the zone displayed beside it.** The name is captured at
+> cluster-election time, but the zone bounds can be moved afterwards by the breakout override and by
+> FINAL ZONE SYNC (~4454). On a breakout bar (`Entry At Market` = 1) the entry is re-pointed to the
+> close and the box can end up far from the level the anchor names — e.g. AMZN 2026-08-03 showed
+> `🎯 GOLDEN X` with a zone of 273.75–276.23 while AMZN's actual golden-cross level is **$249.70**
+> (2026-04-16). Since Titanium levels *pin* the cluster center (§5.3), a genuinely GOLDEN-X-led cluster
+> would sit ON 249.70 — so a large gap between the anchor's implied price and the zone is the signature
+> of a post-election move, not of a cluster at that price.
+>
+> **To check:** hover the ENTRY ZONE cell (Row 2). Its tooltip prints `ANCHOR: … / Raw: … / Final: …`,
+> showing the pre- and post-modification zone. If Raw and Final differ materially, the anchor label
+> describes the Raw zone. Do not infer a price from the anchor name — read the zone bounds.
 
 ---
 
+## 5. Clustering Algorithm
 
-## 6. Clustering Algorithm (v3.0 - Unified Architecture)
+### 5.1 Purpose
+Convert 40+ discrete price levels into 2–3 actionable entry zones.
 
-### 6.1 Purpose
-Convert 40+ discrete price levels into 2-3 actionable "Zones" with institutional-grade precision using a **unified function** for both Long and Short calculations.
+### 5.2 Process
 
-### 6.2 Architecture Overview (Unified calcEntryExit)
+1. **Collect** all structural levels (MAs, pivots, VWAP, Fibs, sweeps, gaps, Darvas)
+2. **Assign weights** — fixed literals for named levels, `calcEvidenceScore` for the rest; see the
+   exact table in §2.5. Levels also carry an `isTitanium` flag that changes their behaviour downstream.
+3. **Keep only levels on the correct side of price** (`level < close × 1.003` for longs)
+4. **Cluster merge** on a RELATIVE tolerance, not a fixed ATR radius:
+   ```
+   atrP = ATR / close
+   TOL  = max(0.003, 0.4 × atrP) × (strongTrend ? 0.7 : 1.0)
+   merge if |level − clusterCenter| / clusterCenter <= TOL
+   ```
+   i.e. **max(0.3% of price, 0.4 × ATR%)**, tightened by 30% when ADX>30 in-trend. Merging adds a
+   confluence bonus of **+1.5** if the cluster is Titanium, **+0.5** otherwise, and the center becomes
+   the weighted average — unless the cluster is Titanium, in which case the center is PINNED (§5.3).
+5. **Score clusters** with proximity decay `Score × e^(k × distance_ATR)`, where **k depends on the
+   cluster**: −0.2 Titanium · −0.4 secondary · **−0.5 normal primary**. Titanium clusters decay most
+   slowly, so they stay competitive from further away — that is deliberate.
+6. **Elect primary** (highest electoral score, with defender hysteresis — §5.4)
+7. **Elect secondary** (separated from primary by ≥0.75 ATR, ×1.35 shadow-recency bonus)
+8. **Derive Entry/Stop/Target** from winning cluster
 
-```mermaid
-flowchart TD
-    A[Collect 40+ Levels] --> B[Assign Weights]
-    B --> C[Sort by Price]
-    C --> D[Cluster Merge: 0.5 ATR radius]
-    D --> E[Score Clusters]
-    E --> F{calcEntryExit Function}
-    
-    subgraph Unified Function
-        F --> G[resolveSecondaryZone]
-        G --> H[harvestDistal]
-        H --> I[Zone Refinement]
-        I --> J[Global Array Population]
-    end
-    
-    J --> K[primaryZone: Entry/Stop/Target]
-    J --> L[secondaryZoneInfo: Backup levels]
-    J --> M[secondaryZoneNames: Anchor labels]
-    
-    K --> N[Width Cap: 1.5% / 1.5 ATR]
-    L --> O[Distal Titanium Harvest]
-    N --> P[Final Primary Zone]
-    O --> Q[Ghost Level Lines]
+### 5.3 Titanium Snap
+If a cluster contains a Titanium level, its center is **PINNED to that exact institutional number**
+and never becomes the weighted average — so the entry sits on the real level (52W low, yearly open,
+POC…) rather than a few cents off it.
+
+> Titanium is an **explicit per-level flag, NOT a weight threshold.** Do not infer it from the number:
+> Darvas is Titanium at weight 2.0, while Weekly Open is *not* Titanium at 3.5. See the flag column in
+> §2.5. The flag also grants the slowest proximity decay (k = −0.2, §5.2 step 5) and the larger +1.5
+> merge bonus.
+
+### 5.4 Defender Hysteresis (Anti-Flicker)
+The incumbent zone is defended twice, and both mechanisms must be beaten:
+
 ```
-
-### 6.3 Unified calcEntryExit Function
-
-The Long and Short calculations are handled by a **single routine** with a long/short switch:
-
-```pine
-calcEntryExit(bool isLong, float[] fl, bool[] bl, int sPrior, float cBox, float atrMaxMult) =>
-    // Shared logic for clustering, scoring, and zone election
-    // Returns: [entry, stop, target, rawTarget, zoneHigh, zoneLow, anchorName, zoneScore, zoneStartIdx]
+taperFactor   = e^(-0.5 × |close − prevEntry| / ATR)
+defenderBonus = stabilityFactor × σ(clusterScores) × taperFactor
 ```
+`σ` is the spread of the competing cluster scores — when clusters are tightly bunched (no clear
+winner) the bonus is small, and when one cluster dominates the incumbent is protected proportionally.
+`stabilityFactor` is timeframe-dependent: **0.5 daily+ · 0.8 4h · 1.0 1h · 1.5 intraday** — slower
+charts need less anti-flicker.
 
-**Benefits:**
-- Token efficiency (reduced from 2 functions to 1)
-- Consistent zone calculation logic for both sides
-- Easier maintenance and bug fixes
+Second, a **0.5 ATR spatial-displacement filter**: a challenger cluster that wins on score is still
+rejected unless its center sits at least `0.5 × ATR` away from the defender's. This is what stops the
+zone shuffling between two near-identical adjacent clusters.
 
-### 6.4 Merge Formula
-When Level A merges with Level B:
+### 5.5 Zone Width
 ```
-New_Center = (Level_A × Weight_A + Level_B × Weight_B) / (Weight_A + Weight_B)
-New_Score = Weight_A + Weight_B + 0.5 (Confluence Bonus)
-Merge_Radius = 0.5 × ATR (Statistically validated)
+maxWidth = max(ATR × 0.5, min(1% of price, ATR × 0.8))
+minWidth = 0.2 ATR
 ```
+The min-width rebuild extends the zone DOWNWARD from its top (`zoneLow := zoneHigh − minWidth`), so
+the structural top is preserved. It used to re-anchor onto the bar's close, which is what made
+"In Zone" true by construction — see §11.8.
 
-### 6.5 Dual-Mode Election
+### 5.6 Target Selection (f_pickCeiling / f_pickFloor)
 
-| Mode | Target | Logic | Multiplier |
-|------|--------|-------|------------|
-| **Primary** | Actionable entry | Proximity-First with Defender Hysteresis | 1.5x Recency |
-| **Secondary** | Backup scaling point | Filter-First with Shadow Recency | 1.35x Recency |
+**Exactly six candidates** are considered for a long ceiling — `keyResistance`, `currentBoxTop`
+(Darvas), `pivotHighPrice`, `weeklyMA2` (weekly EMA50), `bbUpper`, `weeklyMA3` (weekly EMA200) — and
+the mirror set for a short floor. Nothing else can ever become a target.
 
-### 6.6 Proximity-First Engine
 ```
-Proximity_Decay = e^(-0.5 × distance_in_ATR)  // Primary
-Proximity_Decay = e^(-0.4 × distance_in_ATR)  // Secondary (smoother)
-Electoral_Score = Raw_Score × Proximity_Decay × Recency_Multiplier
+risk = |entry − stop|
+near = nearest candidate strictly above entry            → exported as T1 Waypoint
+step = nearest candidate >= entry + risk (>= 1R away)    → exported as Target
+if no candidate is >= 1R away:  step = near              (falls back)
 ```
-**Research Basis**: Exponential decay with 0.5 ATR half-life aligns with institutional zone width literature (0.5-1.0 ATR).
+- Candidates are **not** pre-filtered by R:R. The nearest real wall is the honest target however close
+  it is; whether the trade is *worth taking* is judged separately by the EV gate (§6.2). Filtering
+  candidates by a fixed 1.5 R:R was a real bug — it discarded a near resistance and floated the target
+  *beyond* the very wall price had to clear.
+- When `near ≠ step`, `near` is the level price must trade through and a sensible partial-trim spot.
 
-### 6.7 Defender Logic (Anti-Flicker Hysteresis)
+**Blue-sky synthesis** — only when there is no candidate above entry at all:
 ```
-σ = Standard Deviation of all cluster scores
-Taper_Factor = e^(-0.5 × price_distance_from_zone / ATR)
-Stability_Factor = 0.5 (Daily), 0.8 (4H), 1.0 (1H), 1.5 (Intraday)
-Defender_Bonus = Stability_Factor × σ × Taper_Factor × (2.0 if Titanium else 1.0)
-
-If (Challenger_Score - Defender_Score) < Defender_Bonus:
-    Keep_Previous_Zone()
+isBlueSky = close > pivotHighPrice AND close > 52wHigh × 0.98
+ceiling   = isBlueSky ? entry + fibRange × 1.618
+                      : entry + risk × 2.0
+if ceiling > entry × 1.06:  ceiling = entry + ATR × 2.0     ← 6% sanity cap, replaced by 2×ATR
 ```
+The 6% cap applies **only to this synthetic value**. A real resistance is never capped, even when far —
+capping real levels used to invent targets *beyond* the wall (e.g. CAH 243→251).
 
-### 6.8 Titanium Snap Logic
-If cluster contains a Titanium level (Weight ≥ 5.0):
-```
-Final_Entry = Titanium_Level (NOT the weighted average)
-```
-**Why:** Institutions defend specific numbers ($100.00), not calculated averages ($100.23).
-
-### 6.9 Secondary Zone Filters (Filter-First)
-```
-For each cluster ≠ Primary:
-    1. Separation: |Secondary_Center - Primary_Center| ≥ 0.75 ATR
-    2. Depth: Secondary must be DEEPER than Primary (for scaling)
-    3. Electoral Score = Raw_Score × e^(-0.4 × dist) × 1.35
-    
-Winner = Max(Electoral_Score) among valid candidates
-```
-
-### 6.10 Zone Width Caps (Sniper Refinement)
-```
-maxWidth = max(ATR * 0.5, min(1% of price, ATR * 0.8))
-MIN_HEIGHT = 0.25 ATR  // Prevents invisibly thin zones
-```
-**Research Basis**: Professional traders use 0.5-0.8 ATR for zone widths to balance precision and capture rate. The 1% price cap prevents zones from becoming too large on high-priced assets.
-
-### 6.11 Merge Formula (TOL)
-Zones are merged based on a dynamic tolerance:
-```
-TOL = max(0.3%, 0.4 * ATR_Pct) * (in_strong_trend ? 0.7 : 1.0)
-```
-Merging is tighter in strong trends to distinguish between rapid pullbacks and structural turns.
-
-### 6.11 Proximity-Based Target Selection
-Targets and stops now prioritize **proximity** over fixed priority to ensure realistic levels on high-priced assets.
-
-**Stop Loss Selection (Multi-Tier):**
-1. **Key Support/Resistance:** Priority if within 2.5 ATR of entry. Offset by 0.5 ATR.
-2. **ATR Fallback:** Clamp stop to max 2 ATR if structural levels are too distant.
-3. **Topological Check:** Ensure stop is on the correct side of entry zone.
-
-**Take Profit Selection (Proximity-Scored):**
-The engine finds the **nearest** valid structural level that meets the 1.5:1 minimum R:R.
-- **Long Candidates:** key resistance, Darvas top, pivot high, weekly MA(50), upper Bollinger Band, weekly MA(200).
-- **Short Candidates:** key support, Darvas bottom, pivot low, weekly MA(50), lower Bollinger Band, weekly MA(200).
-- **Fallback:** If no level meets R:R, uses 2:1 risk-based target (clamped to 6% projected move).
-
-### 6.12 Precision Logic Enhancements (v3.4)
-
-#### 1. Directional Strictness ("Underfoot/Overhead" Rule)
-The engine now explicitly purges zones that violate directional logic:
-- **Long Zones:** MUST be at or below current price. No "breakout buy" zones above price are allowed in the entry array.
-- **Short Zones:** MUST be at or above current price.
-
-#### 2. "Blue Sky" Filter
-To prevent shorting into a parabolic breakout:
-- If Price > 52-Week High: **Secondary Short Zones are suppressed.**
-- Logic: "Never short a blue sky breakout with a B-grade setup."
-- Primary Short Zones (strong reversal clusters) are still permitted but require higher scores.
-
-#### 3. Zone Anchor Clamping
-Zones are now mathematically anchored to the entry side to prevent "floating":
-- Long Zones expand **downwards** from the entry Price.
-- Short Zones expand **upwards** from the entry Price.
-- This ensures the `Entry Price` is always the leading edge of the zone.
-
-### 6.12 Continuous Momentum Engine (v3.3)
-To eliminate abrupt score drops ("cliffs"), momentum components now use continuous mathematical functions instead of binary toggles.
-
-| Component | Math Model | Benefit |
-|-----------|------------|---------|
-| **Trend Strength** | Logarithmic ADX Growth | Smooth intensity scaling (faster at low values) |
-| **Impulse** | MACD Histogram Sigmoid | Continuous transition from bearish to bullish |
-| **Velocity** | MA Slope Sigmoid | Smooth transition based on MA 5-bar velocity |
-| **Proximity** | ATR-Normalized Distance | Smooth bonus/penalty as price nears MAs |
-
-**Smoothing:** The final Buy Score and Sell Score are smoothed by a 3-bar EMA to prevent noise/flicker.
-
-### 6.12 Distal Titanium Persistence ("Ghost Levels")
-Non-elected Titanium clusters are harvested and rendered as persistent dashed lines:
-```
-For each cluster with isTitanium = true AND idx ≠ Primary AND idx ≠ Secondary:
-    Store in secondaryZoneInfo[10-14] for Long
-    Store in secondaryZoneInfo[15-19] for Short
-    Render as dashed gray line with "KEY FLOOR" / "KEY RES" label
-```
-**Purpose**: Deep structural context (52W Lows, Golden Crosses) visible regardless of price proximity.
-
-### 6.13 Anti-Flicker MTF Confirmation (60m Gating)
-To prevent intraday "flicker" where a zone appears and disappears rapidly, the engine now employs a **2-Bar Confirmation Protocol** using 60-minute data:
-
-1.  **Requirement:** Price must close inside the zone on the 60m timeframe OR touch the zone for **2 consecutive 60m bars**.
-2.  **Logic:**
-    ```
-    ltfConfirmed = ltfTouchCount >= 2 or ltfCloseInZone
-    ```
-3.  **Reset Triggers:**
-    - Zone Break: Price moves > 0.25 ATR beyond zone.
-    - Zone Shift: Zone center moves > 0.5 ATR (re-calculation).
-4.  **Dashboard Impact:** If a high-score signal exists (PRIME or ACTION) but lower-timeframe confirmation is FALSE, the dashboard displays **⏳ FORMING** instead of the signal. This prevents premature entry on transient wicks.
-
-### 6.14 Global Arrays for State Management
-
-> Internal implementation detail — not needed for analysis.
-
-| Store | Size | Purpose |
-|-------|------|---------|
-| Secondary-zone values | 20 numbers | Zone highs, lows, and scores for Long (slots 0-9) and Short (slots 10-19) |
-| Secondary-zone names | 2 strings | Anchor names for the Long and Short secondary zones |
-
-**Offset Logic:**
-```
-Long:  offSetI = 0,  offSetC = 6,  offSetN = 0
-Short: offSetI = 3,  offSetC = 7,  offSetN = 1
-```
-
+**Target is blanked (∅)** when it would sit behind the entry (reward ≤ 0). A blank target is a hard
+skip, not a missing value.
 
 ---
 
-## 7. Risk Management Logic
+## 6. Risk Management Logic
 
-### 7.1 Stop Loss Calculation
+### 6.1 Stop Loss
+Three priorities, in order — the swing low is a *fallback*, not the primary source:
 
-```mermaid
-flowchart TD
-    A[Find Swing Low 20-bar] --> B[Calculate ATR Stop]
-    B --> C{Swing Low > ATR Stop?}
-    C -->|Yes| D[Use Swing Low - 0.5% Buffer]
-    C -->|No| E[Use ATR Stop]
-    D --> F{Risk > 3%?}
-    E --> F
-    F -->|Yes| G[Force Stop to 3%]
-    F -->|No| H[Use Calculated Stop]
-    G --> I{Forced Stop > Swing Low?}
-    I -->|Yes| J[🛑 TOXIC RISK Flag]
-    I -->|No| K[Accept Forced Stop]
+```
+1. structuralStop = the WINNING CLUSTER's far edge      (zoneLow for a long, zoneHigh for a short)
+2. if that is 0 or on the wrong side of entry:
+   structuralStop = raw swing low/high                  ← fallback only
+3. buffer   = max(entry × 0.005, ATR × 0.5)             ← blended %/ATR breathing room
+   sL_struct = structuralStop − buffer                  (long)
+4. sL_capped = max(sL_struct, entry × (1 − mRP))        ← hard cap, mRP = 5% stocks / 3% ETFs
 ```
 
-### 7.2 The 3% Supreme Law
+The stop is therefore **anchored to the entry zone that generated the signal**, offset by at least
+0.5% or half an ATR. This is why §6.3's TOXIC test compares the final stop against the *zone low*: if
+the 5%/3% cap had to pull the stop back up above the very structure it was derived from, the trade's
+geometry is broken.
+
+`mRP` is 3% when `syminfo.type` is `fund` or `index`, 5% otherwise.
+
+### 6.2 R:R Validity Gate
 ```
-Max_Risk = 3% of Entry Price
-If (Entry - Stop) / Entry > 0.03:
-    Stop = Entry × 0.97
+pLong = clamp(0.50 + (DirProb/100 - 0.50) × rrHaircut, 0.50, 0.95)
+minRR = max(rrFloor, (1-pLong)/pLong × rrKellyBuffer)
+longRRValid = longRR >= minRR
+```
+- `rrHaircut` = 0.5 (shrinks Dir Prob toward 50 — overfit edges decay live)
+- `rrKellyBuffer` = 1.3 (fractional-Kelly cushion above break-even)
+- `rrFloor` = 0.70 (hard floor — calibrated walk-forward on 17 tickers)
+
+> **Verified exact.** Recomputing `Long RR Valid` offline from `Dir Prob` and `RR To Target` using
+> these three constants reproduces the exported flag on **100.000% of 1,466,095 bars**. If you ever
+> change `rrHaircut`, the Python side must change with it or this identity breaks.
+
+### 6.3 TOXIC RISK
+Two conditions, both required — it is not simply "wide stop":
+```
+wasClamped = the max-risk cap actually moved the stop (sL_capped > sL_struct for a long)
+isToxic    = the resulting stop sits at or above the ZONE LOW (sL >= zoneLow)
+if wasClamped AND isToxic → zoneScore := -100      ← the sentinel
+```
+So TOXIC means: *structure demanded a stop wider than 5%/3%, the cap forced it in, and the forced stop
+now sits inside the entry zone itself* — you would be stopped out by noise before the trade could
+work. It is flagged by the **−100 zone-score sentinel**, not by the cap alone; a clamped stop that
+still sits safely below the zone is NOT toxic.
+
+`toxicLongActive = toxicRiskLong and not (isPowerBreakout or isPowerBreakdown)` — power moves suppress
+the flag, because elevated volatility is expected there.
+
+> Downstream code must never "boost" a −100 score; doing so corrupts the sentinel check (there is an
+> explicit guard for this in the .pine).
+
+---
+
+## 7. Visual Opacity Logic
+
+Zone opacity is a **rendering of the zone-confidence score**. The mapping is linear, and it is
+expressed in Pine's `transparency` (higher = more invisible), so it runs backwards from "opacity":
+
+```
+transparency = clamp(95 − 85 × confidence/100, 10, 95)
 ```
 
-### 7.3 Toxic Risk Definition
-A trade is TOXIC if:
-```
-Forced_Stop (3% rule) > Structural_Swing_Low
-```
-**Meaning:** The mathematically required stop is ABOVE the logical support. You WILL get stopped out by noise.
+| Confidence | Transparency | Reads as | Meaning |
+|---|---|---|---|
+| 100 | 10 | most solid | High confidence, safe structure |
+| 75 | 31 | solid | Good — slight extension |
+| 50 | 53 | faded | Elevated risk |
+| 25 | 74 | ghost | Extreme risk |
+| 10 (floor) | 87 | ghost mist | Confidence is floored at 10 — a zone never fully disappears |
 
-### 7.4 Take Profit Calculation
+A zone is therefore **never 100% solid**: the best possible rendering is transparency 10 (≈90%
+opacity). Box alpha is separately capped at 85 and line alpha at 95 after the survival penalty below.
+
+**Additional survival penalty** (`calcOpacityPenalty`, applied on top, `max` of the two):
+- **R:R survival** — `z = max(0, (1.5 − RR)/0.5)`, penalty `(1 − 2/(1+e^(1.702z))) × 42`
+- **Velocity survival** — same curve with `z = max(0, |Z Velocity| − 2.0)` (the blow-off threshold)
+
+Decay profile: RR 1.5 → 0 penalty · RR 1.25 → 7.8 · RR 1.0 → 29.1 · RR 0.5 → 39.3 · RR 0 → 41.5.
+This is *visual only* — it never touches a score, an action state or an exported number.
+
+**Zone Score Shield:** Strong zones (high confluence score) resist ghosting — but only against *noisy*
+penalties. Structural penalties deliberately bypass it:
 ```
-Risk = Entry - Stop
-Target = Entry + (Risk × R:R_Ratio)
-Default R:R = 2.0
+shield        = min(0.5, zoneScore / 30)          → caps at 50% relief
+softPenalty   = rsiPen + velPen + elastPen + patternPen
+totalPenalty  = softPenalty × (1 − shield) + structuralPenalty     ← structural is NOT shielded
+confidence    = max(10, base − totalPenalty)      base = 40 if counter-trend, else adjusted
+                (a merged cluster gets base + 15, capped at 100)
+```
+Component penalties: `|RSI−50| × 0.5` · `max(0, (vel−1) × 10)` · `max(0, (elast−1) × 8)`.
+Structural penalties (which bypass the shield): Darvas BELOW BOX **+20**, MTF misalignment
+`(50 − signalQuality) × 0.4` when signalQuality<50, and score-momentum falling **+10**.
+
+The asymmetry is intentional: pattern events are noisy and a high-confluence zone should shrug them
+off, but a broken structure invalidates the zone no matter how strong its score was.
+
+---
+
+## 8. Data Window Exports (Complete Schema)
+
+> **The Data Window is the ONLY source of truth.** Never OCR numbers off the dashboard
+> image. Use the chart image for pattern context only; read all values from here.
+
+### 8.1 Main Indicator (57 fields)
+
+| # | Field | Type | Description |
+|---|-------|------|-------------|
+| 1 | Sprint Line EMA | price | Fast EMA(5) cloud line |
+| 2 | Hull Baseline HMA | price | Hull MA(20) cloud line |
+| 3 | MA 20 Fast | price | EMA(20) |
+| 4 | MA 50 Mid | price | EMA(50) |
+| 5 | MA 200 Slow | price | EMA(200) — the Ext% reference line |
+| 6 | Weinstein MA 150 | price | HMA(150) — stage analysis |
+| 7 | Golden Cross | 0/1 | EMA50 crossed above MA200 this bar |
+| 8 | Death Cross | 0/1 | EMA50 crossed below MA200 this bar |
+| 9 | Zone 0 Long | 0/1 | `revScoreLong >= 10`, **and `barstate.isconfirmed`** — reads 0 on the live bar |
+| 10 | Zone 0 Short | 0/1 | `revScoreShort >= 10`, same confirmation gate |
+| 11 | AVWAP Resistance | price | Anchored VWAP resistance |
+| 12 | AVWAP Support | price | Anchored VWAP support |
+| 13 | Buy Score | 0–100 | Bayesian long posterior |
+| 14 | Sell Score | 0–100 | Bayesian short posterior |
+| 15 | Stage 1 Base 2 Up 3 Top 4 Down | 0–5 | Weinstein stage (0=IPO, 5=Recovery) |
+| 16 | Stage Age Bars | int | Bars in current stage |
+| 17 | Long Entry | price | Suggested long entry level |
+| 18 | Long Entry Zone Bot | price | Zone lower bound |
+| 19 | Long Entry Zone Top | price | Zone upper bound |
+| 20 | Long Stop Loss | price | Structure-first stop |
+| 21 | Long Target | price/∅ | Target (blank if behind entry) |
+| 22 | Short Entry | price | Suggested short entry |
+| 23 | Short Entry Zone Bot | price | Short zone lower bound |
+| 24 | Short Entry Zone Top | price | Short zone upper bound |
+| 25 | Short Stop Loss | price | Short stop |
+| 26 | Short Target | price/∅ | Short target (blank if behind entry) |
+| 27 | Entry At Market | 0–3 | 0=structural, 1=long at-market, 2=short, 3=both |
+| 28 | Long Rev Zone | 0–26 observed | Mean-reversion score (Connors) — §9.1. p99 = 10.5; 33% of bars are 0 |
+| 29 | Short Rev Zone | 0–23.5 observed | Same, short side. 38% zeros |
+| 30 | Ext Pct vs MA200 | % | `(close − MA 200 Slow)/MA 200 Slow × 100`, signed. Verified exact |
+| 31 | Exhaustion Gradient | 0–1 | Blended trend-maturity/overheat (§15 formula). p99 = 0.42 |
+| 32 | Ext Z Self Relative | σ | Extension vs own history — **252 bars daily, 52 weekly**. Fat-tailed: observed −25.8 to +112.9, p99 only 2.4 |
+| 33 | Regime | 0–6 | Market regime — **priority enum, see §15.6** |
+| 34 | Exp Move Pct 21b | % | `HV20 × √(21/252)` — already a percent, no further scaling |
+| 35 | Dir Prob Pct Above 50 Bull | 0–100 | Evidence-spread direction. Single-name EV input only (§16.10) |
+| 36 | Long Ignition Fresh Breakout | 0/1 | Fresh qualified breakout — descriptive tag, not a trigger (§15.7) |
+| 37 | RR To Target | ratio | Reward:risk of the **dominant side** (`buyScore >= sellScore ? longRR : shortRR`) — NOT always the long. **0 = invalid (4.5% of bars).** p99 = 7.8; still worth clamping in EV math |
+| 38 | Long Target T1 Waypoint | price/∅ | First wall above entry |
+| 39 | Short Target T1 Waypoint | price/∅ | First wall below entry |
+| 40 | Long RR Valid | 0/1 | EV gate passes for long |
+| 41 | Short RR Valid | 0/1 | EV gate passes for short |
+| 42 | Long In Zone | 0/1 | Close inside long entry box (see note below) |
+| 43 | Short In Zone | 0/1 | Close inside short entry box |
+| 44 | Action Long Code | 0–21 | Row 8 left cell (§3.1) |
+| 45 | Action Short Code | 0–21 | Row 8 right cell (§3.1) |
+| 46 | MTF Long Aligned 0 To 3 | 0–3 | Monthly/Weekly/Daily uptrend count |
+| 47 | Bear Warning Mask | bitmask | Bear warnings in last 30 bars (§8.3) |
+| 48 | Reversal Pattern Mask | bitmask | Reversal patterns in last 30 bars (§8.3) |
+| 49 | Weak Level Mask | bitmask | Weak-level events in last 30 bars (§8.3) |
+| 50 | Bear Warning Age | 0–30/∅ | Bars since freshest bear warning |
+| 51 | Reversal Pattern Age | 0–30/∅ | Bars since freshest reversal pattern |
+| 52 | Weak Level Age | 0–30/∅ | Bars since freshest weak-level event |
+| 53 | Z Velocity | σ | Price velocity z-score |
+| 54 | Z Elasticity | σ | Price stretch z-score |
+| 55 | Trend Bars Up | int | `barssince(close < EMA20)` — bars since price last closed BELOW the EMA20, not a generic "uptrend" counter. **Returns 100 as a sentinel if price has never been below it.** Observed 0–164, p99 = 56 |
+| 56 | Buy Sigma Evidence | σ | Raw bullish evidence (before prior) |
+| 57 | Sell Sigma Evidence | σ | Raw bearish evidence (before prior) |
+
+> **Field numbering vs CSV column position.** The 57 fields above occupy CSV columns **6–62**; the 17
+> companion fields (§8.2) occupy **63–79**. The OHLC columns are 1–5 (`time, open, high, low, close`)
+> and **`Volume` is the LAST column (80), not the sixth** — parse by header name, never by position.
+>
+> **An entry can exist with NO zone — 19.3% of live long bars.** 464,492 bars export a valid
+> `Long Entry` and `Long Stop Loss` while `Long Entry Zone Bot/Top` are blank: the clustering engine
+> found no valid cluster and fell back to a structural entry. This is coherent — `Long In Zone` is 0 on
+> **every** one of them, and no zone-requiring code (1, 2, 5, 19) ever fires there. It is also not a
+> warm-up artifact (median bar age 2,192 vs 2,276 overall).
+> **The trap:** `Long RR Valid` reads 1 on **88.8%** of these bars, because the EV gate only needs
+> `RR To Target` and `Dir Prob` — it never checks that a zone exists. A filter that keys on
+> `RR Valid` without also requiring an actionable code will happily promote a zoneless bar. Key on the
+> action code (§3.3); it already implies the zone.
+>
+> **`Long/Short In Zone` is not a plain "between Bot and Top" test.** The box is strict on the side
+> price would break out through and ATR-tolerant on the side it pulls back from (0.1 × ATR):
+> a long can be In Zone slightly UNDER the box, never above it. In practice the tolerance never
+> binds — on 68,730 long in-zone corpus bars the strict side held exactly (0 violations) and 0 bars
+> sat outside the box on the tolerant side. Treat it as plain containment; the asymmetry only matters
+> if zone widths ever shrink toward ATR scale.
+
+### 8.2 Companion R-VRVP (17 fields)
+
+| # | Field | Description |
+|---|-------|-------------|
+| 58 | VP POC | Volume-profile Point of Control |
+| 59 | VP VAH | Value Area High |
+| 60 | VP VAL | Value Area Low |
+| 61 | VP HVN Above | Nearest High-Volume Node above (∅=none) |
+| 62 | VP HVN Below | Nearest High-Volume Node below |
+| 63 | RVOL Vs Avg | Relative volume vs 20-bar avg |
+| 64 | Energy IV30 Ann Pct | Synthetic IV30 |
+| 65 | Energy IV Rank Pct | IV percentile over 252 bars |
+| 66 | Energy IV HV Spread | IV − HV (drives energy state) |
+| 67 | Energy State | 0=Dormant, 1=Squeeze, 2=Warming, 3=Expansion |
+| 68 | HV20 Ann Pct | Realized volatility, annualized |
+| 69 | ADX 14 | Trend strength |
+| 70 | DMI DI Plus | +DI |
+| 71 | DMI DI Minus | −DI |
+| 72–74 | POC, VAH, VAL | Chart-line duplicates |
+
+> **Two different histories — verified on the corpus.** VP POC / VAH / VAL / HVN Above / HVN Below
+> populate on **exactly 1 bar per ticker** (median 1, max 1 — they are `barstate.islast`-gated), while
+> RVOL, the five Energy fields, HV20, ADX and DMI are full-history (median 4,928 bars per ticker).
+> A blank VP column is expected, not missing data, and these must never be used as per-bar features.
+>
+> Also verified: `VAH ≥ POC ≥ VAL` holds on **100%** of populated bars, and `Energy State` reproduces
+> from `Energy IV HV Spread` via the documented thresholds (>20 / >0 / >−20) at a **100.0000%** match
+> rate across 2,407,275 bars.
+
+### 8.3 Bitmask Legends
+
+**Bear Warning Mask:**
+| Bit | Value | Label | Polarity |
+|---|---|---|---|
+| 0 | 1 | TOP | Bearish |
+| 1 | 2 | RSI_CASCADE | Bearish |
+| 2 | 4 | INTERNAL_WEAKNESS | Bearish |
+| 3 | 8 | EXTREME_EXTENSION | Bearish |
+| 4 | 16 | BEAR_WEAKNESS | Bullish (hidden accumulation) |
+
+**Reversal Pattern Mask:**
+| Bit | Value | Label | Actual Polarity |
+|---|---|---|---|
+| 0 | 1 | KEY_REV_BULL | Bullish |
+| 1 | 2 | KEY_REV_BEAR | Bearish |
+| 2 | 4 | SWEEP_BULL | Bullish |
+| 3 | 8 | SWEEP_BEAR | Bearish |
+| 4 | 16 | FAILSWEEP_BULL | **BEARISH** (bullish sweep FAILED) |
+| 5 | 32 | FAILSWEEP_BEAR | **BULLISH** (bearish sweep FAILED) |
+| 6 | 64 | TRAP_BULL | **BEARISH** (failed up-break) |
+| 7 | 128 | TRAP_BEAR | **BULLISH** (failed down-break) |
+| 8 | 256 | HIKKAKE_BULL | Bullish |
+| 9 | 512 | HIKKAKE_BEAR | Bearish |
+| 10 | 1024 | OOPS_BULL | Bullish |
+| 11 | 2048 | OOPS_BEAR | Bearish |
+
+> ⚠️ FAILSWEEP and TRAP bits have INVERTED polarity vs their name suffix.
+
+**Weak Level Mask:**
+| Bit | Value | Label | Polarity |
+|---|---|---|---|
+| 0 | 1 | RESISTANCE_WEAKENED | Bullish (resistance breaking) |
+| 1 | 2 | SUPPORT_WEAKENED | Bearish (support breaking) |
+
+**Base rates — read these before filtering on any bit.** Measured over the full 2,412,609-bar corpus.
+A bit is set when a label of that type fired within the last 30 bars, so it is a *recency window*, not
+a per-bar event rate; common patterns therefore look very high.
+
+| Mask | Bit rates |
+|------|-----------|
+| Bear Warning | TOP **45.1%** · RSI_CASCADE 4.5% · INTERNAL_WEAKNESS 4.7% · EXTREME_EXTENSION 1.1% · BEAR_WEAKNESS **0.001%** |
+| Reversal Pattern | TRAP_BULL **60.1%** · TRAP_BEAR **59.7%** · SWEEP_BEAR 47.2% · SWEEP_BULL 35.8% · FAILSWEEP_BEAR 33.5% · OOPS_BEAR 27.1% · OOPS_BULL 25.0% · FAILSWEEP_BULL 21.7% · KEY_REV_BEAR 21.4% · KEY_REV_BULL 18.7% · HIKKAKE_BEAR 7.0% · HIKKAKE_BULL 6.9% |
+| Weak Level | SUPPORT_WEAKENED 2.8% · RESISTANCE_WEAKENED 1.3% |
+
+Two traps in those numbers:
+- **BEAR_WEAKNESS (bit 16) is inert — 31 bars in 2.4M.** Its source needs price within 1.5 ATR of the
+  20-bar LOW while Sell momentum has already fallen ≥6 off its 20-bar HIGH, and those rarely coincide.
+  Do not build a filter on it. (The underlying variable is *not* dead — it still drives the short-side
+  confidence penalty and `isBottomingFull`. Only this rising-edge bit is.)
+- **TRAP_BULL/TRAP_BEAR (~60%) and TOP (45%) are so common that "bit set" carries almost no
+  information.** Use the paired **Age** field to rank freshness instead of treating presence as signal.
+
+**Mask/Age invariant** (verified, zero violations on 1.28M bars): `mask > 0` ⟺ `Age` is populated, and
+Age is always 0–30. A blank Age means "nothing of that group fired in the window", not missing data.
+
+### 8.4 Reconstructible Fields (cut for token cap)
+
+All formulas below were re-derived from the exports and checked against ground truth. Verified exact:
+`Long RR Valid` **100.000%** (1.47M bars) · `Stalk Queue` **100.0000%** (279,883 bars) ·
+`Zone Touched` **100%** · `Exp Move / HV20` ratio constant to 1.3e-15 ·
+`Ext Pct = (close − MA200 Slow)/MA200 × 100` to 0.000000 absolute error.
+
+**Win Probability:**
+```
+side = Buy Score >= Sell Score ? long : short
+d = side==long ? Dir Prob : (100 - Dir Prob)
+p = clamp(0.50 + (d/100 - 0.50) × 0.5, 0.50, 0.95)
+```
+
+**Expected Value (R):**
+```
+EV = p × RR To Target − (1 − p)
+```
+
+**Zone Touched Today** — bar/zone OVERLAP, not "the low landed inside the zone":
+```
+touched_L = low <= Long Entry Zone Top AND high >= Long Entry Zone Bot
+touched_S = high >= Short Entry Zone Bot AND low <= Short Entry Zone Top
+```
+
+**Stalk Queue** — verified to reproduce the real exported column **exactly (100.0000%)** on 279,883
+ground-truth bars, with 8,395 long / 16,369 short true positives:
+```
+stalk_L = touched_L AND close > Long Entry Zone Top
+          AND Action Long Code in (8, 19) AND Stage in (4, 5)
+          AND Dir Prob >= 50 AND Buy Sigma Evidence >= 2.5
+
+stalk_S = touched_S AND close < Short Entry Zone Bot
+          AND Action Short Code in (8, 19) AND Stage == 4
+          AND Dir Prob <= 50 AND Sell Sigma Evidence >= 2.5
+```
+Note the long stalk deliberately fires in Stage **4 or 5** — it is "a downtrend/recovery that is
+starting to show bullish evidence", not a Stage-2 pullback. Code 19 is accepted alongside 8 so that
+splitting SCREEN BLOCK out of WATCH did not silently shrink the queue.
+
+**Chased:**
+```
+chased_L = Long In Zone == 0 AND close > Long Entry Zone Top
+chased_S = Short In Zone == 0 AND close < Short Entry Zone Bot
 ```
 
 ---
 
-## 8. Visual Opacity Logic (Indicator-Driven)
+## 9. Reversal Zones (Deep Dive)
 
-### 8.1 Confidence to Opacity Mapping
+### 9.1 Scoring Factors (Long — Oversold Bounce)
+
+Long side shown; the short side is symmetric (RSI(2) >90/>85/>75, etc.). `priceSUM` is a σ-measure of
+the recent move and gates several rows.
+
+| Tier | Factor | Condition (long) | Points |
+|------|--------|------------------|--------|
+| T0 | In Zone | anchor name contains `KEY` / `52W` / `Y.O` — see the caveat below | **+2.5** |
+| T0 | In Zone | any other anchor | +1.5 |
+
+> **The T0 "Titanium" test is a string match, and it does NOT equal the `isTit` flag** the clustering
+> engine uses (§2.5). Two of its five patterns — `"TITANIUM"` and `"POC"` — match no level in this
+> indicator at all (POC exists only in the volume-profile companion). Nine genuinely Titanium level
+> types miss it and score 1.5 instead of 2.5, including **`Inst Anchor` (weight 6.0, the heaviest level
+> in the system)**, `GOLDEN X`, `Y.L`, `Y.H`, `Q.O`, `M.O`, `Darvas`, `S200`.
+>
+> **Deliberately left unaligned.** Measured: fixing it would add at most **62** new REVERSAL BUY
+> signals against 6,780 existing (+0.9%), returning +0.80% [−1.93, +3.59] versus +0.85% [+0.34, +1.36]
+> for the current state — same sign, interval far too wide to distinguish. The change is inert, and
+> REVERSAL BUY is the only state with a measured edge, so it is not worth perturbing.
+| T1 | RSI(2) | <10 / <15 / <25 | +3.0 / +2.0 / +1.0 |
+| T1 | RSI(14) | <25 / <30 | +2.0 / +1.0 |
+| T1 | MTF RSI Cascade | multi-timeframe RSI extreme | +3.0 |
+| T1 | RSI Divergence | price lower, RSI higher | +2.5 |
+| T2 | Near 52W Low | — | +2.5 |
+| T2 | Near Key Level | — | +1.5 |
+| T2 | Below BB Lower | — | +1.5 |
+| T2 | Trap Pattern | base | +2.0 |
+| T2 | Trap **+ volume spike** | institutionally-validated trap | **+1.0 extra** |
+| T2 | Elasticity Extreme | z < −2.0 / z < −1.5 | +2.0 / +1.0 |
+| T3 | Stoch Cross | oversold + bullish cross | +1.5 |
+| T3 | MACD Bullish | — | +1.5 |
+| T3 | OBV Divergence | — | +1.0 |
+| T4 | Hammer | — | +1.5 |
+| T4 | Engulfing | — | +1.5 |
+| T4B | Oops Pattern | **only if `priceSUM < −2.0`** (σ-gated) | +2.0 |
+| T4B | Key Reversal Bar | **only if `priceSUM < −2.0`** (σ-gated) | +2.5 |
+| T5 | Capitulation | ≥5 consecutive down days **OR** a single `priceSUM < −3.0` day | +2.0 |
+| T5 | Capitulation | ≥4 consecutive down days | +1.0 |
+| T5 | Volume Climax | RVOL > 2.0 / else Volume z > 2.0 | +2.0 / +1.0 |
+| **T6** | **Oscillator confluence** | **Williams %R z<−1.5 · MFI z<−2.0 · CCI z<−2.0** | **+0.5 each (max +1.5)** |
+| Bonus | Connors trend filter | above SMA200 **AND** `priceSUM < 2.0` | +2.0 |
+| Penalty | Low-Vol Anomaly | volatility rank in bottom 10% | **−2.0** |
+
+**KILL FILTERS — these zero the ENTIRE score, they are not penalties.** Missing them is the most
+common way to mis-predict this field:
+
 ```
-Base_Alpha = Zone_Confidence_Percent (0-100)
+long:  close < low + (high−low) × 0.25                      → score = 0   (25% close-location rule)
+long:  RSI<30 AND RSI<RSI_MA AND priceSUM > −2.5 AND NOT inZone → score = 0   (falling-knife guard)
+short: close > high − (high−low) × 0.25                     → score = 0
+short: RSI>70 AND RSI>RSI_MA AND priceSUM < 2.5             → score = 0   (RSI power trend)
+final: max(0, score)                                         → never negative
 ```
+The 25% rule is the important one: **a bar that closes in the bottom quarter of its own range scores
+zero no matter how much confluence it has.** The reversal engine requires the bar to show rejection,
+not just extension.
 
-### 8.2 Structural Opacity Penalty
-Instead of arbitrary caps, opacity is derived from immediate market structure. Severe topping/bottoming signals "ghost" the zone to signal high risk.
+### 9.2 REVERSAL BUY (Action Code 20)
 
-| Category | Component | Weight | Justification |
-|----------|-----------|--------|---------------|
-| **Indicator** | RSI Deviation from 50 | `0.5 * abs(RSI-50)` | Equilibrium distance |
-| **Indicator** | Velocity Z-Score | `10 * max(0, z-1)` | Parabolic moves ghost zones |
-| **Indicator** | Elasticity Z-Score | `8 * max(0, z-1)` | Price stretch ghosts zones |
-| **Pattern** | RSI Cascade | 15 pts | Multi-TF momentum breakdown |
-| **Pattern** | Score Divergence | 12 pts | Price/momentum disconnect |
-| **Pattern** | RSI Failure Swing | 10 pts | Momentum reversal signal |
-| **Pattern** | Extreme + Confirmation | 8 pts | Stretched + confirmation pattern |
-
-### 8.3 Zone Score Shield (Strong Zones Resist)
-Stronger zones (high confluence) resist ghosting.
+This is the codification of the strongest reversal setup:
 ```
-shield = min(0.5, zoneScore / 30) // Max 50% penalty reduction
-totalPenalty = (IndicatorPenalties + PatternPenalties) * (1 - shield)
+revScoreLong >= 7
+AND buyScore < 30
+AND close < ma3 (EMA 200)
+AND volRatioRev > 1.5 (RVOL)
+AND NOT already in a 🛑 risk state
 ```
-
-### 8.4 Final Formula
-```
-finalConfidence = max(10, baseConfidence - totalPenalty)
-finalAlpha = calcZoneAlpha(finalConfidence)
-```
-
-### 8.5 Interpretation Guide
-| Opacity | Meaning | Action |
-|---------|---------|--------|
-| **100% Solid** | High confidence, safe structure | Full position size |
-| **70-99%** | Good confidence, slight extension | Standard position size |
-| **35-69%** | Faded: Elevated risk / extension | Half position size |
-| **10-35%** | Ghost: Extreme risk / Topping | Quarter position or skip |
-
-> [!IMPORTANT]
-> A "Ghosted" zone (low opacity) is a visual warning that while a support/resistance level exists, the immediate momentum (RSI, Velocity) makes entering it dangerous.
+Fires inside downtrends. Pair with agent's catalyst analysis.
 
 ---
 
-## 9. Quick Reference Card
+## 10. Quick Reference Card
 
-### When to BUY
-✅ Score ≥ 82
-✅ Stage 2 (Advancing)
-✅ ADX > 18
-✅ Weekly Trend Up
-✅ Blue Box is SOLID
-✅ Price at Support Zone
+### When Entry Geometry is Valid
+✅ Action Code 1 or 2 (PRIME / ACTION) — **this alone already implies the next three** (§3.3)
+✅ Long In Zone = 1 · ✅ Long RR Valid = 1 · ✅ Long Target populated — assertions, not filters
+✅ **Entry At Market = 0** — the one clause that genuinely discriminates (§16.5)
 
-### When to SKIP
-❌ Score < 82
-❌ Stage 4 (Declining)
-❌ ADX < 18 (Choppy)
-❌ Weekly Trend Down
-❌ Blue Box is FADED
-❌ FAILED VALIDATION label
-❌ TOXIC RISK label
+> Valid geometry ≠ positive expectancy. This set measures −0.09% ex21, i.e. zero (§16.9). It tells you
+> the trade is *constructible*, not that it is *good*. Conviction comes from research.
+
+### When to Stalk (Limit Order)
+✅ Zone touched today (bar/zone overlap — see §8.4)
+✅ Close above zone (chased)
+✅ Action = WATCH (8) or SCREEN BLOCK (19)
+→ Place limit at zone top. Stop at zone bot − buffer.
+
+### When to Skip
+The measured-negative states first — this list is where the system's real value sits (§16.1, §16.7):
+
+❌ Action 12 STRETCHED (−0.71 SIG) · 16 BLOW-OFF (−0.66 SIG) · 11 EXTENDED (−0.54 SIG) · 19 SCREEN BLOCK (−0.30 SIG)
+❌ **`Ext Pct vs MA200` between 25% and 60% (−0.71 SIG)** — the most robust exclusion in the system
+❌ **PRIME (−0.52 SIG) or ACTION (−0.69 SIG) in Stage 5 Recovery** — the prior says buy, the returns say don't
+❌ Fresh entries: `PASS + Stage Age ≤ 5` is −0.57 SIG. Prefer a settled Stage 2 (16–31 bars, +0.32 SIG)
+❌ Action Code 18 (TOXIC RISK) — always, despite its misleading +14.8% mean (§16.1)
+❌ Action Code 17 (PARABOLIC)
+❌ Action Code 15 (TOP/BOT WARNING) for fresh longs
+❌ Long Target = ∅
+❌ Regime = 2 (Terminal Climax) for fresh entries
 
 ### Emergency Actions
-| See This | Do This |
-|----------|---------|
-| 🛑 TOXIC RISK | Close position immediately |
+| Condition | Action |
+|-----------|--------|
+| 🛑 TOXIC RISK | Close / do not enter |
 | ⚠️ TOP WARNING | Take partial profits |
-| TRAP | Reverse position |
-| SWEEP | Enter opposite direction |
+| ⚠️ PARABOLIC | No fresh entry — outranks everything |
+| TRAP label | Fade the move |
+| SWEEP label | Reversal play |
 
 ---
 
-## 10. Edge Cases & Conflict Resolution
+## 11. Edge Cases & Conflict Resolution
 
-### 10.1 Conflicting Signals (Long AND Short Active)
+### 11.1 Entry At Market = 1 (Breakout Bar)
 
-**Scenario:** Both LONG and SHORT zones appear on chart simultaneously.
+When `Entry At Market` is set for a side:
+- The entry IS the close (breakout fill)
+- `Long In Zone` = 0 (you're above the structural zone)
+- `RR To Target` is the at-market ratio, not the zone ratio
+- The zone is still exported — it's the pullback target if you miss the breakout
+- Action will typically be ACCELERATION or CHASE, not PRIME
 
-| Condition | Resolution |
-|-----------|------------|
-| **Long Score > Short Score by 20+** | Trust LONG. Ignore SHORT zone. |
-| **Short Score > Long Score by 20+** | Trust SHORT. Ignore LONG zone. |
-| **Scores within 20 of each other** | **NEUTRAL**. Do not trade. Market is indecisive. |
-| **Both scores < 50** | No directional bias. Wait for breakout. |
+### 11.2 Both Sides Show WATCH
 
-**Dashboard Indicator:** Check "BIAS" field:
-- "Strong Long" = Long dominates
-- "Strong Short" = Short dominates
-- "Neutral" = No trade
+Market is ranging. No trade. Wait for directional breakout.
 
-### 10.2 Stage Transitions (Weinstein)
+### 11.3 Score High but Action = WATCH
 
-```mermaid
-stateDiagram-v2
-    [*] --> Stage1: Basing
-    Stage1 --> Stage2: Breakout above 30W SMA
-    Stage2 --> Stage3: SMA flattens, price chops
-    Stage3 --> Stage4: Breakdown below 30W SMA
-    Stage4 --> Stage1: Price stabilizes at new base
-    
-    note right of Stage1: WAIT - Accumulation
-    note right of Stage2: BUY - Markup Phase
-    note right of Stage3: SELL - Distribution
-    note right of Stage4: AVOID - Decline Phase
-```
+Score describes trend quality. Action describes entry timing. High score + WATCH =
+good stock, bad entry point (price above zone). Wait for pullback.
 
-| Current Stage | Signal Allowed? | Exception |
-|---------------|-----------------|-----------|
-| **Stage 1** | ❌ No Buy | ✅ Allow if SWEEP pattern detected |
-| **Stage 2** | ✅ Buy Allowed | Full size. PULLBACK ⚠️ = 50% size. BOUNCE 🔄 = 75% size. |
-| **Stage 2/3 + ⚠️ DISTRIBUTION** | ⚠️ Caution | Bearish RSI divergence — smart money exiting. Tighten stops. |
-| **Stage 3** | ⚠️ Caution | Half size, tight stops |
-| **Stage 4** | ❌ No Buy | ✅ Allow if RECOVERY 🌤️ (Stage 5) or V-Shape (Velocity Z > 2.5) |
-| **Stage 4: RALLY ⚠️** | ❌ No Buy | Bear rally — do not trust. Short on failure. |
-| **Stage 4: CRASH 🛑** | ❌ No Buy | Extreme decline. Wait for RECOVERY stage. |
+### 11.4 REV ZONE Conflicts with ACTION
 
-### 10.3 Gap Scenarios (FVG Handling)
+REV ZONE is independent — it does NOT override ACTION.
+- Zone 0 + ACTION=WAIT = high-risk counter-trend reversal
+- Use 25–50% size, tight stop, wait for confirmation candle
+- Safer: wait for ACTION to flip
 
-| Gap Type | Location | Action |
-|----------|----------|--------|
-| **Bullish FVG** | Below current price | Acts as SUPPORT. Valid buy zone. |
-| **Bullish FVG** | Above current price | Target zone. Expect magnet effect. |
-| **Bearish FVG** | Above current price | Acts as RESISTANCE. Block longs. |
-| **Bearish FVG** | Below current price | Target for shorts. |
+### 11.5 BIAS LAG at Stage 3
 
-**Gap Fill Logic:**
-- Gaps < 3 days old have 70% fill probability
-- Gaps > 10 days old have 30% fill probability
-- Gaps near Titanium levels have 90% fill probability
+Stage 3 + Bullish Score = distribution. Score hasn't caught up. Do NOT enter longs on the Stage-3 read
+alone; wait for Stage 4 confirmation or score collapse.
 
-### 10.4 Earnings Proximity
+> **Measured caveat.** The related Stage-4 case is *not* the trap the LAG framing implies:
+> `Buy Score ≥82 in Stage 4` returns **−0.02% [−0.27, +0.21]** — statistically identical to the same
+> score in Stage 2 (+0.05%). Score/stage *disagreement* is not reliably punished — extension is
+> (§16.7, §16.11).
+> Treat `⚠️ LAG` as a prompt to check extension and catalyst, not as an automatic veto.
 
-| Days to Earnings | Action |
-|------------------|--------|
-| **> 14 days** | Trade normally |
-| **7-14 days** | Reduce position size by 50% |
-| **< 7 days** | ⚠️ Earnings Warning active. Consider closing. |
-| **< 2 days** | 🛑 Do NOT enter new positions |
+### 11.6 AVWAP Resistance Below AVWAP Support
 
-**Visual Indicator:** Green "E" icon appears on chart timeline when earnings detected.
+Normal. They're anchor-dated (swing high vs swing low on different dates), not ordered
+by definition. Occurs on ~2% of bars. Not a bug.
 
-### 10.5 Zone Overlap (Primary vs Secondary)
+### 11.7 Warm-Up Period (New Listings)
 
-| Scenario | Resolution |
-|----------|------------|
-| **Zones overlap by > 50%** | Treat as SINGLE strong zone. Merged. |
-| **Zones overlap by < 50%** | Two distinct zones. Trade nearest to current price. |
-| **Secondary zone has higher score** | Primary zone gets "Defender Bonus". Usually wins anyway. |
-| **Price between both zones** | Wait for price to touch one zone before entering. |
+**What is NOT affected: the geometry.** Measured across the corpus by bar age, the long
+zone/stop/target invariant (`stop < zoneBot ≤ zoneTop`, target ahead of entry) holds at a **0.00%
+violation rate in every age bucket, including bars 0–50**. Entry, stop and target are structurally
+trustworthy from the first live bar. (An earlier revision of this document claimed violations of 11.9%
+in the first 50 bars falling to 0.3% by bar 250; that figure is not reproducible on the current corpus
+and has been withdrawn.)
 
-### 10.6 Re-Entry Logic (After Stop Out)
+**What IS affected: the Weinstein stage, and everything priced off it.** The staging MA is HMA(150),
+so `Stage = 0` (`STAGE: IPO/NEW`) dominates early and clears on a sharp schedule:
 
-| Condition | Allow Re-Entry? |
-|-----------|-----------------|
-| **Stopped out, price returns to zone** | ✅ Allow if zone is still active (not dissolved) |
-| **Stopped out, zone has moved** | ✅ Use new zone for new entry |
-| **Stopped out twice in same zone** | ❌ Block. Zone is invalid. Wait for new cluster formation. |
-| **Stopped out, now showing TOXIC** | ❌ Block. Risk profile has degraded. |
+| Bar age | Share reading Stage 0 |
+|---|---|
+| 0–50 | **24.7%** |
+| 50–150 | **24.6%** |
+| 150–250 | 2.4% |
+| 250+ | **0.00%** |
 
----
+Because the Bayesian stage prior (§15.1), the counter-trend veto, the ignition gate and the REVERSAL
+BUY condition all read Stage, a Stage-0 bar is running with a 0.0 prior and several gates disabled.
+**Treat the first ~250 bars of any listing as structurally unstaged.** On the unfiltered corpus
+`WATCH in Stage 0` measures a spurious +1.55%; restricted to the ≥$20 universe it collapses to +0.07%
+[−1.84, +1.99] on 97 names — i.e. it was young-listing noise, not edge, exactly as expected.
 
-## 11. Timeframe Considerations
+### 11.8 Zone Pinning — Fixed, and Deliberately Not "Fixed Further"
 
-### 11.1 Timeframe-Specific Behavior
+The entry box used to be re-anchored onto the current bar's close by the breakout override and by the
+min-width rebuild. `In Zone` was therefore true *by construction* rather than because price had
+returned to a cluster: it measured pinned on **100% of in-zone bars** (269,040 long / 65,252 short
+across 1.28M bars), which forced PRIME/ACTION into a buy-at-market fill at a median R:R of 0.92:1,
+under 1:1 on 61% of PRIME bars. Both re-anchors were removed; the box now keeps whatever structural
+level the cluster phase found.
 
-| Timeframe | ATR Multiplier | Cooldown Bars | Zone Stickiness |
-|-----------|----------------|---------------|-----------------|
-| **1-5 min** | 1.0x | 5 bars | Low (frequent updates) |
-| **15-30 min** | 1.5x | 8 bars | Medium |
-| **1H-4H** | 2.0x | 10 bars | High |
-| **Daily** | 2.5x | 10 bars | Very High |
-| **Weekly** | 3.0x | 5 bars | Maximum |
+Keep `pinned_L = abs(Long Entry Zone Top / close − 1) < 0.0001` as a **regression check** — it should
+now sit near 0 on in-zone bars. If it climbs, something has started re-anchoring the box onto price.
 
-### 11.2 Multi-Timeframe (MTF) Alignment
-
-**Hierarchy (De Prado):**
-```
-Monthly > Weekly > Daily > 4H > 1H
-```
-
-| MTF Status | Meaning | Action |
-|------------|---------|--------|
-| **All Aligned** | Strong confluence | Full position, wide stop |
-| **Daily vs Weekly conflict** | Pullback likely | Half position, tight stop |
-| **Daily vs Monthly conflict** | Counter-trend trade | Quarter position OR skip |
-
-### 11.3 Triple Screen Implementation
-
-| Screen | Timeframe | Indicator | Purpose |
-|--------|-----------|-----------|---------|
-| **Screen 1 (Tide)** | Weekly | MACD Histogram | Direction filter |
-| **Screen 2 (Wave)** | Daily | Force Index / Elder Ray | Pullback detector |
-| **Screen 3 (Ripple)** | Daily/4H | Entry signal | Timing |
-
-**Rule:** You can ONLY trade Screen 3 in the direction of Screen 1.
+**Do not attempt the deeper rewrite.** Two measurements on 1.07M bars: (1) price is never below the
+zone top on a non-pinned bar, because the zone is recomputed each bar from current structure — it
+falls with price and can never be *arrived at*; a stationary level would need a latching state
+machine, not a threshold tweak. (2) Simulating the honest version — a limit resting at the PRIOR
+bar's zone, which is what you could actually have had an order on — fills 32.1% of the time for
++0.75% fwd10 / −0.00% date-neutral, against +0.69% / −0.12% unfilled. The pullback thesis does not pay
+here. The rewrite would buy honesty, not edge.
 
 ---
 
-## 12. Troubleshooting Guide
+## 12. Timeframe Considerations
 
-### 12.1 Common Issues
+### 12.1 Designed For
 
-| Problem | Cause | Solution |
-|---------|-------|----------|
-| **No signals appear** | Score too low OR all filters blocking | Lower score threshold (not recommended) OR wait for better setup |
-| **Zones keep flickering** | Low volatility causing cluster recalculation | Check ADX. If < 15, market is dead. Wait. |
-| **Dashboard shows "N/A"** | Insufficient historical data | Need 252+ bars of history. Use higher timeframe or wait. |
-| **Stop shows as "N/A"** | No swing low found in range | Widen lookback period OR use ATR-based stop |
-| **TOXIC on every trade** | Asset is too volatile for 3% rule | This asset requires wider stops. Reduce position size instead. |
+| Timeframe | Use Case |
+|-----------|----------|
+| **Daily** | Primary swing trading decisions |
+| **Weekly** | LEAP decisions, structural context |
 
-### 12.2 Signal Quality Diagnostics
+### 12.2 MTF Hierarchy
 
-| Symptom | Diagnosis | Fix |
-|---------|-----------|-----|
-| **High score, Faded box** | Risk Zone triggered (RSI > 70 or extended) | Not a bug. Script is warning you. Reduce size. |
-| **STRONG BUY but Red candle** | Signal fired on pullback candle | Valid entry point. Buy the dip. |
-| **Score 100 but FAILED** | Validation guards blocked it | Check tooltip for specific guard. Wait for that condition to clear. |
-| **Zone very far from price** | Clustering found distant support | Not ideal entry. Wait for pullback OR use the zone as stop reference only. |
+Monthly > Weekly > Daily. `MTF Long Aligned` counts how many of the three are in uptrend.
+- 3/3 = full alignment
+- 0/3 = no timeframe confirms long
 
-### 12.3 False Signal Identification
+**Alignment helps up to 2/3, then stops.** In the traded (≥$20) universe, 1/3 is +0.23% SIG and
+**2/3 is +0.32% SIG — rising to +0.46% SIG when Buy Sigma > 5, the best MTF cell in the system.**
+3/3 falls back to −0.13% and is *not* significant. Read 3/3 as "the move is mature and already
+reflected across all three timeframes", not as confirmation — but note it is only a weak negative
+here; the strong −0.48% reading comes from the unfiltered corpus and is a low-priced-stock effect
+(§16.6).
 
-| False Signal Type | How to Identify | Prevention |
-|-------------------|-----------------|------------|
-| **Fakeout Breakout** | TRAP label appears after entry | Wait for close above level, not just intraday touch |
-| **Dead Cat Bounce** | Stage 4 + SWEEP | Treat as scalp only. Take profits quickly. |
-| **Chop Whipsaw** | ADX < 18 + repeated signals | Disable trading until ADX > 20 |
-| **Earnings Trap** | "E" marker within 5 bars of signal | Close before earnings OR skip entirely |
+### 12.3 Stage MA Adapts to Chart
 
-### 12.4 Performance Optimization
-
-| Issue | Solution |
-|-------|----------|
-| **Script running slow** | Reduce lookback periods. Disable secondary zone. |
-| **Too many objects on chart** | Limit label history. Disable unused features. |
-| **Zones drawing incorrectly** | Refresh chart (F5). Zones are drawn only on the last (most recent) bar. |
+The Weinstein MA is HMA(150) on the CHART timeframe:
+- Daily chart: HMA(150 days) ≈ 30-week equivalent
+- Weekly chart: HMA(150 weeks) — much longer structural view
 
 ---
 
-## 13. Appendix: Formula Reference
+## 13. AI Decision Framework
 
-### 13.1 Bayesian Score Calculation
+### 13.1 Reading a Data Window (Step by Step)
+
+1. **Check Action Long Code** — actionable is **1, 2, 3, 4, 6, 20**. Everything else is passive.
+   Note 5 (LOW R:R) is NOT actionable despite sitting inside that numeric range: it means the score
+   and zone qualified but the EV gate failed. Codes are a status enum, never an ordinal score —
+   never compare them with `<` or `>`.
+2. **Check Entry At Market** — structural (0) or chasing the close? The one field that discriminates
+   within a code (§16.5). Prefer 0.
+3. **Check `Ext Pct vs MA200` FIRST among the risk fields** — it is the cleanest continuous signal in
+   the system and monotone to 60% (§16.7). 25–60% is significantly negative.
+4. **Long In Zone / RR Valid / Target** — assertions only. For codes 1, 2 and 19 they are always 1,
+   so they cannot filter anything (§3.3). For codes 3, 6 and 20 do NOT require them.
+5. **Check Regime** — Regime 2 (Terminal Climax) is the danger flag. Regime is 0–6 only; "Toxic" is
+   Action **code** 18, a different field. Remember Regime is a priority enum (§15.6): check Stage
+   separately, because a Stage-4 decline can report Regime 6.
+6. **Check Stage + Stage Age** — structural context + freshness
+7. **Read Exp Move Pct 21b** — size the expected magnitude
+8. **Read Buy/Sell Sigma Evidence** — raw directional evidence (before priors)
+9. **Read Rev Zone scores** — any mean-reversion setup forming?
+10. **Read masks + ages** — recent pattern context
+
+### 13.2 Promotion Decision (Filter → Agent)
+
+**PASS (promote for research):**
+- Action Long Code 1 or 2 — do **not** also test In Zone / RR Valid / Target, they are implied (§3.3)
+- Prefer `Entry At Market = 0`; it is the only clause that discriminates (§16.5)
+- Or: Action Long Code = 20 (REVERSAL BUY) — and require **rev score ≥ 10**, where the edge lives (§16.4)
+
+**WATCH (stalk — limit order, no deep research):**
+- Zone touched + chased + Action 8 or 19
+
+**CUT (skip):**
+- Action 18 (TOXIC) — always, despite its misleading unfiltered mean (§16.1)
+- Action 12 STRETCHED, 16 BLOW-OFF, 11 EXTENDED, 19 SCREEN BLOCK — the significantly negative states
+- `Ext Pct vs MA200` in 25–60% (−0.71% SIG) — the most robust exclusion available
+- PRIME or ACTION while Stage = 5 Recovery (−0.52% / −0.69% SIG)
+- Long Target = ∅ · Regime 2 with no catalyst override
+
+> **Calibrate expectations.** PASS is a *constructibility* gate, not an edge: it measures −0.09% ex21
+> (§16.9). Its purpose is to hand research a small, well-formed candidate set. The exclusion list above
+> is where the measurable value is — every item on it is significantly negative.
+
+### 13.3 Trade Construction
+
+From a promoted Data Window:
+- **Entry:** Long Entry (or zone top for limit orders)
+- **Stop:** Long Stop Loss
+- **Target:** Long Target
+- **T1 (partial trim):** Long Target T1 Waypoint (if different from target)
+- **Risk:** (Entry − Stop) / Entry → position size from account risk tolerance
+- **Reward:Risk:** RR To Target (already computed)
+- **EV:** Reconstruct from Win Prob × R:R − (1 − Win Prob)
+
+### 13.4 What the Agent Adds (Not in the Indicator)
+
+The indicator provides state + geometry. The agent provides:
+- **Direction conviction** from catalysts, earnings, news, sector rotation
+- **Timing** from options flow, dealer positioning, short interest
+- **Catalyst proximity** — earnings dates, FDA events, macro
+- **Cross-sectional ranking** — which of several candidates is best today
+
+---
+
+## 14. Common Mistakes
+
+| Mistake | Why It's Wrong | Correct |
+|---------|---------------|---------|
+| Chasing when Action = WATCH | You're above the zone | Wait for pullback or stalk with limit |
+| Entering on FORMING | Bar hasn't closed | Wait for close |
+| Reading Row 8 off the chart image | Vision models hallucinate action states | Read Action Long Code from Data Window |
+| Treating Buy Score as conviction | It is not selective: median Buy Score is **85.3**, and it clears the 82 signal threshold on **54% of all bars** (≥70 on 65%, ≥50 on 78%) | Use as confirmation context, not a trigger. Selectivity comes from zone + RR + action code |
+| Using Dir Prob to rank candidates | Non-monotone and entirely inside noise across names — the 0–40 band scores *higher* than 55–60 (§16.10) | Use for the single-name EV gate only; never sort a watchlist by it |
+| Treating MTF 3/3 as confirmation | In blue chips 3/3 is −0.13% and **not significant**, while **2/3 is +0.32% SIG** (+0.46% with Buy Sigma >5). Alignment helps up to 2/3 then stops | Prefer 2/3 with strong evidence; read 3/3 as "late" (§16.6) |
+| Shorting at close with PRIME SELL | Short codes 1/2 never fire | Use Sell Score + stalk at short zone |
+| Ignoring TOXIC | The geometry is broken | Always skip |
+| Holding through earnings unhedged | Binary event | Close or hedge before |
+| Buying REVERSAL BUY without catalyst | It fires in downtrends | Agent MUST confirm the thesis |
+| Treating PRIME as a buy signal | PRIME measures **−0.04% [−0.30,+0.22]** — zero. So does the full PASS rule (−0.03%) | Use it to construct the trade; get conviction from research (§16.0) |
+| Adding `In Zone`/`RR Valid`/`Target` to a code 1/2 filter | All three are 100% implied — the clause set selects an identical 25,165 bars | Filter on the code; keep the rest as assertions (§3.3) |
+| Requiring `In Zone` for REVERSAL BUY / ACCELERATION / POWER | Discards 93–96% of them, and for REVERSAL BUY the in-zone half is *worse* | Never gate those codes on the zone (§16.4) |
+| Trusting `Regime = 0 Healthy + Stage 2` | The most comfortable state leans negative (−0.17%, and −0.26% SIG unfiltered) and is never positive | Comfort is priced. No Regime×Stage pair is individually tradeable in blue chips (§16.3) |
+| Acting on TOXIC's +14.8% mean | Fat-tail artifact — median is −0.23%; delisted SBNY alone averages +280% | Always check a median before believing a mean (§16.1) |
+| Assuming fresher is better | There is no freshness decay, and the sign is backwards: `PASS + age ≤5` is **−0.57% SIG** while a settled Stage 2 aged 16–31 bars is **+0.32% SIG** | Prefer settled over brand-new (§16.8) |
+| Using Ignition as a long trigger | The `Long Ignition` flag is +0.03% overall (flat) but **−0.50% SIG when Ext < 10%**; the separate `Regime 5` Ignition is −0.24% inside Stage 2 | Treat both as descriptive breakout tags, never triggers (§15.7, §16.3) |
+
+---
+
+## 15. Appendix: Formula Reference
+
+### 15.1 Bayesian Score
+
+The full chain, in order. Note the exported **`Buy Sigma Evidence` IS the likelihood** — it is passed
+in as `momentumZ` with the other two likelihood terms zeroed, which is why the Row 0 "Net σ" is
+exactly the pre-prior evidence:
+
 ```
-Likelihood_Z = momentum-Z + volume-Z + pattern-Z
-Posterior_Z  = (Likelihood_Z + Prior_Z) / 2.0        // fixed 50/50 blend, not a tunable weight
-Score        = 100 / (1 + e^(-1.5 * Posterior_Z))    // sigmoid, k = 1.5
+buyTotalSigma = zVolume + zRSI + zTrend + velocityPenalty + elasticityScore + trendDurationPenalty
+posteriorZ    = (buyTotalSigma + stagePrior) / 2
+rawScore      = 100 / (1 + exp(−1.5 × posteriorZ))
+
+# then smoothed — the exported Buy/Sell Score is NOT rawScore:
+regimeTurnBar = volume > 1.5×avgVol  OR  |close − close[1]| > 1.5×ATR
+score         = regimeTurnBar ? rawScore : EMA(rawScore, 3)
 ```
-**Priors, derived from Weinstein Stage win rates via inverse-normal-CDF — separate values for the long call vs the short call:**
+The smoothing is bypassed on genuine information bars (a volume or range shock) so the score can jump
+immediately, and applied on the ~90% of bars that carry no new information so it does not chatter.
+This is why §4.6's momentum arrows use a 3-bar delta.
+
+**Short side only:** `sellScore` is then multiplied by an extension-survival factor
+(`2/(1+e^(1.702·max(0,|zElasticity|−1)))`, ~0.5–1.0) when `zElasticity < −1.0`. The long-side twin of
+this multiplier was **removed** after measurement showed it rescaled without improving ranking.
+
+Stage priors:
 
 | Stage | Long prior | Short prior |
-|-------|------------|-------------|
-| 1 (Basing) | 0.0 (or +0.15 if V-Shape) | 0.0 |
-| 2 (Advancing) | +0.44 | -0.44 |
-| 3 (Topping) | -0.1 | +0.1 |
-| 4 (Declining) | -0.44 (or -0.1 if V-Shape) | +0.18 |
-| 5 (Recovery) | +0.25 | -0.25 (or -0.1 if V-Shape) |
+|-------|-----------|-------------|
+| 1 Basing | 0.0 (+0.15 if V-shape) | 0.0 |
+| 2 Advancing | **+0.44** | −0.44 (−0.1 if V-shape) |
+| 3 Topping | −0.1 | +0.1 |
+| 4 Declining | −0.44 (−0.1 if V-shape) | **+0.18** |
+| 5 Recovery | +0.25 | −0.25 |
 
-**V-Shape Recovery Logic:** on a V-shape recovery, the Stage-4-long / Stage-2-and-5-short counter-trend penalty is damped from -0.44 to **-0.1** (not fully neutralized to 0.0) — a partial, not full, override.
+The table is deliberately asymmetric: the best short prior (+0.18, a measured 57% win rate) is far
+weaker than the best long prior (+0.44). The engine is structurally more willing to be long.
 
-### 13.2 Efficiency Ratio (Kaufman)
+### 15.2 Dir Prob (Direction Probability)
 ```
-ER = |Close - Close[N]| / Σ|Close[i] - Close[i-1]|
+dirSpread = buyTotalSigma − sellTotalSigma
+dirZ = zScore(dirSpread, 250)
+dirProbRaw = 100 / (1 + exp(-1.702 × dirZ))
+dampK = (stage4Rally or stage2Pullback or (stage==4 and impulseGreen)) ? 0.45 : 1.0
+dirProb = 50 + (dirProbRaw - 50) × dampK
+```
+Sourced from the **evidence layer** (sigma), not the scores.
 
-Where:
-N = Lookback period (default 10)
-Numerator = Net price change
-Denominator = Sum of all bar-to-bar movements
+### 15.3 Expected Move
 ```
+expMovePct = HV20 × √(21/252)
+```
+No `× 100` — HV20 is already annualized in percent, so the scaling is applied once. Verified against
+the corpus: `Exp Move Pct 21b / HV20 Ann Pct` = 0.288675 = √(21/252) exactly, on every bar.
 
-### 13.3 Force Index (Elder)
+### 15.4 Ext Z Self Relative
 ```
-Force = EMA(Volume × (Close - Close[1]), 13)
+ext20pct = (close - EMA20) / EMA20 × 100
+extMu    = SMA(ext20pct[1], N)     N = 252 daily, 52 weekly
+extSd    = STDEV(ext20pct[1], N)
+extZ     = (ext20pct - extMu) / extSd
 ```
+The `[1]` matters: the baseline excludes the current bar, so a bar cannot inflate its own z.
 
-### 13.4 Cluster Merge Threshold
-```
-Merge_Distance = ATR(14) × 0.005 × Price
+Ext Z ≥ 1.5 demotes **every bullish LONG label** to `⚠️ EXTENDED` — PRIME BUY, ACTION BUY, POWER MOVE,
+POWER (EXT), ACCELERATION and EARLY, not just ACCELERATION. It is matched on the `✓` and `⚡` prefixes,
+which on the long lane are exactly the bullish states. There is no short-side equivalent.
 
-If |Level_A - Level_B| ≤ Merge_Distance:
-    Merge()
+### 15.5 R:R Gate
 ```
-
-### 13.5 Weighted Center Calculation
-```
-Center = Σ(Level_i × Weight_i) / Σ(Weight_i)
-```
-
-### 13.6 Defender Bonus (Anti-Flicker)
-```
-Bonus = ATR × 1.5 × (1 + Volatility_Percentile / 100)
-
-If (New_Score - Old_Score) < Bonus:
-    Keep_Old_Zone()
-```
-
-### 13.7 Risk/Reward Calculation
-```
-Risk = |Entry - Stop|
-Reward = |Target - Entry|
-R:R = Reward / Risk
+p = clamp(0.50 + (dirProb/100 - 0.50) × 0.5, 0.50, 0.95)
+minRR = max(0.70, (1-p)/p × 1.3)
+rrValid = rr >= minRR
 ```
 
-### 13.8 Position Sizing (Implied)
+### 15.6 Regime Priority
 ```
-Position_Size = (Account_Risk × Account_Size) / Risk_Per_Share
-
-Where:
-Account_Risk = 1-2% (conservative)
-Risk_Per_Share = Entry - Stop
+sqzOn ? 6 : isDistribution ? 3 : stage==4 ? 4 : (ext>60 or exhaust>0.7) ? 2 :
+exhaust>0.3 ? 1 : (powerBreakout and trendBars<20) ? 5 : 0
 ```
+**The numbers are NOT the evaluation order.** It resolves 6 → 3 → 4 → 2 → 1 → 5 → 0, so the code names
+the highest-priority condition that is true, not the only one true. Two consequences, both measured on
+the full corpus:
+- **44.8% of Regime-6 (squeeze) bars are ALSO Stage 4.** Never read "Regime ≠ 4" as "not declining" —
+  the squeeze simply outranks the decline. Check Stage independently.
+- **Regime 5 (Ignition) is only reachable after 3/4/2/1 all fail**, i.e. it requires
+  exhaustionGradient < 0.3. A genuine breakout with gradient ≥ 0.3 reports 1, never 5. Verified: the
+  maximum gradient on any Regime-5 bar is 0.29999. Regime 5 is rare — 0.56% of bars.
 
----
+Corpus distribution: 0 Healthy 35.2% · 1 Extended 1.6% · 2 Climax 0.2% · 3 Distribution 5.8% ·
+4 Decline 35.5% · 5 Ignition 0.6% · 6 Squeeze 21.2%.
 
-## 14. Glossary
+### 15.7 Ignition (7 gates, all must pass)
+1. Breakout trigger (above Sprint/Hull cloud, or squeeze release, or power breakout)
+2. Fresh stage (Weinstein 1 or 2)
+3. Accumulation (OBV rising + volume > 1.3× avg)
+4. Relative strength (leading benchmark)
+5. Not extended (< 12% above own Hull MA 20)
+6. Has edge (Dir Prob ≥ 55)
+7. Not climax (Regime ≠ 2)
 
-| Term | Definition |
-|------|------------|
-| **Titanium Level** | High-weight institutional level (Weekly Open, 52W High, AVWAP) |
-| **Cluster** | Group of merged support/resistance levels |
-| **Defender** | Previous zone that resists being replaced by new calculations |
-| **Ghost Box** | Faded zone indicating high risk despite high score |
-| **SWEEP** | Liquidity grab below support that reverses (Bullish) |
-| **TRAP** | Failed breakout that reverses (Bearish if Bull Trap, Bullish if Bear Trap) |
-| **Sigma** | Standard deviation unit in Z-Score calculations |
-| **FVG** | Fair Value Gap - unfilled price gap acting as magnet/barrier |
-| **VCP** | Volatility Contraction Pattern (O'Neil) - tightening range before breakout |
-| **MTF** | Multi-Timeframe Analysis |
-| **HTF** | Higher Timeframe (Weekly/Monthly relative to Daily) |
-| **R:R** | Risk to Reward Ratio |
-| **TOXIC** | Trade where stop loss is mathematically invalid due to 3% rule |
+Gates 6 and 7 are what separate a base breakout from an exhausted parabola that briefly paused — the
+price pattern alone cannot. **Edge, not distance, decides**: there is deliberately no hard MA200 cap,
+because that would clip genuine leaders trading 40%+ above their 200MA.
 
----
+> **What the gates buy, measured (§16).** They make the flag *honest*, not profitable. In the traded
+> universe `Long Ignition = 1` returns +0.03% [−0.33, +0.49] — indistinguishable from `Ignition = 0`
+> (−0.04%). Even `Ignition + Dir Prob 70–100` is +0.04%, and `Ignition + Ext < 10%` is **−0.50% SIG**. Read
+> `Long Ignition` as a descriptive "this is a fresh qualified breakout" tag for the agent's narrative,
+> never as a long trigger.
+>
+> Do not confuse this flag with **Regime = 5**, which is also called Ignition but is a different field
+> with a different (stricter) definition; `Regime 5 + Stage 2` is −0.24% [−0.57, +0.07] (§16.3).
 
-## 15. Tooltip Field Reference
-
-When you click on a signal label, a tooltip popup appears. Here is how to read every field:
-
-### 15.1 Header Section
-
-| Field | Example | Meaning |
-|-------|---------|---------|
-| **BUY SCORE** | `100` | Total buy confluence score (0-100) |
-| **SELL SCORE** | `0` | Total sell confluence score (0-100) |
-| **Type** | `REVERSION (Dip Buy)` | Signal category (see Section 17) |
-| **Logic** | `Fib 50 (Titanium Snap)` | The anchor level that triggered entry (see Section 18) |
-| **Distance** | `+ 1.3% from current price` | How far entry zone is from current price |
-
-### 15.2 SETUP Section
-
-| Field | Example | Meaning |
-|-------|---------|---------|
-| **SMART MONEY ACCUMULATING** | Present/Absent | Institutional buying pattern detected |
-| **SQUEEZE DETECTED** | Present/Absent | Bollinger Band compression active |
-| **RANGE CONTRACTED** | Present/Absent | VCP pattern forming |
-
-### 15.3 REASON Section (For REVERSION signals)
-
-| Field | Value | Meaning |
-|-------|-------|---------|
-| **Hammer Candle** | YES ✅ / NO | Bullish reversal candle present? |
-| **Near Support** | YES ✅ / NO | Price at key support level? |
-| **Darvas Breakout** | YES ✅ / NO | Breaking out of Darvas Box? |
-| **Liquidity Sweep** | YES ✅ / NO | False breakdown reversed? |
-
-### 15.4 SCORE BREAKDOWN Section
-
-Format: `BREAKDOWN (X/5)` where X = number of categories contributing.
-
-| Category | Points | Triggers |
-|----------|--------|----------|
-| **Trend** | 0-30 | MA alignment, Stage 2, Cloud color |
-| **Momentum** | 0-20 | RSI, MACD, Stoch, Impulse |
-| **Volume** | 0-20 | OBV, RVOL, MFI |
-| **Support** | 0-15 | Near key level, Fib, VWAP |
-| **Divergence** | 0-15 | RSI/MACD divergence |
-
-**Reading the breakdown line:**
-`BUY: ✓ Trend ✓ Mom × Vol ✓ Support × Div`
-- ✓ = This category contributed points
-- × = This category did NOT contribute
-
-### 15.5 FILTERS Section
-
-| Field | Pass Value | Fail Value | Meaning |
-|-------|------------|------------|---------|
-| **Fast Cloud** | GREEN/PASSED ✅ | RED ❌ | Short-term momentum filter |
-| **ADX** | Strong/Passed ✅ | Weak ❌ | Trend strength filter |
-
-### 15.6 WARNINGS Section
-
-| Warning | Meaning |
-|---------|---------|
-| **TIMEOUT WARNING: Signal active (High Frequency)** | Signal fired recently. Cooldown period active. |
-| **WARNING: Red Candle (Weak Close)** | Buy signal on a red candle. Wait for confirmation. |
-| **WARNING: Green Candle (Buyers Winning)** | Sell signal on a green candle. Wait for confirmation. |
-| **PARABOLIC MODE (Score > 90)** | High risk chase. Reduce size. |
-
-### 15.7 Confidence Field
-
-| Value | Meaning | Action |
-|-------|---------|--------|
-| **HIGH** | All filters pass, trend aligned | Full position size |
-| **MODERATE (Faded)** | Some filters weak or counter-trend | Half position size |
+In `revanth-enhanced-indicator.pine` the 55.0 and the 12% cloud distance are **hardcoded literals**,
+consistent with the indicator's no-`input()` convention. Only `revanth-screener.pine` exposes them as
+tunable `input.float` params (`ignMinDirProb`, `ignMaxCloudDist`). The screener mirrors this gate but
+rebuilds Dir Prob **undamped** and expresses the climax guard as ">60% above MA200" instead of
+`Regime == 2`. If you change the ignition logic, change BOTH files.
 
 ---
 
-## 16. Visual Element Guide
+---
 
-### 16.1 On-Chart Zones (Boxes)
+## 16. Measured Combinations — What the Fields Do TOGETHER
 
-| Element | Color | Meaning |
-|---------|-------|---------|
-| **Solid Blue Box** | Blue (100% opacity) | High confidence BUY zone |
-| **Faded Blue Box** | Blue (35% opacity) | Caution BUY zone (extended/risky) |
-| **Solid Red Box** | Red (100% opacity) | High confidence SELL zone |
-| **Faded Red Box** | Red (35% opacity) | Caution SELL zone |
-| **Yellow Box** | Yellow/Orange | Secondary zone (lower priority) |
+Everything above defines fields. This section is what the system actually *knows*.
 
-### 16.2 On-Chart Lines
+**Universe: `close >= $20`** — 1,895,464 bars / 544 tickers / 2006–2026, which is the universe actually
+traded. This matters more than it sounds: the unfiltered 546-name corpus carries sub-$20, distressed
+and delisted names whose forward returns are violently fat-tailed, and they invert several
+conclusions. Where the two universes disagree, both numbers are shown and the traded one governs.
 
-| Line | Color | Style | Meaning |
-|------|-------|-------|---------|
-| **Blue Horizontal** | Blue | Solid/Dashed | LONG ENTRY level |
-| **Red Horizontal** | Red | Solid | LONG STOP level |
-| **Green Horizontal** | Green | Solid | LONG TARGET level |
-| **Orange Dashed** | Orange | Dashed | Darvas Box Top/Bottom |
-| **Pink Dashed** | Pink | Dashed | SHORT ENTRY level |
+Metric is **date-neutral 21-day excess (`ex21`)** — each bar's forward return minus the equal-weight
+mean of every *in-universe* name trading that date — with **95% CIs bootstrapped over TICKERS, not
+bars** (bars inside one name are dependent). Sample floor: 400 bars and 25 names.
 
-**Line Style:**
-- **Solid** = Price is currently IN the zone
-- **Dashed** = Price is OUTSIDE the zone
+**A combination is only a rule if its interval excludes zero.** Anything else is a description.
 
-### 16.3 On-Chart Labels
-
-| Label | Color | Meaning |
-|-------|-------|---------|
-| **LONG ENTRY** | Blue | Suggested buy price |
-| **LONG STOP** | Red | Stop loss price for longs |
-| **LONG TARGET** | Green | Take profit price for longs |
-| **SHORT ENTRY** | Red | Suggested short price |
-| **SHORT STOP** | Pink | Stop loss price for shorts |
-| **SHORT TARGET** | Green | Take profit price for shorts |
-| **KEY SUP** | Green circle | Critical support level |
-| **KEY RES** | Red circle | Critical resistance level |
-| **BOX TOP** | Orange | Darvas Box ceiling |
-| **BOX BOT** | Orange | Darvas Box floor |
-
-### 16.4 Zone Label Text
-
-The text inside zone boxes follows this format:
 ```
-[ZONE TYPE]
-[Anchor Description]
+CORPUS=full_v2 MIN_PRICE=20 python3 data-windows/scripts/bible_combos.py   # this section
+CORPUS=full_v2               python3 data-windows/scripts/bible_combos.py   # unfiltered comparison
 ```
 
-**Examples:**
-- `BUY ZONE` / `Visual Swing Low + SMA 50 + Bullish FVG`
-- `SELL ZONE` / `Darvas Box High + Visual Swing High + Liquidity Sweep`
+### 16.0 The Honest Headline
 
-### 16.5 Dashboard Color Coding
+The indicator is a **state-description engine, not an alpha engine.** Read that literally:
 
-| Cell Color | Meaning |
-|------------|---------|
-| **Green** | Bullish / Positive / Pass |
-| **Red** | Bearish / Negative / Fail |
-| **Yellow** | Caution / Neutral |
-| **Orange** | Warning |
-| **Gray** | Inactive / N/A |
+- The promotion rule (`code 1/2 + In Zone + RR Valid + Target`, 20,261 bars) returns
+  **−0.03% ex21 [−0.28, +0.22]** — indistinguishable from zero.
+- **PRIME BUY** alone: **−0.04% [−0.30, +0.22]**. **ACTION BUY**: **−0.14% [−0.69, +0.43]**.
+- The only long entry state that is significantly positive is **REVERSAL BUY (+0.85% [+0.34, +1.36])**
+  — a counter-trend capitulation setup, i.e. the opposite of the breakout path the engine is built
+  around.
 
-### 16.6 Timeline Icons
+So the engine's job is to hand the agent a **truthful, complete, geometrically consistent state**.
+Direction conviction must come from catalysts. Use the states to **exclude** and to **construct the
+trade** (entry, stop, target, size), and let research supply the edge.
 
-| Icon | Color | Meaning |
-|------|-------|---------|
-| **E** | Green circle | Earnings event nearby |
-| **D** | Red circle | Dividend date |
-| **📈** | Green | Historical buy signal |
-| **📉** | Red | Historical sell signal |
+### 16.1 Action Code Alone
+
+| Code | ex21 % | 95% CI | Verdict |
+|------|--------|--------|---------|
+| 20 REVERSAL BUY | **+0.85** | [+0.34, +1.36] | **SIG positive — the only entry state that is** |
+| 15 TOP WARNING | +0.32 | [−0.01, +0.67] | just misses; a mean-reversion marker (§16.7) |
+| 6 ACCELERATION | +0.27 | [−0.30, +0.86] | flat (n=958) |
+| 3 POWER MOVE | +0.13 | [−0.28, +0.60] | flat |
+| 10 WAIT | +0.06 | [−0.10, +0.22] | flat |
+| 1 PRIME | −0.04 | [−0.30, +0.22] | **flat — not a buy signal** |
+| 8 WATCH | −0.06 | [−0.34, +0.15] | flat (63% of bars — it IS the baseline) |
+| 5 LOW R:R | −0.09 | [−0.41, +0.24] | flat |
+| 2 ACTION | −0.14 | [−0.69, +0.43] | flat |
+| 19 SCREEN BLOCK | **−0.30** | [−0.52, −0.08] | **SIG negative — the Elder veto is informative** |
+| 13 VOLATILE | −0.39 | [−1.05, +0.50] | negative lean |
+| 21 CHASE | −0.46 | [−1.06, +0.18] | negative lean — the label is doing its job |
+| 11 EXTENDED | **−0.54** | [−0.86, −0.21] | **SIG negative** |
+| 16 BLOW-OFF | **−0.66** | [−1.03, −0.30] | **SIG negative** |
+| 12 STRETCHED | **−0.71** | [−1.23, −0.21] | **SIG negative** |
+| 17 PARABOLIC | −0.75 | [−2.57, +1.03] | large but only 109 names — too thin to call |
+
+**The negative states are the trustworthy ones.** STRETCHED, BLOW-OFF, EXTENDED and SCREEN BLOCK all
+clear zero on the downside. That is the system's real skill: telling you when NOT to buy.
+
+> **Code 18 TOXIC: the universe filter fixes a trap.** On the unfiltered corpus TOXIC reads
+> **+14.84%**, which is pure artifact — median ex21 is −0.23%, the median close on a TOXIC bar is
+> **$8.18**, and delisted **SBNY** alone averages +280% over 385 bars. Restricted to ≥$20 it collapses
+> to **+1.28% [−3.94, +6.11]**, not significant, on 49 names. TOXIC remains a **SKIP**; it is also the
+> cleanest illustration in this corpus of why you check a median before believing a mean.
+
+### 16.2 Action × Weinstein Stage
+
+| Combination | ex21 % | 95% CI | |
+|---|---|---|---|
+| REVERSAL BUY in Stage 4 | **+0.86** | [+0.34, +1.37] | SIG — REVERSAL BUY essentially *is* a Stage-4 state (6,760 of 6,765 bars) |
+| ACCELERATION in Stage 2 | +0.27 | [−0.32, +0.84] | |
+| PRIME in Stage 2 | +0.12 | [−0.26, +0.56] | the "textbook" setup is flat |
+| WATCH in Stage 2 / 5 / 4 | ≈ 0.00 | — | the baseline |
+| SCREEN BLOCK in Stage 2 | −0.25 | [−0.52, +0.02] | |
+| WATCH in Stage 1 | **−0.34** | [−0.65, −0.06] | **SIG negative — basing is not opportunity** |
+| CHASE in Stage 2 | −0.42 | [−1.02, +0.20] | |
+| **PRIME in Stage 5** | **−0.52** | [−0.98, −0.06] | **SIG NEGATIVE — Recovery-stage PRIME is a trap** |
+| **ACTION in Stage 5** | **−0.69** | [−1.35, −0.07] | **SIG NEGATIVE** |
+
+**The sharpest actionable finding in this section:** PRIME and ACTION are flat in Stage 2 but
+**significantly negative in Stage 5 (Recovery)**. Stage 5 carries a positive Bayesian prior (+0.25,
+§15.1) that the forward returns do not support for breakout entries. Treat a Stage-5 PRIME as a
+decline-to-trade, not a setup.
+
+### 16.3 Regime × Stage — the Priority-Enum Blind Spot
+
+Because Regime reports only the highest-priority condition (§15.6), Stage must be read separately.
+In the traded universe **no Regime×Stage pair is individually significant** — the strong effects seen
+on the unfiltered corpus were carried by low-priced names:
+
+| Combination | Bars | ex21 % | 95% CI | Unfiltered corpus |
+|---|---|---|---|---|
+| Regime 6 Squeeze + Stage 5 | 43,520 | +0.36 | [−0.03, +0.76] | +0.35 **SIG** |
+| Regime 3 Distribution + Stage 2 | 112,012 | +0.18 | [−0.18, +0.62] | +0.14 |
+| Regime 6 Squeeze + **Stage 4** | 178,509 | +0.06 | [−0.20, +0.33] | +0.16 |
+| Regime 0 Healthy + Stage 2 | 450,703 | −0.17 | [−0.38, +0.04] | −0.26 **SIG** |
+| Regime 5 Ignition + Stage 2 | 9,405 | −0.24 | [−0.57, +0.07] | −0.56 **SIG** |
+| Regime 1 Extended + Stage 1 | 1,702 | −0.67 | [−1.57, +0.29] | −0.69 |
+
+The **direction** is stable across both universes — "Healthy + Advancing" leans negative, compression
+leans positive — but in blue chips the effect is not large enough to trade on its own. The structural
+lesson stands regardless: **44.8% of Regime-6 bars are also Stage 4**, so never read "Regime ≠ 4" as
+"not declining".
+
+### 16.4 REVERSAL BUY Anatomy — the one real long edge
+
+| Combination | Bars | ex21 % | 95% CI | |
+|---|---|---|---|---|
+| REVERSAL BUY **+ MTF 0/3** | 3,222 | **+0.95** | [+0.23, +1.66] | **SIG — strongest single reading in the system** |
+| REVERSAL BUY (all) | 6,765 | **+0.85** | [+0.34, +1.36] | SIG |
+| REVERSAL BUY + rev score ≥10 | 4,149 | **+0.83** | [+0.25, +1.38] | SIG |
+| REVERSAL BUY + MTF ≥1 | 3,543 | **+0.67** | [+0.18, +1.14] | SIG |
+| REVERSAL BUY + rev score 7–10 | 2,616 | +0.49 | [−0.07, +1.06] | just misses |
+| rev score ≥7 but NOT code 20 | 136,640 | +0.19 | [−0.04, +0.47] | the score alone is not enough |
+| REVERSAL BUY **+ In Zone** | 447 | −0.13 | [−1.02, +0.80] | in-zone is the *worse* half |
+
+**Rules that follow.** The code itself carries the edge — the raw reversion score does not (+0.19,
+not significant). Do **not** require In Zone. Note the ≥10 refinement matters less in blue chips than
+on the full corpus (where 7–10 was worthless at +0.12); here the whole state works. Most striking:
+the **MTF 0/3** subset is the best of all, which is coherent — this is a capitulation buy, so the
+absence of trend alignment is the setup, not a disqualifier.
+
+### 16.5 Entry At Market — structural fill vs chasing
+
+| Combination | ex21 % | 95% CI |
+|---|---|---|
+| Entry At Market 2 (short at-market) | **+0.29** | [+0.11, +0.47] **SIG** |
+| Entry At Market 0 (structural) | +0.04 | [−0.08, +0.18] |
+| Entry At Market 1 (long at-market) | +0.01 | [−0.32, +0.29] |
+| PRIME + structural (ATM=0) | −0.04 | [−0.32, +0.24] |
+| PRIME + at-market | −0.07 | [−0.44, +0.29] |
+| CHASE + structural | −0.67 | [−1.34, +0.08] |
+
+In blue chips the structural-vs-at-market gap **largely disappears** for PRIME (−0.04 vs −0.07; it was
++0.10 vs −0.28 unfiltered). Prefer ATM = 0 on principle — you get a limit fill instead of paying the
+spread on a breakout — but do not expect it to add measurable edge here.
+
+### 16.6 MTF Alignment — the conclusion INVERTS in blue chips
+
+This is the largest universe-dependent difference in the document:
+
+| MTF | ex21 % (≥$20) | 95% CI | | Unfiltered |
+|---|---|---|---|---|
+| 0/3 | +0.02 | [−0.32, +0.32] | | +0.22 SIG |
+| 1/3 | **+0.23** | [+0.05, +0.44] | SIG | +0.23 SIG |
+| **2/3** | **+0.32** | [+0.08, +0.59] | **SIG** | +0.18 |
+| **2/3 + Buy sigma >5** | **+0.46** | [+0.12, +0.92] | **SIG — best MTF cell** | +0.22 |
+| 2/3 + Buy sigma 2–5 | **+0.30** | [+0.06, +0.57] | SIG | +0.19 |
+| 3/3 | −0.13 | [−0.32, +0.05] | **not significant** | −0.48 **SIG** |
+| 3/3 + Buy sigma 2–5 | −0.18 | [−0.36, −0.02] | SIG | −0.50 SIG |
+
+**Corrected reading.** On the unfiltered corpus 3/3 looks strongly negative (−0.48 SIG) and that is
+what an earlier revision of this document — and the `.pine` comment — asserted. In blue chips it is
+only −0.13 and **not significant**. What survives is the *shape*: alignment helps up to 2/3 and then
+stops helping. **2/3 with strong evidence (+0.46 SIG) is the genuine sweet spot**; 3/3 means the move
+is mature. An even earlier claim that `3/3 × sigma 2–5 = +0.327 edge` is wrong in both universes.
+
+### 16.7 Extension — the most robust continuous signal
+
+| Combination | ex21 % (≥$20) | 95% CI | Unfiltered |
+|---|---|---|---|
+| Ext vs MA200 below 0% | +0.03 | [−0.18, +0.28] | +0.24 SIG |
+| Ext 0–10% | −0.01 | [−0.21, +0.20] | +0.05 |
+| Ext 10–25% | −0.11 | [−0.38, +0.16] | −0.08 |
+| **Ext 25–60%** | **−0.71** | [−1.13, −0.32] | **SIG** — and −0.63 SIG unfiltered |
+| Ext 60%+ | −1.13 | [−3.11, +0.82] | only 116 names, too thin |
+| Exhaustion 0.7–1.0 | −2.01 | [−6.28, +2.28] | only 79 names, too thin |
+
+**`Ext Pct vs MA200` in the 25–60% band is the single most reliable exclusion in the system** — it is
+significantly negative in *both* universes and is monotone across the whole range. The "buy below the
+200-day" effect, by contrast, is a low-priced-stock phenomenon: it does not survive the filter.
+
+This also explains why **TOP WARNING reads positive**: it fires on stretched names that subsequently
+revert, so as a forward indicator it marks mean reversion. It is a correct instruction to exit a long;
+it is not a short trigger.
+
+### 16.8 Stage Age — no freshness decay, and the sign is backwards
+
+| Stage age | ex21 % | 95% CI | + Stage 2 only |
+|---|---|---|---|
+| 0–4 bars | −0.09 | [−0.41, +0.20] | −0.02 |
+| 4–8 | +0.09 | [−0.09, +0.34] | +0.09 |
+| 8–16 | −0.01 | [−0.17, +0.18] | +0.06 |
+| **16–31** | +0.06 | [−0.09, +0.22] | **+0.32 [+0.01, +0.63] SIG** |
+| 31–61 | +0.06 | [−0.13, +0.25] | −0.15 |
+| 61+ | +0.97 | [−0.08, +2.64] | −0.45 |
+
+There is **no monotone freshness decay**, and the one significant cell is *mid-life* Stage 2
+(16–31 bars, +0.32 SIG) — not fresh. Freshest bars (0–4) are the weakest. Correspondingly
+**`PASS + stage age ≤5` measures −0.57% [−0.98, −0.15], significantly negative** and the worst
+refinement tested. An earlier note claiming a clean +0.43R → +0.11R decay (49 names, 285 simulated
+entries, avgR not ex21) does not reproduce at scale in either universe.
+
+Use Stage Age as **context**, and if anything prefer a *settled* Stage 2 over a brand-new one.
+
+### 16.9 Refinements to the Promotion Rule — everything tested made it worse
+
+| Rule | Bars | ex21 % | 95% CI |
+|---|---|---|---|
+| ALT: **REVERSAL BUY** | 6,765 | **+0.85** | [+0.34, +1.36] SIG |
+| PASS + Dir Prob ≥55 | 19,325 | +0.06 | [−0.26, +0.42] |
+| PASS + RR ≥2 | 7,102 | +0.02 | [−0.29, +0.34] |
+| PASS + MTF ≤1 | 9,814 | −0.02 | [−0.39, +0.40] |
+| **FILTER PASS (baseline)** | 20,261 | **−0.03** | [−0.28, +0.22] |
+| PASS + Stage 2/5 | 19,633 | −0.04 | [−0.31, +0.24] |
+| **PASS + Stage age ≤5** | 5,254 | **−0.57** | [−0.98, −0.15] **SIG** |
+
+**No refinement improved on PASS, and PASS itself is not distinguishable from zero.** Adding clauses
+to a null rule just produces smaller null samples. The productive move is not another filter clause —
+it is to stop expecting the long-breakout path to carry edge, and to route conviction through research
+while using the engine for exclusion and trade construction.
+
+### 16.10 Dir Prob Does Not Rank Across Names
+
+| Band | ex21 % | 95% CI |
+|---|---|---|
+| 0–40 | +0.09 | [−0.08, +0.30] |
+| 40–50 | +0.02 | [−0.14, +0.20] |
+| 50–55 | −0.04 | [−0.36, +0.24] |
+| 55–60 | +0.05 | [−0.11, +0.23] |
+| 60–70 | +0.08 | [−0.07, +0.24] |
+| 70–100 | +0.05 | [−0.11, +0.23] |
+
+Flat and non-monotone, with or without the RR gate — even flatter than on the unfiltered corpus.
+**Dir Prob is a single-name EV input.** It belongs in the R:R gate (§15.5), where it sets the
+break-even bar for *that* stock. It is not a cross-sectional ranking score. Never sort a watchlist by
+it.
+
+### 16.11 Contradiction Pairs
+
+| Situation | ex21 % | Reading |
+|---|---|---|
+| Buy Score ≥82 in Stage 2 | +0.05 [−0.13, +0.23] | agreement adds nothing |
+| Both sides WATCH (range) | +0.01 [−0.14, +0.16] | genuinely neutral — correct to skip |
+| Buy Score ≥82 in Stage 4 (the LAG case) | −0.02 [−0.27, +0.21] | *not* the trap the LAG warning implies |
+| Buy Score ≥82 in Regime 6 Squeeze | −0.06 [−0.28, +0.17] | |
+| Buy Score ≥82 in Regime 2 Climax | −0.20 [−2.54, +2.22] | 112 names — too thin to read |
+
+Score/stage **agreement is worth nothing, and disagreement is not punished.** A bullish score in
+Stage 4 is not automatically a trap; `⚠️ LAG` is a flag to think, not a veto. What is reliably bad is
+not disagreement but **extension** (§16.7).
+
+### 16.12 The Combination Cheat-Sheet
+
+**Positive readings worth acting on**
+1. **REVERSAL BUY, especially with MTF 0/3 (+0.95 SIG) or rev score ≥10 (+0.83 SIG)**
+2. MTF **2/3** with Buy Sigma > 5 (+0.46 SIG) — alignment's sweet spot, not 3/3
+3. Stage 2 aged 16–31 bars (+0.32 SIG) — settled, not fresh
+4. Short at-market entries, ATM = 2 (+0.29 SIG)
+
+**Negative readings — the system's real skill**
+1. Ext 25–60% above MA200 (−0.71 SIG) — *robust in both universes*
+2. ACTION (−0.69) and PRIME (−0.52) **in Stage 5 Recovery**, both SIG
+3. BLOW-OFF (−0.66 SIG) · STRETCHED (−0.71 SIG) · EXTENDED (−0.54 SIG)
+4. `PASS + stage age ≤5` (−0.57 SIG)
+5. WATCH in Stage 1 (−0.34 SIG)
+6. SCREEN BLOCK (−0.30 SIG) — the Elder veto is informative in blue chips
+7. `Long Ignition` with Ext < 10% (−0.50 SIG)
+
+**Things that look like signal and are not:** PRIME, ACTION, In Zone, RR Valid, Target present, Dir
+Prob band, Regime×Stage pairs, Ignition, MTF 3/3, and every tested refinement of PASS.
+
+**Findings robust across BOTH universes** (trust these most): the geometry redundancy of §3.3 (exact,
+structural) · Ext 25–60% negative · STRETCHED/EXTENDED/BLOW-OFF negative · REVERSAL BUY positive ·
+PASS ≈ zero · Dir Prob does not rank · WATCH in Stage 1 negative · Ignition+Ext<10% negative ·
+`PASS + age ≤5` negative.
 
 ---
 
-## 17. Signal Type Definitions
-
-### 17.1 Entry Types
-
-| Type | Trigger | Risk Level | Recommended Hold |
-|------|---------|------------|------------------|
-| **TREND FOLLOW (Breakout)** | Score > 82, Price breaking resistance, Stage 2 | Medium | Days to Weeks |
-| **REVERSION (Dip Buy)** | Score > 50, Price at support, Hammer/Sweep pattern | Lower | Days to Weeks |
-| **ROCKET** | Score > 95, Velocity Z > 2.0, Parabolic momentum | High | Hours to Days |
-| **CRASH** | Score > 95 (Sell), Velocity Z < -2.0, Panic selling | High | Hours to Days |
-| **FAILURE SWEEP** | Trapped trader sequence (Red Sweep High broken OR Blue Sweep Low broken) | Low (Contextual) | Days |
-
-### 17.2 TREND FOLLOW vs REVERSION
-
-```mermaid
-flowchart TD
-    A[Signal Generated] --> B{Is Price at Support?}
-    B -->|Yes| C{Pattern Present?}
-    B -->|No| D[TREND FOLLOW]
-    C -->|Hammer/Sweep| E[REVERSION]
-    C -->|No Pattern| F{Score > 90?}
-    F -->|Yes| D
-    F -->|No| G[No Signal]
-```
-
-| Aspect | TREND FOLLOW | REVERSION |
-|--------|--------------|-----------|
-| **Entry Location** | Breakout (above resistance) | Pullback (at support) |
-| **Score Required** | ≥ 82 | ≥ 50 (pattern-driven) |
-| **Pattern Required** | No | Yes (Hammer, Sweep, Engulfing) |
-| **Risk** | Higher (chasing) | Lower (buying dip) |
-| **Stop Location** | Below breakout level | Below swing low |
-
-### 17.3 ROCKET vs STRONG BUY
-
-| Aspect | ROCKET | STRONG BUY |
-|--------|--------|------------|
-| **Score** | ≥ 95 | ≥ 82 |
-| **Velocity** | Z > 2.0 (Parabolic) | Normal |
-| **Filters** | All Pass | All Pass |
-| **Position at Support** | Not required | Required OR Score > 90 |
-| **Risk Level** | Higher (climax move) | Normal |
-| **Box Opacity** | Often Faded (Ghost) | Usually Solid |
-
----
-
-## 18. Anchor Type Reference
-
-The "Logic" field in tooltips shows which level(s) anchored the entry zone.
-
-### 18.1 Titanium Anchors (Weight 5.0)
-
-| Anchor | Description | Significance |
-|--------|-------------|--------------|
-| **Weekly Open** | First price of the week | Institutional rebalancing level |
-| **Monthly Open** | First price of the month | Fund allocation level |
-| **Yearly Open** | First price of the year | Major psychological level |
-| **52W High** | Highest price in 252 bars | Breakout trigger |
-| **52W Low** | Lowest price in 252 bars | Capitulation level |
-| **Anchored VWAP** | VWAP from highest volume bar | Institutional cost basis |
-| **Quarterly Open** | First price of quarter | Rebalancing level |
-
-### 18.2 Gold Anchors (Weight 3.0)
-
-| Anchor | Description |
-|--------|-------------|
-| **SMA 200** | Long-term trend line |
-| **SMA 50** | Medium-term trend line |
-| **EMA 50** | Responsive medium-term trend |
-| **Daily Pivot** | (H+L+C)/3 of previous day |
-| **Fib 61.8** | Golden ratio retracement |
-| **Fib 50** | 50% retracement (not true Fib but common) |
-| **HTF Pivot** | Weekly/Monthly pivot point |
-
-### 18.3 Silver Anchors (Weight 1.0)
-
-| Anchor | Description |
-|--------|-------------|
-| **Visual Swing Low** | Recent swing low visible on chart |
-| **Visual Swing High** | Recent swing high visible on chart |
-| **EMA 8** | "Rocket" line |
-| **SMA 20** | Short-term trend |
-| **Lower BB** | Lower Bollinger Band |
-| **Upper BB** | Upper Bollinger Band |
-
-### 18.4 Special Anchors
-
-| Anchor | Weight | Description |
-|--------|--------|-------------|
-| **Bullish FVG** | 2.5 | Fair Value Gap acting as support |
-| **Bearish FVG** | 2.5 | Fair Value Gap acting as resistance |
-| **Liquidity Sweep** | 3.0 | Reversion anchor (Standard Sweep) |
-| **Failure Sweep** | 5.0 | Momentum anchor (Squeeze/Trapdoor) |
-| **Darvas Box Bottom** | 2.0 | Box floor support |
-| **Darvas Box Top** | 2.0 | Box ceiling resistance |
-
-### 18.5 Reading Compound Anchors
-
-When tooltip shows multiple anchors, they are listed in order of weight:
-```
-Logic: Fib 50 (Titanium Snap) + SMA 50 + Bullish FVG
-```
-
-**Interpretation:**
-1. **Fib 50 (Titanium Snap)** = Entry snapped to Fib level
-2. **SMA 50** = Additional confluence at this zone
-3. **Bullish FVG** = Gap acting as support
-
-**Higher confluence = Higher confidence**
-
----
-
-## 19. Chart Reading Checklist (For AI Agents)
-
-When analyzing a chart, extract and report these fields:
-
-### 19.1 Required Data Points
-
-| Data Point | Where to Find | Example |
-|------------|---------------|---------|
-| **Ticker** | Top left | MRVL |
-| **Timeframe** | Top left | 1D |
-| **Buy Score** | Dashboard or Tooltip | 100 |
-| **Sell Score** | Dashboard or Tooltip | 0 |
-| **Signal Type** | Tooltip "Type" field | REVERSION (Dip Buy) |
-| **Anchor Logic** | Tooltip "Logic" field | Fib 50 (Titanium Snap) |
-| **Stage** | Dashboard CTX row | Stage 2: ADVANCING |
-| **Filters** | Tooltip FILTERS section | Fast Cloud: PASSED, ADX: PASSED |
-| **Decision** | Dashboard header | ✓ SAFE TO TRADE |
-| **Box Opacity** | Visual inspection | Solid / Faded |
-| **Validation Status** | Label on chart | None / FAILED VALIDATION |
-
-### 19.2 Decision Matrix
-
-```mermaid
-flowchart TD
-    A[Read Chart] --> B{Score >= 82?}
-    B -->|No| C{Pattern Present?}
-    B -->|Yes| D{Validation Pass?}
-    C -->|Yes| E[REVERSION Trade]
-    C -->|No| F[NO TRADE]
-    D -->|Yes| G{Box Solid?}
-    D -->|No| H[Check Validation Error]
-    G -->|Yes| I[FULL POSITION]
-    G -->|No| J[HALF POSITION]
-    H --> K[Wait for condition to clear]
-```
-
-### 19.3 Example Analysis Output
-
-**For the MRVL chart provided:**
-```
-TICKER: MRVL
-TIMEFRAME: Daily
-SCORE: Buy 100 / Sell 0
-SIGNAL TYPE: REVERSION (Dip Buy)
-ANCHOR: Fib 50 (Titanium Snap)
-STAGE: Stage 2 - ADVANCING ✓
-ELDER: Green Impulse ✓
-FILTERS: Fast Cloud PASSED ✓, ADX PASSED ✓
-DECISION: BUY SIGNAL TRIGGERED
-BOX OPACITY: Solid Blue
-VALIDATION: All guards passed
-
-RECOMMENDATION: VALID ENTRY
-- Entry: Blue Zone (~$86.50)
-- Stop: KEY SUP $81.18
-- Target: LONG TARGET $91.58
-- Risk: ~6% (exceeds 3% rule - size accordingly)
-- Confidence: HIGH
-```
-
----
-
-## 20. Zero-Lag Dynamic UI Engine
-
-### 20.1 Architectural Requirement
-To ensure historical accuracy without visual latency, all major UI components (S/R Lines, Labels, Zones) must follow the price dynamically during chart dragging and zooming. 
-
-### 20.2 Execution Logic
-*   **Terminal Anchoring**: Elements are rendered using `var` objects and updated via `set_xy` on the terminal bar index.
-*   **Segmented History**: S/R lines are drawn as bar-by-bar segments (`line.new(bar_index-1, price, bar_index, price)`) to ensure they "stick" to historical candlesticks while the active label remains at the leading edge.
-*   **Hysteresis Protection**: `AnchorData` objects track the closest structural proximity to current price to prevent label flickering between competing levels.
-
-### 20.3 Institutional Sweep Detection (Math)
-```pinescript
-// Bullish Sweep: Low < PivotLow AND Close > PivotLow (Excludes Weakened S/R)
-bullishSweep = low < activeLiqPivotLow and close > activeLiqPivotLow and not isSupWeak
-
-// Failed Bullish Sweep: Close crosses under the extreme of a previous Bullish Sweep
-failedBullishSweep = ta.crossunder(close, lastBullSweepLow) and (bar_index - lastBullSweepBar <= 10)
-```
-
----
-
-## 21. Dashboard Decision Logic (The "Brain")
-
-The central header of the dashboard is the ultimate filter. It combines technical structure, probability, and safety guards.
-
-### 21.1 Comprehensive Decision Flowchart
-
-```mermaid
-flowchart TD
-    Start([Dashboard Calculation]) --> Power{Power Breakout?}
-    
-    Power -- Yes --> PowerExt{Topping Full?}
-    PowerExt -- Yes --> A[POWER EXT]
-    PowerExt -- No --> B[POWER MOVE]
-    
-    Power -- No --> Toxic{Toxic Risk?}
-    Toxic -- Yes --> C[TOXIC RISK]
-    
-    Toxic -- No --> TopWarn{Topping?}
-    TopWarn -- Yes --> D[TOP WARNING]
-    
-    TopWarn -- No --> ExtLong{Extended Long?}
-    ExtLong -- Yes --> E[EXTENDED LONG]
-    
-    ExtLong -- No --> ExtShort{Extended Short?}
-    ExtShort -- Yes --> F[EXTENDED SHORT]
-    
-    ExtShort -- No --> Safe{Safe?}
-    
-    Safe -- Yes --> G[SAFE TO TRADE]
-    
-    Safe -- No --> Caution{Caution?}
-    
-    Caution -- Yes --> StageCheck{Stage?}
-    StageCheck -- Stage 1 --> H[LEAN LONG]
-    StageCheck -- Stage 4 --> I[COUNTER TREND]
-    StageCheck -- Other --> J[CAUTION]
-    
-    Caution -- No --> Dangerous{Dangerous?}
-    Dangerous -- Yes --> K[TOXIC RISK]
-    Dangerous -- No --> L[TRADE WITH CAUTION]
-
-    subgraph Safe Definition
-        S1[Risk Score OK]
-        S2[Sharpe Pass]
-        S3[ADX > 18]
-        S4[Drawdown Guard]
-    end
-```
-
-
-### 21.2 Actionable Matrix
-
-| Dashboard String | Context | Professional Action |
-| :--- | :--- | :--- |
-| **✓ POWER MOVE** | High-velocity breakout with momentum alignment. | **AGGRESSIVE**: Enter on breakout or small retest. |
-| **🛑 TOXIC RISK** | Stop inside noise floor, OR drawdown/volatility danger override. | **NO TRADE**: R:R is mathematically invalid or asset is too volatile. |
-| **⚠️ TOP WARNING** | Price is stalling at extreme overbought levels. | **TAKE PROFITS**: Tighten stops on existing longs. |
-| **✓ SAFE TO TRADE** | All mathematical and structural filters are Green. | **STANDARD**: Follow the trade plan in the dashboard. |
-| **! COUNTER TREND** | Trend is Stage 4 (Down) but Buy Signal fired. | **REDUCE SIZE**: High probability of a "Bull Trap." |
-| **! TRADE WITH CAUTION** | Default state. One or more filters are yellow. | **SELECTIVE**: Only enter if you have additional confluence. |
-
----
-
-## 22. Verification Workflow (Video Auditing)
-
-To validate the real-time performance and zero-lag rendering of the indicator, use the following forensic process for video files.
-
-### 22.1 Frame Extraction Command
-```bash
-# Extract frames at 2 frames per second for granular analysis
-ffmpeg -i backtest_video.mov -vf "fps=2" -q:v 2 frames/frame_%04d.png
-```
-
-### 22.2 Audit Points
-| Focus Area | Visual Check | Logic Link |
-| :--- | :--- | :--- |
-| **Label Latency** | Does `💎 STRONG BUY` appear exactly when price touches the zone? | Proximity-First Engine (Section 6.5) |
-| **Dashboard Drift** | Does the `BIAS` cell flip color on the exact bar close? | Bias Calculation (Section 5.1) |
-| **Sweep Squeeze** | Does the 💎 appear at the break of the Red Sweep high? | Institutional Sweep Detection (Section 20.3) |
-| **Toxic Activation** | Does `🛑 TOXIC RISK` flash if high volatility narrows the safety window? | The 3% Supreme Law (Section 7.2) |
-
-### 22.3 Reporting Template
-*   **Timestamp/Frame**: [00:15 / Frame 0030]
-*   **Price Event**: Price breaks resistance at $XXX.
-*   **Indicator Response**: Dashboard flips to `✓ POWER MOVE`, Supertrend turns Green.
-*   **Pass/Fail**: [PASS] - Zero latency observed.
-
-
----
-
-## 23. AI Decision Framework (Complete Autonomous Trading Logic)
-
-This section provides everything an AI agent needs to make trading decisions autonomously using only the dashboard data.
-
-### 23.1 Master Decision Flow Chart
-
-```mermaid
-flowchart TD
-    START[Read Dashboard] --> R8{Row 8 ACTION}
-    
-    R8 -->|BUY Green| CHECK_SAFE
-    R8 -->|SELL Red| CHECK_SAFE_SHORT
-    R8 -->|WAIT Yellow| WAIT
-    R8 -->|AVOID Red| SKIP
-    R8 -->|Dash Gray| CHECK_OTHER_SIDE
-    
-    CHECK_SAFE{Row 1 Decision}
-    CHECK_SAFE -->|SAFE| EXECUTE_LONG
-    CHECK_SAFE -->|CAUTION| REDUCE_SIZE_LONG
-    CHECK_SAFE -->|TOXIC| SKIP
-    
-    CHECK_SAFE_SHORT{Row 1 Decision}
-    CHECK_SAFE_SHORT -->|SAFE| EXECUTE_SHORT
-    CHECK_SAFE_SHORT -->|CAUTION| REDUCE_SIZE_SHORT
-    CHECK_SAFE_SHORT -->|TOXIC| SKIP
-    
-    EXECUTE_LONG[EXECUTE BUY: Entry/Stop/Target from Rows 2-4]
-    EXECUTE_SHORT[EXECUTE SELL: Entry/Stop/Target from Rows 2-4]
-    REDUCE_SIZE_LONG[BUY at 50% size]
-    REDUCE_SIZE_SHORT[SELL at 50% size]
-    WAIT[HOLD: Wait for zone]
-    SKIP[NO TRADE]
-    CHECK_OTHER_SIDE[Check other side]
-```
-
-
-### 23.2 If/Then Decision Rules
-
-```
-RULE 1: EXECUTE LONG
-IF Row 8 Left Cell = "BUY @ $X" (Green background)
-AND Row 1 Center Cell contains "SAFE" or "POWER"
-AND Row 7 Left Cell contains "STAGE 2" (Green background)
-THEN → EXECUTE BUY at $X with Stop from Row 3, Target from Row 4
-
-RULE 2: EXECUTE SHORT
-IF Row 8 Right Cell = "SELL @ $X" (Red background)
-AND Row 1 Center Cell contains "SAFE" or "POWER"
-AND Row 7 Left Cell contains "STAGE 4" (Red background)
-THEN → EXECUTE SELL at $X with Stop from Row 3, Target from Row 4
-
-RULE 3: WAIT FOR ENTRY
-IF Row 8 Cell = "WAIT $X" (Yellow background)
-THEN → DO NOT TRADE. Set alert for price to reach $X.
-
-RULE 4: REDUCE SIZE
-IF Row 8 Cell shows action BUT Row 1 contains "CAUTION" or "EXTENDED" or "COUNTER"
-THEN → EXECUTE at 50% position size
-
-RULE 5: AVOID
-IF Row 8 Cell = "AVOID" (Red background)
-OR Row 1 contains "TOXIC RISK"
-THEN → DO NOT TRADE. Skip this ticker.
-
-RULE 6: NEUTRAL
-IF Row 8 Left Cell = "—" AND Right Cell = "—"
-THEN → NO TRADE. Market is indecisive.
-```
-
-### 23.3 Priority Order (When Signals Conflict)
-
-| Priority | Signal | Action |
-|----------|--------|--------|
-| 1 (Highest) | "AVOID" / "TOXIC" | Always skip. No exceptions. |
-| 2 | Row 8 ACTION shows "BUY @" or "SELL @" with Green/Red | Execute trade |
-| 3 | Row 8 shows "WAIT" | Hold, set alert |
-| 4 | Row 10 Conviction shows "PRIME" or "LEAN" | Direction confirmed |
-| 5 | Row 7 Stage shows GREEN (Stage 2) | Long bias confirmed |
-| 6 | Row 12 MTF shows "100%" | Full conviction |
-| 7 (Lowest) | Row 8 shows "—" on one side | That side is inactive |
-
-### 23.4 Position Sizing Guidelines
-
-| Confidence Level | Row 1 Decision | Row 8 Color | Position Size |
-|------------------|----------------|-------------|---------------|
-| **MAX (100%)** | "✓ SAFE TO TRADE" + Green | Green | 100% of planned size |
-| **HIGH (75%)** | "✓ SAFE TO TRADE" | Yellow | 75% of planned size |
-| **MODERATE (50%)** | "CAUTION" or "COUNTER" | Yellow | 50% of planned size |
-| **LOW (25%)** | "⚠️ EXTENDED" or "! EXTENDED" | Orange | 25% of planned size |
-| **SKIP (0%)** | "TOXIC RISK" | Red | 0% - Do not trade |
-
-### 23.5 Real Examples with Decision Walkthrough
-
-#### Example 1: MSFT - Perfect Long Setup
-```
-Dashboard Reading:
-- Row 0: 🟢 LONG Net +5.2σ | DAILY | 🔴 SHORT Net -2.1σ   ← header = Net σ (raw evidence), NOT the 0-100 score (that's Row 10)
-- Row 1: BULL | ✓ SAFE TO TRADE (Green) | SIDE
-- Row 2: 462.85-465.50 | 📍 ENTRY ZONE | NONE
-- Row 3: 454.79 | 🛑 STOP | 491.48
-- Row 4: 482.07 | 🎯 TARGET | 454.42
-- Row 7: STAGE 2: ADVANCING ✓ (Green) | DMI:+DI▲ (Green) | BREAKOUT 🚀 (Green)
-- Row 8: BUY @ 462.85 (Green) | ⚡ ACTION (Green) | — (Gray)
-- Row 9: 12.5 (21%) | ⚡ ENERGY (White) | ⚪ DORMANT
-- Row 10: 100 Buy | ✓ SAFE TO TRADE (Green) | 21 Sell
-- Row 12: 100% | 100% MTF (Green) | 0%
-
-AI Decision Process:
-1. Row 8 Left Cell = "BUY @ 462.85" with GREEN background → ACTIONABLE
-2. Row 1 Center = "✓ SAFE TO TRADE" → CONFIRMED
-3. Row 7 = "STAGE 2" with GREEN → TREND ALIGNED
-4. Row 8 Right = "—" → Short side inactive, ignore
-
-DECISION: EXECUTE BUY at $462.85
-- Entry: $462.85
-- Stop: $454.79 (from Row 3)
-- Target: $482.07 (from Row 4)
-- Position Size: 100% (Safe + Green)
-```
-
-#### Example 2: AAPL - Caution Setup
-```
-Dashboard Reading:
-- Row 0: 🟢 LONG Net +1.6σ | DAILY | 🔴 SHORT Net -1.3σ   ← Buy Score 87 but Net σ only +1.6 = trend-prior-driven, lower conviction
-- Row 1: BULL | ! TRADE WITH CAUTION (Yellow) | SIDE
-- Row 7: STAGE 2: ADVANCING ✓ (Green) | DMI:+DI▲ (Green) | IN BOX 📦 (Yellow)
-- Row 8: WAIT 267.31 (Yellow) | ⚡ ACTION (Yellow) | — (Gray)
-- Row 9: 45.2 (88%) | ⚡ ENERGY (Orange) | 🟠 WARMING
-- Row 10: 87 Buy | ! TRADE WITH CAUTION (Yellow) | 21 Sell
-- Row 12: 60% | 60% MTF (Yellow) | 20%
-
-AI Decision Process:
-1. Row 8 Left Cell = "WAIT 267.31" with YELLOW background → NOT IN ZONE YET
-2. Row 1 Center = "! TRADE WITH CAUTION" → REDUCED CONFIDENCE
-3. Row 10 shows "! CHASE" → Extended, likely to pull back
-
-DECISION: DO NOT TRADE YET
-- Wait for price to reach $267.31 zone
-- When in zone, execute at 50% size due to "CAUTION"
-- Set price alert at $267.31
-```
-
-#### Example 3: UNH - Toxic Skip
-```
-Dashboard Reading:
-- Row 0: 🟢 LONG Net -1.2σ | DAILY | 🔴 SHORT Net +1.5σ
-- Row 1: SIDE | 🛑 TOXIC RISK (Red) | BEAR
-- Row 7: STAGE 4: DECLINING ❌ (Red) | DMI:-DI▼ (Red) | BELOW BOX ❌ (Red)
-- Row 8: AVOID (Red) | ⚡ ACTION (Red) | AVOID (Red)
-- Row 9: 68.4 (95%) | ⚡ ENERGY (Purple) | 🟣 EXPANSION
-- Row 10: 45 Buy | 🛑 TOXIC RISK (Red) | 55 Sell
-
-AI Decision Process:
-1. Row 8 = "AVOID" with RED background → IMMEDIATE SKIP
-2. Row 1 = "🛑 TOXIC RISK" → CONFIRMED SKIP
-3. Row 7 = "STAGE 4" with RED → Downtrend, no longs
-
-DECISION: DO NOT TRADE
-- Skip this ticker entirely
-- Move to next opportunity
-```
-
-#### Example 4: GOOGL - Short Setup
-```
-Dashboard Reading:
-- Row 0: 🟢 LONG Net -2.4σ | DAILY | 🔴 SHORT Net +4.1σ
-- Row 1: SIDE | ✓ SAFE TO TRADE (Green) | BEAR
-- Row 2: NONE | 📍 ENTRY ZONE | 331.57-336.20
-- Row 7: STAGE 3: TOPPING ⚠️ (Yellow) | DMI:-DI▼ (Red) | IN BOX 📦 (Yellow)
-- Row 8: — (Gray) | ⚡ ACTION (Red) | SELL @ 331.57 (Red)
-- Row 9: 55.4 (92%) | ⚡ ENERGY (Purple) | 🟣 EXPANSION
-- Row 9: 35 Buy | ✓ SAFE TO TRADE (Green) | 78 Sell
-- Row 11: 40% | 40% MTF (Yellow) | 80% (Red)
-
-AI Decision Process:
-1. Row 8 Right Cell = "SELL @ 331.57" with RED background → SHORT ACTIONABLE
-2. Row 1 Center = "✓ SAFE TO TRADE" → CONFIRMED
-3. Row 8 Left = "—" → Long side inactive (ACTION row)
-4. Row 7 = "STAGE 3: TOPPING" → Distribution phase, short bias
-
-DECISION: EXECUTE SHORT at $331.57
-- Entry: $331.57
-- Stop: From Row 3 Short column
-- Target: From Row 4 Short column
-- Position Size: 100% (Safe + Red confirmed)
-```
-
-### 23.6 Edge Cases for AI
-
-#### Edge Case 1: Both Sides Show "WAIT"
-```
-Row 8: WAIT 462.00 (Yellow) | ⚡ ACTION (Yellow) | WAIT 478.00 (Yellow)
-```
-**Resolution:** Market is in a range. NO TRADE. Wait for directional breakout.
-
-#### Edge Case 2: ACTION is Green but Stage is Red
-```
-Row 8: BUY @ 342.00 (Green) | ⚡ ACTION (Green) | — (Gray)
-Row 7: STAGE 4: DECLINING ❌ (Red) | ADX:25 | BELOW BOX ❌
-```
-**Resolution:** This is a COUNTER-TREND trade. Check Row 1:
-- If "CAUTION" or "COUNTER" → Execute at 25% size only
-- If "TOXIC" → Skip
-
-#### Edge Case 3: High Score but Low ADX
-```
-Row 0: 🟢 LONG 95 | DAILY | 🔴 SHORT 10
-Row 7: STAGE 2 ✓ | ADX:12 (Gray) | IN BOX
-Row 8: WAIT 150.00 (Yellow) | ⚡ ACTION | —
-```
-**Resolution:** ADX < 15 means CHOPPY market. Even with high score:
-- Do NOT take breakout trades
-- Wait for ADX > 18 before entering
-- Or only trade SWEEP/TRAP reversal patterns
-
-#### Edge Case 4: MTF Not Aligned
-```
-Row 12: M ✓ W X D X | 33% MTF (Orange) | XM XW XD
-```
-**Resolution:** Only 33% of timeframes agree. This is a LOW CONVICTION trade:
-- If Row 8 shows "BUY @" → Execute at 50% size max
-- If Row 1 also shows "CAUTION" → Skip entirely
-
-#### Edge Case 5: STOP/TARGET Shows "—" (Dash)
-```
-Row 2: NONE | 📍 ENTRY ZONE | NONE
-Row 3: — | 🛑 STOP | —
-Row 4: — | 🎯 TARGET | —
-```
-**Resolution:** When primary entry zone is "NONE", STOP and TARGET display "—" to indicate no actionable levels:
-- This is intentional to prevent showing stale/irrelevant exit levels
-- Wait for a valid entry zone to form before looking at stop/target
-- Secondary zone may still be visible on chart for reference
-
-#### Edge Case 6: Entry Zone Shows "(2)" Suffix
-```
-Row 2: 637.82-642.26 (2) | 📍 ENTRY ZONE | NONE
-```
-**Resolution:** The "(2)" suffix indicates the **Secondary Zone** is being displayed because the Primary Zone is inactive:
-- Primary Zone was too far from price or didn't meet cluster threshold
-- Secondary Zone is still valid but lower conviction
-- Use 50-75% position size when entering on Secondary Zone
-- Check chart for the orange "SECONDARY" box visual
-
-#### Edge Case 7: DMI Shows "—" (Neutral)
-```
-Row 7: STAGE 2 ✓ | DMI:— | IN BOX 📦
-```
-**Resolution:** DMI:— means neither bullish nor bearish momentum is dominant:
-- Condition: Neither `+DI > -DI with ADX rising` (Bull) nor `-DI > +DI` (Bear)
-- Market is choppy/consolidating
-- If ADX < 15 AND DMI:— → Avoid breakout trades
-- Exception: If Darvas shows "ABOVE BOX ✓" or "BREAKOUT 🚀", momentum may be building despite DMI neutrality
-
-#### Edge Case 8: REV ZONE Conflicts with ACTION
-```
-Row 8: WAIT | ⚡ ACTION | WAIT
-Row 11: 🎯 Z0(12) | 🔄 REV ZONE | —
-```
-**Resolution:** REV ZONE shows extreme reversal (Zone 0) but ACTION says WAIT:
-- REV ZONE is **informational only** — it does NOT override ACTION
-- This is a high-risk counter-trend reversal opportunity
-- If you want to take the reversal: Use 25-50% size, tight stop
-- Wait for a confirmation candle (Pin Bar, Engulfing) before entry
-- Safer approach: Wait for ACTION to flip to "BUY @" or "SELL @"
-
-#### Edge Case 9: ENERGY SQUEEZE but ACTION WAIT
-```
-Row 8: WAIT | ⚡ ACTION | WAIT
-Row 9: 15.2 (12%) | ⚡ ENERGY | 🔵 SQUEEZE
-```
-**Resolution:** Volatility is compressing (breakout imminent) but no actionable signal yet:
-- SQUEEZE = Energy building, breakout likely within days
-- Set price alerts at KEY SUP and KEY RES levels
-- When breakout occurs, ACTION should flip to "BUY @" or "SELL @"
-- Pre-position is risky — wait for direction confirmation
-
-#### Edge Case 10: BIAS LAG at Stage 3 (The NVDA Pattern)
-```
-Row 1: BULL | ⚠️ LAG 71 | SIDE
-Row 7: STAGE 3: TOPPING ⚠️ | DMI:-DI▼ | IN BOX 📦
-Row 8: ⚠️ TOP WARNING | ⚡ ACTION | WAIT
-Row 9: 28.91 (32.14%) | ⚡ ENERGY | ⚪ DORMANT
-Row 10: ▲ 71 Buy | ⚠️ TOP WARNING | ▼ 20 Sell
-```
-**Resolution:** Stage 3 TOPPING with bullish score = classic bias lag. The score hasn't caught up to the structural deterioration:
-- stage-expected −0.5 (Stage 3) vs score-predicted +1.0 (bullish) → gap = 1.5 → triggers LAG
-- **Do NOT enter longs.** The LAG tells you the score is unreliable.
-- TOP WARNING confirms distribution is underway.
-- DORMANT energy = no catalyst to break out; compression before potential breakdown.
-- **Action:** Wait for Stage 4 confirmation (short) or score collapse below 50 (confirms structural shift).
-
-#### Edge Case 11: Score Momentum Divergence (▲ Arrow + Stage Transition)
-```
-Row 7: STAGE 2 → STAGE 3 transition
-Row 10: ▲ 75 Buy | BULLISH 75 | ▼ 22 Sell
-```
-**Resolution:** Buy score is rising (▲) but Stage is transitioning from 2 to 3:
-- The ▲ arrow reflects momentum inertia — indicators haven't caught up to the stage shift.
-- This is a TRAP scenario. Treat as equivalent to BIAS LAG.
-- **Action:** Reduce to 25% size or skip entirely. Wait for Stage to stabilize.
-
-#### Edge Case 12: Institutional Trap + Reversion Zone Confluence
-```
-Chart: ⚠️ BEAR TRAP label visible
-Row 11: 🎯 Z0(12) | 🔄 REV ZONE | —
-Row 7: STAGE 4: DECLINING ❌
-```
-**Resolution:** Bear Trap feeds +2.0 into reversion scoring, pushing it to Zone 0:
-- Trapped shorts must cover → mechanical buying pressure.
-- Zone 0 + Bear Trap = one of the highest conviction reversal setups.
-- **Action:** Enter counter-trend long at 75% size with tight stop below trap level.
-- If Volume Spike present on trap bar: +1.0 bonus → even higher conviction.
-
-#### Edge Case 13: Cooldown Override (Score ≥ 90 Bypass)
-```
-Previous signal: 5 bars ago
-Current: buyScore = 92, cooldown = 10 bars (not passed)
-```
-**Resolution:** Score ≥ 90 bypasses the 10-bar cooldown restriction:
-- A buy bypasses the cooldown when the cooldown has passed, OR Buy Score ≥ 90, OR it is a reversion buy.
-- Valid signal — the override exists for legitimate high-conviction entries during rapid reversals.
-- **Action:** Execute normally. The cooldown override is intentional, not a bug.
-
-#### Edge Case 14: Dual REV ZONE (Both Sides Active)
-```
-Row 11: 🎯 Z1(8) | 🔄 REV ZONE | 🎯 Z2(5)
-```
-**Resolution:** Both Long and Short reversion zones are active simultaneously:
-- Market is in extreme chop — both sides showing reversion potential.
-- **Action:** SKIP. Wait for one side to clear (drop to `—`) before trading the other.
-- Exception: If one side is Zone 0 (score 10+) and the other is Zone 2 (score 4-6), favor the Zone 0 side.
-
-#### Edge Case 15: POWER MOVE + BIAS LAG
-```
-Row 8: ✓ POWER MOVE | ⚡ ACTION | WAIT
-Row 10: ▲ 88 Buy | ⚠️ LAG 88 | ▼ 15 Sell
-```
-**Resolution:** Momentum breakout with Stage conflict:
-- POWER MOVE says "execute aggressively" but LAG says "Stage hasn't confirmed."
-- This is either a genuine breakout (Stage about to confirm) or a massive bull trap.
-- **Action:** Enter at 50% size with tight stop. If Stage confirms within 3 bars, add to full. If not, exit.
-
-#### Edge Case 16: Both Sides Show Secondary (2) Zones
-```
-Row 2: 129.72-130.47 (2) | 📍 ENTRY ZONE | 144.41-145.15 (2)
-```
-**Resolution:** Neither side has a strong enough primary cluster — both display fallback secondary zones:
-- These are lower-conviction levels. Use 50-75% position size max.
-- Check which side has the higher score (Row 0) and trade only that side.
-- If both scores are within 20 points of each other, SKIP — market is directionless.
-
-#### Edge Case 17: ⚠️ DISTRIBUTION Stage with Bullish DMI
-```
-Row 7: ⚠️ DISTRIBUTION | DMI:+DI▲ | ABOVE BOX ✅
-```
-**Resolution:** Proactive distribution override fired (bearish RSI divergence in Stage 2/3) despite bullish DMI and Darvas breakout:
-- Smart money is exiting while price is still technically strong.
-- This is an early warning — DO NOT add to longs.
-- If already in a position, tighten stops to KEY SUP.
-- Wait for either the divergence to resolve (score stays high) or Stage 3/4 confirmation (exit).
-
-### 23.7 AI Execution Checklist
-
-Before executing any trade, AI must verify ALL of these:
-
-```
-□ Row 8 shows actionable state (PRIME/ACTION/POWER, not "WAIT", "AVOID", or "—")
-□ Row 1 does NOT contain "TOXIC RISK"
-□ Row 10 center does NOT show "⚠️ LAG" (if it does, trust Stage over Score)
-□ Row 10 score arrow is NOT ▼ on the dominant side (if ▼, reduce size by 25%)
-□ Row 7 DMI Trend is NOT gray (Yellow/Gray = choppy/non-trending)
-□ Row 7 Stage matches trade direction (Stage 2 for Long, Stage 4 for Short)
-□ Row 10 Conviction confirms direction (Buy Score > Sell Score for Long)
-□ Row 3 Stop is populated (not "N/A" or "—")
-□ Row 4 Target is populated (not "N/A" or "—")
-```
-
-If ANY checkbox fails, reduce size or skip.
-
----
-
-## 24. Quick Decision Matrix (AI Lookup Table)
-
-### 24.1 Primary Action Matrix
-
-| Row 8 ACTION | Row 1 Decision | Row 7 Stage | Score Arrow | Action | Size |
-|--------------|----------------|-------------|------------|--------|------|
-| BUY @ (Green) | SAFE (Green) | Stage 2 (Green) | ▲ or ▬ | **EXECUTE LONG** | 100% |
-| BUY @ (Green) | SAFE (Green) | Stage 2 (Green) | ▼ | **EXECUTE LONG** (skeptical) | 75% |
-| BUY @ (Green) | CAUTION (Yellow) | Stage 2 (Green) | Any | **EXECUTE LONG** | 50% |
-| BUY @ (Green) | SAFE (Green) | Stage 3 (Yellow) | Any | **EXECUTE LONG** | 75% |
-| BUY @ (Yellow) | SAFE (Green) | Stage 2 (Green) | Any | **EXECUTE LONG** | 75% |
-| BUY @ (Green) | SAFE (Green) | Stage 2: BOUNCE 🔄 | Any | **EXECUTE LONG** | 75% |
-| BUY @ (Green) | SAFE (Green) | Stage 1 (Gray) | Any | **STALKING** | 25% |
-| Any BUY | ⚠️ LAG (Orange) | Stage 3/4 | Any | **SKIP or EXIT** | 0% |
-| WAIT (Yellow) | Any | Any | Any | **HOLD** | 0% |
-| AVOID (Red) | Any | Any | Any | **SKIP** | 0% |
-| — (Gray) | Any | Any | Any | **INACTIVE** | 0% |
-| SELL @ (Red) | SAFE (Green) | Stage 4 (Red) | ▲ or ▬ | **EXECUTE SHORT** | 100% |
-| SELL @ (Red) | SAFE (Green) | Stage 4 (Red) | ▼ | **EXECUTE SHORT** (skeptical) | 75% |
-| SELL @ (Red) | CAUTION (Yellow) | Stage 4 (Red) | Any | **EXECUTE SHORT** | 50% |
-| SELL @ (Red) | SAFE (Green) | Stage 3 (Yellow) | Any | **EXECUTE SHORT** | 75% |
-| Any | TOXIC (Red) | Any | Any | **SKIP** | 0% |
-| Any | Any | Stage 4 (Red) | Any | **NO LONGS** | 0% |
-| Any | Any | Stage 2: PULLBACK ⚠️ | Any | **CAUTION** | 50% |
-
-### 24.2 REV ZONE Combinations (Counter-Trend)
-
-| Row 11 REV ZONE | Row 8 ACTION | Row 7 Stage | Trap Label? | Action | Size |
-|-----------------|--------------|-------------|-------------|--------|------|
-| 🎯 ZONE 0 (Long) | WAIT | Stage 4 | BEAR TRAP ✅ | **HIGH CONVICTION REVERSAL** | 75% |
-| 🎯 ZONE 0 (Long) | WAIT | Stage 4 | No | **REVERSAL LONG** | 50% |
-| 🎯 ZONE 0 (Long) | TOXIC RISK | Stage 4 | No | **HIGH RISK REVERSAL** | 25% |
-| 🎯 ZONE 1 (Long) | WAIT | Any | No | **WATCH FOR ENTRY** | 0% |
-| 🎯 ZONE 1 (Long) | WAIT | Any | BEAR TRAP ✅ | **EARLY REVERSAL** | 25% |
-| 🎯 ZONE 0 (Short) | WAIT | Stage 2 | BULL TRAP ✅ | **HIGH CONVICTION REVERSAL** | 75% |
-| 🎯 ZONE 0 (Short) | WAIT | Stage 2 | No | **REVERSAL SHORT** | 50% |
-| 🎯 ZONE 0 (Short) | TOXIC RISK | Stage 2 | No | **HIGH RISK REVERSAL** | 25% |
-| Both sides active | Any | Any | Any | **SKIP — chop** | 0% |
-| — | Any | Any | Any | **NO REVERSAL PLAY** | — |
-
-### 24.3 Energy/Volatility Combinations
-
-| Row 9 ENERGY | Row 8 ACTION | Meaning | Action |
-|--------------|--------------|---------|--------|
-| 🔵 SQUEEZE | BUY @ | Breakout imminent | **EXECUTE** - Tight stop |
-| 🔵 SQUEEZE | WAIT | Compression building | **PREPARE** - Watch for signal |
-| 🟠 WARMING | BUY @ | Volatility rising | **EXECUTE** - Normal stop |
-| 🟣 EXPANSION | BUY @ | Already moving | **EXECUTE** - Trail stop |
-| 🟣 EXPANSION | ! EXTENDED | Parabolic move | **DO NOT CHASE** |
-| ⚪ DORMANT | Any | Dead market | **SKIP** - Wait for catalyst |
-
-### 24.4 MTF Alignment Combinations
-
-| Row 12 MTF | Row 8 ACTION | Row 7 Stage | Action | Size |
-|------------|--------------|-------------|--------|------|
-| 100% ✓ | BUY @ | Stage 2 | **HIGH CONVICTION** | 100% |
-| 80% | BUY @ | Stage 2 | **EXECUTE** | 100% |
-| 60% | BUY @ | Stage 2 | **EXECUTE** | 75% |
-| 40% | BUY @ | Stage 2 | **CAUTION** | 50% |
-| <40% | BUY @ | Any | **LOW CONVICTION** | 25% |
-| <40% | Any | Stage 4 | **SKIP** | 0% |
-
-### 24.5 Pattern Label Combinations
-
-| Chart Label | Row 8 ACTION | Row 7 Stage | Action |
-|-------------|--------------|-------------|--------|
-| 📍 PIN BAR (Green) | BUY @ | Stage 2 | **CONFIRMED ENTRY** |
-| 📍 PIN BAR (Green) | WAIT | Stage 2 | **EARLY WARNING** - Prepare |
-| 🔥 ENGULF (Green) | BUY @ | Stage 2 | **CONFIRMED ENTRY** |
-| 🔥 ENGULF (Green) | WAIT | Stage 1 | **BREAKOUT SIGNAL** |
-| TRAP (Yellow) | — | Any | **FADE OPPOSITE** |
-| 💎 FAILURE SWEEP (Teal) | Any | Any | **AGGRESSIVE LONG** |
-| 💎 FAILURE SWEEP (Red) | Any | Any | **AGGRESSIVE SHORT** |
-| SWEEP (Green) | WAIT | Any | **REVERSAL LONG** |
-| SWEEP (Red) | WAIT | Any | **REVERSAL SHORT** |
-
-### 24.6 Darvas Box Combinations
-
-| Row 7 Darvas | Row 8 ACTION | Row 9 ENERGY | Action |
-|--------------|--------------|--------------|--------|
-| BREAKOUT 🚀 | BUY @ | EXPANSION | **RIDE THE WAVE** |
-| BREAKOUT 🚀 | BUY @ | SQUEEZE | **FRESH BREAKOUT** - Execute |
-| ABOVE BOX ✅ | BUY @ | Any | **EXECUTE** - Box is floor |
-| IN BOX 📦 | WAIT | SQUEEZE | **PREPARE** - Breakout building |
-| IN BOX 📦 | BUY @ | Any | **CAUTION** - 50% size |
-| BELOW BOX ❌ | BUY @ | Any | **SKIP** - Structure broken |
-| BELOW BOX ❌ | SELL @ | Any | **EXECUTE SHORT** |
-
-### 24.7 Extended/Warning Combinations
-
-| Row 8 ACTION | Row 7 Stage | Condition | Action |
-|--------------|-------------|-----------|--------|
-| ! EXTENDED | Stage 2 | Price far above zone | **WAIT FOR PULLBACK** |
-| ⚠️ TOP WARNING | Stage 2 | RSI >70 + Topping | **EXIT LONGS** |
-| ⚠️ PARABOLIC | Any | >60% from MA200 + exhaustion confirm | **NO FRESH ENTRY** (outranks PRIME/POWER) |
-| ⚡ ACCELERATION | Stage 1/2 | Velocity Z >2 on YOUNG trend (<20 bars) **+ score ≥50** | **MOMENTUM ENTRY OK** (ignition) |
-| ⚡ EARLY | Stage 1/2 | Same thrust **but score <50** | **WAIT** — unconfirmed thrust, not actionable |
-| ⚡ BREAKDOWN | Stage 3/4 | Velocity Z <-2 on YOUNG downtrend (<20 bars) | **MOMENTUM SHORT OK** (ignition) |
-| ⚠️ BLOW-OFF | Stage 2 | Velocity Z >2 on MATURE/non-ignition trend | **DO NOT BUY** |
-| ⚠️ CAPITULATION | Stage 4 | Velocity Z <-2 on MATURE/non-ignition downtrend | **DO NOT SHORT** |
-| ⚠️ BOT WARNING | Stage 4 | RSI <30 + Bottoming | **EXIT SHORTS** |
-| 🛑 TOXIC RISK | Any | Stop inside noise OR global danger | **SKIP** |
-
-### 24.8 BIAS LAG Combinations
-
-| Row 10 Center | Row 7 Stage | Score Arrow | Interpretation | Action |
-|---------------|-------------|------------|----------------|--------|
-| ⚠️ LAG 71+ | Stage 3: TOPPING | ▲ | Score rising into distribution. **Classic trap.** | **EXIT longs / SKIP** |
-| ⚠️ LAG 71+ | Stage 3: TOPPING | ▼ | Score finally catching up to stage. Confirming top. | **SHORT preparation** |
-| ⚠️ LAG 60-70 | Stage 4 | ▲ | Possible early reversal — score improving against declining stage. | **WATCH — may turn to Recovery** |
-| ⚠️ LAG 60-70 | Stage 4 | ▼ | Score collapsing to match stage. Full alignment forming. | **SHORT if ACTION confirms** |
-| ⚠️ LAG 55+ | Stage 2 (bearish score) | ▲ | Bearish score rising in uptrend. Possible pullback. | **Tighten stops on longs** |
-| ⚠️ LAG 55+ | Stage 2 (bearish score) | ▼ | Bearish pressure fading. Uptrend resuming. | **HOLD longs** |
-| No LAG | Any | Any | Score and Stage aligned. | **Normal execution rules** |
-
-### 24.9 Score Momentum Arrow Combinations
-
-| Dominant Score | Arrow | ACTION State | Meaning | Size Adjustment |
-|----------------|-------|-------------|---------|-----------------|
-| 85+ | ▲ | PRIME | Strengthening conviction at peak | **Full size** |
-| 85+ | ▬ | PRIME | Stable high conviction | **Full size** |
-| 85+ | ▼ | PRIME | Score peaked and declining | **75% — momentum fading** |
-| 70-84 | ▲ | ACTION | Approaching PRIME threshold | **Standard + add if hits 85** |
-| 70-84 | ▼ | ACTION | Dropping from ACTION zone | **50% — may lose signal** |
-| 50-69 | ▲ | WATCH | Score improving toward ACTION | **Prepare entry — set alerts** |
-| 50-69 | ▼ | WATCH | Deteriorating — unlikely to trigger | **Skip — wait for base** |
-| < 50 | Any | WAIT | Insufficient confluence | **No trade** |
-
-
----
-
-## 25. Input Parameters (Complete Configuration Reference)
-
-> **Internal configuration reference — NOT needed for chart analysis.** These are the indicator's tunable settings and their defaults, for a human configuring the indicator. A model reading a chart does not use this section (the parameter names below are the indicator's own setting labels).
-
-All tunable settings and their defaults are listed below.
-**The script does NOT use `input()` functions** - all settings are hardcoded `var` declarations for token efficiency.
-
-### 25.1 Entry Filters
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `requireWeinsteinStage` | `true` | Only allow entries in correct Weinstein stage |
-
-### 25.2 Core Settings
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `scoreThreshold` | `82` | Minimum score to generate signal |
-| `signalCooldown` | `10` | Bars to wait between signals |
-| `showEntryExit` | `true` | Display entry/exit zones |
-| `showStopLoss` | `true` | Display stop loss levels |
-| `requireConfluence` | `true` | Require 3+ categories for signal |
-| `minSignalQuality` | `35` | Minimum MTF alignment % |
-
-### 25.3 Top Detection
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `rsiTopThreshold` | `65` | RSI level for topping concern |
-| `rsiExtremeThreshold` | `75` | RSI level for extreme overbought |
-| `enableRsiCascade` | `true` | Multi-timeframe RSI cascade detection |
-| `cascadeTimeframe` | `'60'` | Intraday timeframe for cascade |
-| `enableScoreDivergence` | `true` | Enable score-based divergence |
-
-> **RSI Cascade Asymmetry (By Design):**
-> - **Bearish Cascade (Tops)**: Weekly RSI > 70 AND (Daily > 70 OR Intraday > 70) — Lenient (2 of 3). Tops form gradually.
-> - **Bullish Cascade (Bottoms)**: Weekly RSI < 40 AND Daily < 30 AND Intraday < 30 — Strict (all 3). Bottoms are violent capitulation events requiring extreme confluence.
-
-### 25.4 Institutional Tools
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `enableAvwap` | `true` | Show Anchored VWAP levels |
-| `enableGapZones` | `true` | Show Fair Value Gaps |
-
-### 25.5 Predictive Engine
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `erLength` | `20` | Efficiency Ratio lookback |
-| `adxTrendThresh` | `18` | ADX threshold for trend confirmation |
-| `liqPivotLength` | `10` | Liquidity sweep pivot lookback |
-
-### 25.6 MTF Analysis
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `enableMTF` | `true` | Enable multi-timeframe analysis |
-| `htfTrend` | `'W'` | Higher timeframe for trend (W=Weekly) |
-| `mtfStrict` | `true` | Require all timeframes aligned |
-| `useMtfConfirmation` | `true` | Use MTF for signal confirmation |
-| `strictMtfMode` | `false` | Ultra-strict MTF filtering |
-
-### 25.7 Pattern Detection
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `useSmartFiltering` | `true` | Enable intelligent signal filtering |
-| `minConfidenceScore` | `75` | Minimum pattern confidence |
-| `structurePriorityMode` | `true` | Prioritize structural levels |
-
-### 25.8 Moving Averages
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `maSprintLength` | `5` | Fast EMA ("Sprint") |
-| `maHullLength` | `20` | Hull MA for momentum |
-| `ma1Length` | `20` | Short-term MA (EMA 20) |
-| `ma2Length` | `50` | Medium-term MA (EMA 50) |
-| `ma3Length` | `200` | Long-term MA (SMA 200) |
-
-### 25.9 Momentum Indicators
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `rsiLength` | `14` | RSI calculation period |
-| `macdFast` | `12` | MACD fast EMA |
-| `macdSlow` | `26` | MACD slow EMA |
-| `macdSignal` | `9` | MACD signal line |
-
-### 25.10 Risk Management
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `atrLength` | `14` | ATR calculation period |
-| `atrMultiplierTF` | `2.0 (M) / 1.5 (W) / 1.2 (D) / 1.0 (Intraday)` | ATR multiplier for stops (timeframe-adaptive) |
-| `riskRewardTF` | `2.0` | Target risk:reward ratio |
-| `baseMaxRisk` | `0.05 (stocks) / 0.03 (funds)` | Maximum risk per trade |
-| `riskFreeRate` | `0.045` | Risk-free rate for Sharpe |
-| `baseMaxRiskScore` | `60` | Max risk score allowed |
-
-### 25.11 Relative Strength
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `enableRelativeStrength` | `true` | Compare to benchmark |
-| `benchmarkSymbol` | `'SPY'` | Benchmark for RS calculation |
-| `rsMinimum` | `70` | Minimum RS score |
-| `requireNewHighs` | `false` | Require new highs for signal |
-
-### 25.12 Visual Settings
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `maxLabelHistory` | `50` | Max labels to keep on chart |
-| `showCandlePatterns` | `true` | Display candle patterns |
-| `showChartPatterns` | `true` | Display chart patterns |
-| `showSR` | `true` | Display support/resistance |
-| `showGaps` | `true` | Display gap zones |
-| `fibLength` | `50` | Fibonacci lookback |
-
----
-
-## 26. Score Calculation (Complete Breakdown)
-
-### 26.1 Score Components
-
-> **This section (§26) is internal mechanics, for completeness.** Trading decisions use the FINAL **Buy Score / Sell Score** (0-100) already in the Data Window — you do NOT need to recompute them from the recipes below.
-
-The dashboard **Buy Score / Sell Score** (0-100) do **NOT** come from summing these 5 categories to 100. The categories below are a separate, much smaller tally (raw integers, max ~30 combined) used only for two things: the Murphy 3-category confluence gate (a setup needs **≥ 3 of the 5 categories non-zero**) and the tooltip's `BREAKDOWN (X/5)` display. The actual 0-100 score comes from the sigma/Bayesian pipeline (§26.9 and §13.1): net evidence-sigma → Bayesian posterior → sigmoid.
-
-| Category | Real Max | What It Measures |
-|----------|----------|------------------|
-| **Trend** | 8 | MA alignment, Golden Cross, MTF alignment, Weinstein Stage 2 |
-| **Momentum** | 10 | RSI, MACD cross, Stochastic %K/%D, Elder signals, impulse |
-| **Volatility / Support-Breakout** | 7 | MA pullback support, Fib 50 support, ADX strength, squeeze, Darvas |
-| **Volume** | 4 | OBV, volume Z-score surge, Chaikin A/D line |
-| **Divergence** | 1 | Single flag: bullish RSI/MACD divergence present |
-
-### 26.2 Trend Score (max 8)
-
-| Condition | Points |
-|-----------|--------|
-| Fast MA crosses above slow MA, in an uptrend | +1 |
-| Golden Cross (50 above 200) | +1 |
-| Uptrend, price above MA20, MA20 above MA50 (MA50 still below MA200) | +1 |
-| All timeframes aligned bullish | +2 |
-| Major timeframes aligned bullish, in an uptrend | +1 |
-| Weinstein Stage 2 | +2 |
-
-### 26.3 Momentum Score (max 10)
-
-| Condition | Points |
-|-----------|--------|
-| RSI < 30 and turning up, not in a downtrend (oversold bounce) | +1 |
-| MACD line crosses above its signal line | +1 |
-| Stochastic %K crosses %D bullish | +1 |
-| Momentum bullish | +1 |
-| MACD line above signal and above zero | +1 |
-| RSI > 50 and rising more than 5 points | +1 |
-| Elder buy / strong-buy / triple-screen buy | +2 |
-| New local high (above the prior bar's high) | +1 |
-| Elder Impulse green | +1 |
-
-### 26.4 Volatility / Support-Breakout Score (max 7)
-
-Despite the name, this measures support/breakout confluence, not raw volatility.
-
-| Condition | Points |
-|-----------|--------|
-| Pullback reclaim of MA20 support, in an uptrend | +2 |
-| Reclaim of the 50% Fibonacci support in a strong trend | +1 |
-| Strong trend + uptrend + ADX > 30 | +1 |
-| Volatility squeeze active | +1 |
-| Strong Darvas breakout (or +1 for an in-box with quality ≥ 60) | +2 (or +1) |
-
-### 26.5 Volume Score (max 4)
-
-| Condition | Points |
-|-----------|--------|
-| Volume confirms + OBV bullish | +1 |
-| Volume Z-score > 2 surge on an up close | +1 |
-| OBV bullish, in an uptrend | +1 |
-| Chaikin A/D line bullish, in an uptrend | +1 |
-
-### 26.6 Divergence Score (max 1)
-
-Single flag, not additive: 1 if a bullish RSI or MACD divergence (or the bearish score-divergence flag) is present, else 0.
-
-### 26.7 Score Finalization
-
-After component calculation, the score is finalized via a consolidation step:
-
-```
-1. Add sweep bonuses (+10 for bullish sweep)
-2. Add FVG bonuses (+5 for bullish FVG)
-3. Add new high bonus (+5 for 3M new high)
-4. Apply Stage filter (Stage 2 = no penalty, Stage 4 = heavy penalty)
-5. Apply Impulse filter (Green impulse = bonus)
-6. ADX Multiplier: If ADX < 18, multiply score by 0.8 (penalty for choppy)
-7. Extension survival multiplier: Reduce score for overextended price
-8. Sell-side category sigma bonus: Symmetric with buy side
-9. Capital protection filters (drawdown guard, risk flags)
-```
-
-### 26.8 Score Smoothing & Momentum Tracking
-
-**EMA Smoothing (3-bar):**
-Final Buy Score and Sell Score are smoothed by a 3-bar EMA to prevent noise/flicker. Scores change gradually rather than jumping bar-to-bar.
-
-**Score Momentum Delta:**
-```
-buyDelta  = buyScore  - buyScore[3]   (3-bar change)
-sellDelta = sellScore - sellScore[3]  (3-bar change)
-```
-
-**Dashboard Arrow Mapping:**
-| Delta | Arrow | Color | Meaning |
-|-------|-------|-------|---------|
-| > +2 | ▲ | Green | Score improving — conviction strengthening |
-| < -2 | ▼ | Red | Score deteriorating — conviction weakening |
-| -2 to +2 | ▬ | Gray | Score stable — steady state |
-
-**Signal Gating Impact:**
-- A ▲ arrow adds implicit confidence to the signal quality.
-- A ▼ arrow on PRIME/ACTION is a skepticism trigger — the signal may downgrade next bar.
-- The delta is harvested from the EMA-smoothed score, not the raw score, so it reflects genuine momentum shifts rather than noise.
-
-### 26.9 Complete Scoring Pipeline (End-to-End)
-
-```
-Raw Indicators → Category Sigma (Trend/Mom/Vol/Sup/Div)
-    → Bayesian Fusion (Prior from Stage + Likelihood from Sigma)
-    → EMA Smoothing (3-bar)
-    → Extension Survival Multiplier
-    → ADX Multiplier
-    → Capital Protection Filters
-    → Final buyScore / sellScore (0-100)
-    → Score Momentum Delta (▲/▼/▬)
-    → Signal Validation (score threshold + zone + confluence)
-    → Cooldown Gate (with ≥90 / reversion override)
-    → Triple Screen Filter
-    → Final Signal (PRIME / ACTION / WATCH / WAIT)
-    → Dashboard Rendering (Row 10 with arrows + bias lag)
-```
-
-### 26.10 Murphy's Confluence Rule (3-Category Minimum)
-
-Signals require contributions from **at least 3 different categories**:
-
-```
-confluenceMetBuy = buyCategories >= 3
-
-If buyScore >= 82 BUT buyCategories < 3:
-    Signal is BLOCKED (not enough confluence)
-```
-
----
-
-## 27. Function Inventory (Complete List)
-
-> **Internal implementation reference — NOT needed for chart analysis.** This lists the indicator's internal functions for developers; a model reading a chart does not use it.
-
-### 27.1 Core Calculation Functions
-
-| Function | Purpose | Returns |
-|----------|---------|---------|
-| `calcEntryExit(isLong, fl, bl, sPrior, cBox, atrMult)` | Unified zone calculation | [entry, stop, target, rawTarget, zoneHigh, zoneLow, anchorName, score, startIdx] |
-| `finalizeConsolidatedScores(buyScore, sellScore, ...)` | Score finalization | [finalBuyScore, finalSellScore] |
-| `calcMTFQuality(mAlign, wAlign, dAlign, htfAlign, enable)` | MTF alignment % | signalQuality (0-100) |
-
-### 27.2 Zone Resolution Functions
-
-| Function | Purpose | Returns |
-|----------|---------|---------|
-| `resolveSecondaryZone(clusters, primaryIdx, atr, isLong)` | Find secondary zone | [zoneHigh, zoneLow, anchorName, score] |
-| `harvestDistal(clusters, primaryIdx, secondaryIdx, isLong)` | Extract ghost levels | Array of distal Titanium levels |
-
-### 27.3 Visual Rendering Functions
-
-| Function | Purpose |
-|----------|---------|
-| `renderMainDashboard(data, strH, lZone, sZone, lvls, secInfo, secNames)` | Draws 12-row dashboard |
-| `renderDashRow(tab, row, valL, lbl, valS, ...)` | Draws single dashboard row |
-| `drawTopWarnings(...)` | Draws TOP WARNING, INTERNAL WEAKNESS, BEAR WEAKNESS, RSI CASCADE, EXTREME EXTENSION labels |
-| `drawInstitutionalVisuals(...)` | Draws AVWAP, gaps, sweeps |
-
-### 27.4 Detection Functions
-
-| Function | Purpose | Returns |
-|----------|---------|---------|
-| `checkOverextended(c, ma1, ma3, rsi, bbU)` | Overbought detection | boolean |
-| `checkOverextendedDown(c, ma1, ma3, rsi, bbL)` | Oversold detection | boolean |
-| `isTitaniumLevel(weight)` | Check if level is Titanium | boolean (weight >= 5.0) |
-
-### 27.5 Formatting Functions
-
-| Function | Purpose | Example |
-|----------|---------|---------|
-| `fmt1(val)` | Format to 2 decimals | "123.45" |
-| `fmt2(val)` | Format to mintick | "123.4567" |
-| `fmt0(val)` | Format to integer | "123" |
-| `fmtSafeP(val, fallback)` | Safe percentage format | "45%" or "--" |
-
-### 27.6 Helper Functions
-
-| Function | Purpose |
-|----------|---------|
-| `buildSignalList(signals, labels, offset)` | Build tooltip signal list |
-| `createTableCell(tbl, col, row, txt, ...)` | Create table cell |
-| `isExpirationDay()` | Check for options expiration |
-
----
-
-## 28. Data Flow (Script Execution Order)
-
-> **Internal implementation reference — NOT needed for chart analysis.** This documents how the script executes internally, for developers.
-
-### 28.1 Execution Phases
-
-```mermaid
-flowchart TD
-    A[Phase 1: Data Collection] --> B[Phase 2: Indicator Calculation]
-    B --> C[Phase 3: Pattern Detection]
-    C --> D[Phase 4: Score Calculation]
-    D --> E[Phase 5: Zone Calculation]
-    E --> F[Phase 6: Risk Assessment]
-    F --> G[Phase 7: Signal Generation]
-    G --> H[Phase 8: Visual Rendering]
-```
-
-### 28.2 Phase Details
-
-| Phase | Line Range | Key Operations |
-|-------|------------|----------------|
-| **1. Data Collection** | 1-200 | OHLCV, MTF security calls, parameter setup |
-| **2. Indicators** | 200-1000 | MAs, RSI, MACD, ATR, Bollinger, ADX |
-| **3. Patterns** | 1000-2000 | Sweeps, traps, candle patterns, Darvas, Weinstein |
-| **4. Scoring** | 2000-3600 | Category scores, confluence check, finalization |
-| **5. Zones** | 2800-3000 | calcEntryExit calls, structural floor override |
-| **6. Risk** | 3000-3200 | Toxic flag, Sharpe ratio, risk zone checks |
-| **7. Signals** | 3200-3800 | Buy/Sell signal generation, validation |
-| **8. Visuals** | 3800-5076 | Dashboard, zones, labels, lines |
-
-### 28.3 Key Data Structures
-
-| Structure | Type | Purpose |
-|-----------|------|---------|
-| `techFloatsL` | array<float> | 41 floats for Long zone calculation |
-| `techFloatsS` | array<float> | 41 floats for Short zone calculation |
-| `techBoolsL` | array<bool> | 6 booleans for Long conditions |
-| `techBoolsS` | array<bool> | 6 booleans for Short conditions |
-| `secondaryZoneInfo` | array<float> | 20 floats for secondary zones |
-| `secondaryZoneNames` | array<string> | 2 strings for anchor names |
-
-### 28.4 MTF Data Flow
-
-```
-Monthly Security Call → monthlyClose, monthlyMA1, monthlyMA2, monthlyMA3
-Weekly Security Call → weeklyClose, weeklyMA1, weeklyMA2, weeklyMA3, RSI, MACD
-Daily Security Call → dailyClose, dailyMA1, dailyMA2, dailyMA3, 52W High/Low
-Intraday Security Call → rsiIntraday (for cascade detection)
-```
-
----
-
-## 29. Color Constants (Complete Reference)
-
-### 29.1 AI Signal Matrix Colors (Dashboard)
-
-| Constant | RGB | Alpha | Usage |
-|----------|-----|-------|-------|
-| `COL_SIGNAL_BULL` | `rgb(16, 185, 129)` | 15% | Active bullish cells |
-| `COL_SIGNAL_BEAR` | `rgb(239, 68, 68)` | 15% | Active bearish cells |
-| `COL_SIGNAL_CAUTION` | `rgb(245, 158, 11)` | 20% | Caution/waiting cells |
-| `COL_SIGNAL_INACTIVE` | `rgb(107, 114, 128)` | 60% | Inactive/neutral cells |
-| `COL_SIGNAL_INST` | `rgb(139, 92, 246)` | 25% | Institutional/anchor cells |
-| `COL_ORANGE` | `color.orange` | 0% | Warning/extended |
-
-### 29.2 Zone Colors
-
-| Element | Bullish | Bearish | Meaning |
-|---------|---------|---------|---------|
-| **Primary Zone** | Blue (solid) | Red (solid) | High confidence entry |
-| **Primary Zone (Faded)** | Blue (60% alpha) | Red (60% alpha) | Caution entry |
-| **Secondary Zone** | Blue (80% alpha) | Red (80% alpha) | Backup scaling |
-| **Ghost Level** | Gray dashed | Gray dashed | Distal Titanium |
-
-### 29.3 Label Colors
-
-| Label | Color | Background |
-|-------|-------|------------|
-| STRONG BUY | White | Green |
-| BUY | White | Lime |
-| ROCKET | White | Teal |
-| STRONG SELL | White | Red |
-| SELL | White | Maroon |
-| CRASH | White | Purple |
-| TOP WARNING | White | Red |
-| INTERNAL WEAKNESS 📉 | White | Orange |
-| BEAR WEAKNESS 📈 | White | Lime |
-| RSI CASCADE 🌊 | White | Orange |
-| EXTREME EXTENSION ⚡ | White | Red |
-| HIKKAKE (Bull) | White | Green |
-| HIKKAKE (Bear) | White | Red |
-| OOPS (Bull) | White | Green |
-| OOPS (Bear) | White | Red |
-| KEY REV (Bull) | White | Green |
-| KEY REV (Bear) | White | Red |
-| WEAK RES | Black | Orange |
-| WEAK SUPPORT | White | Red |
-| SWEEP (Bull) | White | Green |
-| SWEEP (Bear) | White | Red |
-| TRAP | White | Orange |
-
-
----
-
-## 30. Common Mistakes (Avoid These Pitfalls)
-
-### 30.1 Signal Chasing Errors
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Chasing 🚀 ROCKET signals** | ROCKET appears AFTER the move started. You're buying the climax. | Wait for pullback to Entry Zone. ROCKET = "Hold if in, don't chase if out." |
-| **Buying after 💎 STRONG BUY bar closes** | Signal bar already moved. Entry is now mid-range. | Set alert for pullback to zone. If already in zone, enter on next candle open. |
-| **Entering on PENDING ⏳** | Bar hasn't closed. Signal may disappear. | Wait for bar close to confirm signal. |
-
-### 30.2 Zone Interpretation Errors
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Entering when price is ABOVE zone** | You're chasing. Zone is below you. | Wait for pullback INTO the zone (between zone high and low). |
-| **Ignoring faded/ghost zones** | Faded zones still show structure | Treat as valid but reduce position size by 50%. |
-| **Using Secondary Zone as primary** | Secondary is for scaling, not initial entry | Enter at Primary Zone first, add at Secondary if it holds. |
-
-### 30.3 Dashboard Misreads
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Trading when Row 8 shows "WAIT"** | You're not at the entry zone yet | Set price alert for the WAIT price level. |
-| **Trading when Row 8 shows "—"** | That side is inactive (non-dominant bias) | Only trade the active side (the one with BUY/SELL directive). |
-| **Ignoring Row 1 "CAUTION" or "TOXIC"** | Decision overrides everything | CAUTION = 50% size. TOXIC = skip entirely. |
-| **Thinking SAFE means guaranteed** | SAFE just means filters passed | Still use stop loss. SAFE ≠ Can't lose. |
-| **Ignoring ⚠️ BIAS LAG** | Score lags structural reality (Stage) | Trust Stage over Score. Reduce size or skip. LAG at Stage 3 = don't trust bullish score. |
-| **Ignoring ▼ score momentum arrow** | Conviction is weakening on your side | A ▼ on a PRIME/ACTION signal = reduce size 25%. Score may drop below threshold next bar. |
-| **Trading both REV ZONE sides** | Both sides showing reversion = extreme chop | Skip when both Long and Short REV ZONEs are active simultaneously. |
-
-### 30.4 Risk Management Errors
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Moving stop loss to "give room"** | If stop is hit, thesis was wrong | Accept stop loss. Never widen after entry. |
-| **Ignoring 🛑 TOXIC RISK** | Math says you'll get stopped by noise | Skip the trade. Find another setup. |
-| **Full size when ADX < 15** | No trend = whipsaw. You'll get chopped. | Reduce size by 75% or wait for ADX > 18. |
-| **Holding through earnings** | Binary event. Indicator can't predict news. | Close or heavily reduce before earnings. |
-
-### 30.5 Stage/Trend Errors
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Buying longs in Stage 4** | Stage 4 = Distribution/Decline. Trend is against you. | Only short or skip. Wait for Stage 1 basing. |
-| **Counter-trend trading full size** | You're fighting the trend | If Row 1 shows "COUNTER" → 25% size max. |
-| **Ignoring TOP WARNING** | Topping signals often precede reversals | Take partial profits. Tighten stops. |
-
-### 30.6 Over-Trading Errors
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Re-entering after stop out** | Same zone failed. Thesis was wrong. | Wait for NEW zone formation or price structure. |
-| **Multiple entries in cooldown** | Signal already active. Dedup prevents spam. | Wait 10 bars (signalCooldown) for next valid signal. |
-| **Trading every signal** | Not all signals are equal | Use conviction scale. Score 5 or below = skip. |
-
-### 30.7 Options-Specific Errors
-
-| Mistake | Why It's Wrong | Correct Action |
-|---------|----------------|----------------|
-| **Buying calls when IV Rank > 80%** | Options are expensive. Premium decay hurts. | Sell spreads instead, or wait for IV to drop. |
-| **Ignoring expiry near earnings** | Earnings = IV crush. You'll lose even if right. | Choose expiry AFTER earnings, or close before. |
-| **Buying far OTM "lottery tickets"** | Low delta = low probability | Buy ATM or slightly OTM (delta 0.40-0.60). |
-
-### 30.8 The Golden Rules (Never Break These)
-
-1. **Never chase a ROCKET.** It's a hold signal, not an entry signal.
-2. **Never trade TOXIC.** The math is broken. Move on.
-3. **Never go full size below ADX 15.** Choppy markets will destroy you.
-4. **Never hold through earnings unhedged.** Binary events are gambling.
-5. **Never ignore the Row 8 ACTION directive.** It's the simplest instruction - follow it.
-6. **Never widen your stop after entry.** If you need to, you sized wrong.
-7. **Never trade both sides simultaneously.** Dashboard shows dominant bias for a reason.
-
----
-
+## Verification Record
+
+Every statement in this document traces to one of two sources: the Pine source, or a measurement on
+the export corpus. Nothing is asserted from memory or inherited from an earlier revision unchecked.
+
+**Verified against the code** (line-by-line, `revanth-enhanced-indicator.pine` +
+`revanth-volume-profile.pine`): every MA/oscillator period · every level weight and titanium flag ·
+cluster merge tolerance, decay constants and both hysteresis mechanisms · zone width bounds · the
+opacity penalty stack including the structural bypass · the full R:R gate · the complete reversion
+score including Tier 6 and the kill filters · all 22 action-code strings and the `f_actCode` ordering ·
+all three bitmask legends · the Stage/Regime/Energy enums · the LAG test · target selection and
+blue-sky synthesis · the TOXIC sentinel · every dashboard row index and cell.
+
+**Verified by measurement** (2,412,609 bars / 546 tickers / 2006–2026):
+
+| Claim | Result |
+|---|---|
+| Export schema and column order | 57 + 17 fields, CSV columns 6–62 and 63–79, exact |
+| `Long RR Valid` from the documented EV gate | **100.000%** (1,466,095 bars) |
+| Stalk Queue reconstruction | **100.0000%** (279,883 bars, 24,764 positives) |
+| Zone Touched reconstruction | **100%** |
+| `Exp Move / HV20` = √(21/252) | constant to 1.3e-15 |
+| `Ext Pct` = (close−MA200)/MA200×100 | 0.000000 absolute error |
+| `Energy State` from IV−HV spread thresholds | **100.0000%** (2,407,275 bars) |
+| Mask ⟺ Age invariant | zero violations (1.28M bars) |
+| `VAH ≥ POC ≥ VAL` | 100% of populated bars |
+| Long zone/stop/target geometry, all bar ages | **0.00%** violations |
+| In-Zone strict-side containment | 0 violations (68,730 bars) |
+| All 83 confidence intervals quoted in §16 | machine-checked against `bible_combos.py` output |
+
+**Claims withdrawn because they did not survive** (corrected here *and* in the `.pine`, not quietly
+dropped): the `MTF 3/3 × sigma = +0.327` walk-forward edge · the monotone stage-freshness decay · the
+11.9%→0.3% warm-up violation rate · `MIN_HEIGHT = 0.25 ATR` · the `0.5 ATR` cluster merge radius ·
+the flat `e^(−0.5×dist)` decay · `Titanium = weight ≥ 5.0` · the Titanium/Gold/Silver weight tiers ·
+the swing-low-first stop · the unshielded opacity formula · `expMove × 100` · `STAGE 4: RECOVERY` ·
+the HV20 energy cell label · the single-source EXTENDED definition · "weak level tested >3 times" ·
+"Trend Bars Up = consecutive bars in uptrend" · the "100% solid" opacity band.
+
+**Bug found and fixed during verification (`revanth-enhanced-indicator.pine:4766`).** A no-entry bar
+used to be assigned a synthetic **$1.00** entry (`nz(suggestedEntryLong, 1) == 0 ? 1 : …`). That was
+not inert: it propagated into the stop (`1 × (1 − maxRisk)` = **$0.95**, *overwriting a real structural
+stop*), gave a 5-cent risk denominator, and fabricated the R:R. Footprint on the pre-fix corpus:
+3,025 bars, of which **1,559 across 80 tickers had close ≥ $20 while exporting a stop under $1.00**
+(GM, LYFT, SOLV, AMCR, FOXA, AFRM among them); median fabricated R:R 19.1, max 286.7, 1,792 bars
+flagged `RR Valid`, and 3 reached PRIME. The sentinel is now `na`, so the chain degrades honestly —
+`longRR` falls to its 0.0 invalid value, `longRRValid` goes false, and `f_gateTarget` blanks
+Target/Waypoint through its existing `na(ent)` guard. Verified by simulating both paths on the
+affected bars: the old-path model reproduces the exported `RR To Target` to 0.000000 error, and the
+new path yields 0 fabricated ratios, 0 false `RR Valid`, 0 clobbered stops.
+
+> ⚠️ **Corpus caveat:** `full_v2` was scraped BEFORE this fix, so those 3,025 bars (0.13%) still carry
+> the fabricated values. The §16 tables are unaffected at that magnitude, but re-scrape before any new
+> measurement work that touches stops, targets or R:R.
+
+**Known soft spots — stated, not hidden.** These are the only claims not independently re-derived:
+the "40+ levels → 2–3 zones" figure in §5.1 is descriptive; the §3.5 confirmation-pattern conditions
+(pin bar / engulfing near support) are taken from the label definitions but not corpus-measured; and
+the §16 tables are 21-day date-neutral excess only — a different horizon or a non-date-neutral metric
+can and does give different signs (see §16.1 TOXIC).

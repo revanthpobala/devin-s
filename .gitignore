@@ -50,3 +50,4 @@ pine-script-indicators/*
 .playwright-*
 .kilo/*
 reports/*
+.tv-state.json

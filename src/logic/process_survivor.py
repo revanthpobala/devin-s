@@ -124,13 +124,12 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     Eligibility (``send``) requires ALL of:
       - quality_pass: deterministic PASS, OR a WATCH whose conviction clears
         WATCH_MIN_CONVICTION (near-zone, high-quality, not-yet-triggered setups),
+      - pursue: the technical verdict is not CUT,
       - conviction >= MIN_CONVICTION_FOR_DEEP_RESEARCH (stable deterministic score,
         NOT the flaky LLM 1-10),
-      - ev_r >= TIER_A_MIN_EV_R (a thin-EV name must not crowd out a high-EV one),
       - earnings gate != FAIL,
       - has_plan: a complete zone + stop + target (something for the paid pass to
         evaluate).
-      - setup mode is NOT "NONE": early-trend names without a setup are excluded.
       - NOT a terminal-climax / blow-off: blocked when regime==2 OR the
         "exhaustion" flag is set (a name that has already run its move, e.g. a
         spike-then-fade, must never reach paid deep research).
@@ -213,9 +212,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         and triage.get("pursue") is True
         and earnings_gate != "FAIL"
         and conviction_ok
-        and (det_ev_r is None or det_ev_r >= min_ev_r)
         and has_plan
-        and mode != "NONE"
         and not blocked
     )
     # Informational scalar (mirrors deep_research_sort_key's news penalty on the

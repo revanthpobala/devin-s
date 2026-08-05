@@ -297,7 +297,7 @@ def run_local_research(
     # PRIORITISATION filter and must run here too, or the folder balloons.
     from src.logic.data_window_filter import rank_pass_tickers
 
-    cap = int(os.getenv("DEEP_RESEARCH_CAP", "8"))
+    cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
     deep_candidates, force_candidates = [], []
     for rec in all_thesis.values():
         ticker = rec.get("ticker")
@@ -320,13 +320,18 @@ def run_local_research(
             tr["ticker"] = ticker.upper()
             deep_candidates.append(tr)
     ranked_deep = rank_pass_tickers(deep_candidates)
-    keep_deep = {str(r.get("ticker", "")).upper() for r in ranked_deep[:cap]}
+    kept_deep = ranked_deep if cap <= 0 else ranked_deep[:cap]
+    keep_deep = {str(r.get("ticker", "")).upper() for r in kept_deep}
     keep_force = set(force_candidates)
-    if len(deep_candidates) > cap:
+    if cap > 0 and len(deep_candidates) > cap:
         logger.info(
             f"Deep-research cap {cap}: {len(deep_candidates)} flagged -> "
             f"{len(keep_deep)} kept ({sorted(keep_deep)}); "
             f"{len(deep_candidates) - cap} deferred."
+        )
+    else:
+        logger.info(
+            f"Deep-research uncapped: all {len(keep_deep)} eligible tickers kept."
         )
 
     for stale_dir, keep in ((deep_dir, keep_deep), (force_dir, keep_force)):
