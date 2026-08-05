@@ -53,6 +53,12 @@ def normalize_number_str(val) -> str:
 # ---------------------------------------------------------------------------
 # Provenance: 2016-2026 bar universe cut points (close >= $20).
 EXT_MAX = 25.0       # Ext Pct vs MA200 >= 25% (era-robust hard exclusion: -1.78% / -1.00% 21d excess)
+# Ext Z Self Relative (stock's own historical extension distribution, already exported
+# by the indicator) >= 2.5 -> -0.62% vs +0.69% SIG for the rest, on the mega-cap subset.
+# Not yet statistically significant at n=15 names, but correct sign where the absolute
+# EXT_MAX threshold above was wrong-signed for this population -- self-relative context
+# generalizes better than a cross-sectional price/extension cutoff for large-cap-only use.
+EXT_Z_SELF_MAX = 2.5
 P_RICH = 125.4       # Price 2/3 quantile (2016-2026 bars, close >= $20; measured threshold)
 HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 
@@ -570,6 +576,7 @@ def run_data_window_filter(
             "mtf_short": None,
             "realvol_10d": realvol_10d,
             "ret_10d": ret_10d,
+            "rank_model_score": None,
             "bad_data": True,
         }
         _log_data_window_scrape(ticker, raw, verdict)
@@ -586,8 +593,9 @@ def run_data_window_filter(
     act_code = W["act_code"]
 
     # HARD EXCLUSIONS (CUT for all setups)
-    if ext_pct >= EXT_MAX:
-        triage, reason = "CUT", "extreme_extension"
+    ext_z_self = f.get("ext_z_self") or 0.0
+    if ext_z_self >= EXT_Z_SELF_MAX:
+        triage, reason = "CUT", "extreme_extension_self_relative"
     elif price >= P_RICH and hv20 >= HV_HIGH:
         triage, reason = "CUT", "rich_high_volatility"
     elif act_code in _ACTION_HARD_CUT_CODES:
@@ -626,6 +634,13 @@ def run_data_window_filter(
 
     bar_date = raw.get("bar_date") or raw.get("time") or raw.get("Time") or raw.get("Date")
 
+    try:
+        from src.logic.watch_ranker import score_data_window
+
+        rank_model_score = score_data_window(f)
+    except Exception:
+        rank_model_score = None
+
     verdict = {
         "ticker": ticker,
         "bar_date": str(bar_date) if bar_date is not None else None,
@@ -656,6 +671,7 @@ def run_data_window_filter(
         "realvol_10d": realvol_10d,
         "ret_10d": ret_10d,
         "tiebreak": tiebreak_score(W, f),
+        "rank_model_score": rank_model_score,
         "bad_data": False,
     }
 
@@ -678,19 +694,20 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
 # ---------------------------------------------------------------------------
 # 5. RANK — sort candidates for deep research selection
 # ---------------------------------------------------------------------------
-def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, float, float]:
+def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, int, float, float, float]:
     """THE single ranking key for deep-research selection.
 
     Priority order:
     1. PASS verdict (REVERSAL BUY lane) outranks WATCH/CUT.
     2. REVERSAL BUY action code (action == "REVERSAL BUY").
-    3. Actionable now (`in_zone == True`).
-    4. Deterministic tiebreak score (unvalidated heuristic).
-    5. Directional edge |dir_prob - 50|.
-    6. Conviction score.
+    3. Model-scored (long-side WATCH) outranks records ordered by the legacy heuristic.
+    4. Actionable now (`in_zone == True`) -- legacy branch only.
+    5. Primary score: learned rank model, else the tiebreak heuristic.
+    6. Directional edge |dir_prob - 50| -- legacy branch only.
+    7. Conviction score -- legacy branch only.
     """
     if not rec:
-        return (0, 0, 0, 0.0, 0.0, 0.0)
+        return (0, 0, 0, 0, 0.0, 0.0, 0.0)
 
     # Unpack nested triage dict if outer record passed
     if isinstance(rec.get("triage"), dict):
@@ -699,17 +716,32 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, f
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
     in_zone = 1 if bool(rec.get("in_zone")) else 0
-    tb = float(rec.get("tiebreak") or 0.0)
     dir_edge = abs((rec.get("dir_prob") or 50) - 50)
     conviction = float(rec.get("conviction") or 0.0)
 
-    # Adjust tiebreak if news contradiction/negative present
-    if rec.get("news_contradiction"):
-        tb -= 10.0
-    elif rec.get("news_negative"):
-        tb -= 2.0
+    # The ranker was validated on long-side WATCH bars and nothing else, so it orders
+    # exactly that population: the PASS lane keeps its own ordering and short-side
+    # candidates keep tiebreak_score, tiered below the scored names.
+    ms = rec.get("rank_model_score")
+    use_model = (ms is not None and not is_pass and rec.get("chosen_side") == "long")
 
-    return (is_pass, is_rev_buy, in_zone, tb, dir_edge, conviction)
+    if use_model:
+        # Within long-side WATCH the model replaces in_zone/tiebreak/dir_edge/conviction
+        # wholesale -- that is the configuration measured OOS. A partial swap of only the
+        # tiebreak slot was never tested.
+        has_model, primary = 1, float(ms)
+        in_zone, dir_edge, conviction = 0, 0.0, 0.0
+        contra_pen, neg_pen = 1.0, 0.05  # model scale: ~0-1
+    else:
+        has_model, primary = 0, float(rec.get("tiebreak") or 0.0)
+        contra_pen, neg_pen = 10.0, 2.0  # legacy tiebreak scale
+
+    if rec.get("news_contradiction"):
+        primary -= contra_pen
+    elif rec.get("news_negative"):
+        primary -= neg_pen
+
+    return (is_pass, is_rev_buy, has_model, in_zone, primary, dir_edge, conviction)
 
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -888,7 +920,7 @@ def _self_test() -> None:
             long_target=170.0,
             long_in_zone=1.0,
         ),
-        # Case 2: Hard exclusion CUT (ext_pct >= 25) -> CUT extreme_extension
+        # Case 2: Hard exclusion CUT (ext_z_self >= 2.5) -> CUT extreme_extension_self_relative
         "EXT_CUT": dict(
             price=200.0,
             ma20=180.0,
@@ -900,7 +932,8 @@ def _self_test() -> None:
             stage=2,
             dir_prob=80.0,
             regime=0,
-            ext_pct=30.0,  # >= 25.0 cut
+            ext_pct=30.0,
+            ext_z_self=3.0,  # >= 2.5 cut
             exhaustion=0.2,
             rev_l=0.0,
             rev_s=0.0,
@@ -960,7 +993,7 @@ def _self_test() -> None:
 
     expected = {
         "REV_BUY": ("long", "REVERSION_LONG", "PASS", "reversal_buy_lane"),
-        "EXT_CUT": ("long", "TREND_LONG", "CUT", "extreme_extension"),
+        "EXT_CUT": ("long", "TREND_LONG", "CUT", "extreme_extension_self_relative"),
         "RR_TRAP": ("long", "TREND_LONG", "WATCH", "constructible_watch"),
         "STAGE0": ("long", "TREND_LONG", "CUT", "warmup_stage_0"),
     }

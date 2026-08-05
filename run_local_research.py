@@ -159,17 +159,19 @@ def run_local_research(
         key=lambda r: deep_research_sort_key(r.get("triage") or {}),
         reverse=True,
     )
-    top_n = ranked[:enrich_n]
-    enrich_targets = {r["ticker"].upper() for r in top_n} | force_set
+    selected = ranked[:enrich_n] if enrich_n > 0 else ranked
+    enrich_targets = {r["ticker"].upper() for r in selected} | force_set
     logger.info(
         f"PHASE 2C-1 done: {len(prefilter_results)} prefiltered, "
-        f"{len(send_results)} send-eligible, enriching top {len(top_n)} by rank "
-        f"+ {len(force_set)} forced (ENRICH_TOP_N={enrich_n})."
+        f"{len(send_results)} send-eligible, enriching {len(selected)} "
+        f"+ {len(force_set)} forced "
+        f"(ENRICH_TOP_N={enrich_n or 'uncapped'})."
     )
 
-    # Phase 2C (PASS 2 — Qwen enrichment, EXPENSIVE, top-N only):
-    # only the selected tickers hit the local LLM + Finnhub + Alpha Vantage +
-    # Adanos. The rest keep their deterministic-only _thesis.json from pass 1.
+    # Phase 2C (PASS 2 — Qwen enrichment, top-N or uncapped):
+    # only selected tickers hit local LLM + Finnhub news + yfinance earnings.
+    # Quota-bound clients (Alpha Vantage, Adanos) run on the paid pass in deep_research.py.
+    # The rest keep their deterministic-only _thesis.json from pass 1.
     # The enrichment pool is capped at LLM_LOCAL_CONCURRENCY (= the server's
     # --parallel) so we never oversubscribe the local GPU server.
     llm_workers = min(config.LLM_LOCAL_CONCURRENCY, len(enrich_targets)) or 1

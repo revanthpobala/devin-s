@@ -363,23 +363,25 @@ def run_deep_research(date_str, target_ticker=None):
                 t = Path(thesis_file).name.replace("_thesis.json", "")
                 flagged.append((t, _load_triage_record(raw_dir, deep_dir, t)))
 
-            # Deterministic RANK + hard cap: only the top-N setups reach paid research.
-            from src.logic.data_window_filter import rank_pass_tickers
+        # Deterministic RANK + hard cap: only the top-N setups reach paid research.
+        from src.logic.data_window_filter import rank_pass_tickers
 
-            cap = int(os.getenv("DEEP_RESEARCH_CAP", "8"))
-            ranked = rank_pass_tickers([r for _, r in flagged if r])
-            keep = {str(r.get("ticker", "")).upper() for r in ranked[:cap]}
-            logger.info(
-                f"Deep-research cap {cap}: {len(flagged)} flagged -> {len(keep)} kept ({sorted(keep)})."
-            )
-            for t, rec in flagged:
-                if rec and t.upper() not in keep:
-                    logger.info(f"[{t}] Below deep-research cap ({cap}) - deferred.")
-                    continue
-                tdir = _triage_subdir_for(t) or raw_dir
-                matches = glob.glob(str(tdir / f"{t}_*.png"))
-                if matches:
-                    chart_files.append(matches[0])
+        cap = int(os.getenv("DEEP_RESEARCH_CAP", "8"))
+        ranked = rank_pass_tickers([r for _, r in flagged if r])
+        keep = {str(r.get("ticker", "")).upper() for r in ranked[:cap]}
+        logger.info(
+            f"Deep-research cap {cap}: {len(flagged)} flagged -> {len(keep)} kept ({sorted(keep)})."
+        )
+        for t, rec in flagged:
+            if rec and t.upper() not in keep:
+                logger.info(f"[{t}] Below deep-research cap ({cap}) - deferred.")
+                continue
+            tdir = _triage_subdir_for(t) or raw_dir
+            matches = glob.glob(str(tdir / f"{t}_*.png"))
+            if matches:
+                chart_files.append(matches[0])
+
+        chart_files = list(dict.fromkeys(chart_files))
 
     if not chart_files:
         logger.warning("No charts found for deep research.")
@@ -440,6 +442,13 @@ def run_deep_research(date_str, target_ticker=None):
         # that carries the filter's own `triage` verdict.
         verdict_record = triage_record if triage_record.get("triage") else {}
 
+        # Default to an empty flag list; the thesis-file path below may override it.
+        flags = (
+            triage_record.get("flags")
+            if isinstance(triage_record, dict)
+            else None
+        ) or []
+
         thesis_file = tdir / f"{ticker}_thesis.json"
         if not triage_record.get("flags") and thesis_file.exists():
             try:
@@ -451,6 +460,7 @@ def run_deep_research(date_str, target_ticker=None):
             except (json.JSONDecodeError, OSError):
                 pass
 
+            # Re-read flags from the (possibly replaced) triage_record.
             flags = (
                 triage_record.get("flags")
                 if isinstance(triage_record, dict)

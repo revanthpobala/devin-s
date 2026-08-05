@@ -69,10 +69,16 @@ LLM_TRIAGE_MAX_TOKENS = int(os.getenv("LLM_TRIAGE_MAX_TOKENS", "2048"))
 # (deep_research.py, before calling Minimax). Both use the same
 # deep_research_sort_key ranking, so the folder and the paid run agree.
 DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "8"))
-# ENRICH_TOP_N: deterministic-PASS tickers (ranked by EV) that receive the local
-# Qwen news enrichment. Set to ~2-3x DEEP_RESEARCH_CAP so the paid pass has a
-# deeper bench than it will actually use, without enriching all ~127 survivors.
-ENRICH_TOP_N = int(os.getenv("ENRICH_TOP_N", "24"))
+# ENRICH_TOP_N: optional cap on how many send-eligible tickers receive the local
+# Qwen enrichment. 0 (the default) = NO CAP, enrich every eligible name.
+# Uncapped is the right default because nothing in that pass costs money or burns a
+# hard quota: Qwen is local, Finnhub news is 60/min, earnings is yfinance. The two
+# quota-bound clients (Alpha Vantage 25/day, Adanos monthly) were already moved to
+# the paid pass in deep_research.py. The only cost of enriching all ~127 survivors
+# is wall-clock at LLM_LOCAL_CONCURRENCY, and a local read on a name the
+# deterministic rank would have buried is exactly where an unexpected candidate
+# surfaces. Set a positive value to restore a cap if the GPU box is the bottleneck.
+ENRICH_TOP_N = int(os.getenv("ENRICH_TOP_N", "0"))
 # TIER_A_MIN_EV_R: minimum expected-value ratio (ev_r) a ticker must clear to be
 # eligible for deep research, even if it is a deterministic PASS. Prevents
 # thin-EV names (e.g. ev_r 0.11) from crowding out high-EV names (e.g. 3.04).

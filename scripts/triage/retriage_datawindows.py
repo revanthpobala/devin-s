@@ -84,28 +84,27 @@ def main() -> None:
     rows.sort(key=lambda r: (order.get(r["triage"], 3), -(r["conviction"] or 0)))
 
     print(f"\n=== Re-triage {args.date} - {len(rows)} tickers (pure-technical, fixed filter) ===\n")
-    hdr = f"{'TICKER':10} {'SIDE':5} {'MODE':13} {'TRIAGE':5} {'GEM':4} {'RR':>6} {'DIRP':>6} {'REG':>3}   FLAGS/REASON"
+    hdr = f"{'TICKER':10} {'SIDE':5} {'MODE':13} {'TRIAGE':5} {'MSCORE':>7} {'RR':>6} {'DIRP':>6} {'REG':>3}   FLAGS/REASON"
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         rr = f"{r['rr']:.2f}" if r["rr"] is not None else "-"
         dirp = f"{r['dir_prob']:.0f}" if r.get("dir_prob") is not None else "-"
         reg = int(round(r["regime"])) if r.get("regime") is not None else "-"
-        gem = "YES" if r["send_for_deep_research"] else ""
+        _ms = r.get("rank_model_score")
+        ms = f"{_ms:7.4f}" if _ms is not None else "      -"
         tail = ",".join(r["flags"]) or r.get("reason", "")
         print(
             f"{r['ticker']:10} {str(r['chosen_side'] or '-'):5} {r['mode']:13} "
-            f"{r['triage']:5} {gem:4} {rr:>6} {dirp:>6} {str(reg):>3}  {tail}"
+            f"{r['triage']:5} {ms:>7} {rr:>6} {dirp:>6} {str(reg):>3}  {tail}"
         )
 
     # Summary.
     counts = {}
     for r in rows:
         counts[r["triage"]] = counts.get(r["triage"], 0) + 1
-    gem_names = [r["ticker"] for r in rows if r["send_for_deep_research"]]
     print("\n--- SUMMARY ---")
     print("counts:", counts)
-    print(f"send_for_deep_research ({len(gem_names)}): ", ", ".join(gem_names) or "(none)")
     if bad:
         print(f"\nbad_data / unreadable ({len(bad)}):")
         for tk, why in bad:
