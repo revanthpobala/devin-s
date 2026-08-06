@@ -34,8 +34,10 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "noreply@tradingview.com")
 # Google Sheets Settings
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "TradingView Alerts Tracker")
 GOOGLE_TRADES_SHEET_NAME = os.getenv("GOOGLE_TRADES_SHEET_NAME", "TradingView Trades Tracker")
+GOOGLE_SWING_SPX_SHEET_NAME = os.getenv("GOOGLE_SWING_SPX_SHEET_NAME", "SWING-SPX")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")  # Can be empty, will fallback to name search
 SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", str(BASE_DIR / "service_account.json"))
+SPX_CONSTITUENTS_CSV = BASE_DIR / "EveryDay" / "SPX-constituents.csv"
 
 # Script Mode Settings
 LOOP_MODE = os.getenv("LOOP_MODE", "false").lower() in ("true", "1", "yes")

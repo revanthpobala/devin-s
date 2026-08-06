@@ -44,13 +44,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "Performs a DuckDuckGo search and returns the top results. Use this to fetch real-time news, earnings dates, analyst upgrades/downgrades, and macro market context.",
+            "description": "Performs a DuckDuckGo search and returns the top results. Use this to fetch real-time news, earnings dates, analyst upgrades/downgrades, and macro market context. CRITICAL: You MUST include the current date (e.g. 'Aug 5 2026' or '2026') in your query to avoid pulling years-old stale news.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query (e.g., 'AAPL earnings date Q3 2026', 'site:finviz.com AAPL')",
+                        "description": "The search query. ALWAYS include the current date/year! (e.g., 'AAPL earnings date Q3 2026', 'site:finviz.com AAPL 2026')",
                     }
                 },
                 "required": ["query"],
@@ -60,12 +60,49 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_realtime_quote",
-            "description": "Fetch REAL-TIME quote and range data for a ticker from Alpaca (falls back to yfinance): last price, bid/ask, day range, previous close, 52-week range, volume. Use this for live price context instead of relying on stale dashboard numbers.",
+            "name": "fetch_finnhub_news",
+            "description": "Fetches recent fundamental company news from Finnhub for a given ticker.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ticker": {"type": "string", "description": "The ticker symbol, e.g. 'RTX'"}
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g., 'AMZN')",
+                    }
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_alpaca_news",
+            "description": "Fetches recent market news articles from Alpaca for a given ticker.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g., 'AMZN')",
+                    }
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_realtime_quote",
+            "description": "Fetches the real-time exact price for a ticker (the LIVE price, which may differ from the closed Data Window).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol",
+                    }
                 },
                 "required": ["ticker"],
             },
@@ -75,32 +112,52 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fetch_options_chain",
-            "description": "Fetch the LIVE options chain for a ticker from Alpaca (falls back to yfinance). Returns strikes, bids/asks, mid, volume, and greeks (delta/gamma/theta/vega) for a direction (CALL/PUT), strike range, and days-to-expiry window. NOTE: implied volatility and open interest are NOT included in Alpaca's chain snapshot. Use this to get real-time option prices and liquidity for swing setups.",
+            "description": "Fetches live options chain data (bid/ask, delta, gamma) to help define exact strikes and options strategies.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ticker": {"type": "string", "description": "The ticker symbol, e.g. 'RTX'"},
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol",
+                    },
                     "direction": {
                         "type": "string",
                         "enum": ["CALL", "PUT"],
-                        "description": "Option type to fetch",
+                        "description": "Call or Put chain",
                     },
                     "strike_low": {
                         "type": "number",
-                        "description": "Lower bound of strike range (defaults to ~0.90x spot)",
+                        "description": "Lower bound of strike prices (derive from chart zones)",
                     },
                     "strike_high": {
                         "type": "number",
-                        "description": "Upper bound of strike range (defaults to ~1.15x spot)",
+                        "description": "Upper bound of strike prices (derive from chart zones)",
                     },
                     "min_dte": {
                         "type": "integer",
-                        "description": "Minimum days to expiry (default 30)",
+                        "description": "Minimum days to expiry (default 14)",
                     },
                     "max_dte": {
                         "type": "integer",
                         "description": "Maximum days to expiry (default 120)",
                     },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_unusual_options_flow",
+            "description": "Fetches unusual institutional options flow (large block sweeps where Volume heavily exceeds Open Interest) from Charles Schwab. Use this to determine if smart money is aggressively positioning for a short-term catalyst.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'AMZN')",
+                    }
                 },
                 "required": ["ticker"],
             },
@@ -143,6 +200,28 @@ def execute_tool_call(tool_call):
         logger.info(f"LLM executed tool: fetch_options_chain(ticker='{args.get('ticker')}')")
         result = fetch_options_chain_tool(**args)
         return result or "No options chain data returned."
+    elif function_name == "fetch_unusual_options_flow":
+        from src.clients.schwab_client import get_unusual_options_flow
+
+        logger.info(f"LLM executed tool: fetch_unusual_options_flow(ticker='{args.get('ticker')}')")
+        result = get_unusual_options_flow(args.get("ticker"))
+        return result or "No unusual options flow data returned."
+    elif function_name == "fetch_finnhub_news":
+        from src.clients.news_client import _fetch_finnhub_news
+        
+        ticker = args.get("ticker")
+        logger.info(f"LLM executed tool: fetch_finnhub_news(ticker='{ticker}')")
+        result = _fetch_finnhub_news(ticker, days=3)
+        return result or f"No Finnhub news found for {ticker}."
+    elif function_name == "fetch_alpaca_news":
+        from src.clients.news_client import get_ticker_news
+        
+        ticker = args.get("ticker")
+        logger.info(f"LLM executed tool: fetch_alpaca_news(ticker='{ticker}')")
+        result_dict = get_ticker_news(ticker, days=3)
+        if result_dict and result_dict.get("raw_news"):
+            return result_dict["raw_news"]
+        return f"No Alpaca/Yahoo news found for {ticker}."
     else:
         logger.warning(f"Unknown tool called: {function_name}")
         return f"Error: Tool '{function_name}' is not supported."
@@ -311,11 +390,13 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     (e.g. paid deep research).
 
     Priority when use_openrouter=True:
-      1. NVIDIA NIM           — NVIDIA_API_KEY / NVDIA_DEV_API_KEY (+ model) set
+      1. Meta AI              — META_AI_API_KEY set
       2. OpenRouter (paid)    — OPENROUTER_KEY set
-      3. Local Unsloth server (fallback)
-    Returns (client, model, provider_tag). provider_tag is "nvidia" | "openrouter" | "local".
+      3. NVIDIA NIM           — NVIDIA_API_KEY / NVDIA_DEV_API_KEY (+ model) set
+      4. Local Unsloth server (fallback)
+    Returns (client, model, provider_tag). provider_tag is "meta" | "openrouter" | "nvidia" | "local".
     """
+    meta_key = os.getenv("META_AI_API_KEY")
     openrouter_key = os.getenv("OPENROUTER_KEY")
     nvidia_key = _nvidia_key()
 
@@ -339,7 +420,20 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
         return client, model, "local"
 
     # Below: explicit opt-in to remote (use_openrouter=True).
-    # OPENROUTER FIRST: the paid deep-research pass sets use_openrouter=True and
+    # META FIRST: Meta AI API is checked first if META_AI_API_KEY is available.
+    if meta_key:
+        resolved_model = model or os.getenv("META_LLM", "muse-spark-1.2-contributor")
+        logger.info(
+            f"Routing request to Meta AI (Model: {resolved_model})"
+        )
+        client = OpenAI(
+            base_url=os.getenv("META_BASE_URL", "https://api.meta.ai/v1"),
+            api_key=meta_key,
+            timeout=180,
+        )
+        return client, resolved_model, "meta"
+
+    # OPENROUTER SECOND: the paid deep-research pass sets use_openrouter=True and
     # points at OPENROUTER_MODEL (default minimax/minimax-m3) — Minimax M3 is the
     # MULTIMODAL model we provisioned for chart vision, available on OpenRouter.
     # NVIDIA NIM is kept as the fallback (its VL model, e.g. nemotron-nano-12b-v2-vl,
@@ -395,16 +489,17 @@ def query_local_llm(
     disable_thinking: bool = False,
     model: str | None = None,
     json_schema: dict | None = None,
+    summarize_tool_context: str | None = None,
 ) -> str:
     """
-    Run inference via local FastAPI Unsloth server, NVIDIA NIM (free), or OpenRouter,
+    Run inference via local FastAPI Unsloth server, Meta AI, NVIDIA NIM (free), or OpenRouter,
     using the standard OpenAI SDK. Supports native tool calling loops.
 
     Provider priority (all env-driven, nothing hardcoded to a specific model so a
     NVIDIA free-model swap never breaks the pipeline):
-      NVIDIA NIM (NVIDIA_API_KEY / NVDIA_DEV_API_KEY) -> OpenRouter (OPENROUTER_KEY) -> Local server.
-    `model` selects a specific NVIDIA model (e.g. GLM 5.2 for news, inkling/kimi for
-    vision); when None, NVIDIA_MODEL (or OPENROUTER_MODEL) env is used.
+      Meta AI (META_AI_API_KEY) -> OpenRouter (OPENROUTER_KEY) -> NVIDIA NIM (NVIDIA_API_KEY / NVDIA_DEV_API_KEY) -> Local server.
+    `model` selects a specific NVIDIA/Meta/OpenRouter model;
+    when None, META_LLM (or OPENROUTER_MODEL) env is used.
     """
     try:
         user_content = []
@@ -522,6 +617,25 @@ def query_local_llm(
 
                 for tool_call in message.tool_calls:
                     tool_result = execute_tool_call(tool_call)
+                    tool_result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
+
+                    if summarize_tool_context and tool_call.function.name in ("search_web", "fetch_finnhub_news", "fetch_alpaca_news") and len(tool_result_str) > 200:
+                        logger.info(f"Summarizing raw output of {tool_call.function.name} locally to filter hallucinations...")
+                        sys_prompt = "You are a strict data analyst. You are provided with raw news/web search data. Summarize the key catalysts, fundamental data, and sentiment concisely. " + summarize_tool_context
+                        usr_prompt = f"RAW TOOL OUTPUT:\n{tool_result_str}\n\nSummarize the core facts."
+                        
+                        summary = query_local_llm(
+                            system_prompt=sys_prompt,
+                            user_prompt=usr_prompt,
+                            use_openrouter=False, # Force local model
+                            use_tools=False,      # No recursive tools
+                            disable_thinking=True,
+                            max_tokens=1024,
+                        )
+                        if summary:
+                            tool_result_str = f"[LOCAL LLM SYNTHESIS]:\n{summary}"
+                        else:
+                            logger.warning(f"Local summarization of {tool_call.function.name} failed, falling back to raw output.")
 
                     # Append the tool's response to the history
                     messages.append(
@@ -529,9 +643,7 @@ def query_local_llm(
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": tool_call.function.name,
-                            "content": (
-                                tool_result if isinstance(tool_result, str) else str(tool_result)
-                            ),
+                            "content": tool_result_str,
                         }
                     )
 
@@ -547,13 +659,12 @@ def query_local_llm(
                 # Check if output was truncated due to output token limit (finish_reason='length')
                 full_content = content or ""
                 cont_attempts = 0
-                max_cont_attempts = 3
 
-                while finish_reason == "length" and cont_attempts < max_cont_attempts:
+                while finish_reason == "length":
                     cont_attempts += 1
                     logger.warning(
                         f"[{provider}:{model}] Output truncated (finish_reason='length') at {len(full_content)} chars. "
-                        f"Auto-continuation pass {cont_attempts}/{max_cont_attempts}..."
+                        f"Auto-continuation pass {cont_attempts}..."
                     )
 
                     # Build continuation payload (without tools)
@@ -562,11 +673,17 @@ def query_local_llm(
                     kwargs_cont.pop("tool_choice", None)
 
                     cont_messages = list(messages)
-                    cont_messages.append({"role": "assistant", "content": full_content})
-                    cont_messages.append({
-                        "role": "user",
-                        "content": "Your response was cut off due to the model output token limit. Please CONTINUE your analysis from the exact sentence/character where you stopped. Do NOT repeat headings or sections you already wrote."
-                    })
+                    if full_content.strip():
+                        cont_messages.append({"role": "assistant", "content": full_content})
+                        cont_messages.append({
+                            "role": "user",
+                            "content": "Your response was cut off due to the model output token limit. Please CONTINUE your analysis from the exact sentence/character where you stopped. Do NOT repeat headings or sections you already wrote."
+                        })
+                    else:
+                        cont_messages.append({
+                            "role": "user",
+                            "content": "Your previous response hit the token limit before outputting the final report. Please SKIP your reasoning preamble and output the final required format directly."
+                        })
                     kwargs_cont["messages"] = cont_messages
 
                     try:
@@ -582,14 +699,33 @@ def query_local_llm(
 
                 if not full_content:
                     logger.error(f"API returned empty content. Full response: {response}")
-                return full_content.strip()
+                    
+                import re
+                final_text = full_content.strip()
+                final_text = re.sub(r'<think>.*?</think>', '', final_text, flags=re.DOTALL).strip()
+                final_text = re.sub(r'<thinking>.*?</thinking>', '', final_text, flags=re.DOTALL).strip()
+                # If there's an unclosed <think> tag, strip everything after it
+                if "<think>" in final_text and "</think>" not in final_text:
+                    final_text = final_text.split("<think>")[0].strip()
+                if "<thinking>" in final_text and "</thinking>" not in final_text:
+                    final_text = final_text.split("<thinking>")[0].strip()
+                    
+                return final_text
 
         logger.warning("Max tool calls reached. Forcing LLM to finish.")
         # Force a final completion without tools
         kwargs.pop("tools", None)
         kwargs.pop("tool_choice", None)
         final_response = _create_completion(client, provider, **kwargs)
-        return _extract_text(final_response.choices[0].message).strip()
+        final_text = _extract_text(final_response.choices[0].message).strip()
+        import re
+        final_text = re.sub(r'<think>.*?</think>', '', final_text, flags=re.DOTALL).strip()
+        final_text = re.sub(r'<thinking>.*?</thinking>', '', final_text, flags=re.DOTALL).strip()
+        if "<think>" in final_text and "</think>" not in final_text:
+            final_text = final_text.split("<think>")[0].strip()
+        if "<thinking>" in final_text and "</thinking>" not in final_text:
+            final_text = final_text.split("<thinking>")[0].strip()
+        return final_text
 
     except Exception as e:
         logger.error(f"API LLM inference failed: {e}", exc_info=True)

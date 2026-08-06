@@ -1,3 +1,4 @@
+from datetime import datetime
 import logging
 import os
 import threading
@@ -44,14 +45,17 @@ class SheetsTracker:
         self.sheet_name = config.GOOGLE_SHEET_NAME
         self.sheet_id = config.GOOGLE_SHEET_ID
         self.trades_sheet_name = config.GOOGLE_TRADES_SHEET_NAME
+        self.spx_sheet_name = getattr(config, "GOOGLE_SWING_SPX_SHEET_NAME", "SWING-SPX")
         self.client = None
         self.sheet: Optional[gspread.Spreadsheet] = None
         self.trades_sheet: Optional[gspread.Spreadsheet] = None
+        self.spx_sheet: Optional[gspread.Spreadsheet] = None
         self.last_logged_row = None
 
         # Caches to avoid duplicate API calls
         self.alerts_worksheets_cache = {}  # title -> Worksheet object
         self.trades_worksheets_cache = {}  # title -> Worksheet object
+        self.spx_worksheets_cache = {}     # title -> Worksheet object
         self.all_rows_cache = {}  # spreadsheet:title -> List[List[str]]
         self.lock = threading.Lock()
 
@@ -146,17 +150,29 @@ class SheetsTracker:
                     )
                     self.trades_sheet = self.client.create(self.trades_sheet_name)
 
+                # 3. Connect or Create/Share SWING-SPX Sheet
+                try:
+                    logger.info(f"Opening SWING-SPX Google Sheet: {self.spx_sheet_name}")
+                    self.spx_sheet = self.client.open(self.spx_sheet_name)
+                except gspread.exceptions.SpreadsheetNotFound:
+                    logger.info(
+                        f"SWING-SPX Google Sheet '{self.spx_sheet_name}' not found. Creating it..."
+                    )
+                    self.spx_sheet = self.client.create(self.spx_sheet_name)
+
                 # Share with the user's Gmail
                 user_email = config.GMAIL_EMAIL
                 if user_email:
                     logger.info(
-                        f"Automatically sharing Trades sheet with {user_email} as Editor..."
+                        f"Automatically sharing Google Sheets with {user_email} as Editor..."
                     )
-                    try:
-                        self.trades_sheet.share(user_email, perm_type="user", role="writer")
-                        logger.info("Successfully shared Trades sheet with user.")
-                    except Exception as se:
-                        logger.warning(f"Failed to share Trades sheet with {user_email}: {se}")
+                    for sh_name, sh_obj in (("Trades", self.trades_sheet), ("SWING-SPX", self.spx_sheet)):
+                        if sh_obj:
+                            try:
+                                sh_obj.share(user_email, perm_type="user", role="writer")
+                                logger.info(f"Successfully shared {sh_name} sheet with user.")
+                            except Exception as se:
+                                logger.warning(f"Failed to share {sh_name} sheet with {user_email}: {se}")
 
                 logger.info("Successfully connected to Google Sheets.")
                 return True
@@ -238,6 +254,141 @@ class SheetsTracker:
 
         self.trades_worksheets_cache[date_str] = worksheet
         return worksheet
+
+    def get_spx_worksheet_for_date(self, date_str: str) -> gspread.Worksheet:
+        """Open or create a worksheet tab named with the YYYY-MM-DD date inside SWING-SPX sheet."""
+        if date_str in self.spx_worksheets_cache:
+            return self.spx_worksheets_cache[date_str]
+
+        if not self.spx_sheet:
+            if not self.connect() or not self.spx_sheet:
+                raise RuntimeError("Not connected to Google Sheets SWING-SPX Spreadsheet")
+
+        spx_sheet = self.spx_sheet
+        try:
+            worksheet = spx_sheet.worksheet(date_str)
+            logger.info(f"Opened existing SWING-SPX worksheet tab: '{date_str}'")
+            self._ensure_headers(worksheet, self._initialize_trades_headers, "Trade ID")
+        except gspread.exceptions.WorksheetNotFound:
+            logger.info(f"Creating new SWING-SPX worksheet tab for date: '{date_str}'")
+            worksheet = spx_sheet.add_worksheet(title=date_str, rows=1000, cols=24)
+            self._initialize_trades_headers(worksheet)
+            try:
+                default_ws = spx_sheet.worksheet("Sheet1")
+                spx_sheet.del_worksheet(default_ws)
+            except Exception:
+                pass
+
+        self.spx_worksheets_cache[date_str] = worksheet
+        return worksheet
+
+    def batch_upload_spx_survivors(self, date_str: str, survivors: list) -> bool:
+        """Batch upload all SPX constituent survivors to the SWING-SPX spreadsheet under the date tab."""
+        import json
+        if not survivors:
+            return True
+
+        if not self.spx_sheet:
+            if not self.connect():
+                return False
+
+        try:
+            with self.lock:
+                worksheet = self.get_spx_worksheet_for_date(date_str)
+                all_existing = self._get_all_rows(worksheet)
+
+                existing_map = {}
+                if len(all_existing) > 1:
+                    for idx, r in enumerate(all_existing[1:]):
+                        if len(r) >= 3 and r[2]:
+                            sym = r[2].strip().upper()
+                            existing_map[sym] = r
+
+                rows_to_write = []
+                try:
+                    from zoneinfo import ZoneInfo
+                    est_now = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    est_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                import random
+                used_trade_ids = set()
+
+                def _random_trade_id():
+                    # Random numeric Trade ID, unique within this batch upload.
+                    while True:
+                        tid = random.randint(100000, 999999)
+                        if tid not in used_trade_ids:
+                            used_trade_ids.add(tid)
+                            return str(tid)
+
+                for idx, survivor in enumerate(survivors):
+                    symbol = (survivor.get("Symbol") or survivor.get("Ticker") or survivor.get("ticker") or "").strip().upper()
+                    if not symbol:
+                        continue
+
+                    trade_id = survivor.get("Trade ID") or _random_trade_id()
+                    survivor["Trade ID"] = trade_id
+                    survivor["_sheet_type"] = "spx"
+                    current_row = idx + 2
+                    survivor["_row_index"] = current_row
+
+                    prev_row = existing_map.get(symbol, [])
+                    entry_time = prev_row[1] if (len(prev_row) > 1 and prev_row[1].strip()) else est_now
+                    raw_req = json.dumps(survivor)
+
+                    if symbol == "SPX":
+                        live_price_formula = '=GOOGLEFINANCE("INDEXSP:.INX")'
+                    elif symbol == "VIX":
+                        live_price_formula = '=GOOGLEFINANCE("INDEXCBOE:VIX")'
+                    else:
+                        live_price_formula = f"=GOOGLEFINANCE(C{current_row})"
+
+                    row_vals = [
+                        trade_id,           # A: Trade ID
+                        entry_time,         # B: Entry Time (EST)
+                        symbol,             # C: Symbol
+                        "",                 # D: Type (empty)
+                        "",                 # E: Setup (empty)
+                        "",                 # F: Stage (empty)
+                        "",                 # G: Entry Price (empty)
+                        "",                 # H: Targets (empty)
+                        "",                 # I: Dir Prob (empty)
+                        "",                 # J: Context (empty)
+                        "",                 # K: Research (empty)
+                        "",                 # L: Verdict (empty)
+                        "",                 # M: Conviction (empty)
+                        "",                 # N: Action Plan (empty)
+                        live_price_formula, # O: Live Price
+                        "",                 # P: Live PnL % (empty)
+                        "",                 # Q: 1D PnL % (empty)
+                        "",                 # R: 5D PnL % (empty)
+                        "",                 # S: 20D PnL % (empty)
+                        "",                 # T: Raw Request (empty)
+                        "",                 # U: LLM Triage (empty)
+                        "",                 # V: LLM Reasoning (empty)
+                        "",                 # W: AV Data (empty)
+                        "",                 # X: LLM Trade Decision (empty)
+                    ]
+                    rows_to_write.append(row_vals)
+
+                if rows_to_write:
+                    logger.info(f"Batch writing {len(rows_to_write)} SPX constituent rows to SWING-SPX tab '{date_str}'...")
+                    needed_rows = len(rows_to_write) + 10
+                    if worksheet.row_count < needed_rows:
+                        worksheet.add_rows(needed_rows - worksheet.row_count)
+
+                    worksheet.update(range_name=f"A2:X{len(rows_to_write) + 1}", values=rows_to_write, value_input_option="USER_ENTERED")
+                    cache_key = f"{worksheet.spreadsheet.title}:{date_str}"
+                    if cache_key in self.all_rows_cache:
+                        del self.all_rows_cache[cache_key]
+
+                logger.info(f"Successfully uploaded {len(rows_to_write)} SPX constituents with Trade IDs to SWING-SPX sheet.")
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to batch upload SPX constituents to SWING-SPX sheet: {e}")
+            return False
 
     def _ensure_headers(self, worksheet, init_func, expected_first):
         """Restore headers on an existing tab if its header row is missing or corrupt.
@@ -782,21 +933,28 @@ class SheetsTracker:
                     return False
         return False
 
-    def batch_update_swing_research(self, date_str: str, updates_list: list) -> bool:
+    def batch_update_swing_research(self, date_str: str, updates_list: list, is_spx: bool = False) -> bool:
         """
-        Batch updates multiple rows in the Trades Tracker with LLM triage results and AlphaVantage data.
+        Batch updates multiple rows in the Trades or SWING-SPX Tracker with LLM triage results and AlphaVantage data.
         This completely avoids rate limits by submitting a single API request for all updates.
         """
         if not updates_list:
             return True
 
-        if not self.trades_sheet:
+        if not self.trades_sheet or not self.spx_sheet:
             if not self.connect():
                 return False
 
         try:
             with self.lock:
-                worksheet = self.get_trades_worksheet_for_date(date_str)
+                use_spx = is_spx or any(
+                    u.get("_sheet_type") == "spx" or u.get("survivor", {}).get("_sheet_type") == "spx"
+                    for u in updates_list
+                )
+                if use_spx:
+                    worksheet = self.get_spx_worksheet_for_date(date_str)
+                else:
+                    worksheet = self.get_trades_worksheet_for_date(date_str)
                 import gspread
 
                 # Ensure the sheet has enough columns (we need at least 24 now)

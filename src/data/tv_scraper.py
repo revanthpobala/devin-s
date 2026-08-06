@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
@@ -58,6 +59,16 @@ class TVScraper:
         self.screenshots_dir = config.BASE_DIR / "data" / "raw" / today_str
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
+        # Clean stale Singleton lock files recursively from Chrome profile directory
+        profile_path = Path(self.user_data_dir)
+        if profile_path.exists():
+            for item in profile_path.rglob("*"):
+                if item.is_file() and item.name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+                    try:
+                        item.unlink()
+                    except Exception:
+                        pass
+
     def _pan_zoom_chart(self, page, move_right: int = MOVE_RIGHT_TIMES,
                         zoom_out: int = ZOOM_OUT_TIMES):
         # Scroll the chart forward (into future / projection space) and zoom out
@@ -100,12 +111,12 @@ class TVScraper:
                 page.keyboard.press("Control+ArrowDown")
                 time.sleep(0.15)
 
-        # Clear the crosshair by parking the mouse at the bottom-right corner so
-        # it sits outside the main chart area before the screenshot, then let the
-        # view settle. Escape dismisses any lingering tooltips/menus.
-        page.keyboard.press("Escape")
+        # Clear the crosshair. Escape dismisses any lingering tooltips/menus/crosshairs.
+        # We move the mouse out of the main chart area and press Escape.
         vp = page.viewport_size or {"width": 1920, "height": 1080}
-        page.mouse.move(vp["width"] - 5, vp["height"] - 5)
+        page.mouse.move(vp["width"] - 1, vp["height"] // 2)
+        time.sleep(0.5)
+        page.keyboard.press("Escape")
         time.sleep(1.0)
 
     def capture_ticker(self, symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS,
@@ -117,6 +128,15 @@ class TVScraper:
         3. {symbol}_chart_zoom.png  — Zoomed-in daily view with future offset
         """
         logger.info(f"Starting Playwright to capture screenshots for {symbol}...")
+
+        profile_path = Path(self.user_data_dir)
+        if profile_path.exists():
+            for item in profile_path.rglob("*"):
+                if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
+                    try:
+                        item.unlink()
+                    except Exception:
+                        pass
 
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
@@ -292,40 +312,40 @@ class TVScraper:
             logger.info("Taking wide-view chart screenshot...")
             page.screenshot(path=str(chart_path))
 
-            # ── 2. Download chart CSV (last ~1 month of daily bars) ───────────────
-            # Ported from data-windows/scripts/tv_export.py, which is the version that
-            # actually works. Three things it gets right and a naive attempt does not:
-            #   * page.click() AUTO-WAITS for the element. query_selector() returns
-            #     immediately, so the dropdown has not rendered yet and the download
-            #     button is reported missing - that was the previous failure.
-            #   * It is a THREE-click sequence: menu -> "Download chart data" -> submit.
-            #   * "Go to" is the only safe way to set the range. The range tabs let
-            #     TradingView pick its own resolution and it silently switches to 1M,
-            #     overriding interval=D, which would make realvol_10d a 10-MONTH number.
-            # We only need the last row + 11 trailing closes, so one month is enough.
-            start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-            logger.info(f"Downloading chart CSV (range: {start_date} -> today)...")
-            csv_path = self.screenshots_dir / f"{safe_symbol}_datawindow.csv"
-            data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"
+            # ── 2. Zoomed screenshot (exactly 3 months) ───────────────
+            # The zoomed screenshot should always cover 3 months (90 days) for proper visual context.
+            zoom_start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+            logger.info(f"Setting range to 3 months for zoomed screenshot (range: {zoom_start_date} -> today)...")
 
             page.wait_for_selector(GOTO_BTN, state="visible", timeout=30000)
             page.click(GOTO_BTN, timeout=15000)
-            page.fill(GOTO_START, start_date, timeout=15000)
+            page.fill(GOTO_START, zoom_start_date, timeout=15000)
             page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=15000)
             page.click(GOTO_SUBMIT, timeout=15000)
             time.sleep(settle_s)   # let the new range load and the indicator recompute
 
-            # ── 2b. Zoomed screenshot, taken from the SAME Go-to view ─────────────
-            # The gem uses the image only for visual pattern context (candles, zone
-            # boxes, signal labels) and is forbidden from reading numbers off it, so
-            # per-bar resolution is what matters here. On the wide default view a daily
-            # candle is a few pixels and no label text is legible. This costs one extra
-            # page.screenshot() because the browser and the Go-to are already here.
-            # Pan right 4x so the zoom view also scrolls into future/projection space.
+            # ── 2b. Take Zoomed screenshot ─────────────
             self._pan_zoom_chart(page, move_right=4, zoom_out=0)
+            page.keyboard.press("Escape")  # extra escape to ensure crosshair is gone
+            time.sleep(0.5)
+            
             zoom_path = self.screenshots_dir / f"{safe_symbol}_chart_zoom.png"
             page.screenshot(path=str(zoom_path))
             logger.info(f"Saved zoomed chart screenshot to {zoom_path}")
+
+            # ── 2c. Download chart CSV ───────────────
+            # Set the range to lookback_days if it's different from 90 (e.g. 365 days for SPX)
+            if lookback_days != 90:
+                start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+                logger.info(f"Setting range for CSV download (range: {start_date} -> today)...")
+                page.click(GOTO_BTN, timeout=15000)
+                page.fill(GOTO_START, start_date, timeout=15000)
+                page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=15000)
+                page.click(GOTO_SUBMIT, timeout=15000)
+                time.sleep(settle_s)
+                
+            csv_path = self.screenshots_dir / f"{safe_symbol}_datawindow.csv"
+            data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"
 
             page.click(MENU_BTN, timeout=15000)
             page.click(DL_ITEM, timeout=15000)
@@ -372,8 +392,38 @@ class TVScraper:
 
 
 if __name__ == "__main__":
+    import concurrent.futures
     import sys
 
-    scraper = TVScraper(worker_id=2)
-    symbol_to_test = sys.argv[1] if len(sys.argv) > 1 else "NASDAQ:NVDA"
-    scraper.capture_ticker(symbol_to_test)
+    # Fixed, pre-logged-in Chrome profiles (one per parallel worker so sessions
+    # never collide on the Singleton lock). Order matters only for assignment.
+    CHROME_PROFILES = [
+        "tv_chrome_profile_1",
+        "tv_chrome_profile_2",
+        "tv_chrome_profile_4",
+        "tv_chrome_profile_3",
+        "tv_chrome_profile_5",
+    ]
+
+    symbols = []
+    target_date = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--date="):
+            target_date = arg.split("=", 1)[1]
+        else:
+            symbols.append(arg)
+    if not symbols:
+        symbols = ["NASDAQ:NVDA"]
+
+    def _run_one(idx_symbol):
+        idx, symbol = idx_symbol
+        profile = CHROME_PROFILES[idx % len(CHROME_PROFILES)]
+        scraper = TVScraper(chrome_profile=profile, target_date=target_date)
+        try:
+            scraper.capture_ticker(symbol)
+        except Exception as e:
+            logger.error(f"Scrape failed for {symbol} (profile {profile}): {e}")
+
+    logger.info(f"Scraping {len(symbols)} ticker(s) across {len(CHROME_PROFILES)} Chrome profiles...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(CHROME_PROFILES)) as executor:
+        list(executor.map(_run_one, list(enumerate(symbols))))

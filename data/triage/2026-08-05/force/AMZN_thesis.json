@@ -1,0 +1,120 @@
+{
+    "ticker": "AMZN",
+    "trade_id": "SPX-2026-08-05-AMZN",
+    "row_index": 24,
+    "researched_at": "2026-08-05T21:25:20",
+    "llm_data": {
+        "triage": "WATCH",
+        "chosen_side": "long",
+        "mode": "TREND_LONG",
+        "reason": "constructible_watch",
+        "conviction": 87.18240267542942,
+        "rr": -0.4509813764152717,
+        "in_zone": false,
+        "flags": [
+            "churn",
+            "stage_lag",
+            "ext_z_self_elevated",
+            "hot_10d_volatility",
+            "rich_high_volatility"
+        ],
+        "send_for_deep_research": false,
+        "pursue": true,
+        "pursue_reason": "constructible_watch",
+        "news_negative": false,
+        "news_contradiction": false,
+        "rank_score": -999999999.9128,
+        "enriched": false,
+        "sentiment": "neutral",
+        "sentiment_summary": "Mixed headlines feature Amazon's new Alexa+ expansion in Australia alongside broader market volatility and competitor AI developments."
+    },
+    "av_sentiment": {},
+    "av_earnings": {},
+    "triage": {
+        "ticker": "AMZN",
+        "bar_date": "2026-08-05",
+        "chosen_side": "long",
+        "mode": "TREND_LONG",
+        "triage": "WATCH",
+        "reason": "constructible_watch",
+        "conviction": 87.18240267542942,
+        "conviction_str": "HIGH",
+        "rev": 0.0,
+        "rr": -0.4509813764152717,
+        "ev_r": null,
+        "win_prob": 55.355146110348606,
+        "in_zone": false,
+        "missed": false,
+        "dir_prob": 55.355146110348606,
+        "regime": 4.0,
+        "flags": [
+            "churn",
+            "stage_lag",
+            "ext_z_self_elevated",
+            "hot_10d_volatility",
+            "rich_high_volatility"
+        ],
+        "long_plan": {
+            "zone": [
+                null,
+                null
+            ],
+            "stop": 240.34822267209103,
+            "target": 258.0825
+        },
+        "short_plan": {
+            "zone": [
+                278.92241460675405,
+                281.4181406245907
+            ],
+            "stop": 286.409592660264,
+            "target": 255.9556
+        },
+        "recency": {
+            "warnings_fresh": [],
+            "warnings_age": null,
+            "reversals_fresh": [
+                "KEY_REV_BULL",
+                "KEY_REV_BEAR",
+                "TRAP_BULL",
+                "TRAP_BEAR"
+            ],
+            "reversals_age": 0.0,
+            "weak_levels": [],
+            "weak_levels_age": null
+        },
+        "action_long": "WAIT",
+        "action_short": "WATCH",
+        "action": "WAIT",
+        "action_actionable": false,
+        "mtf_long": 2.0,
+        "mtf_short": null,
+        "realvol_10d": 85.44705858556988,
+        "ret_10d": 11.353890136818453,
+        "ext_pct": 14.9764910742334,
+        "tiebreak": -3.2925741075109305,
+        "rank_model_score": null,
+        "bad_data": false,
+        "sentiment": {
+            "label": "neutral",
+            "summary": "Mixed headlines feature Amazon's new Alexa+ expansion in Australia alongside broader market volatility and competitor AI developments.",
+            "headlines": [
+                "10 Consumer Discretionary Stocks Whale Activity In Today\u2019s Session",
+                "SpaceX Chooses Nvidia; Short Squeeze Drives Market Rally, But Extreme Positive Sentiment Flashes Warning",
+                "Broadcom, Marvell And Nvidia Could Feel the Impact of US Ban on Chinese AI Components",
+                "SpaceX Lockup Expiry Could Send a Gentle Jolt Through QQQ, Nasdaq ETFs",
+                "Amazon Rolling Out Alexa+ In Australia On Aug. 6 As Part Of Early Access Program; To Cost A$29.99 Per Month For Non-Prime Members; To Expand To 10 Additional Markets By 2027",
+                "QUICK SPARK: QQQ Pulls In Nearly $5 Billion in a Day as Investors Pile Into Big Tech",
+                "'Anthropic confirms it's building an in-house chip team for Claude' - Business Insider Exclusive",
+                "SEC Is 'Ready, Willing And Able' To Replace CLARITY Act If It Fails, Bitwise's Matt Hougan Says",
+                "Performance Comparison: Amazon.com And Competitors In Broadline Retail Industry",
+                "Paramount CEO David Ellison Is 'Highly Confident' Warner Bros. Deal Will Close, Calls Antitrust Lawsuit a Fight Over Trust: 'The Issue Is\u2026 CNN'"
+            ]
+        },
+        "news_negative": false,
+        "pursue": true,
+        "pursue_reason": "constructible_watch"
+    },
+    "social_sentiment": {},
+    "thesis_json": "D:\\My-Projects\\Stock\\data\\triage\\2026-08-05\\force\\AMZN_thesis.json"
+}

@@ -6,3 +6,4 @@
 4. **Do not recompute what is already computed.** Win Prob, Expected Value, the triage verdict and the R:R in section 2d-i are deterministic. Quote them.
 5. **Name the pillar.** Any BUY or SELL verdict must include the CALIBRATION DISCLOSURE: the measured `ex21` of the state you are leaning on, whether its interval excludes zero, and which non-indicator pillar is carrying the conviction. **If you cannot name that pillar, the verdict is SKIP** — a disciplined no is a valid, valuable answer here and most bars deserve one.
 6. **Emit the full OUTPUT FORMAT** from the system prompt, in order, with the headers verbatim.
+7. **DRAW THE ASCII ART.** You MUST explicitly draw the ASCII diagrams in the THE SETUP and INCOME & MANAGEMENT sections exactly as shown in the strict example template. Do not skip them. Failure to draw the ASCII boxes is a severe framework violation.

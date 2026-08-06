@@ -1,0 +1,104 @@
+{
+    "ticker": "CNC",
+    "trade_id": "SPX-2026-08-05-CNC",
+    "row_index": 96,
+    "researched_at": "2026-08-05T21:34:16",
+    "llm_data": {
+        "dominant_side": "long",
+        "entry_mode": "BREAKOUT_LONG",
+        "confirm_contradict": "CONFIRMS",
+        "triage": "PASS",
+        "conviction": 7,
+        "reasoning": "BREAKOUT_LONG fires with ignition_long=1.0. News CONFIRMS with analyst upgrades (JP Morgan/Bernstein). ext_pct=29.6 flags extreme_extension. PASS triage.",
+        "send_for_deep_research": true,
+        "bull_case": "Centene (CNC) is poised for a powerful bullish breakout as major institutions like Bernstein and JP Morgan simultaneously raise price targets to $79 and $67 respectively, signaling strong fundamental validation. This positive sentiment aligns perfectly with the technical setup, where a 92.5% directional probability and a 1.23 risk-reward ratio confirm that the stock is currently in a high-conviction accumulation phase ready to surge above its resistance zones.",
+        "bear_case": "Despite bullish headlines from major banks raising price targets, the stock remains trapped in a \"below_zone\" technical regime with a dangerously high 29.56% exhaustion percentage, signaling that the recent rally is a deceptive trap rather than a genuine reversal. The market's failure to break above the 7.0 resistance level while maintaining a 92.5% probability of a downward direction confirms that these analyst upgrades are likely propping up a failing trend before an inevitable collapse.",
+        "bull_rebuttal": "The 92.5% directional probability and recent analyst upgrades from JP Morgan and Bernstein confirm a high-conviction bullish reversal, rendering the \"below_zone\" status merely a temporary technical lag rather than a fundamental warning. The dangerously high exhaustion metric is a false alarm indicating that the current rally is in its early, explosive phase, positioning the stock for a significant breakout above the 7.0 resistance level rather than an impending collapse.",
+        "bear_rebuttal": "The headline price targets of $67 and $79 are dangerously misleading given the stock is currently trading in a \"below_zone\" state with a 92.5% directional probability pointing decisively downward, indicating these analysts are likely anchoring to outdated highs rather than current bearish momentum. This apparent institutional support is a classic trap designed to lure buyers into a liquidity grab before the stock accelerates further into the 3.5 to 7.0 point reversal zones, where the true exhaustion of the recent rally will be realized.",
+        "moderator_agreement": "Based on the debate provided, here are the three points of agreement and three points of fierce d",
+        "moderator_disagreement": "Disagreement between the Bull and the Bear:\n\n### **3 Points of Agreement**\n1.  **Analyst Price Targets:** Both parties acknowledge that major institutions (specifically Bernstein and JP Morgan) have recently raised their price targets for Centene to $79 and $67, respectively.\n2.  **The 92.5% Probability Metric:** Both sides explicitly reference the identical \"92.5% directional probability\" figure, though they interpret its meaning in opposite directions.\n3.  **The $7.0 Resistance Level:** Both the Bull and the Bear identify the $7.0 level as a critical technical threshold that the stock has failed to break through effectively.\n\n### **3 Points of Fierce D",
+        "news_contradiction": false,
+        "news_negative": false,
+        "rank_score": 1.141,
+        "enriched": true
+    },
+    "triage": {
+        "ticker": "CNC",
+        "bar_date": "2026-08-05",
+        "chosen_side": "long",
+        "mode": "BREAKOUT_LONG",
+        "triage": "WATCH",
+        "reason": "constructible_watch",
+        "conviction": 74.94519310566274,
+        "conviction_str": "MED",
+        "rev": 3.5,
+        "rr": 1.2332358995071369,
+        "ev_r": 1.066025722736296,
+        "win_prob": 92.51265050827172,
+        "in_zone": true,
+        "missed": false,
+        "dir_prob": 92.51265050827172,
+        "regime": 0.0,
+        "flags": [
+            "soft_caution_action"
+        ],
+        "long_plan": {
+            "zone": [
+                66.46245618637194,
+                67.15754381362807
+            ],
+            "stop": 65.07228093185968,
+            "target": 69.355
+        },
+        "short_plan": {
+            "zone": [
+                null,
+                null
+            ],
+            "stop": 69.37271906814033,
+            "target": 64.10823
+        },
+        "recency": {
+            "warnings_fresh": [],
+            "warnings_age": null,
+            "reversals_fresh": [
+                "KEY_REV_BULL",
+                "SWEEP_BEAR",
+                "FAILSWEEP_BEAR",
+                "TRAP_BULL",
+                "OOPS_BULL"
+            ],
+            "reversals_age": 6.0,
+            "weak_levels": [],
+            "weak_levels_age": null
+        },
+        "action_long": "SCREEN BLOCK",
+        "action_short": "WAIT",
+        "action": "SCREEN BLOCK",
+        "action_actionable": false,
+        "mtf_long": 1.0,
+        "mtf_short": null,
+        "realvol_10d": 39.911506266865146,
+        "ret_10d": 1.6694490818029963,
+        "ext_pct": 29.557861834869648,
+        "tiebreak": -1.1206961765909362,
+        "rank_model_score": null,
+        "bad_data": false,
+        "sentiment": {
+            "label": "positive",
+            "summary": "Analysts maintain positive ratings while raising price targets for Centene.",
+            "headlines": [
+                "JP Morgan Maintains Neutral on Centene, Raises Price Target to $67",
+                "Bernstein Maintains Outperform on Centene, Raises Price Target to $79"
+            ]
+        },
+        "news_negative": false,
+        "pursue": true,
+        "pursue_reason": "constructible_watch",
+        "news_contradiction": false
+    },
+    "av_sentiment": {},
+    "av_earnings": {},
+    "social_sentiment": {},
+    "thesis_json": "D:\\My-Projects\\Stock\\data\\raw\\2026-08-05\\CNC_thesis.json"
+}

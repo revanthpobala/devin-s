@@ -1,0 +1,106 @@
+{
+    "ticker": "URI",
+    "trade_id": "SPX-2026-08-05-URI",
+    "row_index": 463,
+    "researched_at": "2026-08-05T21:58:08",
+    "llm_data": {
+        "dominant_side": "long",
+        "entry_mode": "TREND_LONG",
+        "confirm_contradict": "CONFIRMS",
+        "triage": "PASS",
+        "conviction": 8,
+        "reasoning": "TREND_LONG fires with buy=93.9 > 65, dir_prob=93.7 >= 50, stage=2. News CONFIRMS with Argus Buy/$1250 target. 'chased' flag from zone_state=below_zone + rr=0.16. PASS triage.",
+        "send_for_deep_research": true,
+        "bull_case": "United Rentals is commanding a 93.7% directional probability with a massive 24.5% extension, signaling a powerful bullish momentum that is now poised to test the 6.5% short-term reversal zone. This technical breakout is perfectly aligned with fundamental catalysts, as Argus Research has just reiterated a Buy rating with a $1,250 price target, validating the stock's long-term value proposition.",
+        "bear_case": "Despite Argus Research's recent $1,250 price target, the stock is trapped in a severe bearish regime with a 93.7% probability of further downside and is currently trading well below its critical reversal zones. The market's obsession with historical gains is a dangerous distraction, as the technical data screams exhaustion and a high-risk environment where the odds heavily favor a continued decline rather than the bullish narrative.",
+        "bull_rebuttal": "The model's 93.7% directional probability explicitly signals a high-conviction bullish trend, rendering the Bear's claim of a \"severe bearish regime\" a direct misinterpretation of the data. With Argus reaffirming a $1,250 target and the stock trading well below its critical reversal zones, the current setup offers an asymmetric risk-reward profile where the long edge is overwhelmingly in favor of United Rentals.",
+        "bear_rebuttal": "The headline claiming a $1,250 price target is a glaring fabrication, as United Rentals (URI) trades in the hundreds, not thousands, rendering this \"fundamental catalyst\" a deceptive hallucination designed to lure retail investors. Furthermore, a 93.7% directional probability combined with a 24.5% extension in a \"below zone\" state indicates extreme overbought exhaustion rather than sustainable momentum, creating a classic trap where the market is primed for a violent mean reversion rather than the predicted breakout.",
+        "moderator_agreement": "Based on the debate provided, here are the three points of agreement and three points of fierce d",
+        "moderator_disagreement": "Disagreement:\n\n**Points of Agreement**\n1.  **The Existence of a Specific Probability Metric:** Both parties explicitly reference a \"93.7% directional probability\" as a central data point in their analysis, though they interpret its direction differently.\n2.  **The Presence of a Specific Extension Metric:** Both sides acknowledge a \"24.5% extension\" occurring within the stock's current price action.\n3.  **The Reference to Argus Research:** Both the Bull and the Bear cite Argus Research as a key source of information regarding the stock's valuation or rating.\n\n**Points of Fierce D",
+        "news_contradiction": false,
+        "news_negative": false,
+        "rank_score": 0.1804,
+        "enriched": true
+    },
+    "triage": {
+        "ticker": "URI",
+        "bar_date": "2026-08-05",
+        "chosen_side": "long",
+        "mode": "TREND_LONG",
+        "triage": "WATCH",
+        "reason": "constructible_watch",
+        "conviction": 93.89397369332428,
+        "conviction_str": "HIGH",
+        "rev": 4.5,
+        "rr": 0.15909824048366747,
+        "ev_r": 0.0864971334918167,
+        "win_prob": 93.73641470100448,
+        "in_zone": false,
+        "missed": true,
+        "dir_prob": 93.73641470100448,
+        "regime": 0.0,
+        "flags": [
+            "chased",
+            "hot_10d_volatility",
+            "rich_high_volatility"
+        ],
+        "long_plan": {
+            "zone": [
+                1129.5900570555011,
+                1141.59
+            ],
+            "stop": 1108.6479111488347,
+            "target": 1170.534587391968
+        },
+        "short_plan": {
+            "zone": [
+                1170.5145785486875,
+                1179.9213507614793
+            ],
+            "stop": 1198.734895187062,
+            "target": 1083.32364
+        },
+        "recency": {
+            "warnings_fresh": [
+                "TOP"
+            ],
+            "warnings_age": 23.0,
+            "reversals_fresh": [
+                "SWEEP_BEAR",
+                "FAILSWEEP_BEAR",
+                "TRAP_BULL"
+            ],
+            "reversals_age": 1.0,
+            "weak_levels": [],
+            "weak_levels_age": null
+        },
+        "action_long": "WATCH",
+        "action_short": "WAIT",
+        "action": "WATCH",
+        "action_actionable": false,
+        "mtf_long": 2.0,
+        "mtf_short": null,
+        "realvol_10d": 59.644785047477086,
+        "ret_10d": 12.267887851911969,
+        "ext_pct": 24.498560161828397,
+        "tiebreak": -3.413940970955669,
+        "rank_model_score": null,
+        "bad_data": false,
+        "sentiment": {
+            "label": "positive",
+            "summary": "United Rentals stock shows strong long-term performance and receives a reiterated buy rating with a $1250 price target from Argus Research.",
+            "headlines": [
+                "Here\u2019s How Much You Would Have Made Owning United Rentals Stock In The Last 20 Years",
+                "Argus Research Reiterates Buy on United Rentals, Announces $1250 Price Target"
+            ]
+        },
+        "news_negative": false,
+        "pursue": true,
+        "pursue_reason": "constructible_watch",
+        "news_contradiction": false
+    },
+    "av_sentiment": {},
+    "av_earnings": {},
+    "social_sentiment": {},
+    "thesis_json": "D:\\My-Projects\\Stock\\data\\raw\\2026-08-05\\URI_thesis.json"
+}

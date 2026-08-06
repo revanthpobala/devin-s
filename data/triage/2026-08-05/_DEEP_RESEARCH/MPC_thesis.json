@@ -1,0 +1,112 @@
+{
+    "ticker": "MPC",
+    "trade_id": "SPX-2026-08-05-MPC",
+    "row_index": 300,
+    "researched_at": "2026-08-05T21:47:34",
+    "llm_data": {
+        "dominant_side": "long",
+        "entry_mode": "TREND_LONG",
+        "confirm_contradict": "CONFIRMS",
+        "triage": "PASS",
+        "conviction": 8,
+        "reasoning": "TREND_LONG fires with buy=99 > 65, dir_prob=86 >= 50, stage=2. News CONFIRMS with multiple analyst upgrades. ext_pct=27.5 triggers 'extreme_extension' flag. PASS triage.",
+        "send_for_deep_research": true,
+        "bull_case": "Marathon Petroleum (MPC) is poised for a powerful bullish breakout as a consensus of major institutions, including TD Cowen and Wells Fargo, aggressively raises price targets to the $350\u2013$375 range, signaling overwhelming confidence in its future value. This fundamental momentum is perfectly aligned with technical perfection, evidenced by an 85.76% directional probability and a robust 1.65 risk-to-reward ratio that confirms the stock is primed for a significant upward move.",
+        "bear_case": "Despite a chorus of bullish analyst upgrades and a \"below zone\" technical exhaustion signal indicating the stock is overextended, the market is trapped in a dangerous divergence where the massive rally has already priced in all future upside. The current price action suggests a classic top formation where the relentless buying pressure is merely a final liquidity grab before a severe correction, making any new long entry a high-probability trap for chasing momentum.",
+        "bull_rebuttal": "The \"below zone\" technical signal actually confirms the stock is undervalued relative to its historical volatility bands, while the overwhelming analyst consensus and massive 85.76% directional probability indicate that the recent price appreciation is driven by fundamental earnings power rather than a speculative bubble. Far from being a top formation, the divergence you cite is simply the market efficiently pricing in Marathon Petroleum's robust cash flow and dividend growth, which has historically delivered exceptional long-term returns as highlighted by the 15-year compounding headline.",
+        "bear_rebuttal": "The headline-driven price target hikes are a classic \"buy the rumor, sell the news\" trap, as the stock is currently trapped in a \"below_zone\" state with an exhaustion metric of 0.156, indicating that the recent rally has already depleted available buyers before the targets can be reached. Relying on an 85.76% directional probability while the price sits below the critical 4.0 support zone is dangerous, as this high probability likely reflects a mean-reversion model predicting a drop back to fair value rather than a confirmed breakout.",
+        "moderator_agreement": "Based on the debate provided, here are the three points of agreement and three points of fierce d",
+        "moderator_disagreement": "Disagreement between the Bull and the Bear regarding Marathon Petroleum (MPC).\n\n### **3 Points of Agreement**\n\n1.  **Significant Analyst Attention and Price Target Hikes**\n    Both parties acknowledge that major institutions (specifically citing TD Cowen and Wells Fargo) have recently issued aggressive price target increases, with the Bull noting the $350\u2013$375 range and the Bear acknowledging the \"headline-driven\" nature of these specific upgrades.\n\n2.  **The Existence of a Specific Technical Indicator (\"Below Zone\")**\n    Both sides reference the same specific technical metric, the \"below zone\" signal. The Bull interprets this as confirmation of undervaluation relative to historical volatility, while the Bear cites it as evidence of overextension and exhaustion.\n\n3.  **The Presence of a High Probability Metric (85.76%)**\n    Both participants explicitly cite the \"85.76% directional probability\" figure. The Bull views this as confirmation of a robust upward move, whereas the Bear argues it likely reflects a mean-reversion model predicting a drop rather than a breakout.\n\n***\n\n### **3 Points of Fierce D",
+        "news_contradiction": false,
+        "news_negative": false,
+        "rank_score": 1.3758,
+        "enriched": true
+    },
+    "triage": {
+        "ticker": "MPC",
+        "bar_date": "2026-08-05",
+        "chosen_side": "long",
+        "mode": "TREND_LONG",
+        "triage": "WATCH",
+        "reason": "constructible_watch",
+        "conviction": 99.0465572295133,
+        "conviction_str": "HIGH",
+        "rev": 0.0,
+        "rr": 1.654698427941171,
+        "ev_r": 1.2767098211336054,
+        "win_prob": 85.76152368837197,
+        "in_zone": false,
+        "missed": true,
+        "dir_prob": 85.76152368837197,
+        "regime": 0.0,
+        "flags": [
+            "pullback"
+        ],
+        "long_plan": {
+            "zone": [
+                285.5000059517632,
+                288.00873480142724
+            ],
+            "stop": 280.48254825243504,
+            "target": 326.32242526124577
+        },
+        "short_plan": {
+            "zone": [
+                308.5350606337088,
+                311.04378948337285
+            ],
+            "stop": 316.061247182701,
+            "target": 286.91857473875444
+        },
+        "recency": {
+            "warnings_fresh": [
+                "TOP",
+                "RSI_CASCADE",
+                "EXTREME_EXTENSION"
+            ],
+            "warnings_age": 10.0,
+            "reversals_fresh": [
+                "SWEEP_BULL",
+                "FAILSWEEP_BEAR",
+                "TRAP_BULL",
+                "TRAP_BEAR"
+            ],
+            "reversals_age": 23.0,
+            "weak_levels": [],
+            "weak_levels_age": null
+        },
+        "action_long": "WATCH",
+        "action_short": "WAIT",
+        "action": "WATCH",
+        "action_actionable": false,
+        "mtf_long": 1.0,
+        "mtf_short": null,
+        "realvol_10d": 35.23360304802829,
+        "ret_10d": -5.721613577354187,
+        "ext_pct": 27.516992121369395,
+        "tiebreak": 0.03910444071347863,
+        "rank_model_score": null,
+        "bad_data": false,
+        "sentiment": {
+            "label": "positive",
+            "summary": "Marathon Petroleum delivered a massive Q2 earnings beat driven by a refining boom, prompting multiple analysts to raise price targets and maintain buy ratings.",
+            "headlines": [
+                "TD Cowen Maintains Buy on Marathon Petroleum, Raises Price Target to $375",
+                "Citigroup Maintains Neutral on Marathon Petroleum, Raises Price Target to $318",
+                "Wells Fargo Maintains Overweight on Marathon Petroleum, Raises Price Target to $359",
+                "Evercore ISI Group Maintains In-Line on Marathon Petroleum, Raises Price Target to $330",
+                "$100 Invested In Marathon Petroleum 15 Years Ago Would Be Worth This Much Today",
+                "Marathon Petroleum Crushes Q2 As Refining Boom Fuels Massive Earnings Beat",
+                "Marathon Petroleum Q2 Adj. EPS $17.73 Beats $13.73 Estimate, Sales $52.337B Beat $42.078B Estimate"
+            ]
+        },
+        "news_negative": false,
+        "pursue": true,
+        "pursue_reason": "constructible_watch",
+        "news_contradiction": false
+    },
+    "av_sentiment": {},
+    "av_earnings": {},
+    "social_sentiment": {},
+    "thesis_json": "D:\\My-Projects\\Stock\\data\\raw\\2026-08-05\\MPC_thesis.json"
+}

@@ -68,8 +68,8 @@ def _pull_fresh_news(ticker: str, date_str: str) -> str:
 
     pull_date = datetime.now().strftime("%Y-%m-%d")
     queries = [
-        f"{ticker} latest news earnings catalyst today",
-        f"{ticker} analyst rating upgrade downgrade price target",
+        f"{ticker} latest news earnings catalyst {date_str}",
+        f"{ticker} analyst rating upgrade downgrade price target {date_str}",
     ]
     blocks = []
     for q in queries:
@@ -413,7 +413,7 @@ def run_deep_research(date_str, target_ticker=None):
         with open(example_path, "r", encoding="utf-8") as f:
             few_shot_example = f.read()
 
-    system_prompt = f"{gem_text}\n\n{response_text}\n\n--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}"
+    system_prompt = f"{gem_text}\n\n{response_text}"
 
     logger.info(f"Starting Agentic Deep Research Phase for {len(chart_files)} tickers...")
 
@@ -469,6 +469,9 @@ def run_deep_research(date_str, target_ticker=None):
                 if isinstance(triage_record, dict)
                 else None
             ) or []
+
+        # Multi-Agent Debate will be run live.
+        # We ignore the stale mod_agree/mod_disagree from local triage.
 
         flags_block = _format_flags_block(flags)
         engine_math_block = _format_engine_math_block(verdict_record)
@@ -567,11 +570,100 @@ def run_deep_research(date_str, target_ticker=None):
             )
 
         options_block = ""
+
+        # ========================================================
+        # MULTI-AGENT BULL VS BEAR DEBATE (Local LLM)
+        # ========================================================
+        debate_payload = f"""
+        RESEARCH DATE: {date_str}
+
+        --- 1. DATA WINDOW (Exact Math State from TradingView) ---
+        {data_window_str}
+
+        --- 1a. LIVE QUOTE ---
+        {live_quote_block}
+
+        {unmasked_recency_block}
+
+        --- 2. NEWS RESEARCH DOSSIER ---
+        {news_dossier}
+
+        --- 2a. FRESH NEWS (LIVE) ---
+        {fresh_news}
+
+        --- 2b. MACRO NEWS (LIVE) ---
+        {macro_news}
+
+        {market_sentiment_block}
+
+        --- 2c. FUNDAMENTAL & SOCIAL ---
+        {av_block}
+        {social_block}
+
+        --- 2d. ENGINE FLAGS ---
+        {flags_block}
+        {engine_math_block}
+
+        --- 2e. EARNINGS DATE ---
+        {earnings_fact_block}
+        """
+
+        bull_sys = "You are a ruthless, aggressive Bullish Analyst. Your job is to find the absolute strongest bull case for this stock based on the technicals, catalysts, and macros. Ignore all bearish signals. Output your bull case in a concise, punchy markdown format."
+        bear_sys = "You are a skeptical, aggressive Bearish Analyst. Your job is to find every reason this setup will fail. Focus on overhead supply, weak catalysts, macro headwinds, and overextension. Output your bear case in a concise, punchy markdown format."
+
+        import concurrent.futures
+
+        def _run_debate_agent(sys_prompt, u_prompt, tokens=1024):
+            return query_local_llm(
+                system_prompt=sys_prompt,
+                user_prompt=u_prompt,
+                use_openrouter=False,
+                use_tools=False,
+                disable_thinking=True,
+                max_tokens=tokens
+            )
+
+        logger.info(f"[{ticker}] Running Bull and Bear Agents concurrently...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f_bull = executor.submit(_run_debate_agent, bull_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 1024)
+            f_bear = executor.submit(_run_debate_agent, bear_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 1024)
+            bull_case = f_bull.result()
+            bear_case = f_bear.result()
+
+        logger.info(f"[{ticker}] Running Rebuttal Agents concurrently...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f_bull_reb = executor.submit(
+                _run_debate_agent,
+                bull_sys + " You are now in the rebuttal phase. Read the Bear Case below and systematically destroy their arguments.",
+                f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BEAR CASE ---\n{bear_case}",
+                512
+            )
+            f_bear_reb = executor.submit(
+                _run_debate_agent,
+                bear_sys + " You are now in the rebuttal phase. Read the Bull Case below and systematically destroy their arguments.",
+                f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BULL CASE ---\n{bull_case}",
+                512
+            )
+            bull_rebuttal = f_bull_reb.result()
+            bear_rebuttal = f_bear_reb.result()
+
+        debate_block = (
+            "--- 2f. LOCAL RESEARCHER DEBATE (MULTI-AGENT) ---\n"
+            "Local analysts conducted a ruthless debate on this ticker. Here is their full debate transcript:\n\n"
+            "🟢 BULL CASE:\n"
+            f"{bull_case}\n\n"
+            "🔴 BEAR CASE:\n"
+            f"{bear_case}\n\n"
+            "🟢 BULL REBUTTAL:\n"
+            f"{bull_rebuttal}\n\n"
+            "🔴 BEAR REBUTTAL:\n"
+            f"{bear_rebuttal}\n\n"
+            "You are the Portfolio Manager (Judge). You MUST settle these disagreements in your final thesis and formulate the trade plan."
+        )
         user_prompt = f"""
         RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
         VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
-        prior-session news is current — the FRESH LIVE NEWS block below is the authoritative,
-        dated source for today's economy/earnings context.
+        prior-session news is current.
 
         I am requesting a Deep Research Validation for the ticker: {ticker}.
 
@@ -597,12 +689,13 @@ def run_deep_research(date_str, target_ticker=None):
 
         --- 2. NEWS RESEARCH DOSSIER (Pre-compiled by Local Pipeline) ---
         {news_dossier}
-        {"(NOTE: this cached dossier is STALE — written on a different date. Prefer the FRESH LIVE NEWS block below.)" if stale else ""}
+        {"(NOTE: this cached dossier is STALE — written on a different date. Prefer live tools.)" if stale else ""}
 
-        --- 2b. FRESH LIVE NEWS (pulled at run time — AUTHORITATIVE for today) ---
-        {macro_news}
-
+        --- 2a. FRESH NEWS (LIVE) ---
         {fresh_news}
+
+        --- 2b. MACRO NEWS (LIVE) ---
+        {macro_news}
 
         {market_sentiment_block}
 
@@ -616,26 +709,16 @@ def run_deep_research(date_str, target_ticker=None):
         --- 2d-i. ENGINE MATH (deterministic — already computed, do not recompute) ---
         {engine_math_block}
 
-        --- 2e. GOOGLE-GROUNDED RESEARCH (Gemini + Google Search, cited) ---
-        {grounded_block}
-
-        --- 2f. EARNINGS DATE (deterministic where available) ---
+        --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}
 
-        {options_block}
-        You have access to LIVE TOOLS. BEFORE you finalize the thesis you MUST call them for the
-        option chain and for anything time-sensitive you still need. What is already pre-fetched
-        above and must NOT be re-derived: the live price (section 1a), the engine math (2d-i), the
-        earnings date (2f), and macro/CPI/Fed/earnings context (2b). The Data Window state itself
-        (scores, action codes, stage, zones, geometry) is NOT stale and is NOT superseded by any
-        tool - it is the bar you are analysing. Only PRICE moves after the close.
+        {debate_block}
 
-        - get_realtime_quote("{ticker}")  -> refresh the live quote if section 1a is unavailable or you need bid/ask depth.
-        - fetch_options_chain("{ticker}", direction="CALL"|"PUT", strike_low=..., strike_high=...,
-                min_dte=..., max_dte=...)    -> live option strikes, bids/asks, mid, volume, and greeks
-                (delta/gamma/theta/vega) from Alpaca. NOTE: IV and open interest are NOT returned.
-                Derive direction/strike band from the chart + live quote; widen if needed.
-        - search_web(...)                  -> latest earnings date, catalyst, analyst/macro context.
+        {options_block}
+        You have access to LIVE TOOLS for fundamental discovery. BEFORE you finalize the thesis you MUST call them:
+        - `fetch_finnhub_news` and `fetch_alpaca_news` for the latest ticker-specific news.
+        - `search_web` for broader macro or catalyst context.
+        - `fetch_options_chain` for exact strikes.
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Then synthesize the FINAL thesis and
@@ -647,10 +730,19 @@ def run_deep_research(date_str, target_ticker=None):
         - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) derived from the live chain
             and the expected range.
         - CONVICTION and the risk/reward rationale.
-        Emit your final Portfolio Manager Thesis exactly as instructed in the response format.
+        
+        CRITICAL: Emit your final Portfolio Manager Thesis EXACTLY as instructed in the STRICT EXAMPLE OF THE EXACT FORMAT below. You MUST draw the ASCII art explicitly.
+
+        --- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---
+        {few_shot_example}
         """
 
-        provider_model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3")
+        meta_key = os.getenv("META_AI_API_KEY")
+        if meta_key:
+            provider_model = os.getenv("META_LLM", "muse-spark-1.2-contributor")
+        else:
+            provider_model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3")
+            
         logger.info(
             f"[{ticker}] Pass 2 — Transmitting full payload + {len(image_paths)} images to {provider_model} (tools enabled)..."
         )
@@ -663,6 +755,7 @@ def run_deep_research(date_str, target_ticker=None):
                 image_paths=image_paths,
                 use_tools=True,  # let M3 pull live quotes / chains / news itself
                 max_tokens=8192,
+                summarize_tool_context=f"The simulated date is {date_str}. CRITICAL: Filter out any news from 2024 or other years that contradicts this date. Treat {date_str} as the present day."
             )
 
             if response:
@@ -685,10 +778,10 @@ def run_deep_research(date_str, target_ticker=None):
 
                 # Parse metrics via regex for Google Sheets tracker
                 verdict_match = re.search(
-                    r"\*\*Verdict:\*\*\s*(.+)", response_for_parse, re.IGNORECASE
+                    r"\*\*Verdict:\*\*\s*(.*?)(?=\s*·|\s*\*\*Conviction|$)", response_for_parse, re.IGNORECASE
                 )
                 conviction_match = re.search(
-                    r"\*\*Conviction:\*\*\s*([\d\.]+)(?:/10)?", response_for_parse, re.IGNORECASE
+                    r"\*\*Conviction[^\*]*:\*\*\s*([\d\.]+)(?:/10)?", response_for_parse, re.IGNORECASE
                 )
                 thesis_match = re.search(
                     r"\*\*The Thesis in 2 Sentences:\*\*\s*(.+)", response_for_parse, re.IGNORECASE

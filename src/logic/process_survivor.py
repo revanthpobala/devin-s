@@ -64,7 +64,7 @@ _TRIAGE_SCHEMA = {
         "reasoning": {"type": "string", "maxLength": 240},
         "triage": {"type": "string", "enum": ["PASS", "WATCH", "CUT"]},
         "conviction": {"type": "number"},
-        "send_for_deep_research": {"type": "boolean"},
+        "send_for_deep_research": {"type": "boolean"}
     },
     "required": ["dominant_side", "entry_mode", "confirm_contradict", "triage", "conviction"],
 }
@@ -88,7 +88,8 @@ def _next_earnings_days(ticker: str):
     return get_next_earnings_days(ticker)
 
 
-def scrape_survivor_task(survivor, out_dir, today_str, worker_id):
+def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days: int = 90,
+                         chrome_profile: str = None):
     ticker = survivor.get("Ticker") or survivor.get("Symbol") or survivor.get("ticker", "")
     if not ticker:
         logger.warning(f"[Scraper-{worker_id}] Survivor dict has no Ticker key: {survivor}")
@@ -106,10 +107,13 @@ def scrape_survivor_task(survivor, out_dir, today_str, worker_id):
         )
         return
 
-    logger.info(f"[Scraper-{worker_id}] Scraping TradingView for {ticker}...")
+    logger.info(f"[Scraper-{worker_id}] Scraping TradingView for {ticker} (lookback_days={lookback_days})...")
     try:
-        scraper = TVScraper(worker_id=worker_id)
-        scraper.capture_ticker(ticker)
+        if chrome_profile:
+            scraper = TVScraper(chrome_profile=chrome_profile, target_date=today_str)
+        else:
+            scraper = TVScraper(worker_id=worker_id, target_date=today_str)
+        scraper.capture_ticker(ticker, lookback_days=lookback_days)
     except Exception as e:
         logger.error(f"[Scraper-{worker_id}] Scraper failed for {ticker}: {e}")
 
@@ -813,6 +817,12 @@ Example Output:
             "key_flags": list(triage.get("flags") or []),
             "send_for_deep_research": bool(det_pass and earnings_gate != "FAIL"),
             "llm_failed": True,
+            "bull_case": None,
+            "bear_case": None,
+            "bull_rebuttal": None,
+            "bear_rebuttal": None,
+            "moderator_agreement": None,
+            "moderator_disagreement": None,
         }
         if det_pass and earnings_gate == "FAIL":
             llm_json["triage"] = "WATCH"
@@ -822,6 +832,87 @@ Example Output:
             f"falling back to deterministic verdict ({triage.get('triage')}), "
             f"send_for_deep_research={llm_json['send_for_deep_research']}."
         )
+
+    # ── MULTI-ROUND BULL / BEAR DEBATE ───────────────────────────────────
+    # We use a TradingAgents-style debate architecture on the free Local LLM.
+    # Round 1 (Parallel): Bull and Bear read technicals + news and write openings.
+    # Round 2 (Parallel): Bull and Bear read each other's openings and rebut them.
+    # Round 3 (Moderator): Synthesizes exact points of agreement/disagreement.
+    # The moderator summary is passed to the Brain (Muse Spark) to settle.
+    import concurrent.futures as _cf
+
+    _debate_data = json.dumps({
+        "ticker": ticker, "price": current_price,
+        "buy": buy_score, "sell": sell_score,
+        "stage": int(round(_pget("stage"))), "regime": int(round(_pget("regime"))),
+        "ext_pct": _pget("ext_pct"), "exhaustion": _pget("exhaustion"),
+        "dir_prob": _pget("dir_prob"),
+        "rev_zone_l": safe_float(data_window.get("Long Rev Zone")),
+        "rev_zone_s": safe_float(data_window.get("Short Rev Zone")),
+        "zone_state": zone_state, "rr_from_current": round(rr_from_current, 2),
+        "headlines": headlines[:5],
+    }, indent=2)
+
+    def _run_debate(sys_prompt: str, usr_prompt: str, max_toks: int = 256) -> str:
+        try:
+            resp = query_local_llm(
+                system_prompt=sys_prompt, user_prompt=usr_prompt,
+                json_mode=False, max_tokens=max_toks, use_openrouter=False,
+                use_tools=False, disable_thinking=True, model=os.getenv("LOCAL_LLM_MODEL", "gpt-4"),
+            )
+            return (resp or "").strip()
+        except Exception as e:
+            logger.warning(f"[Debate-{worker_id}] {ticker} call failed: {e}")
+            return ""
+
+    # ROUND 1
+    _BULL_R1_SYS = "You are a BULLISH equity researcher. Build the absolute strongest 2-sentence argument for why this stock is a great LONG trade right now. Use BOTH the technical data and news headlines provided. Output ONLY the 2 sentences."
+    _BEAR_R1_SYS = "You are a BEARISH equity researcher. Build the absolute strongest 2-sentence argument for why this stock is a terrible LONG trade/trap. Use BOTH the technical data and news headlines provided. Output ONLY the 2 sentences."
+    
+    bull_case = ""
+    bear_case = ""
+    with _cf.ThreadPoolExecutor(max_workers=2) as dpool:
+        bf1 = dpool.submit(_run_debate, _BULL_R1_SYS, _debate_data)
+        br1 = dpool.submit(_run_debate, _BEAR_R1_SYS, _debate_data)
+        bull_case = bf1.result(timeout=30)
+        bear_case = br1.result(timeout=30)
+
+    # ROUND 2
+    _BULL_R2_SYS = "You are a BULLISH equity researcher. Read the Bear's argument and the original data. Rebut their specific claims in exactly 2 sentences and re-assert the long edge."
+    _BEAR_R2_SYS = "You are a BEARISH equity researcher. Read the Bull's argument and the original data. Rebut their specific claims in exactly 2 sentences and assert why it's a trap."
+    
+    bull_rebuttal = ""
+    bear_rebuttal = ""
+    with _cf.ThreadPoolExecutor(max_workers=2) as dpool:
+        bf2 = dpool.submit(_run_debate, _BULL_R2_SYS, f"DATA:\n{_debate_data}\n\nBEAR'S ARGUMENT:\n{bear_case}")
+        br2 = dpool.submit(_run_debate, _BEAR_R2_SYS, f"DATA:\n{_debate_data}\n\nBULL'S ARGUMENT:\n{bull_case}")
+        bull_rebuttal = bf2.result(timeout=30)
+        bear_rebuttal = br2.result(timeout=30)
+
+    # ROUND 3
+    _MOD_SYS = "You are an impartial moderator synthesizing a stock debate between a Bull and a Bear. Based on their openings and rebuttals, output EXACTLY 3 points they agree on, and EXACTLY 3 points of fierce disagreement."
+    _MOD_USR = f"BULL OPENING:\n{bull_case}\n\nBEAR OPENING:\n{bear_case}\n\nBULL REBUTTAL:\n{bull_rebuttal}\n\nBEAR REBUTTAL:\n{bear_rebuttal}"
+    
+    mod_out = _run_debate(_MOD_SYS, _MOD_USR, max_toks=512)
+    
+    # Split the moderator output if it clearly uses headers, otherwise just store it
+    mod_agree = ""
+    mod_disagree = ""
+    if "isagree" in mod_out.lower():
+        parts = mod_out.split("isagree")
+        mod_agree = parts[0].strip()
+        mod_disagree = "Disagree" + parts[1].strip()
+    else:
+        mod_agree = mod_out
+
+    logger.info(f"[Debate-{worker_id}] {ticker}: 3 Rounds Complete. Mod output {len(mod_out)} chars.")
+
+    llm_json["bull_case"] = bull_case or None
+    llm_json["bear_case"] = bear_case or None
+    llm_json["bull_rebuttal"] = bull_rebuttal or None
+    llm_json["bear_rebuttal"] = bear_rebuttal or None
+    llm_json["moderator_agreement"] = mod_agree or None
+    llm_json["moderator_disagreement"] = mod_disagree or None
 
     # Authoritative deep-research flag — recomputed for EVERY ticker (whether the
     # LLM succeeded or fell back) from the DETERMINISTIC verdict, NOT from whatever
