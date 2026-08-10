@@ -287,14 +287,19 @@ One or two lines: the **[M]** ex21 of the state you are leaning on, its CI, whet
 - **7+ requires at least one non-indicator pillar** retrieved this session: dated catalyst, fundamental re-rating, verified flow, or policy shift. **Name it in THE EDGE.**
 - **9+ requires two**, plus clean event risk.
 - **−1** for a breakout rather than a pullback/capitulation. **−1** if `Ext Pct vs MA200` is already 10–25% (approaching the exclusion band).
-- **Code 20 may start at 6 on state alone** — the one measured lane — but the catalyst check is mandatory.
+- **Code 20 may start at 6 on state alone** — the one measured lane — but the catalyst check is mandatory. **+1** if it carries an OOS-validated confirm (failed-sweep/OOPS in the mask, still-falling `Z Velocity`, or deep `Ext Pct ≤ −4%` with `Rev Zone ≥10`); the failed-sweep add is the strongest (bible §16.4a). **Never** for a Z1 (7–9) or a Stage-5 reversal.
 
 **Sizing.** The matrix sizes the RISK; it does not rank the NAME. "100%" means "if you have independently decided to own this, here is a well-defined place to take the risk".
 
 | Condition | Size |
 |---|---|
-| Code 20 + `Rev Zone ≥10`, catalyst confirmed | 100% |
-| Code 20, Rev Zone 7–10 | 50% |
+| Code 20 + `Rev Zone ≥10` + **failed-sweep/OOPS** (mask) + catalyst confirmed | 100% |
+| Code 20 + `Rev Zone ≥10` + **still falling** (`Z Velocity` bottom-quartile, ≈≤−1.4) or **deep** (`Ext Pct vs MA200` ≤ −4%), catalyst confirmed | 100% |
+| Code 20 + `Rev Zone ≥10`, catalyst confirmed, no pattern/depth confirm | 75% |
+| Code 20, Rev Zone 7–10 (Z1) | **25% — [M] the Z1 tier FADES out-of-sample (batty7 §16.4a); require Z0 for real conviction** |
+| ⚠️ Any Code 20 in **Stage 5 Recovery** | **0% — [M] +5.7 in-sample flips to −4.6 OOS; the bounce is already spent (§16.4a)** |
+| Code 20 + **downgrade + structural share-loss / broken-thesis** narrative (bible §16.4b: TTD-type) | **0% — TA cannot override a re-rating down** |
+| Code 20 + one-time earnings miss/guide-cut, catalyst stabilizes within 1–2 quarters | 75–100% with OOS confirms — 71% of such dumps won at 60d in the news study (§16.4b) |
 | PRIME/ACTION in **Stage 2**, ▲/▬, non-indicator pillar present | 100% |
 | PRIME/ACTION in Stage 2, ▼ | 75% |
 | PRIME/ACTION with MTF 3/3 (mature, not confirmed) | 50% |

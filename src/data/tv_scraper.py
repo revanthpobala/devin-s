@@ -46,8 +46,11 @@ SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 class TVScraper:
     def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None):
         self.chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/")
-        # Store Chrome profile locally so user only logs in once
-        if chrome_profile:
+        # Store Chrome profile locally or read from TV_CHROME_PROFILE_DIR
+        env_profile = os.getenv("TV_CHROME_PROFILE_DIR")
+        if env_profile and os.path.exists(env_profile):
+            self.user_data_dir = env_profile
+        elif chrome_profile:
             self.user_data_dir = str(config.BASE_DIR / chrome_profile)
         elif worker_id is not None:
             self.user_data_dir = str(config.BASE_DIR / f"tv_chrome_profile_{worker_id}")
@@ -63,7 +66,7 @@ class TVScraper:
         profile_path = Path(self.user_data_dir)
         if profile_path.exists():
             for item in profile_path.rglob("*"):
-                if item.is_file() and item.name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+                if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
                     try:
                         item.unlink()
                     except Exception:
@@ -317,12 +320,16 @@ class TVScraper:
             zoom_start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
             logger.info(f"Setting range to 3 months for zoomed screenshot (range: {zoom_start_date} -> today)...")
 
-            page.wait_for_selector(GOTO_BTN, state="visible", timeout=30000)
-            page.click(GOTO_BTN, timeout=15000)
-            page.fill(GOTO_START, zoom_start_date, timeout=15000)
-            page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=15000)
-            page.click(GOTO_SUBMIT, timeout=15000)
-            time.sleep(settle_s)   # let the new range load and the indicator recompute
+            try:
+                page.wait_for_selector(GOTO_BTN, state="visible", timeout=5000)
+                page.click(GOTO_BTN, timeout=5000)
+                if page.is_visible(GOTO_START):
+                    page.fill(GOTO_START, zoom_start_date, timeout=5000)
+                    page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=5000)
+                    page.click(GOTO_SUBMIT, timeout=5000)
+                    time.sleep(settle_s)   # let the new range load and the indicator recompute
+            except Exception as e:
+                logger.warning(f"Go-to-date selector bypassed: {e}")
 
             # ── 2b. Take Zoomed screenshot ─────────────
             self._pan_zoom_chart(page, move_right=4, zoom_out=0)
@@ -336,13 +343,17 @@ class TVScraper:
             # ── 2c. Download chart CSV ───────────────
             # Set the range to lookback_days if it's different from 90 (e.g. 365 days for SPX)
             if lookback_days != 90:
-                start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-                logger.info(f"Setting range for CSV download (range: {start_date} -> today)...")
-                page.click(GOTO_BTN, timeout=15000)
-                page.fill(GOTO_START, start_date, timeout=15000)
-                page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=15000)
-                page.click(GOTO_SUBMIT, timeout=15000)
-                time.sleep(settle_s)
+                try:
+                    start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+                    logger.info(f"Setting range for CSV download (range: {start_date} -> today)...")
+                    page.click(GOTO_BTN, timeout=5000)
+                    if page.is_visible(GOTO_START):
+                        page.fill(GOTO_START, start_date, timeout=5000)
+                        page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=5000)
+                        page.click(GOTO_SUBMIT, timeout=5000)
+                        time.sleep(settle_s)
+                except Exception as e:
+                    logger.warning(f"Go-to-date selector bypassed for CSV: {e}")
                 
             csv_path = self.screenshots_dir / f"{safe_symbol}_datawindow.csv"
             data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"

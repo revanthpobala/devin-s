@@ -75,7 +75,7 @@ _FIELD_LABELS = {
     "weinstein": ("weinstein",),
     "buy": ("buy score",),
     "sell": ("sell score",),
-    "stage": ("stage (1=", "stage 1 base", "stage 1"),
+    "stage": ("stage 1 base 2 up 3 top 4 down", "stage (1=", "stage 1 base", "stage 1"),
     "stage_age_bars": ("stage age bars", "stage age",),
     "long_zbot": ("long entry zone bot",),
     "long_ztop": ("long entry zone top",),
@@ -93,15 +93,15 @@ _FIELD_LABELS = {
     "short_entry": ("short entry",),
     "short_in_zone": ("short in zone",),
     "short_rr_valid": ("short rr valid", "short r:r valid",),
-    "entry_at_market": ("entry at market",),
+    "entry_at_market": ("entry at market 0no 1l 2s 3both", "entry at market",),
     "rev_l": ("long rev zone",),
     "rev_s": ("short rev zone",),
-    "ext_pct": ("ext%", "ext pct"),
+    "ext_pct": ("ext pct vs ma200", "ext%", "ext pct"),
     "ext_z_self": ("ext z self relative", "ext z self",),
     "exhaustion": ("exhaustion gradient",),
-    "regime": ("regime (", "regime 0 hlt"),
-    "dir_prob": ("dir prob",),
-    "ignition_long": ("long ignition",),
+    "regime": ("regime 0 hlt 1 ext 2 clmx 3 dist 4 dn 5 ign 6 sqz", "regime (", "regime 0 hlt"),
+    "dir_prob": ("dir prob pct above 50 bull", "dir prob",),
+    "ignition_long": ("long ignition fresh breakout", "long ignition",),
     "bear_mask": ("bear warning mask",),
     "rev_mask": ("reversal pattern mask",),
     "weak_mask": ("weak level mask",),
@@ -110,36 +110,39 @@ _FIELD_LABELS = {
     "weak_age": ("weak level age",),
     "action_long": ("action long code",),
     "action_short": ("action short code",),
-    "mtf_long": ("mtf long aligned",),
-    "energy_state": ("energy state",),
-    "energy_ivrank": ("energy iv rank",),
-    "energy_iv30": ("energy iv30 (ann %)", "energy iv30 ann %",),
-    "iv_hv_spread": ("energy iv-hv spread", "energy iv-hv spread (ivs)", "energy iv hv spread"),
-    "hv20": ("hv20 (ann %)", "hv20 ann %",),
-    "adx": ("adx (14",),
-    "di_plus": ("dmi +di", "dmi di plus"),
-    "di_minus": ("dmi -di", "dmi di minus"),
-    "rr_to_target": ("r:r to target",),
+    "mtf_long": ("mtf long aligned 0 to 3", "mtf long aligned",),
+    "energy_state": ("energy state 3 exp 2 warm 1 sqz 0 dorm", "energy state",),
+    "energy_ivrank": ("energy iv rank pct", "energy iv rank",),
+    "energy_iv30": ("energy iv30 ann pct", "energy iv30 (ann %)", "energy iv30 ann %",),
+    "iv_hv_spread": ("energy iv hv spread", "energy iv-hv spread", "energy iv-hv spread (ivs)"),
+    "hv20": ("hv20 ann pct", "hv20 (ann %)", "hv20 ann %",),
+    "adx": ("adx 14", "adx (14",),
+    "di_plus": ("dmi di plus", "dmi +di"),
+    "di_minus": ("dmi di minus", "dmi -di"),
+    "rr_to_target": ("rr to target", "r:r to target"),
     "vp_poc": ("vp poc", "poc",),
     "vp_vah": ("vp vah", "vah",),
     "vp_val": ("vp val", "val",),
     "vp_hvn_above": ("vp hvn above",),
     "vp_hvn_below": ("vp hvn below",),
-    "rvol": ("rvol (vs avg)",),
+    "rvol": ("rvol vs avg", "rvol (vs avg)",),
     "sprint_ema": ("sprint line ema",),
-    "hull_baseline": ("hull baseline (hma 20)", "hull baseline hma 20", "hull baseline hma", "hull baseline hwa 20",),
+    "hull_baseline": ("hull baseline hma", "hull baseline (hma 20)", "hull baseline hma 20", "hull baseline hwa 20",),
     "golden_cross": ("golden cross",),
     "death_cross": ("death cross",),
     "zone0_long": ("zone 0 long",),
     "zone0_short": ("zone 0 short",),
     "avwap_resistance": ("avwap resistance",),
     "avwap_support": ("avwap support",),
-    "exp_move_pct": ("exp move pct",),
+    "exp_move_pct": ("exp move pct 21b", "exp move pct",),
+    "z_volume": ("z volume",),
+    "z_rsi": ("z rsi",),
     "z_velocity": ("z velocity",),
     "z_elasticity": ("z elasticity",),
     "trend_bars_up": ("trend bars up",),
-    "buy_sigma_evidence": ("buy sigma evidence",),
-    "sell_sigma_evidence": ("sell sigma evidence",),
+    "buy_sigma_evidence": ("buy sigma evidence", "buy_sigma_evidence",),
+    "sell_sigma_evidence": ("sell sigma evidence", "sell_sigma_evidence",),
+    "zone_rr_flags": ("zone rr flags pack",),
 }
 
 _BEAR_MASK_BITS = {
@@ -236,6 +239,12 @@ def _alnum(s: str) -> str:
 
 
 def _match_label(raw: dict, *needles) -> Optional[str]:
+    # Pass 1: Exact match on normalized alphanumeric string (prevents key collisions)
+    for key in raw:
+        cleaned = _alnum(key)
+        if any(_alnum(n) == cleaned for n in needles):
+            return key
+    # Pass 2: Substring match fallback for partial/extended labels
     for key in raw:
         cleaned = _alnum(key)
         if any(_alnum(n) in cleaned for n in needles):
@@ -327,6 +336,20 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
             f[field] = None
         else:
             f[field] = _num_mask(raw[key], _MAX_MASK.get(field)) if field in _MASK_CLASS_FIELDS else _num(raw[key])
+
+    # Unpack zone_rr_flags if present and individual flag fields are missing
+    flags_pack = f.get("zone_rr_flags")
+    if flags_pack is not None:
+        m = int(round(flags_pack))
+        if f.get("long_in_zone") is None:
+            f["long_in_zone"] = 1.0 if (m & 1) else 0.0
+        if f.get("short_in_zone") is None:
+            f["short_in_zone"] = 1.0 if (m & 2) else 0.0
+        if f.get("long_rr_valid") is None:
+            f["long_rr_valid"] = 1.0 if (m & 4) else 0.0
+        if f.get("short_rr_valid") is None:
+            f["short_rr_valid"] = 1.0 if (m & 8) else 0.0
+
     return f
 
 
@@ -998,6 +1021,93 @@ def _self_test() -> None:
             long_stop_loss=45.0,
             long_target=60.0,
         ),
+        # Case 5: Scraped TV Data Window for CAT (raw string labels, unicode minus, ∅ empty zones) -> WATCH
+        "CAT": {
+            "Date": "Fri 07 Aug '26",
+            "Open": "865.63",
+            "High": "868.00",
+            "Low": "836.01",
+            "Close": "842.19",
+            "Change": "−14.77 (−1.72%)",
+            "Volume": "2.44 M",
+            "VP POC": "886.47",
+            "VP VAH": "1,022.14",
+            "VP VAL": "759.03",
+            "VP HVN Above": "870.03",
+            "VP HVN Below": "787.81",
+            "RVOL Vs Avg": "0.7706",
+            "Energy IV30 Ann Pct": "53.64",
+            "Energy IV Rank Pct": "79.76",
+            "Energy IV HV Spread": "23.08",
+            "Energy State 3 Exp 2 Warm 1 Sqz 0 Dorm": "3.00",
+            "HV20 Ann Pct": "43.58",
+            "ADX 14": "19.92",
+            "DMI DI Plus": "23.77",
+            "DMI DI Minus": "26.43",
+            "POC": "886.47",
+            "VAH": "1,022.14",
+            "VAL": "759.03",
+            "Sprint Line EMA": "850.10",
+            "Hull Baseline HMA": "830.97",
+            "MA 20 Fast": "870.12",
+            "MA 50 Mid": "886.84",
+            "MA 200 Slow": "757.51",
+            "Weinstein MA 150": "965.18",
+            "Golden Cross": "0.0000",
+            "Death Cross": "0.0000",
+            "Zone 0 Long": "0.0000",
+            "Zone 0 Short": "0.0000",
+            "AVWAP Resistance": "892.18",
+            "AVWAP Support": "834.77",
+            "Buy Score": "63.24",
+            "Sell Score": "56.53",
+            "Stage 1 Base 2 Up 3 Top 4 Down": "4.00",
+            "Stage Age Bars": "24.00",
+            "Long Entry": "834.77",
+            "Long Entry Zone Bot": "829.49",
+            "Long Entry Zone Top": "840.05",
+            "Long Stop Loss": "808.37",
+            "Long Target": "888.87",
+            "Short Entry": "860.39",
+            "Short Entry Zone Bot": "∅",
+            "Short Entry Zone Top": "∅",
+            "Short Stop Loss": "886.79",
+            "Short Target": "794.59",
+            "Entry At Market 0No 1L 2S 3Both": "0.0000",
+            "Long Rev Zone": "0.0000",
+            "Short Rev Zone": "3.00",
+            "Ext Pct vs MA200": "11.18",
+            "Exhaustion Gradient": "0.0802",
+            "Ext Z Self Relative": "−1.37",
+            "Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz": "4.00",
+            "Exp Move Pct 21b": "12.58",
+            "Dir Prob Pct Above 50 Bull": "20.67",
+            "Long Ignition Fresh Breakout": "0.0000",
+            "RR To Target": "2.05",
+            "Long Target T1 Waypoint": "888.87",
+            "Short Target T1 Waypoint": "794.59",
+            "Zone RR Flags Pack": "12.00",
+            "Action Long Code": "8.00",
+            "Action Short Code": "8.00",
+            "MTF Long Aligned 0 To 3": "1.0000",
+            "Bear Warning Mask": "1.0000",
+            "Reversal Pattern Mask": "20.00",
+            "Weak Level Mask": "0.0000",
+            "Bear Warning Age": "19.00",
+            "Reversal Pattern Age": "7.00",
+            "Weak Level Age": "∅",
+            "Z Volume": "0.0000",
+            "Z RSI": "−0.0787",
+            "Z Velocity": "−1.19",
+            "Z Elasticity": "−1.36",
+            "Trend Bars Up": "0.0000",
+            "Buy Sigma Evidence": "0.8090",
+            "Sell Sigma Evidence": "1.52",
+            "Premove Pack": "1,088.00",
+            "Darvas Box Top": "935.00",
+            "Buy Category Pack": "65,536.00",
+            "Sell Category Pack": "18.00",
+        },
     }
 
     expected = {
@@ -1005,6 +1115,7 @@ def _self_test() -> None:
         "EXT_CUT": ("long", "TREND_LONG", "CUT", "extreme_extension_self_relative"),
         "RR_TRAP": ("long", "TREND_LONG", "WATCH", "constructible_watch"),
         "STAGE0": ("long", "TREND_LONG", "CUT", "warmup_stage_0"),
+        "CAT": ("long", "NONE", "WATCH", "no_setup"),
     }
 
     ok = True

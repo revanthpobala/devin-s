@@ -70,16 +70,23 @@ _TRIAGE_SCHEMA = {
 }
 
 
+_EMPTY_TOKENS = {"", "∅", "⌀", "none", "n/a", "na", "-", "—", "null", "nan"}
+
+
 def safe_float(val, default=0.0):
+    if val is None:
+        return default
     try:
-        s = normalize_number_str(val)
+        s = normalize_number_str(val).strip()
+        if s.lower() in _EMPTY_TOKENS:
+            return default
         for p in ["C", "O", "H", "L"]:
             s = s.replace(p, "")
         s = s.replace(",", "").replace("%", "").replace(" ", "").strip()
-        if not s:
+        if not s or s.lower() in _EMPTY_TOKENS:
             return default
         return float(s)
-    except:
+    except Exception:
         return default
 
 
@@ -552,10 +559,25 @@ def generate_thesis_task(
     }
     headlines = list(sentiment.get("headlines", []) or [])
 
+    # Parse Data Window early with parse_data_window for reliable normalized field extraction
+    try:
+        from src.logic.data_window_filter import parse_data_window
+
+        _pf = parse_data_window(data_window) or {}
+    except Exception as e:
+        logger.warning(
+            f"[ThesisWorker-{worker_id}] parse_data_window failed for {ticker}: {e}"
+        )
+        _pf = {}
+
+    def _pget(key, default=0.0):
+        v = _pf.get(key)
+        return v if isinstance(v, (int, float)) else default
+
     # E. Calculate RR inputs (needed before the direction inference below)
-    current_price = safe_float(data_window.get("Close") or data_window.get("C"))
-    buy_score = safe_float(data_window.get("Buy Score"))
-    sell_score = safe_float(data_window.get("Sell Score"))
+    current_price = _pf.get("price") if _pf.get("price") is not None else safe_float(data_window.get("Close") or data_window.get("C"))
+    buy_score = _pf.get("buy") if _pf.get("buy") is not None else safe_float(data_window.get("Buy Score"))
+    sell_score = _pf.get("sell") if _pf.get("sell") is not None else safe_float(data_window.get("Sell Score"))
 
     # # Determine Trade Direction (deterministic filter's chosen_side is authoritative)
     side = str(
@@ -566,15 +588,13 @@ def generate_thesis_task(
         # Fallback for single-ticker --ticker runs that bypass the sheet cascade
         # and therefore carry no alert-side. Use the indicator's own Direction
         # Probability (bible §5.13 Group B field 14): >50 = bull, <50 = bear.
-        # This is the Grinold-Kahn standardized/damped score, i.e. the
-        # canonical directional read, NOT a raw buy>vs>sell comparison.
-        dir_prob = safe_float(data_window.get("Dir Prob % (>50 bull)"))
+        dir_prob = _pf.get("dir_prob") if _pf.get("dir_prob") is not None else safe_float(data_window.get("Dir Prob % (>50 bull)"))
         if dir_prob > 0:
             side = "LONG" if dir_prob >= 50 else "SHORT"
         else:
             # Dir Prob missing/uncomputed: infer from score + short zone presence.
-            short_zone = str(data_window.get("Short Entry Zone Bot", "")).strip()
-            if buy_score >= sell_score or short_zone in ("", "∅", "N/A", "None"):
+            short_zone_val = _pf.get("short_zbot")
+            if buy_score >= sell_score or short_zone_val is None:
                 side = "LONG"
             else:
                 side = "SHORT"
@@ -582,14 +602,14 @@ def generate_thesis_task(
     rr_from_current = 0.0
     try:
         if side == "LONG":
-            target = safe_float(data_window.get("Long Target"))
-            stop = safe_float(data_window.get("Long Stop Loss"))
-            if current_price - stop > 0:
+            target = _pf.get("long_target") if _pf.get("long_target") is not None else safe_float(data_window.get("Long Target"))
+            stop = _pf.get("long_stop_loss") if _pf.get("long_stop_loss") is not None else safe_float(data_window.get("Long Stop Loss"))
+            if target is not None and stop is not None and current_price is not None and current_price - stop > 0:
                 rr_from_current = (target - current_price) / (current_price - stop)
         elif side == "SHORT":
-            target = safe_float(data_window.get("Short Target"))
-            stop = safe_float(data_window.get("Short Stop Loss"))
-            if stop - current_price > 0:
+            target = _pf.get("short_target") if _pf.get("short_target") is not None else safe_float(data_window.get("Short Target"))
+            stop = _pf.get("short_stop_loss") if _pf.get("short_stop_loss") is not None else safe_float(data_window.get("Short Stop Loss"))
+            if target is not None and stop is not None and current_price is not None and stop - current_price > 0:
                 rr_from_current = (current_price - target) / (stop - current_price)
     except Exception as e:
         logger.warning(f"[ThesisWorker-{worker_id}] Failed to calculate RR for {ticker}: {e}")
@@ -597,18 +617,18 @@ def generate_thesis_task(
     if triage.get("rr") is not None:
         rr_from_current = triage["rr"]
 
-    zone_bot = safe_float(data_window.get("Long Entry Zone Bot"))
-    zone_top = safe_float(data_window.get("Long Entry Zone Top"))
+    zone_bot = _pf.get("long_zbot")
+    zone_top = _pf.get("long_ztop")
 
     if side == "SHORT":
-        czb = safe_float(data_window.get("Short Entry Zone Bot"))
-        czt = safe_float(data_window.get("Short Entry Zone Top"))
+        czb = _pf.get("short_zbot")
+        czt = _pf.get("short_ztop")
     else:
         czb, czt = zone_bot, zone_top
     zone_state = "in_zone"
-    if czt and current_price > czt:
+    if czt is not None and current_price is not None and current_price > czt:
         zone_state = "above_zone"
-    elif czb and current_price < czb:
+    elif czb is not None and current_price is not None and current_price < czb:
         zone_state = "below_zone"
 
     raw_news = news_data.pop("raw_news", "")
@@ -626,29 +646,6 @@ def generate_thesis_task(
         earnings_gate = "CAUTION"
     else:
         earnings_gate = "PASS"
-    # Resolve the math fields through the FILTER'S OWN label matcher, never by exact key.
-    # The nine fields below were read with hardcoded legacy titles ("Ext% (vs MA200)",
-    # "Stage (1=Base,2=Up,3=Top,4=Dn)", "Dir Prob % (>50 bull)", ...). The Pine export
-    # titles changed, so every one of them missed and safe_float(None) handed the model
-    # 0.0 — dir_prob 0 made TREND_LONG unreachable and TREND_SHORT always true, stage 0
-    # disabled both REVERSION modes, and regime 0 read as "Healthy" on every ticker.
-    # parse_data_window carries both old and new variants for each label, so it survives
-    # the next rename too.
-    try:
-        from src.logic.data_window_filter import parse_data_window
-
-        _pf = parse_data_window(data_window) or {}
-    except Exception as e:
-        logger.warning(
-            f"[ThesisWorker-{worker_id}] parse_data_window failed for {ticker}: {e}"
-        )
-        _pf = {}
-
-
-    def _pget(key, default=0.0):
-        v = _pf.get(key)
-        return v if isinstance(v, (int, float)) else default
-
 
     llm_input = {
         "ticker": ticker,
@@ -662,16 +659,16 @@ def generate_thesis_task(
         "exhaustion": _pget("exhaustion"),
         "exp_move_pct": _pget("exp_move_pct"),
         "ignition_long": _pget("ignition_long"),
-        "rev_zone_l": safe_float(data_window.get("Long Rev Zone")),
-        "rev_zone_s": safe_float(data_window.get("Short Rev Zone")),
+        "rev_zone_l": _pf.get("rev_l") if _pf.get("rev_l") is not None else safe_float(data_window.get("Long Rev Zone")),
+        "rev_zone_s": _pf.get("rev_s") if _pf.get("rev_s") is not None else safe_float(data_window.get("Short Rev Zone")),
         "long_zone": [zone_bot, zone_top],
-        "long_target": safe_float(data_window.get("Long Target")),
-        "long_stop": safe_float(data_window.get("Long Stop Loss")),
+        "long_target": _pf.get("long_target") if _pf.get("long_target") is not None else safe_float(data_window.get("Long Target")),
+        "long_stop": _pf.get("long_stop_loss") if _pf.get("long_stop_loss") is not None else safe_float(data_window.get("Long Stop Loss")),
         "ma200": _pget("ma200"),
-        "avwap_res": safe_float(data_window.get("AVWAP Resistance")),
-        "avwap_sup": safe_float(data_window.get("AVWAP Support")),
-        "golden_cross": safe_float(data_window.get("Golden Cross")),
-        "death_cross": safe_float(data_window.get("Death Cross")),
+        "avwap_res": _pf.get("avwap_resistance") if _pf.get("avwap_resistance") is not None else safe_float(data_window.get("AVWAP Resistance")),
+        "avwap_sup": _pf.get("avwap_support") if _pf.get("avwap_support") is not None else safe_float(data_window.get("AVWAP Support")),
+        "golden_cross": _pf.get("golden_cross") if _pf.get("golden_cross") is not None else safe_float(data_window.get("Golden Cross")),
+        "death_cross": _pf.get("death_cross") if _pf.get("death_cross") is not None else safe_float(data_window.get("Death Cross")),
         "dominant_side": side.lower(),
         "opposite_score": sell_score if side == "LONG" else buy_score,
         "zone_state": zone_state,
@@ -682,12 +679,12 @@ def generate_thesis_task(
         # low_volume_breakout), but they were never sent — so those rules could not fire.
         # None (not 0.0) when the companion is off the chart, since the gem is told not to
         # infer a missing VP field and 0.0 would read as a real price.
-        "poc": safe_float(data_window.get("VP POC"), None),
-        "vah": safe_float(data_window.get("VP VAH"), None),
-        "val": safe_float(data_window.get("VP VAL"), None),
-        "hvn_above": safe_float(data_window.get("VP HVN Above"), None),
-        "hvn_below": safe_float(data_window.get("VP HVN Below"), None),
-        "rvol": safe_float(data_window.get("RVOL Vs Avg"), None),
+        "poc": _pf.get("vp_poc") if _pf.get("vp_poc") is not None else safe_float(data_window.get("VP POC"), None),
+        "vah": _pf.get("vp_vah") if _pf.get("vp_vah") is not None else safe_float(data_window.get("VP VAH"), None),
+        "val": _pf.get("vp_val") if _pf.get("vp_val") is not None else safe_float(data_window.get("VP VAL"), None),
+        "hvn_above": _pf.get("vp_hvn_above") if _pf.get("vp_hvn_above") is not None else safe_float(data_window.get("VP HVN Above"), None),
+        "hvn_below": _pf.get("vp_hvn_below") if _pf.get("vp_hvn_below") is not None else safe_float(data_window.get("VP HVN Below"), None),
+        "rvol": _pf.get("rvol") if _pf.get("rvol") is not None else safe_float(data_window.get("RVOL Vs Avg"), None),
         "ev_r": safe_float(triage.get("ev_r")),
         "win_prob": safe_float(triage.get("win_prob")),
         "computed_flags": list(triage.get("flags") or []),

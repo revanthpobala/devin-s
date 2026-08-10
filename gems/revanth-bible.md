@@ -613,7 +613,7 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 > **The Data Window is the ONLY source of truth.** Never OCR numbers off the dashboard
 > image. Use the chart image for pattern context only; read all values from here.
 
-### 8.1 Main Indicator (57 fields)
+### 8.1 Main Indicator (65 fields)
 
 | # | Field | Type | Description |
 |---|-------|------|-------------|
@@ -669,15 +669,28 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 | 50 | Bear Warning Age | 0–30/∅ | Bars since freshest bear warning |
 | 51 | Reversal Pattern Age | 0–30/∅ | Bars since freshest reversal pattern |
 | 52 | Weak Level Age | 0–30/∅ | Bars since freshest weak-level event |
-| 53 | Z Velocity | σ | Price velocity z-score |
-| 54 | Z Elasticity | σ | Price stretch z-score |
-| 55 | Trend Bars Up | int | `barssince(close < EMA20)` — bars since price last closed BELOW the EMA20, not a generic "uptrend" counter. **Returns 100 as a sentinel if price has never been below it.** Observed 0–164, p99 = 56 |
-| 56 | Buy Sigma Evidence | σ | Raw bullish evidence (before prior) |
-| 57 | Sell Sigma Evidence | σ | Raw bearish evidence (before prior) |
+| 53 | Z Volume | σ | Volume z-score vs 20 bars — demand urgency |
+| 54 | Z RSI | σ | RSI z-score vs 14 bars, **sign-flipped** (lower RSI = higher value) |
+| 55 | Z Velocity | σ | Price velocity z-score |
+| 56 | Z Elasticity | σ | Price stretch z-score |
+| 57 | Trend Bars Up | int | `barssince(close < EMA20)` — bars since price last closed BELOW the EMA20, not a generic "uptrend" counter. **Returns 100 as a sentinel if price has never been below it.** Observed 0–164, p99 = 56 |
+| 58 | Buy Sigma Evidence | σ | Raw bullish evidence (before prior) |
+| 59 | Sell Sigma Evidence | σ | Raw bearish evidence (before prior) |
+| 60 | Darvas State | 0–5 | 0=no box, 1=IN BOX, 2=BREAKING OUT, 3=BREAKOUT (Stage 2), 4=ABOVE BOX, 5=BELOW BOX. Same ternary precedence as the Row 7 cell, so code and dashboard cannot disagree |
+| 61 | Darvas Box Quality | 0–100 | Tightness: 100 if box height <5%, 80 if <10%, 60 if <15%, 40 if <20%, else 20. 0 when no valid box |
+| 62 | Darvas Box Top | price/∅ | Pivot level — the stalk trigger. **Blank when no box exists; read as null, not 0** |
+| 63 | Darvas Box Bot | price/∅ | Box floor — structure break level. Same blank rule |
+| 64 | Squeeze Release Dir | −1/0/+1 | Direction on the bar a BB/KC squeeze fires. **`Regime == 6` already means `sqzOn`** (it is that enum's first branch), so the coil itself is not exported separately — this is only the release |
+| 65 | RS Leader | 0/1 | `close/index > EMA50(close/index)`, index auto-selected SPY or QQQ. The same bool that gates `Long Ignition` |
 
-> **Field numbering vs CSV column position.** The 57 fields above occupy CSV columns **6–62**; the 17
-> companion fields (§8.2) occupy **63–79**. The OHLC columns are 1–5 (`time, open, high, low, close`)
-> and **`Volume` is the LAST column (80), not the sixth** — parse by header name, never by position.
+> **Field numbering vs CSV column position.** The 65 fields above occupy CSV columns **6–70**; the 17
+> companion fields (§8.2) occupy **71–87**. The OHLC columns are 1–5 (`time, open, high, low, close`)
+> and **`Volume` is the LAST column (88), not the sixth** — parse by header name, never by position.
+>
+> ⚠️ **Schema width is no longer a recency proxy.** Widths have gone 79 → 82 → 83 → 85, then back to
+> 79 after the token-cap cleanup deleted six exports, and now to 88 with the pre-move pack. A given
+> width does **not** identify a version — the 85 of the old schema is a different field set from any
+> later 85. `load_exports.py` resolves duplicate tickers by folder order for exactly this reason.
 >
 > **An entry can exist with NO zone — 19.3% of live long bars.** 464,492 bars export a valid
 > `Long Entry` and `Long Stop Loss` while `Long Entry Zone Bot/Top` are blank: the clustering engine
@@ -700,21 +713,21 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 
 | # | Field | Description |
 |---|-------|-------------|
-| 58 | VP POC | Volume-profile Point of Control |
-| 59 | VP VAH | Value Area High |
-| 60 | VP VAL | Value Area Low |
-| 61 | VP HVN Above | Nearest High-Volume Node above (∅=none) |
-| 62 | VP HVN Below | Nearest High-Volume Node below |
-| 63 | RVOL Vs Avg | Relative volume vs 20-bar avg |
-| 64 | Energy IV30 Ann Pct | Synthetic IV30 |
-| 65 | Energy IV Rank Pct | IV percentile over 252 bars |
-| 66 | Energy IV HV Spread | IV − HV (drives energy state) |
-| 67 | Energy State | 0=Dormant, 1=Squeeze, 2=Warming, 3=Expansion |
-| 68 | HV20 Ann Pct | Realized volatility, annualized |
-| 69 | ADX 14 | Trend strength |
-| 70 | DMI DI Plus | +DI |
-| 71 | DMI DI Minus | −DI |
-| 72–74 | POC, VAH, VAL | Chart-line duplicates |
+| 66 | VP POC | Volume-profile Point of Control |
+| 67 | VP VAH | Value Area High |
+| 68 | VP VAL | Value Area Low |
+| 69 | VP HVN Above | Nearest High-Volume Node above (∅=none) |
+| 70 | VP HVN Below | Nearest High-Volume Node below |
+| 71 | RVOL Vs Avg | Relative volume vs 20-bar avg |
+| 72 | Energy IV30 Ann Pct | Synthetic IV30 |
+| 73 | Energy IV Rank Pct | IV percentile over 252 bars |
+| 74 | Energy IV HV Spread | IV − HV (drives energy state) |
+| 75 | Energy State | 0=Dormant, 1=Squeeze, 2=Warming, 3=Expansion |
+| 76 | HV20 Ann Pct | Realized volatility, annualized |
+| 77 | ADX 14 | Trend strength |
+| 78 | DMI DI Plus | +DI |
+| 79 | DMI DI Minus | −DI |
+| 80–82 | POC, VAH, VAL | Chart-line duplicates |
 
 > **Two different histories — verified on the corpus.** VP POC / VAH / VAL / HVN Above / HVN Below
 > populate on **exactly 1 bar per ticker** (median 1, max 1 — they are `barstate.islast`-gated), while
@@ -1397,6 +1410,58 @@ not significant). Do **not** require In Zone. Note the ≥10 refinement matters 
 on the full corpus (where 7–10 was worthless at +0.12); here the whole state works. Most striking:
 the **MTF 0/3** subset is the best of all, which is coherent — this is a capitulation buy, so the
 absence of trend alignment is the setup, not a disqualifier.
+
+**16.4a — Out-of-sample / 60-day / pattern confirmation.**
+§16 above is full-sample 21-day ex21. An independent replication on a different scrape (batty7) at a
+**60-day** horizon, with an explicit **TRAIN ≤2021-12-31 / TEST ≥2022-03-01** split (60-bar purge) and
+a **label-shuffle null**, confirms and sharpens the same edge. Metric here = 60d forward return minus
+each ticker's own 60d drift (excess60), t = mean/se on **de-overlapped** bars (≥21d apart, so windows
+are ~independent). This is the OOS proof §16 previously lacked.
+
+| Setup (long reversal pool, revScoreLong≥7) | TRAIN ex60 | TEST ex60 | verdict |
+|---|---|---|---|
+| **rev Z0 (≥10)** | +2.67 (t 5.9) | **+1.39 (t 4.4) SIG** | **HELD** |
+| rev Z1 (7–9) only | +1.38 (t 4.8) | +0.01 (t 0.1) | **fades — needs the Z0 depth** |
+| **Stage 4 (Decline)** | +1.14 (t 4.8) | **+0.81 (t 3.8) SIG** | HELD — the reversal *is* a Stage-4 state |
+| **Stage 5 (Recovery)** | +0.15 (t 0.3) | **−2.84 (t −4.6)** | **NEGATIVE OOS — do not buy the "recovery"** |
+| **Z0 + FAILSWEEP_BULL** | +5.11 (t 6.x) | **+2.83 SIG** | HELD — the failed-sweep is the single best pattern add |
+| Z0 + OOPS_BULL | +4.98 | +2.21 SIG | HELD |
+| Z0 + deep_ext (≤−4% vs MA200) | +4.71 | +2.03 SIG | HELD |
+| Z0 + high IV-rank (≥48) | +4.72 | +1.86 SIG | HELD |
+| **Z0 + falling (zVel bottom-quartile) + FAILSWEEP** | — | **+5–7 (t 6–8)** | HELD — top validated cluster |
+| Stage 5 + deep_ext | **+5.69 (t 4.3)** | **−4.56 (t −3.9)** | **OVERFIT TRAP — flipped sign OOS; a cautionary example** |
+
+**Systematic robustness.** A full 1/2/3-way search over 24 conditions on the de-overlapped pool
+returned **512 combos passing TRAIN and 383 also holding in TEST**; a label-shuffle null (8 runs)
+produced **12.2 ± 7.4 passing TRAIN and 0.0 ± 0.0 holding in TEST**. Real HELD / null HELD ≈ **766×** —
+the reversal edge is not a multiple-testing artifact.
+
+**What this changes for the rule.** (1) The winning ingredients are **still-falling** (zVel bottom
+quartile — buy while it is dropping, not after it turns), **deep below the 200MA**, **high IV-rank**,
+and above all a **failed sweep / OOPS** in the mask. (2) **Stage 5 is a trap** — by the time the engine
+labels it Recovery the bounce is spent and forward excess goes negative; keep entries in **Stage 4**.
+(3) The Z1 (7–9) tier does not survive OOS — require **Z0 (≥10)** for standalone conviction.
+⚠️ Still technical-only: whether each move was news/earnings-driven is measured separately (§16.4b);
+a −20% earnings-gap "reversal" (broken thesis) and a technical flush look identical here.
+
+**16.4b — News attribution on Code-20 reversal births (n=16 research sample).**
+16 largest single-day dumps (2024+) into a fresh Code-20 birth (Z0 + Stage 4) were researched for
+fundamental cause (outcome withheld from researchers). **16/16 had identifiable news** — all earnings,
+guidance, downgrade, or macro-sector driven; no pure technical flushes in this dump-selected sample.
+
+| NATURE | n | 60d WIN | mean ret60 |
+|---|---|---|---|
+| **FUNDAMENTAL_DETERIORATION** | 14 | **10/14 (71%)** | +17.5% |
+| SENTIMENT_OVERREACTION | 1 | 0/1 | −9.4% (TTD: downgrade + competitive threat) |
+| MACRO_FLUSH | 1 | 1/1 | +7.8% (ENPH: tax-credit policy) |
+
+**Implication — refines, does not kill, the reversal lane.** Earnings/guidance dumps into a Stage-4 Z0
+reversal often *do* bounce at 60d (71% in this sample) — the TA edge and the FA catalyst are not
+mutually exclusive. What *does* fail: **downgrade + structural competitive-loss narrative** (TTD) and
+ongoing multi-quarter deterioration without a stabilizing catalyst (PINS, EL, MPWR, TER — the 4
+fundamental losses). **Agent FA job:** classify one-time miss/guide-cut (tradeable with TA confirms)
+vs broken-thesis / share-loss / open-ended tariff drag (size 0% or skip despite Code 20). Raw data:
+`data-windows/output/news_study/news_attribution.csv`.
 
 ### 16.5 Entry At Market — structural fill vs chasing
 
