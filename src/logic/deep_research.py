@@ -228,6 +228,31 @@ def _format_triggers_block(triage_record: dict) -> str:
 
     return "\n".join(lines)
 
+def _format_scenario_block(scenarios: list) -> str:
+    """Render the Deterministic Price Scenario output as a human-readable block."""
+    if not scenarios:
+        return "(Deterministic Price Scenario not available)"
+
+    lines = [
+        "The deterministic layer has projected one-step technical scenarios for key candidate prices.",
+        "Use these EXACT numbers in your trajectory narration. Do not fabricate returns.",
+        "",
+    ]
+    
+    for s in scenarios:
+        lines.append(f"Candidate Price: {s.get('candidate_price')}")
+        lines.append(f"  - Projected MA50: {s.get('ma50_proj')}")
+        lines.append(f"  - Projected MA200: {s.get('ma200_proj')}")
+        lines.append(f"  - Extension %: {s.get('ext_pct')}%")
+        lines.append(f"  - Lane Classification: {s.get('lane')} ({s.get('lane_edge')})")
+        if s.get("zone_top"):
+            lines.append(f"  - Target/Zone Top: {s.get('zone_top')}")
+        if s.get("zone_bot"):
+            lines.append(f"  - Stop/Zone Bot: {s.get('zone_bot')}")
+        lines.append("")
+
+    return "\n".join(lines)
+
 def _format_unmasked_recency_block(dw_dict: dict) -> str:
     """Format raw recency integer bitmasks (rev_mask, bear_mask, weak_mask) into
     explicit, human-readable pattern lists with clear directional polarities.
@@ -553,6 +578,38 @@ def run_deep_research(date_str, target_ticker=None):
         else:
             logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
 
+        # Build scenarios
+        scenarios = []
+        try:
+            from src.logic.scenario_model import build_scenario
+            prices = []
+            
+            def _try_add(key):
+                if key in dw_dict and dw_dict[key]:
+                    try:
+                        prices.append(float(dw_dict[key]))
+                    except (ValueError, TypeError):
+                        pass
+
+            _try_add("52 Week High")
+            _try_add("long_target")
+            _try_add("ma50")
+            
+            if "ma200" in dw_dict and dw_dict["ma200"]:
+                try:
+                    ma200 = float(dw_dict["ma200"])
+                    prices.append(ma200)
+                    prices.append(ma200 * 0.95) # below MA200
+                except (ValueError, TypeError):
+                    pass
+                    
+            candidate_prices = sorted(list(set([round(p, 2) for p in prices])))
+            scenarios = build_scenario(dw_dict, None, candidate_prices)
+        except Exception as e:
+            logger.warning(f"[{ticker}] scenario build failed: {e}")
+
+        scenario_block = _format_scenario_block(scenarios)
+
         unmasked_recency_block = _format_unmasked_recency_block(dw_dict)
 
         # Load pre-compiled news research dossier (Steps 3-7)
@@ -778,6 +835,9 @@ def run_deep_research(date_str, target_ticker=None):
 
         --- 2d-ii. BUY-TRIGGER GAP ENGINE (deterministic gate distances) ---
         {triggers_block}
+
+        --- 2d-iii. PRICE SCENARIO TRAJECTORY ---
+        {scenario_block}
 
         --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}

@@ -252,6 +252,11 @@ def _check_hard_exclusions(f: Dict[str, Any]) -> List[str]:
             exclusions.append("ext_25_60_no_fresh_long")
     return exclusions
 
+LANE_EDGE_MAP = {
+    "code20_reversal": "+0.85% SIG - only measured long edge (bible 16.1); needs close<MA200 + RVOL>1.5 + Buy<30; ~60d hold",
+    "stage2_prime": "flat - no measured edge (bible 16.9); pullback/breakout lanes are exclusion, not alpha",
+}
+
 
 def _evaluate_state(
     f: Dict[str, Any], gates: List[dict], state_name: str
@@ -312,16 +317,27 @@ def compute_triggers(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     code20 = _evaluate_state(f, _CODE20_REVERSAL_GATES, "code20_reversal")
     stage2 = _evaluate_state(f, _STAGE2_PRIME_GATES, "stage2_prime")
+    
+    code20["lane_edge"] = LANE_EDGE_MAP["code20_reversal"]
+    stage2["lane_edge"] = LANE_EDGE_MAP["stage2_prime"]
+    code20["edge_rank"] = 1
+    stage2["edge_rank"] = 0
 
-    # Determine nearest actionable state (fewest open gates)
+    # Determine nearest actionable state (edge_rank desc, open_count asc)
     states = [code20, stage2]
-    nearest = min(states, key=lambda s: s["open_count"])
+    states.sort(key=lambda s: (-s["edge_rank"], s["open_count"]))
+    nearest = states[0]
 
     # Conviction ceiling: indicator-only = 6, no pillar bonus without catalyst
     conviction_ceiling = _CONVICTION_BASE
+    
+    blocked_now = len(hard_exclusions) > 0
+    edge_note = f"Edge is in code20_reversal (open_gates={code20['open_count']})"
 
     return {
         "hard_exclusions": hard_exclusions,
+        "blocked_now": blocked_now,
+        "edge_note": edge_note,
         "code20_reversal": {
             "state": code20["state"],
             "all_passed": code20["all_passed"],
@@ -329,6 +345,7 @@ def compute_triggers(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "passed_gates": code20["passed_gates"],
             "open_count": code20["open_count"],
             "total_count": code20["total_count"],
+            "lane_edge": code20["lane_edge"],
         },
         "stage2_prime": {
             "state": stage2["state"],
@@ -337,6 +354,7 @@ def compute_triggers(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "passed_gates": stage2["passed_gates"],
             "open_count": stage2["open_count"],
             "total_count": stage2["total_count"],
+            "lane_edge": stage2["lane_edge"],
         },
         "nearest_actionable_state": nearest["state"],
         "open_gates_count": nearest["open_count"],

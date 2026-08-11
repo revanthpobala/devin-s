@@ -31,6 +31,15 @@ def test_code20_trigger():
     passed_names = code20["passed_gates"]
     assert "buy_score_lt_30" in passed_names
     assert "close_below_ma200" in passed_names
+    
+    # Check lane_edge and blocked_now
+    assert res["blocked_now"] == False
+    assert code20["lane_edge"].startswith("+0.85%")
+    assert res["stage2_prime"]["lane_edge"].startswith("flat -")
+    
+    # Check nearest actionable state which should be code20_reversal because of edge_rank desc
+    # code20 has 2 open gates. Let's make stage2 have 3 open gates so code20 wins anyway.
+    assert res["nearest_actionable_state"] == "code20_reversal"
 
 def test_hard_exclusions():
     f = {
@@ -43,6 +52,7 @@ def test_hard_exclusions():
     assert "action_code_16_forbids_entry" in res["hard_exclusions"]
     assert "ext_25_60_no_fresh_long" in res["hard_exclusions"]
     assert "stage_0_not_actionable" in res["hard_exclusions"]
+    assert res["blocked_now"] == True
 
 if __name__ == "__main__":
     test_code20_trigger()

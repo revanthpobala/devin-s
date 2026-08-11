@@ -64,7 +64,8 @@ _TRIAGE_SCHEMA = {
         "reasoning": {"type": "string", "maxLength": 240},
         "triage": {"type": "string", "enum": ["PASS", "WATCH", "CUT"]},
         "conviction": {"type": "number"},
-        "send_for_deep_research": {"type": "boolean"}
+        "send_for_deep_research": {"type": "boolean"},
+        "trajectory": {"type": "string", "maxLength": 500}
     },
     "required": ["dominant_side", "entry_mode", "confirm_contradict", "triage", "conviction"],
 }
@@ -511,6 +512,7 @@ def generate_thesis_task(
             "news_negative": triage.get("news_negative", False),
             "sentiment": sentiment.get("label", "neutral"),
             "sentiment_summary": sentiment.get("summary", ""),
+            "triggers": triage.get("triggers"),
         }
         # NOTE: no _thesis.md is written (markdown generation removed); the
         # canonical record is the _thesis.json below.
@@ -736,6 +738,15 @@ Example Output:
     user_prompt = (
         few_shot_example.strip() + "\n\n---\n\nActual Data:\n" + json.dumps(llm_input, indent=2)
     )
+
+    if enrich:
+        user_prompt += (
+            "\n\nTRAJECTORY INSTRUCTION:\n"
+            "You must also generate a 'trajectory' string (<= 500 chars). Use the provided static levels "
+            "(ma200, long_zone, avwap_res, avwap_sup, poc, vah, val, hvn_above, hvn_below) and evaluate the candidate prices "
+            "(52wHigh/zone/MA50/MA200) against the explicitly graded LANE DEFINITIONS (reversal=+edge, pullback/breakout=flat/exclusion). "
+            "Provide an explicit trajectory narration."
+        )
 
     # LOCAL Qwen is FREE and the server is launched with --reasoning off, so the model
     # never emits a <think> token that would trip the local GBNF grammar (HTTP 400). The

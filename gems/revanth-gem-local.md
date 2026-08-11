@@ -255,7 +255,9 @@ Then: `+1` if `confirm_contradict==CONFIRMS` · `+1` if long AND `zone_state==in
   "key_flags": ["exhaustion","oversold","churn","chased","stage_lag","earnings","extended","squeeze","counter_trend_high_risk","aggressive_target","dip_buy","rally_sell","volume_confirmed","low_volume_breakout","into_supply","below_value","above_value","extreme_extension","stage_5_recovery","unstaged_warmup"],
   "reasoning": "2-3 terse sentences, UNDER 240 CHARACTERS. See spec below.",
   "triage": "PASS|WATCH|CUT",
-  "conviction": 0
+  "conviction": 0,
+  "send_for_deep_research": true,
+  "trajectory": "<=500 char string for explicitly graded trajectory or 'none'"
 }
 ```
 
