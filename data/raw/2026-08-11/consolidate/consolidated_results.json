@@ -1,0 +1,118 @@
+{
+  "AMZN": {
+    "ticker": "AMZN",
+    "trade_id": "",
+    "row_index": null,
+    "researched_at": "2026-08-11T09:12:45",
+    "llm_data": {
+      "dominant_side": "long",
+      "entry_mode": "NONE",
+      "confirm_contradict": "CONFIRMS",
+      "triage": "WATCH",
+      "conviction": 3,
+      "reasoning": "No active entry mode (buy=89.9 but stage=5 recovery). News CONFIRMS bullish sentiment. WATCH due to stage_5_recovery flag and churn. Low conviction.",
+      "send_for_deep_research": true,
+      "bull_case": "Amazon's shares are surging nearly 2% after breaking above the $300 psychological barrier, a move confirmed by a 65.6% directional probability and a 1.58 risk-reward ratio that places the stock in a high-momentum \"above zone\" state. This technical breakout is further validated by bullish sentiment from crypto traders predicting a run to $300 by August and positive market reaction to Amazon's impressive Q2 performance, creating a powerful confluence for an immediate long entry.",
+      "bear_case": "Despite headlines hyping a $300 target, the stock is trapped in Stage 5 exhaustion with a 14.76% extreme percentage and a 1.58 risk-to-reward ratio, signaling a high-probability reversal rather than a breakout. The recent 2% rally is merely a \"key trading signal\" that has already inflated the price to $273.72, creating a dangerous long trap where regulatory scrutiny and political pressure from figures like Zohran Mamdani threaten to crush momentum before any genuine upside can materialize.",
+      "bull_rebuttal": "The headline-driven rally to $273.72 is not a trap but a confirmation of a robust Stage 5 breakout, evidenced by a 65.6% directional probability and a 1.58 risk-to-reward ratio that mathematically favors continued upside over a premature reversal. While regulatory headlines create noise, the overwhelming buy-to-sell ratio of nearly 1.2-to-1 and the stock's position above its resistance zone indicate that momentum is accelerating toward the $300 target rather than stalling.",
+      "bear_rebuttal": "The headline hype about a $300 close is a classic distraction masking the fact that the stock is already trading at extreme exhaustion levels (0.255) with a massive 14.76% extension, signaling a severe overbought condition rather than sustainable momentum. This \"breakout\" is a dangerous trap because the underlying data shows a 76.6% sell signal and zero reversal zone support, meaning the recent surge is likely a final liquidity grab before a sharp correction rather than the start of a new leg up.",
+      "moderator_agreement": "Based on the debate provided, here are the three points of agreement and three points of fierce d",
+      "moderator_disagreement": "Disagreement between the Bull and the Bear:\n\n### **3 Points of Agreement**\n1.  **The Current Price Level:** Both parties acknowledge that Amazon's stock is currently trading at **$273.72**.\n2.  **The Risk-to-Reward Ratio:** Both sides cite the specific metric of a **1.58 risk-to-reward ratio** as a central factor in their analysis of the current trade setup.\n3.  **The $300 Psychological Target:** Both the Bull and the Bear reference the **$300 price level** as a critical psychological barrier or target that is currently in focus for the market.\n\n### **3 Points of Fierce D",
+      "news_contradiction": false,
+      "news_negative": false,
+      "rank_score": 0.7823,
+      "enriched": true
+    },
+    "triage": {
+      "ticker": "AMZN",
+      "bar_date": "2026-08-11",
+      "chosen_side": "long",
+      "mode": "TREND_LONG",
+      "triage": "WATCH",
+      "reason": "constructible_watch",
+      "conviction": 89.89141190539351,
+      "conviction_str": "HIGH",
+      "rev": 0.0,
+      "rr": 1.578497420736954,
+      "ev_r": 0.6923869168061065,
+      "win_prob": 65.63461740141705,
+      "in_zone": false,
+      "missed": true,
+      "dir_prob": 65.63461740141705,
+      "regime": 0.0,
+      "flags": [
+        "churn",
+        "chased",
+        "soft_caution_action",
+        "hot_10d_return",
+        "hot_10d_volatility",
+        "rich_high_volatility"
+      ],
+      "long_plan": {
+        "zone": [
+          269.6200466232113,
+          271.83995337678874
+        ],
+        "stop": 265.18023311605634,
+        "target": 287.2
+      },
+      "short_plan": {
+        "zone": [
+          null,
+          null
+        ],
+        "stop": 282.0319696874275,
+        "target": 263.6497
+      },
+      "recency": {
+        "warnings_fresh": [],
+        "warnings_age": null,
+        "reversals_fresh": [
+          "KEY_REV_BULL",
+          "KEY_REV_BEAR",
+          "TRAP_BULL",
+          "TRAP_BEAR"
+        ],
+        "reversals_age": 4.0,
+        "weak_levels": [],
+        "weak_levels_age": null
+      },
+      "action_long": "BLOW-OFF/CAPITULATION",
+      "action_short": "WATCH",
+      "action": "BLOW-OFF/CAPITULATION",
+      "action_actionable": false,
+      "mtf_long": 3.0,
+      "mtf_short": null,
+      "realvol_10d": 79.50366823902468,
+      "ret_10d": 18.56536429004592,
+      "ext_pct": 14.757592771234354,
+      "tiebreak": -2.6015271485707405,
+      "rank_model_score": null,
+      "bad_data": false,
+      "sentiment": {
+        "label": "positive",
+        "summary": "Amazon shares are gaining momentum following strong Q2 results and positive trading signals, despite unrelated market noise in the provided headlines.",
+        "headlines": [
+          "AMZN Stock to Close Above $300 by August End? Crypto Punters Bet on the Possibility Following Amazon's Impressive Q2 Performance",
+          "Zohran Mamdani Wants Amazon to Follow 'the Rules' as He Demands 'Accountability,' Backs Delivery Protection Act (UPDATED)",
+          "Bill Ackman Backs Vivek Ramaswamy\u2019s Data-Center Plan: 'Interesting Idea'",
+          "Amazon Shares Up Nearly 2% After Key Trading Signal",
+          "Why Is Coherent Stock Falling on Monday?",
+          "2 Consumer Discretionary Stocks Whale Activity In Today\u2019s Session",
+          "FDA Announces Downstream Recalls By Coast Citrus Distributors For Jalape\u00f1os And Products Containing Recalled Jalape\u00f1os In 26 States",
+          "S&P 500 Earnings Growth May Be Less Impressive Than It Looks; SpaceX Short Squeeze; Inflation Data Ahead",
+          "Elon Musk Joked About Buying Manchester United \u2014 Now Jeff Bezos Is Buying Into Its Biggest Rival",
+          "Microsoft Stock Rises 2%: Upcoming Maia 300 Chip Launch Targets Reduced Nvidia Reliance"
+        ]
+      },
+      "news_negative": false,
+      "pursue": true,
+      "pursue_reason": "constructible_watch",
+      "news_contradiction": false
+    },
+    "av_sentiment": {},
+    "av_earnings": {},
+    "social_sentiment": {},
+    "thesis_json": "D:\\My-Projects\\Stock\\data\\raw\\2026-08-11\\AMZN_thesis.json"
+  }
+}
