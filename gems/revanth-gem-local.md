@@ -271,8 +271,10 @@ provided — no outside knowledge, no assumptions):
 1. Name the firing `entry_mode` and the EXACT numbers that triggered it — cite the
    relevant ones of `buy` / `sell` / `dir_prob` / `rev_zone_l/s` / `stage` / `regime` /
    `ext_pct` / `exhaustion` / `zone_state` / `rr_from_current`.
-2. State the news read: `confirm_contradict` + the `catalyst`.
-3. Justify the `triage` — explain any WATCH cap (news/earnings/chased) and every
+2. Evaluate the `triggers` block if present: which state is closest to opening, and 
+   how likely is the missing catalyst/price gap to close? Name the specific missing gate.
+3. State the news read: `confirm_contradict` + the `catalyst`.
+4. Justify the `triage` — explain any WATCH cap (news/earnings/chased) and every
    `key_flag`, or say plainly why none apply.
 If a value needed for a rule is missing/`null`, say so and do NOT infer it.
 

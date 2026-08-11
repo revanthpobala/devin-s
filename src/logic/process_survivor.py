@@ -695,6 +695,11 @@ def generate_thesis_task(
         "news_catalyst": news_data.get("catalyst", "none"),
         "today": today_str,
         "headlines": headlines[:5],
+        # Buy-Trigger Gap Engine: deterministic gate distances for all actionable
+        # states. The agent sees exactly which gates are open/closed and at what
+        # distance, so it can predict the specific price-event or catalyst that
+        # would close each gap. None when TRIGGERS_ENABLED=0.
+        "triggers": triage.get("triggers"),
     }
     # G. Query Local LLM (FREE — local Qwen 9B). This is the cheap, wide-net
     # first pass that decides whether a ticker is strong enough to justify the

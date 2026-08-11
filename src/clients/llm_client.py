@@ -660,8 +660,13 @@ def query_local_llm(
                 full_content = content or ""
                 cont_attempts = 0
 
+                MAX_CONT_ATTEMPTS = 3
                 while finish_reason == "length":
                     cont_attempts += 1
+                    if cont_attempts > MAX_CONT_ATTEMPTS:
+                        logger.warning(f"Max auto-continuation passes ({MAX_CONT_ATTEMPTS}) reached. Aborting continuation.")
+                        break
+
                     logger.warning(
                         f"[{provider}:{model}] Output truncated (finish_reason='length') at {len(full_content)} chars. "
                         f"Auto-continuation pass {cont_attempts}..."

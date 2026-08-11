@@ -219,6 +219,13 @@ One or two lines: the **[M]** ex21 of the state you are leaning on, its CI, whet
 ## ⚖️ LOCAL RESEARCHER DEBATE
 **Moderator Consensus:** [Synthesize the points of agreement and disagreement that the local researchers debated, and how you (as Judge) resolve them in this thesis. **CRITICAL: Cross-verify all search results and sources! If Google Grounded Search contradicts web search results (like DDGS/Brave) regarding legal rulings, facts, or catalyst timelines, ALWAYS trust the Google Grounded Search. Explicitly call out any hallucinated or outdated claims from the web search.**]
 
+## 🎯 BUY-TRIGGER FORECAST (NEW ENGINE)
+**Nearest Actionable State:** [Identify the state with the fewest open gates]
+**Open Gates & Requirements:**
+- **[Gate Name]:** Needs [Specific price level or metric] (Currently [X], Gap [Y]) — Predict the catalyst or price-action needed to close this gap within 21 days.
+*(List all open gates for the nearest state)*
+**Plausibility:** [High / Medium / Low] — Justify based on the macro and catalyst context.
+
 ## COUNTER-TREND ANALYSIS (only if REV ZONE is active)
 | Check | Finding |
 |---|---|

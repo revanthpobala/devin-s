@@ -162,6 +162,72 @@ def _format_engine_math_block(rec: dict) -> str:
 
     return "\n".join(lines)
 
+def _format_triggers_block(triage_record: dict) -> str:
+    """Render the Buy-Trigger Gap Engine output as a human-readable block.
+
+    The `triggers` dict lives inside the triage record (added by data_window_filter).
+    For each actionable state (Code 20 Reversal, Stage-2 PRIME) it shows which gates
+    are passed, which are open, and at what distance — so the deep-research agent can
+    predict the specific price-event or catalyst that would close each gap.
+    """
+    triggers = triage_record.get("triggers") if isinstance(triage_record, dict) else None
+    if not triggers:
+        return "(Buy-Trigger Gap Engine not available — TRIGGERS_ENABLED=0 or bad_data)"
+
+    lines = [
+        "Each actionable state below lists its required gates, which ones are already",
+        "satisfied (PASSED) and which are still open (OPEN — with the gap distance).",
+        "For each OPEN gate, predict the specific price-event (the real level to hit)",
+        "or catalyst-event (the news/fundamental that lifts the gate) and how plausible",
+        "it is within 21 days. NEVER fabricate hypothetical Buy Score / Stage / Dir Prob values.",
+        "",
+    ]
+
+    hard = triggers.get("hard_exclusions") or []
+    if hard:
+        lines.append("⛔ HARD EXCLUSIONS (active — no entry possible):")
+        for h in hard:
+            lines.append(f"  - {h}")
+        lines.append("")
+
+    for state_key in ("code20_reversal", "stage2_prime"):
+        state = triggers.get(state_key)
+        if not state:
+            continue
+        status = "✅ ALL GATES PASSED" if state.get("all_passed") else f"❌ {state.get('open_count')}/{state.get('total_count')} gates OPEN"
+        lines.append(f"▸ {state.get('state', state_key).upper()} — {status}")
+
+        passed = state.get("passed_gates") or []
+        if passed:
+            lines.append("  PASSED: " + ", ".join(passed))
+
+        open_gates = state.get("open_gates") or []
+        for g in open_gates:
+            ref = g.get("ref_level")
+            cur = g.get("current_value")
+            gap = g.get("gap")
+            ref_str = f"{ref:.2f}" if isinstance(ref, (int, float)) else str(ref)
+            cur_str = f"{cur:.2f}" if isinstance(cur, (int, float)) else str(cur)
+            gap_str = f"{gap:.2f}" if isinstance(gap, (int, float)) else "?"
+            lines.append(
+                f"  OPEN: {g['name']} — need {g['field']} {g['comparator']} {ref_str} "
+                f"(currently {cur_str}, gap {gap_str}) [{g['change_type']}]"
+            )
+        lines.append("")
+
+    nearest = triggers.get("nearest_actionable_state", "?")
+    open_ct = triggers.get("open_gates_count", "?")
+    ceiling = triggers.get("conviction_ceiling", "?")
+    lines.append(f"Nearest actionable state: {nearest} ({open_ct} gates open)")
+    lines.append(f"Conviction ceiling (indicator-only, no external pillar): {ceiling}")
+    lines.append("")
+    lines.append(
+        "⚠️ RULE: Never fabricate hypothetical Buy Score / Stage / Dir Prob values. "
+        "The deterministic layer names REAL thresholds and REAL levels only."
+    )
+
+    return "\n".join(lines)
+
 def _format_unmasked_recency_block(dw_dict: dict) -> str:
     """Format raw recency integer bitmasks (rev_mask, bear_mask, weak_mask) into
     explicit, human-readable pattern lists with clear directional polarities.
@@ -475,6 +541,7 @@ def run_deep_research(date_str, target_ticker=None):
 
         flags_block = _format_flags_block(flags)
         engine_math_block = _format_engine_math_block(verdict_record)
+        triggers_block = _format_triggers_block(verdict_record)
 
         # Load data window JSON (math state)
         data_window_str = "{}"
@@ -708,6 +775,9 @@ def run_deep_research(date_str, target_ticker=None):
 
         --- 2d-i. ENGINE MATH (deterministic — already computed, do not recompute) ---
         {engine_math_block}
+
+        --- 2d-ii. BUY-TRIGGER GAP ENGINE (deterministic gate distances) ---
+        {triggers_block}
 
         --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}

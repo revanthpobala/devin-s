@@ -601,6 +601,7 @@ def run_data_window_filter(
             "ext_pct": f.get("ext_pct"),
             "rank_model_score": None,
             "bad_data": True,
+            "triggers": None,
         }
         _log_data_window_scrape(ticker, raw, verdict)
         return verdict
@@ -695,6 +696,14 @@ def run_data_window_filter(
         "rank_model_score": rank_model_score,
         "bad_data": False,
     }
+
+    # Buy-Trigger Gap Engine: compute how far the current bar is from each
+    # actionable state.  Feature-flagged via TRIGGERS_ENABLED env.
+    try:
+        from src.logic.trigger_gaps import compute_triggers
+        verdict["triggers"] = compute_triggers(f)
+    except Exception:
+        verdict["triggers"] = None
 
     _log_data_window_scrape(ticker, raw, verdict)
     return verdict
