@@ -1,0 +1,13 @@
+{
+    "built_at": "2026-08-11T23:07:52.824426+00:00",
+    "corpus": "full_v2",
+    "min_price": 20.0,
+    "n_bars": 1884667,
+    "n_tickers": 544,
+    "date_range": [
+        "2006-12-08",
+        "2026-07-01"
+    ],
+    "baseline_ex21": -0.299,
+    "metric": "date-neutral ex21; edge = mean - baseline; ticker-bootstrap CI; sig = signed label-shuffle null (50), baseline-relative"
+}

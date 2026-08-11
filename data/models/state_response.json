@@ -1,0 +1,244 @@
+{
+    "buckets": {
+        "baseline_all": {
+            "n": 1884667,
+            "n_tk": 544,
+            "ex21_mean": -0.299,
+            "edge_vs_baseline": 0.0,
+            "ex21_med": -0.354,
+            "p10": -8.82,
+            "p90": 8.1,
+            "p_up": 0.573,
+            "ci": [
+                -0.575,
+                -0.088
+            ],
+            "sig": false,
+            "era_edges_5y": [
+                -0.86,
+                -0.09,
+                0.69,
+                -0.17
+            ],
+            "eras_positive": "1/4",
+            "min_era_edge": -0.86,
+            "reliability": "n/a"
+        },
+        "reversal": {
+            "n": 6796,
+            "n_tk": 526,
+            "ex21_mean": 0.73,
+            "edge_vs_baseline": 1.029,
+            "ex21_med": -0.035,
+            "p10": -10.95,
+            "p90": 11.08,
+            "p_up": 0.585,
+            "ci": [
+                0.23,
+                1.289
+            ],
+            "sig": true,
+            "era_edges_5y": [
+                0.58,
+                0.6,
+                0.92,
+                1.2
+            ],
+            "eras_positive": "4/4",
+            "min_era_edge": 0.58,
+            "reliability": "episodic"
+        },
+        "reversal_deep": {
+            "n": 4230,
+            "n_tk": 512,
+            "ex21_mean": 0.816,
+            "edge_vs_baseline": 1.116,
+            "ex21_med": 0.256,
+            "p10": -12.59,
+            "p90": 12.27,
+            "p_up": 0.599,
+            "ci": [
+                0.23,
+                1.406
+            ],
+            "sig": true,
+            "era_edges_5y": [
+                1.39,
+                0.36,
+                0.96,
+                1.59
+            ],
+            "eras_positive": "4/4",
+            "min_era_edge": 0.36,
+            "reliability": "episodic"
+        },
+        "reversal_deep_oops": {
+            "n": 1689,
+            "n_tk": 440,
+            "ex21_mean": 1.265,
+            "edge_vs_baseline": 1.564,
+            "ex21_med": 0.472,
+            "p10": -12.6,
+            "p90": 14.37,
+            "p_up": 0.607,
+            "ci": [
+                0.423,
+                2.097
+            ],
+            "sig": true,
+            "era_edges_5y": [
+                1.8,
+                -0.91,
+                1.0,
+                2.78
+            ],
+            "eras_positive": "3/4",
+            "min_era_edge": -0.91,
+            "reliability": "episodic"
+        },
+        "reversal_shallow": {
+            "n": 2566,
+            "n_tk": 483,
+            "ex21_mean": -0.146,
+            "edge_vs_baseline": 0.154,
+            "ex21_med": -0.337,
+            "p10": -8.34,
+            "p90": 8.71,
+            "p_up": 0.561,
+            "ci": [
+                -0.707,
+                0.484
+            ],
+            "sig": false,
+            "era_edges_5y": [
+                -0.74,
+                0.46,
+                -0.27,
+                0.27
+            ],
+            "eras_positive": "2/4",
+            "min_era_edge": -0.74,
+            "reliability": "n/a"
+        },
+        "reversal_oops_any": {
+            "n": 2523,
+            "n_tk": 491,
+            "ex21_mean": 0.913,
+            "edge_vs_baseline": 1.212,
+            "ex21_med": 0.153,
+            "p10": -11.39,
+            "p90": 12.86,
+            "p_up": 0.593,
+            "ci": [
+                0.202,
+                1.63
+            ],
+            "sig": true,
+            "era_edges_5y": [
+                1.21,
+                0.45,
+                0.93,
+                2.13
+            ],
+            "eras_positive": "4/4",
+            "min_era_edge": 0.45,
+            "reliability": "episodic"
+        },
+        "prime_stage2": {
+            "n": 665613,
+            "n_tk": 543,
+            "ex21_mean": -0.217,
+            "edge_vs_baseline": 0.082,
+            "ex21_med": -0.357,
+            "p10": -8.28,
+            "p90": 7.36,
+            "p_up": 0.564,
+            "ci": [
+                -0.386,
+                -0.037
+            ],
+            "sig": false,
+            "era_edges_5y": [
+                -0.65,
+                0.06,
+                0.26,
+                -0.28
+            ],
+            "eras_positive": "2/4",
+            "min_era_edge": -0.65,
+            "reliability": "n/a"
+        },
+        "strong_buy_mom": {
+            "n": 817110,
+            "n_tk": 544,
+            "ex21_mean": -0.324,
+            "edge_vs_baseline": -0.025,
+            "ex21_med": -0.376,
+            "p10": -8.5,
+            "p90": 7.58,
+            "p_up": 0.568,
+            "ci": [
+                -0.629,
+                -0.075
+            ],
+            "sig": false,
+            "era_edges_5y": [
+                -0.48,
+                0.04,
+                0.4,
+                -0.29
+            ],
+            "eras_positive": "2/4",
+            "min_era_edge": -0.48,
+            "reliability": "n/a"
+        },
+        "ext_excl_25_60": {
+            "n": 83584,
+            "n_tk": 473,
+            "ex21_mean": -0.929,
+            "edge_vs_baseline": -0.63,
+            "ex21_med": -0.192,
+            "p10": -11.65,
+            "p90": 12.9,
+            "p_up": 0.557,
+            "ci": [
+                -1.363,
+                -0.533
+            ],
+            "sig": true,
+            "era_edges_5y": [
+                -2.04,
+                -2.02,
+                -0.75,
+                -1.77
+            ],
+            "eras_positive": "0/4",
+            "min_era_edge": -2.04,
+            "reliability": "steady_exclusion"
+        },
+        "watch_code8": {
+            "n": 1201999,
+            "n_tk": 544,
+            "ex21_mean": -0.324,
+            "edge_vs_baseline": -0.024,
+            "ex21_med": -0.346,
+            "p10": -8.54,
+            "p90": 7.79,
+            "p_up": 0.571,
+            "ci": [
+                -0.607,
+                -0.117
+            ],
+            "sig": false,
+            "era_edges_5y": [
+                -0.71,
+                -0.13,
+                0.68,
+                -0.27
+            ],
+            "eras_positive": "1/4",
+            "min_era_edge": -0.71,
+            "reliability": "n/a"
+        }
+    }
+}
