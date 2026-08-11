@@ -226,6 +226,13 @@ One or two lines: the **[M]** ex21 of the state you are leaning on, its CI, whet
 *(List all open gates for the nearest state)*
 **Plausibility:** [High / Medium / Low] — Justify based on the macro and catalyst context.
 
+## 📊 HISTORICAL STATE RESPONSE (from 2d-iv)
+Read block `2d-iv. STATE RESPONSE`. For each candidate price, list its projected state and historical response + its `reliability`. 
+⚠️ **CRITICAL RULES**:
+- Treat `reliability="episodic"` as **tail-driven, not all-weather; size for the tail**.
+- Treat `flat` buckets (like STRONG BUY, PRIME, WATCH) as having **no edge**. Never present a flat bucket as tradeable.
+- **NEVER fabricate numbers**. Only quote the EXACT numbers provided in 2d-iv.
+
 ## COUNTER-TREND ANALYSIS (only if REV ZONE is active)
 | Check | Finding |
 |---|---|

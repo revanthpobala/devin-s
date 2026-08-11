@@ -241,6 +241,15 @@ Then: `+1` if `confirm_contradict==CONFIRMS` · `+1` if long AND `zone_state==in
 
 ---
 
+## 📊 HISTORICAL STATE RESPONSE (from 2d-iv)
+If the prompt includes block `2d-iv. STATE RESPONSE`, use it when generating your `trajectory` string.
+⚠️ **CRITICAL RULES**:
+- Treat `reliability="episodic"` as **tail-driven, not all-weather; size for the tail**.
+- Treat `flat` buckets (like STRONG BUY, PRIME, WATCH) as having **no edge**. Never present a flat bucket as tradeable.
+- **NEVER fabricate numbers**. Only quote the EXACT numbers provided in 2d-iv.
+
+---
+
 ## OUTPUT (STRICT JSON ONLY — one object, no prose)
 
 ```json

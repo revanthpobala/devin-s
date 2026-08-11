@@ -253,6 +253,46 @@ def _format_scenario_block(scenarios: list) -> str:
 
     return "\n".join(lines)
 
+def _format_state_response_block(dw_dict: dict, scenarios: list) -> str:
+    """Render the Historical State Response output as a human-readable block."""
+    if not isinstance(dw_dict, dict) or not dw_dict:
+        return "(Data Window missing, cannot compute state response)"
+        
+    try:
+        from src.logic.response_model import state_response
+    except ImportError:
+        return "(State Response model unavailable)"
+    
+    current_resp = state_response(dw_dict)
+    if not current_resp:
+        return "(State Response model disabled or missing)"
+        
+    lines = [
+        "The response model projects historical 21-day outcomes for given structural states.",
+        "Use this as the baseline expectation for your explicitly narrated trajectories.",
+        "",
+        f"CURRENT BAR: {current_resp.get('bucket')} (Edge vs Baseline: {current_resp.get('edge_vs_baseline')} | {current_resp.get('reliability')} | Median {current_resp.get('ex21_med')} | p10 {current_resp.get('p10')} / p90 {current_resp.get('p90')} | {'SIG' if current_resp.get('sig') else 'flat'})",
+        ""
+    ]
+    
+    if scenarios:
+        lines.append("PROJECTED CANDIDATE STATES:")
+        for s in scenarios:
+            price = s.get('candidate_price')
+            # build a simulated f for state_response
+            f_sim = dict(dw_dict)
+            f_sim["price"] = price
+            f_sim["ma50"] = s.get("ma50_proj")
+            f_sim["ma200"] = s.get("ma200_proj")
+            f_sim["ext_pct"] = s.get("ext_pct")
+            resp = state_response(f_sim)
+            if resp:
+                lines.append(f"  - If price -> {price}: {resp.get('bucket')} (Edge vs Baseline: {resp.get('edge_vs_baseline')})")
+            else:
+                lines.append(f"  - If price -> {price}: (unavailable)")
+                
+    return "\n".join(lines)
+
 def _format_unmasked_recency_block(dw_dict: dict) -> str:
     """Format raw recency integer bitmasks (rev_mask, bear_mask, weak_mask) into
     explicit, human-readable pattern lists with clear directional polarities.
@@ -609,6 +649,7 @@ def run_deep_research(date_str, target_ticker=None):
             logger.warning(f"[{ticker}] scenario build failed: {e}")
 
         scenario_block = _format_scenario_block(scenarios)
+        state_response_block = _format_state_response_block(dw_dict, scenarios)
 
         unmasked_recency_block = _format_unmasked_recency_block(dw_dict)
 
@@ -838,6 +879,9 @@ def run_deep_research(date_str, target_ticker=None):
 
         --- 2d-iii. PRICE SCENARIO TRAJECTORY ---
         {scenario_block}
+
+        --- 2d-iv. STATE RESPONSE (historical, honest) ---
+        {state_response_block}
 
         --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}
