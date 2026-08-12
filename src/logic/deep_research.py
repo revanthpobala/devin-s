@@ -253,9 +253,9 @@ def _format_scenario_block(scenarios: list) -> str:
 
     return "\n".join(lines)
 
-def _format_state_response_block(dw_dict: dict, scenarios: list) -> str:
+def _format_state_response_block(f_parsed: dict, scenarios: list) -> str:
     """Render the Historical State Response output as a human-readable block."""
-    if not isinstance(dw_dict, dict) or not dw_dict:
+    if not isinstance(f_parsed, dict) or not f_parsed:
         return "(Data Window missing, cannot compute state response)"
         
     try:
@@ -263,7 +263,7 @@ def _format_state_response_block(dw_dict: dict, scenarios: list) -> str:
     except ImportError:
         return "(State Response model unavailable)"
     
-    current_resp = state_response(dw_dict)
+    current_resp = state_response(f_parsed)
     if not current_resp:
         return "(State Response model disabled or missing)"
         
@@ -280,7 +280,7 @@ def _format_state_response_block(dw_dict: dict, scenarios: list) -> str:
         for s in scenarios:
             price = s.get('candidate_price')
             # build a simulated f for state_response
-            f_sim = dict(dw_dict)
+            f_sim = dict(f_parsed)
             f_sim["price"] = price
             f_sim["ma50"] = s.get("ma50_proj")
             f_sim["ma200"] = s.get("ma200_proj")
@@ -618,38 +618,47 @@ def run_deep_research(date_str, target_ticker=None):
         else:
             logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
 
-        # Build scenarios
+        from src.logic.data_window_filter import parse_data_window
+
+        f_parsed = parse_data_window(dw_dict) if dw_dict else {}
+
+        triggers_src = verdict_record
+        if not (isinstance(verdict_record, dict) and verdict_record.get("triggers")) and f_parsed:
+            from src.logic.trigger_gaps import compute_triggers
+
+            triggers_src = {"triggers": compute_triggers(f_parsed)}
+        triggers_block = _format_triggers_block(triggers_src)
+
+        # Build scenarios (parsed keys: price, ma50, ma200, long_target, ...)
         scenarios = []
         try:
             from src.logic.scenario_model import build_scenario
             prices = []
             
-            def _try_add(key):
-                if key in dw_dict and dw_dict[key]:
-                    try:
-                        prices.append(float(dw_dict[key]))
-                    except (ValueError, TypeError):
-                        pass
-
-            _try_add("52 Week High")
-            _try_add("long_target")
-            _try_add("ma50")
-            
-            if "ma200" in dw_dict and dw_dict["ma200"]:
+            def _try_add_price(val):
+                if val is None:
+                    return
                 try:
-                    ma200 = float(dw_dict["ma200"])
-                    prices.append(ma200)
-                    prices.append(ma200 * 0.95) # below MA200
+                    prices.append(float(val))
                 except (ValueError, TypeError):
                     pass
+
+            for key in ("long_target", "ma50", "ma200"):
+                _try_add_price(f_parsed.get(key))
+            for raw_key in ("52 Week High", "52 week high"):
+                _try_add_price(dw_dict.get(raw_key) if dw_dict else None)
+                
+            ma200 = f_parsed.get("ma200")
+            if ma200 is not None:
+                _try_add_price(float(ma200) * 0.95)
                     
             candidate_prices = sorted(list(set([round(p, 2) for p in prices])))
-            scenarios = build_scenario(dw_dict, None, candidate_prices)
+            scenarios = build_scenario(f_parsed, None, candidate_prices)
         except Exception as e:
             logger.warning(f"[{ticker}] scenario build failed: {e}")
 
         scenario_block = _format_scenario_block(scenarios)
-        state_response_block = _format_state_response_block(dw_dict, scenarios)
+        state_response_block = _format_state_response_block(f_parsed, scenarios)
 
         unmasked_recency_block = _format_unmasked_recency_block(dw_dict)
 
@@ -790,8 +799,8 @@ def run_deep_research(date_str, target_ticker=None):
 
         logger.info(f"[{ticker}] Running Bull and Bear Agents concurrently...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            f_bull = executor.submit(_run_debate_agent, bull_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 1024)
-            f_bear = executor.submit(_run_debate_agent, bear_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 1024)
+            f_bull = executor.submit(_run_debate_agent, bull_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 2048)
+            f_bear = executor.submit(_run_debate_agent, bear_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 2048)
             bull_case = f_bull.result()
             bear_case = f_bear.result()
 
@@ -801,13 +810,13 @@ def run_deep_research(date_str, target_ticker=None):
                 _run_debate_agent,
                 bull_sys + " You are now in the rebuttal phase. Read the Bear Case below and systematically destroy their arguments.",
                 f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BEAR CASE ---\n{bear_case}",
-                512
+                1024
             )
             f_bear_reb = executor.submit(
                 _run_debate_agent,
                 bear_sys + " You are now in the rebuttal phase. Read the Bull Case below and systematically destroy their arguments.",
                 f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BULL CASE ---\n{bull_case}",
-                512
+                1024
             )
             bull_rebuttal = f_bull_reb.result()
             bear_rebuttal = f_bear_reb.result()

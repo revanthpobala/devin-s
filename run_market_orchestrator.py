@@ -195,7 +195,7 @@ def main():
                             "-a",
                             "gpt-4",
                             "--parallel",
-                            "4",
+                            "3",
                             "--reasoning",
                             "off",
                         ],

@@ -31,7 +31,6 @@ REM                            With thinking OFF we can now ALSO enforce a stric
 REM                            json_schema on local calls (no <think> to conflict) -> near
 REM                            zero parse failures. The deterministic filter (not the LLM)
 REM                            owns the actual trading verdict.
-
-D:\My-Projects\Stock\llama-cpp-server\llama-server.exe -m "D:\My-Projects\Stock\models\Qwen3.5-9B-Q8_0.gguf" --host 127.0.0.1 --port 8000 -c 32768 --parallel 4 -fa on -ctk q8_0 -ctv q8_0 -ngl 999 -a "gpt-4" --jinja --reasoning off -lv 4 --log-file "%LLM_LOG%"
+D:\My-Projects\Stock\llama-cpp-server\llama-server.exe -m "D:\My-Projects\Stock\models\Qwen3.5-9B-Q8_0.gguf" --host 127.0.0.1 --port 8000 -c 32768 --parallel 3 -fa on -ctk q8_0 -ctv q8_0 -ngl 999 -a "gpt-4" --jinja --reasoning off -lv 4 --log-file "%LLM_LOG%"
 
 pause

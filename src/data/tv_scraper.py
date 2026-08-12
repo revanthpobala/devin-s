@@ -321,8 +321,23 @@ class TVScraper:
             logger.info(f"Setting range to 3 months for zoomed screenshot (range: {zoom_start_date} -> today)...")
 
             try:
+                # Reset chart zoom so candles aren't tiny from the wide-view pan/zoom
+                try:
+                    page.keyboard.press("Alt+r")
+                    time.sleep(1.0)
+                except Exception:
+                    pass
+
                 page.wait_for_selector(GOTO_BTN, state="visible", timeout=5000)
                 page.click(GOTO_BTN, timeout=5000)
+                
+                # Switch to Custom Range tab so the start/end inputs become visible
+                try:
+                    page.click('button:has-text("Custom range")', timeout=2000)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                
                 if page.is_visible(GOTO_START):
                     page.fill(GOTO_START, zoom_start_date, timeout=5000)
                     page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=5000)
@@ -347,6 +362,13 @@ class TVScraper:
                     start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
                     logger.info(f"Setting range for CSV download (range: {start_date} -> today)...")
                     page.click(GOTO_BTN, timeout=5000)
+                    
+                    try:
+                        page.click('button:has-text("Custom range")', timeout=2000)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                    
                     if page.is_visible(GOTO_START):
                         page.fill(GOTO_START, start_date, timeout=5000)
                         page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=5000)

@@ -351,33 +351,6 @@ def _complete_truncated_json(s: str):
     return work
 
 
-def _nvidia_key() -> str:
-    # Accept either spelling: NVIDIA_API_KEY or the project's NVDIA_DEV_API_KEY.
-    return os.getenv("NVIDIA_API_KEY") or os.getenv("NVDIA_DEV_API_KEY") or ""
-
-
-# Per-task NVIDIA model selection. All env-driven so a free-model swap never
-# requires code changes. Defaults chosen from the models actually provisioned on
-# this NVIDIA account (verified callable via /v1/chat/completions):
-#   - news/sentiment : z-ai/glm-5.2          (text-only, cheap, works)
-#   - vision/deep    : thinkingmachines/inkling (multimodal; REASONING-ONLY, emits
-#                      empty `content` — final answer lands in reasoning_content,
-#                      so it is best used with a content-emitting fallback)
-#   - fallback       : nvidia/nemotron-nano-12b-v2-vl (multimodal, emits real
-#                      `content`). NOTE: moonshotai/kimi-k2.6 is catalog-listed but
-#                      returns 404 at inference for this account, so it is NOT used.
-def nvidia_news_model() -> str:
-    return os.getenv("NVIDIA_MODEL_NEWS", "z-ai/glm-5.2")
-
-
-def nvidia_free_model() -> str:
-    """The user-provisioned FREE NVIDIA model, set via NVDIA_FREE_MODEL in .env.
-
-    This is the model used for the remote rescue attempt in local research
-    (process_survivor.py attempt 4) when the local 9B keeps failing. Falls back
-    to the project default if the env var is unset."""
-    return os.getenv("NVDIA_FREE_MODEL") or os.getenv("NVIDIA_MODEL") or "z-ai/glm-5.2"
-
 
 def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     """Resolve the (client, model, provider_tag) triple from env config.
@@ -398,7 +371,6 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     """
     meta_key = os.getenv("META_AI_API_KEY")
     openrouter_key = os.getenv("OPENROUTER_KEY")
-    nvidia_key = _nvidia_key()
 
     # LOCAL-FIRST: any use_openrouter=False call uses the local 9B. No remote
     # key can hijack the free local-research path. The local 9B can be
@@ -451,16 +423,7 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
         )
         return client, resolved_model, "openrouter"
 
-    _nvidia_model = model or nvidia_free_model()
-    if nvidia_key and _nvidia_model:
-        resolved = _nvidia_model
-        logger.info(f"Routing request to NVIDIA NIM (Model: {resolved})")
-        client = OpenAI(
-            base_url=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-            api_key=nvidia_key,
-            timeout=300,
-        )
-        return client, resolved, "nvidia"
+
 
     logger.warning(
         "use_openrouter=True but no remote key/model configured — falling back to Local LLM Server."
