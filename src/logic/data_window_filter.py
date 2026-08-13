@@ -20,9 +20,13 @@ HONESTY & VALIDATION CONSTRAINTS:
 import json
 import logging
 import os
+import re
 import unicodedata
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
+
+_ALNUM_RE = re.compile(r"[^a-z0-9+-]")
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,19 @@ EXT_MAX = 25.0       # Ext Pct vs MA200 >= 25% (era-robust hard exclusion: -1.78
 EXT_Z_SELF_MAX = 2.5
 P_RICH = 125.4       # Price 2/3 quantile (2016-2026 bars, close >= $20; measured threshold)
 HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
+
+# AT-MARKET R:R LANE -- the only rule in this system that passed a sector AND ticker breadth test.
+# Measured with the indicator's own stop/target, path-accurate (stop checked before target, 21 bars),
+# R relative to the same-day universe. Gate = in long zone AND at-market R:R >= X AND fade off:
+#   - >= 2  n=39,740  +0.116R  4/4 eras  12/12 sectors  69.9% of 519 names  <- PASS lane
+#   - >= 5  n= 3,884  +0.252R  4/4 eras  both ticker halves  68.3% of 156 names
+# 6.0 is stronger still (+0.369R) but only 33 names reach n>=10, so its breadth is unverifiable and
+# it is deliberately NOT used -- the same standard that rejected PRIME and code 20 for breadth.
+# Win rate FALLS as the ratio rises (34% at >=2, 23% at >=5): the edge is payoff, not hit rate.
+RR_MKT_PASS = 2.0
+RR_MKT_STRONG = 5.0
+# Set RR_LANE_ENABLED=0 to restore code-20-only PASS behaviour for an A/B comparison.
+RR_LANE_ENABLED = os.getenv("RR_LANE_ENABLED", "1") not in ("0", "false", "False")
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +256,17 @@ _CORE_FIELDS = [
 _EMPTY_TOKENS = {"", "∅", "⌀", "none", "n/a", "na", "-", "—", "null", "nan"}
 
 
+@lru_cache(maxsize=4096)
+def _alnum_cached(s: str) -> str:
+    return _ALNUM_RE.sub("", s.lower())
+
+
 def _alnum(s: str) -> str:
-    import re
-    return re.sub(r"[^a-z0-9+-]", "", str(s).lower())
+    """Normalize a label for matching. Memoized: '_match_label' calls this for every raw key x every
+    needle across two passes, so a single parse_data_window did ~20k regex substitutions and any
+    historical replay was ~4ms/row. The label vocabulary is tiny and fixed, so caching is free.
+    Behaviour is identical -- same regex, same casefold."""
+    return _alnum_cached(str(s))
 
 
 def _match_label(raw: dict, *needles) -> Optional[str]:
@@ -353,8 +378,21 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
             f["short_in_zone"] = 1.0 if (m & 2) else 0.0
         if f.get("long_rr_valid") is None:
             f["long_rr_valid"] = 1.0 if (m & 4) else 0.0
-        if f.get("short_rr_valid") is None:
-            f["short_rr_valid"] = 1.0 if (m & 8) else 0.0
+    # Signal Pack bits: 1 strongBuy  2 strongSell  4 NOT-fade  8 isTopping  16 isBottoming.
+    # BIT 2 IS INVERTED in the Pine ('not fadeZoneLong ? 4 : 0'), so bit2 == 0 means the fade /
+    # DO NOT CHASE gate is ACTIVE. That state measures -0.038R era-stable, so it is an exclusion.
+    # fade_long stays None when the column is absent (pre-2026-08-13 scrapes have no Signal Pack):
+    # treating missing as "no fade" would silently promote the bars this is meant to exclude.
+    sig_pack = f.get("signal_pack")
+    if sig_pack is not None:
+        m = int(round(sig_pack))
+        f["strong_buy"] = 1.0 if (m & 1) else 0.0
+        f["strong_sell"] = 1.0 if (m & 2) else 0.0
+        f["fade_long"] = 0.0 if (m & 4) else 1.0
+        f["is_topping"] = 1.0 if (m & 8) else 0.0
+        f["is_bottoming"] = 1.0 if (m & 16) else 0.0
+    else:
+        f["fade_long"] = None
 
     return f
 
@@ -418,7 +456,7 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
         missed = bool(ztop is not None and price < zbot)
         chased = bool(act_code == 21 or (missed and f["ma20"] is not None and price < f["ma20"]))
 
-    # Risk / reward calculation (reading actual exported stop)
+    # Risk / reward, AT MARKET (reading the actual exported stop) -- never the zone-entry ratio.
     risk = reward = None
     if stop is not None and tgt is not None and price is not None:
         if side == "long":
@@ -429,20 +467,27 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
             reward = price - tgt
     rr = (reward / risk) if (risk is not None and risk > 0) else None
 
+    # Prefer the indicator's own at-market ratio on the long side so this can never drift from the
+    # .pine's longRRatMkt; the recomputation above is the fallback for pre-2026-08-13 scrapes.
+    if side == "long":
+        exported_rr_mkt = f.get("long_rr_at_market")
+        if exported_rr_mkt is not None and exported_rr_mkt > 0:
+            rr = exported_rr_mkt
+
     # Dominant side attribution
-    ev_side = "long" if (f["buy"] or 0.0) >= (f["sell"] or 0.0) else "short"
-    if side == ev_side:
-        if rr is None:
-            rr = f.get("rr_to_target")
-        dir_p = f.get("dir_prob")
-        if dir_p is not None:
-            win_prob = dir_p if side == "long" else (100.0 - dir_p)
-            if rr is not None and rr > 0:
-                ev_r = ((win_prob / 100.0) * rr) - (1.0 - (win_prob / 100.0))
-            else:
-                ev_r = None
+    ev_side = "long" if ((f["buy"] or 0.0) >= (f["sell"] or 0.0)) else "short"
+    # NO 'rr_to_target' FALLBACK. That field is exported as
+    # `buyScore >= sellScore ? longRR : shortRR` -- the DOMINANT side's ratio, measured from the
+    # ZONE entry, not at market. It overstates the at-market ratio on 93.7% of bars (median
+    # +2.11 R; AMZN 2026-08-13 zone 4.12 vs at-market 0.59) and on a sell-dominant bar it is the
+    # SHORT ratio entirely. Since it feeds ev_r -> TIER_A_MIN_EV_R, leaving rr as None is
+    # correct: the EV gate then abstains instead of acting on the wrong side of the book.
+    dir_p = f.get("dir_prob")
+    if dir_p is not None:
+        win_prob = dir_p if side == "long" else (100.0 - dir_p)
+        if rr is not None and rr > 0:
+            ev_r = ((win_prob / 100.0) * rr) - (1.0 - (win_prob / 100.0))
         else:
-            win_prob = None
             ev_r = None
     else:
         win_prob = None
@@ -484,6 +529,13 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
 # 3. Winner selection + soft flags
 # ---------------------------------------------------------------------------
 def _choose_winner(L: dict, S: dict, f: Dict[str, Optional[float]]) -> dict:
+    # SHORT IS LEVELS-ONLY. Measured on 534 names with the engine's own short geometry: shorting
+    # anything -0.084R in short zone -0.095R short R:R >= 2 -0.101R short-RR-valid -0.108R
+    # (era-stable NEGATIVE, 24.7% win) Sell Score >= 96 -0.113R. Every tightening makes it WORSE,
+    # which is the signature of a real negative edge rather than noise -- and the states the engine
+    # rates highest are the worst ones. The short zone/stop/target stay in 'short_plan' because they
+    # are honest resistance/support structure (useful for a long's target and for strike selection),
+    # but a long candidate must win whenever one exists.
     if L["mode"] == "NONE" and S["mode"] == "NONE":
         buy = f["buy"] or 0.0
         sell = f["sell"] or 0.0
@@ -491,7 +543,12 @@ def _choose_winner(L: dict, S: dict, f: Dict[str, Optional[float]]) -> dict:
         W["mode"] = "NONE"
     else:
         candidates = [s for s in (L, S) if s["mode"] != "NONE"]
-        W = max(candidates, key=lambda s: (s["act_code"] == 20, s["score"] or 0.0))
+        long_candidates = [s for s in candidates if s["side"] == "long"]
+        if long_candidates:
+            W = max(long_candidates, key=lambda s: (s["act_code"] == 20, s["score"] or 0.0))
+        else:
+            W = max(candidates, key=lambda s: s["score"] or 0.0)
+            W["flags"].append("short_levels_only")
 
     cs = W["side"]
     opp = (f["sell"] if cs == "long" else f["buy"]) or 0.0
@@ -622,19 +679,48 @@ def run_data_window_filter(
     stage = int(round(f["stage"] or 0))
     act_code = W["act_code"]
 
-    # HARD EXCLUSIONS (CUT for all setups)
+    # CUT MEANS "NO TRADE OF ANY KIND IS CONSTRUCTIBLE" -- it drops the name from the pipeline
+    # entirely, so it is reserved for absurd/unbuildable states, NOT for merely negative ones.
+    # A small negative expectancy for BUYING (fade -0.038R, extension) is not absurd: those states
+    # are the best measured premium-SELLING context (bible §17 -- fade-on 11.0% touch at 1.5x
+    # ExpMove, Ext Z >= 2 0.0%, both the widest margins in the set). Demoting them to a
+    # structure-only WATCH keeps the name available for the trade context DOES support;
+    # CUTting them threw that away. Only geometry that cannot be built at all still CUTs.
     ext_z_self = f.get("ext_z_self") or 0.0
-    if ext_z_self >= EXT_Z_SELF_MAX:
-        triage, reason = "CUT", "extreme_extension_self_relative"
-    elif act_code in _ACTION_HARD_CUT_CODES:
-        triage, reason = "CUT", "parabolic_or_toxic"
+    rr_mkt = W["rr"]
+    fade_long = f.get("fade_long")
+    # No fresh LONG entry, but the name stays alive for a structure read.
+    no_fresh_long = (fade_long == 1.0) or (ext_z_self >= EXT_Z_SELF_MAX) or (act_code == 17)
+    if act_code == 18:
+        triage, reason = "CUT", "toxic_geometry"       # stop inside the noise floor: unbuildable
     elif stage == 0:
-        triage, reason = "CUT", "warmup_stage_0"
+        triage, reason = "CUT", "warmup_stage_0"       # no history: nothing is computable
     elif W["target"] is None and W["chased"]:
-        triage, reason = "CUT", "chasing_without_target"
+        triage, reason = "CUT", "chasing_without_target"  # no target: no plan to construct
     elif act_code == 20:
         triage = "PASS"
         reason = "reversal_buy_lane"
+    # THE BREADTH-VERIFIED LANE. Mirrors the chart's slate/teal callout exactly: in long zone AND
+    # at-market R:R >= 2 AND fade off. +0.116R, 4/4 eras, 12/12 sectors, 69.9% of 519 names,
+    # n=39,740 -- the only rule here that survived both a sector and a ticker breadth test, and
+    # strictly better evidenced than the code-20 lane above it (whose breadth is unverifiable: only
+    # 8/19 names reach n>=30). Kept BELOW code 20 because code 20 never fires in-zone, so the two
+    # lanes are disjoint, and this preserves the existing 'is_rev_buy' sort tier.
+    elif (
+        RR_LANE_ENABLED
+        and W["side"] == "long"
+        and not no_fresh_long
+        and W["in_zone"]
+        and rr_mkt is not None
+        and rr_mkt >= RR_MKT_PASS
+        and act_code not in _ACTION_SOFT_CAUTION_CODES
+    ):
+        triage = "PASS"
+        reason = "rr_at_market_lane_strong" if rr_mkt >= RR_MKT_STRONG else "rr_at_market_lane"
+    elif no_fresh_long:
+        # Negative for BUYING, but not unbuildable -- and measurably the best premium-SELLING state.
+        triage = "WATCH"
+        reason = "structure_only_no_fresh_long"
     else:
         # All other non-excluded setups clear to WATCH
         triage = "WATCH"
@@ -644,6 +730,12 @@ def run_data_window_filter(
     flags = list(W["flags"])
     if act_code in _ACTION_SOFT_CAUTION_CODES:
         flags.append("soft_caution_action")
+    if fade_long == 1.0:
+        flags.append("fade_do_not_chase")
+    if ext_z_self >= EXT_Z_SELF_MAX:
+        flags.append("extreme_extension_self_relative")
+    if act_code == 17:
+        flags.append("parabolic")
     if (f.get("ext_z_self") or 0.0) >= 1.5:
         flags.append("ext_z_self_elevated")
     if ret_10d is not None and ret_10d >= 12.9:
@@ -652,6 +744,37 @@ def run_data_window_filter(
         flags.append("hot_10d_volatility")
     if price >= P_RICH and hv20 >= HV_HIGH:
         flags.append("rich_high_volatility")
+
+    # STRUCTURE READ -- what the context supports when a fresh long is off the table. Direction and
+    # "will price reach a level" are ORTHOGONAL questions answered by different fields: the zone /
+    # Rev Zone / stage terms that carry the long edge are noise for the touch question, while Ext Z
+    # and IV rank -- flat for direction -- are the two that carry it (bible §17.2). Strike rules in
+    # Exp Move Pct 21b, never a fixed %OTM: at a fixed distance a high IV rank makes assignment
+    # MORE likely (24.3% vs 20.9% at 10% OTM) but LESS likely per unit of expected move (15.6% vs
+    # 23.9% at 1.5x). This is timing/strike guidance only -- §17.5 shows the overlay's expectancy is
+    # NOT established (it needs real option prices), so never present it as free income.
+    iv_rank = f.get("energy_ivrank")
+    exp_move = f.get("exp_move_pct")
+    premium_rich = iv_rank is not None and iv_rank >= 80
+    structure = None
+    if no_fresh_long:
+        # Extended / faded: the widest measured margin on the CALL side.
+        structure = "call_credit_or_covered_call" if premium_rich else "call_side_no_fresh_long"
+    elif ext_z_self <= -1.5 or (W["rev"] or 0.0) >= 10:
+        # Washed out: put side, and P(DN touch) < P(UP touch) at every distance (30.2% vs 38.2%).
+        structure = "cash_secured_put_or_put_credit" if premium_rich else "put_side_watch"
+    elif iv_rank is not None and iv_rank <= 20:
+        structure = "debit_long_premium_cheap"
+
+    structure_strikes = None
+    if structure is not None and exp_move and price:
+        # 1.25x / 1.5x ExpMove: the two rungs whose touch odds are tabulated in bible §17.1.
+        structure_strikes = {
+            "call_1_25x": round(price * (1 + exp_move * 1.25 / 100.0), 2),
+            "call_1_50x": round(price * (1 + exp_move * 1.50 / 100.0), 2),
+            "put_1_25x": round(price * (1 - exp_move * 1.25 / 100.0), 2),
+            "put_1_50x": round(price * (1 - exp_move * 1.50 / 100.0), 2),
+        }
 
     conviction = W["score"]
     if triage == "PASS":
@@ -701,6 +824,14 @@ def run_data_window_filter(
         "tiebreak": tiebreak_score(W, f),
         "rank_model_score": rank_model_score,
         "bad_data": False,
+        # Structure read (see the note above): no_fresh_long says "do not BUY here", which is not
+        # the same as "no trade". Consumers should read these instead of re-deriving them.
+        "no_fresh_long": no_fresh_long,
+        "structure": structure,
+        "structure_strikes": structure_strikes,
+        "iv_rank": iv_rank,
+        "exp_move_pct": exp_move,
+        "rr_at_market": rr_mkt if W["side"] == "long" else None,
     }
 
     # Buy-Trigger Gap Engine: compute how far the current bar is from each
@@ -763,11 +894,20 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float]
     top-3 by ext +1.69, top-8 +1.02, top-30 +0.31 -- so it degrades if the cap grows.
     """
     if not rec:
-        return (0, 0, 0.0, 0.0)
+        return (0, 0, -1e9, 0.0)
 
     # Unpack nested triage dict if outer record passed
     if isinstance(rec.get("triage"), dict):
         rec = rec["triage"]
+
+    # THIS KEY IS DIRECTIONAL-ONLY. 'ext_pct' was measured on "which name captures the movers"
+    # (+0.84 vs -0.25 random). For an income/premium-selling candidate the useful ordering is IV rank
+    # / Ext Z / ExpMove, which is close to the OPPOSITE ranking -- one key cannot order two different
+    # trade types. Income names are already excluded from the paid pass upstream
+    # (_deep_research_gate), so this is a belt-and-braces guard: if one ever reaches here, sort it
+    # last rather than letting it be ranked as if it were a directional setup.
+    if rec.get("no_fresh_long"):
+        return (0, 0, -1e9, 0.0)
 
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
@@ -778,7 +918,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float]
     # gap between adjacent candidates (single-digit % of extension), not merely nudge.
     if rec.get("news_contradiction"):
         primary -= 20.0
-    elif rec.get("news_negative"):
+    if rec.get("news_negative"):
         primary -= 5.0
 
     return (is_pass, is_rev_buy, primary, conviction)
@@ -1036,6 +1176,39 @@ def _self_test() -> None:
             long_stop_loss=45.0,
             long_target=60.0,
         ),
+        # Case 6: The measured at-market R:R lane, in-zone + rr 3.0 + fade off -> PASS
+        "RR_LANE": dict(
+            price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
+            buy=80.0, sell=30.0, stage=2, dir_prob=60.0, regime=0,
+            ext_pct=11.0, exhaustion=0.1, rev_l=0.0, rev_s=0.0,
+            action_long=1.0,
+            long_zbot=99.0, long_ztop=101.0,
+            long_stop_loss=95.0, long_target=115.0,  # At-market RR = 15/5 = 3.0
+            zone_rr_flags=5.0,   # bit0 in-zone + bit2 rr-valid
+            signal_pack=4.0,     # bit2 set -> fade OFF
+        ),
+        # Case 7: Identical bar with the fade gate ACTIVE (signal_pack bit2 clear) -> CUT
+        "RR_FADE": dict(
+            price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
+            buy=80.0, sell=30.0, stage=2, dir_prob=60.0, regime=0,
+            ext_pct=11.0, exhaustion=0.1, rev_l=0.0, rev_s=0.0,
+            action_long=1.0,
+            long_zbot=99.0, long_ztop=101.0,
+            long_stop_loss=95.0, long_target=115.0,
+            zone_rr_flags=5.0,
+            signal_pack=0.0,     # bit2 clear -> fade ACTIVE
+            energy_ivrank=86.0,  # Premium rich -> should resolve to a credit/covered-call read
+            exp_move_pct=15.0,   # Exercises the ExpMove strike ladder
+        ),
+        # Case 8: 'rr_to_target' must NOT be used as a fallback -- here Sell > Buy so that field is
+        # the SHORT ratio; rr and ev_r must both stay None (asserted after the loop).
+        "RR_NO_FALLBACK": dict(
+            price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
+            buy=40.0, sell=90.0, stage=2, dir_prob=45.0, regime=0,
+            ext_pct=4.0, exhaustion=0.0, rev_l=0.0, rev_s=0.0,
+            action_long=6.0, action_short=8.0,
+            rr_to_target=3.0,
+        ),
         # Case 5: Scraped TV Data Window for CAT (raw string labels, unicode minus, ∅ empty zones) -> WATCH
         "CAT": {
             "Date": "Fri 07 Aug '26",
@@ -1127,15 +1300,22 @@ def _self_test() -> None:
 
     expected = {
         "REV_BUY": ("long", "REVERSION_LONG", "PASS", "reversal_buy_lane"),
-        "EXT_CUT": ("long", "TREND_LONG", "CUT", "extreme_extension_self_relative"),
+        # Extension is negative for BUYING but is the best premium-SELLING context, so it is a
+        # structure-only WATCH now, not a CUT. CUT would drop the name and forfeit that trade.
+        "EXT_CUT": ("long", "TREND_LONG", "WATCH", "structure_only_no_fresh_long"),
         "RR_TRAP": ("long", "TREND_LONG", "WATCH", "constructible_watch"),
         "STAGE0": ("long", "TREND_LONG", "CUT", "warmup_stage_0"),
         "CAT": ("long", "NONE", "WATCH", "no_setup"),
+        "RR_LANE": ("long", "TREND_LONG", "PASS", "rr_at_market_lane"),
+        "RR_FADE": ("long", "TREND_LONG", "WATCH", "structure_only_no_fresh_long"),
+        "RR_NO_FALLBACK": ("short", "NONE", "WATCH", "no_setup"),
     }
 
     ok = True
+    results = {}
     for tk, fields in cases.items():
         out = run_data_window_filter(tk, fields)
+        results[tk] = out
         exp_side, exp_mode, exp_triage, exp_reason = expected[tk]
         checks = [
             ("chosen_side", out["chosen_side"], exp_side),
@@ -1151,6 +1331,28 @@ def _self_test() -> None:
             f"SELF-TEST {tk}: side={out['chosen_side']} mode={out['mode']} "
             f"triage={out['triage']} reason={out['reason']} rr={out['rr']}"
         )
+
+    # A triage check alone cannot catch the rr_to_target fallback coming back: the verdict would
+    # still be WATCH while ev_r was silently built from the SHORT side's zone ratio. Assert directly.
+    nf = results.get("RR_NO_FALLBACK", {})
+    for name in ("rr", "ev_r"):
+        if nf.get(name) is not None:
+            ok = False
+            logger.error(f"SELF-TEST RR_NO_FALLBACK {name}: got {nf.get(name)!r}, expected None "
+                         f"(rr_to_target must never be used as a fallback)")
+
+    # A blocked long must still carry a usable structure read, otherwise the demotion-instead-of-CUT
+    # is pointless -- the whole reason for not CUTting is that a trade remains constructible.
+    for tk in ("RR_FADE", "EXT_CUT"):
+        r = results.get(tk, {})
+        if not r.get("no_fresh_long"):
+            ok = False
+            logger.error(f"SELF-TEST {tk}: no_fresh_long should be True")
+        if not r.get("structure"):
+            ok = False
+            logger.error(f"SELF-TEST {tk}: expected a structure read, got {r.get('structure')!r}")
+        logger.info(f"SELF-TEST {tk}: structure={r.get('structure')!r} strikes={r.get('structure_strikes')!r}")
+
     logger.info("SELF-TEST " + ("ALL PASS" if ok else "FAILURES PRESENT"))
 
 

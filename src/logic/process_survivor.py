@@ -219,6 +219,20 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     else:
         conviction_ok = det_conv is None or det_conv >= min_conviction
 
+    # INCOME / STRUCTURE-ONLY NAMES DO NOT GO TO PAID RESEARCH.
+    # 'no_fresh_long' means "do not BUY here" (fade active, Ext Z >= 2.5, or parabolic). They
+    # are still tradeable -- they are the best measured premium-SELLING context -- but the
+    # support needs 'Energy IV Rank Pct', 'Exp Move Pct 21b', the level ladder and the earnings gate,
+    # all of which are deterministic and already computed locally. Deep research buys DIRECTIONAL
+    # conviction (catalyst, flow, policy, insider divergence), which cannot improve a strike sale,
+    # so paying for it here spends the expensive resource on the one question it does not answer.
+    # They still flow through the free, uncapped local enrichment, and the filter hands them back as
+    # 'structure' + 'structure_strikes' ready to use.
+    # This exclusion used to happen ONLY INCIDENTALLY: ev_r is built from long directional EV,
+    # so an extended/faded name almost always failed TIER_A_MIN_EV_R. That is fragile -- it breaks
+    # the moment ev_r changes -- so it is stated explicitly.
+    income_only = bool(triage.get("no_fresh_long"))
+
     send = bool(
         quality_pass
         and triage.get("pursue") is True
@@ -226,6 +240,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         and conviction_ok
         and has_plan
         and not blocked
+        and not income_only
     )
     # Informational scalar (mirrors deep_research_sort_key's news penalty on the
     # ev axis so the logged number tracks the real ordering intent).
@@ -400,10 +415,21 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             f"[Prefilter-{worker_id}] No _row_index for {ticker}; saved locally, not pushed to Sheets."
         )
 
-    logger.info(
-        f"[Prefilter-{worker_id}] {ticker}: det={triage.get('triage')} "
-        f"rank={round(ev_score, 3)} send={send} news_neg={news_negative} contradicts={contradicts}"
-    )
+    # Income candidates are deliberately not sent to paid research (see _deep_research_gate), but log
+    # what they DO support -- otherwise a name that is a perfectly good premium sale just drops
+    # from the run with send=False and no explanation.
+    income_only = bool(triage.get("no_fresh_long"))
+    if income_only:
+        logger.info(
+            f"[Prefilter-{worker_id}] {ticker}: INCOME-ONLY (no fresh long) "
+            f"structure={triage.get('structure')} iv_rank={triage.get('iv_rank')} "
+            f"exp_move={triage.get('exp_move_pct')} strikes={triage.get('structure_strikes')}"
+        )
+    else:
+        logger.info(
+            f"[Prefilter-{worker_id}] {ticker}: det={triage.get('triage')} "
+            f"rank={round(ev_score, 3)} send={send} news_neg={news_negative} contradicts={contradicts}"
+        )
     return {
         "ticker": safe_ticker,
         "trade_id": trade_id,
@@ -414,6 +440,10 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         "enriched": False,
         "triage": triage,
         "thesis_json_path": str(thesis_json_path),
+        # Income lane: consumers read these instead of re-deriving a strike from the chart.
+        "income_only": income_only,
+        "structure": triage.get("structure"),
+        "structure_strikes": triage.get("structure_strikes"),
     }
 
 
