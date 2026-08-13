@@ -22,7 +22,9 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
     safe = ticker.replace(":", "_")
     for fname in (
         f"{safe}_chart.png",
+        f"{safe}_chart_zoom.png",
         f"{safe}_datawindow.json",
+        f"{safe}_datawindow.csv",
         f"{safe}_news_research.md",
         f"{safe}_thesis.json",
     ):
