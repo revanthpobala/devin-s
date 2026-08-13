@@ -40,6 +40,81 @@ def _cached_get(url: str, headers: dict | None = None, ttl: int = 60):
     except Exception as e:
         logger.warning(f"macro_client fetch [{url[:60]}]: {e}")
     return None
+    
+def get_cached_kalshi_summary() -> str:
+    from src import config
+    import json
+    cache_file = config.BASE_DIR / "data" / "kalshi_macro_cache.json"
+    now = datetime.now(timezone.utc).timestamp()
+    
+    if cache_file.exists():
+        try:
+            cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
+            if now - cache_data.get("timestamp", 0) < 14400: # 4 hour TTL
+                return cache_data.get("summary", "")
+        except Exception:
+            pass
+            
+    from src.clients.kalshi_client import get_llm_summarized_macro_odds
+    summary = get_llm_summarized_macro_odds()
+    
+    if summary:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps({
+                "timestamp": now,
+                "summary": summary
+            }), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to write Kalshi cache: {e}")
+            
+    return summary
+
+_bls_cpi_cache = None
+_bls_cpi_cache_ts = 0
+
+def get_bls_cpi() -> str:
+    global _bls_cpi_cache, _bls_cpi_cache_ts
+    now = datetime.now(timezone.utc).timestamp()
+    if _bls_cpi_cache and (now - _bls_cpi_cache_ts) < 3600:
+        return _bls_cpi_cache
+
+    try:
+        import json
+        url = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+        headers = {'Content-type': 'application/json'}
+        year = datetime.now().year
+        payload = {
+            "seriesid": ["CUSR0000SA0", "CUUR0000SA0"],
+            "startyear": str(year - 1),
+            "endyear": str(year)
+        }
+        r = requests.post(url, json=payload, headers=headers, timeout=5)
+        if r.status_code == 200:
+            j = r.json()
+            if j.get("status") == "REQUEST_SUCCEEDED":
+                sa_series = next((s for s in j["Results"]["series"] if s["seriesID"] == "CUSR0000SA0"), None)
+                nsa_series = next((s for s in j["Results"]["series"] if s["seriesID"] == "CUUR0000SA0"), None)
+                
+                if sa_series and nsa_series and sa_series["data"] and nsa_series["data"]:
+                    sa_data = sa_series["data"]
+                    nsa_data = nsa_series["data"]
+                    latest = sa_data[0]
+                    
+                    mom = ((float(sa_data[0]["value"]) / float(sa_data[1]["value"])) - 1) * 100
+                    
+                    curr_nsa = float(nsa_data[0]["value"])
+                    prev_year_nsa = next((x for x in nsa_data if x["period"] == latest["period"] and str(x["year"]) == str(int(latest["year"])-1)), None)
+                    
+                    if prev_year_nsa:
+                        yoy = ((curr_nsa / float(prev_year_nsa["value"])) - 1) * 100
+                        res = f"Latest actual CPI ({latest['periodName']} {latest['year']}): MoM {mom:+.1f}%, YoY {yoy:+.1f}%"
+                        _bls_cpi_cache = res
+                        _bls_cpi_cache_ts = now
+                        return res
+    except Exception as e:
+        logger.warning(f"BLS API fetch failed: {e}")
+    return ""
 
 
 def _fh():
@@ -97,6 +172,58 @@ FOMC_DATES_2026 = [
     date(2026, 10, 29),
     date(2026, 12, 10),
 ]
+
+CPI_DATES_2026 = [
+    date(2026, 1, 13), date(2026, 2, 12), date(2026, 3, 12),
+    date(2026, 4, 10), date(2026, 5, 14), date(2026, 6, 11),
+    date(2026, 7, 10), date(2026, 8, 12), date(2026, 9, 11),
+    date(2026, 10, 14), date(2026, 11, 12), date(2026, 12, 10),
+]
+
+NFP_DATES_2026 = [
+    date(2026, 1, 2), date(2026, 2, 6), date(2026, 3, 6),
+    date(2026, 4, 3), date(2026, 5, 1), date(2026, 6, 5),
+    date(2026, 7, 3), date(2026, 8, 7), date(2026, 9, 4),
+    date(2026, 10, 2), date(2026, 11, 6), date(2026, 12, 4),
+]
+
+def get_upcoming_macro_events(current_date_str: str = None) -> str:
+    """
+    Returns a deterministic string showing days until next FOMC, CPI, and NFP.
+    """
+    if current_date_str:
+        today = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+    else:
+        today = datetime.now(ET).date()
+
+    def get_next(dates):
+        for d in dates:
+            if d >= today:
+                return d, (d - today).days
+        return None, None
+
+    lines = []
+    
+    cpi_d, cpi_days = get_next(CPI_DATES_2026)
+    if cpi_d:
+        cpi_str = f"Next CPI: {cpi_d.strftime('%b %d')} ({cpi_days} days)"
+        bls = get_bls_cpi()
+        if bls:
+            cpi_str += f" | {bls}"
+        lines.append(cpi_str)
+        
+    fomc_d, fomc_days = get_next(FOMC_DATES_2026)
+    if fomc_d:
+        lines.append(f"Next FOMC: {fomc_d.strftime('%b %d')} ({fomc_days} days)")
+        
+    nfp_d, nfp_days = get_next(NFP_DATES_2026)
+    if nfp_d:
+        lines.append(f"Next NFP: {nfp_d.strftime('%b %d')} ({nfp_days} days)")
+
+    if not lines:
+        return "No upcoming 2026 macro events found."
+        
+    return "[MACRO TIMELINE] " + " | ".join(lines)
 
 
 def get_fomc_alert() -> str:
@@ -510,6 +637,11 @@ def build_macro_context(ticker: str | None = None) -> str:
     movers = get_biggest_movers()
     if movers:
         sections.append(movers)
+        
+    # ── L) Kalshi Market Consensus (LLM-Summarized) ──────────────────────────
+    kalshi_summary = get_cached_kalshi_summary()
+    if kalshi_summary:
+        sections.append(kalshi_summary)
 
     body = "\n\n".join(s for s in sections if s)
     return f"=== STEP 2: MACRO / TAPE CONTEXT ===\n{body}\n=== END STEP 2 ==="

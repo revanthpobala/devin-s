@@ -115,19 +115,18 @@ CRITICAL INSTRUCTION: Keep your internal `<think>` block extremely concise (unde
 Do NOT write an essay. Output the JSON immediately.
 """
     try:
-        from src.clients.llm_client import nvidia_news_model, query_local_llm
+        from src.clients.llm_client import query_local_llm
 
-        # Pass headline/summary as JSON user prompt. Use the text-only GLM 5.2
-        # NVIDIA model for cheap news summarization (no vision needed here).
+        # Pass headline/summary as JSON user prompt.
         user_prompt = json.dumps({"headline": headline, "summary": summary})
 
         response_text = query_local_llm(
             system_prompt=prompt,
             user_prompt=user_prompt,
             json_mode=True,
+            use_openrouter=False,
             max_tokens=512,
             disable_thinking=True,
-            model=nvidia_news_model(),
         )
         if response_text:
             if "</think>" in response_text:

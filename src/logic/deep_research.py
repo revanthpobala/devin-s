@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src import config
-from src.clients import adanos_client, alphavantage_client, earnings_client, google_grounding_client
+from src.clients import adanos_client, alphavantage_client, earnings_client, google_grounding_client, finnhub_client
 from src.clients.adanos_client import format_market_sentiment_block
 from src.clients.llm_client import query_local_llm
 from src.logic.thesis_drift import ThesisDriftChecker
@@ -38,27 +38,11 @@ def _load_triage_record(raw_dir: Path, deep_dir: Path, ticker: str) -> dict:
 
 
 def _pull_macro_news(date_str: str) -> str:
-    """Run-level macro context (CPI/Fed) — fetched ONCE per run, shared by all tickers."""
-    from src.clients.search_client import search_web
+    """Run-level macro context (CPI/Fed/NFP) — purely deterministic."""
+    from src.clients.macro_client import get_upcoming_macro_events
 
-    queries = [
-        "US CPI inflation report latest Fed interest rate decision",
-        f"Federal Reserve rate decision {date_str[:7]} hawkish dovish rates",
-    ]
-    blocks = []
-    for q in queries:
-        try:
-            res = search_web(q, max_results=3)  # Brave (auto)
-        except Exception:
-            res = []
-        if res:
-            blocks.append(
-                "Q: "
-                + q
-                + "\n"
-                + "\n".join(f"- [{r.get('title', '')}] {r.get('body', '')}\n" for r in res)
-            )
-    return "\n".join(blocks) if blocks else "No fresh macro news retrieved."
+    timeline = get_upcoming_macro_events(date_str)
+    return timeline
 
 
 def _pull_fresh_news(ticker: str, date_str: str) -> str:
@@ -710,11 +694,16 @@ def run_deep_research(date_str, target_ticker=None):
         av_block = alphavantage_client.format_av_block(ticker)
         social_block = adanos_client.format_social_block(ticker)
         earnings_fact_block = earnings_client.format_earnings_fact_block(ticker)
+        institutional_block = finnhub_client.format_finnhub_institutional_block(ticker)
 
         grounded_question = (
             f"{ticker} stock latest news, analyst rating changes, and earnings outlook this week"
         )
         grounded_block = google_grounding_client.format_grounded_block(ticker, grounded_question)
+        
+        macro_grounded_question = f"US Macroeconomic news today {date_str}, including any CPI, NFP, or FOMC data released"
+        macro_grounded_block = google_grounding_client.format_grounded_block("MACRO", macro_grounded_question)
+
 
         stale = _dossier_stale(dossier_path, date_str)
         if stale:
@@ -773,6 +762,8 @@ def run_deep_research(date_str, target_ticker=None):
         --- 2c. FUNDAMENTAL & SOCIAL ---
         {av_block}
         {social_block}
+        {grounded_block}
+        {macro_grounded_block}
 
         --- 2d. ENGINE FLAGS ---
         {flags_block}
@@ -876,6 +867,10 @@ def run_deep_research(date_str, target_ticker=None):
         --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL (fetched live for this ticker) ---
         {av_block}
         {social_block}
+        {grounded_block}
+        
+        --- 2c-ii. MACRO GROUNDING (Google Search) ---
+        {macro_grounded_block}
 
         --- 2d. ENGINE FLAGS (deterministic) ---
         {flags_block}
@@ -894,8 +889,11 @@ def run_deep_research(date_str, target_ticker=None):
 
         --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}
+        {institutional_block}
 
         {debate_block}
+
+        ## 2B. LATEST CHART STATE (from Pass 1)
 
         {options_block}
         You have access to LIVE TOOLS for fundamental discovery. BEFORE you finalize the thesis you MUST call them:

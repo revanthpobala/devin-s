@@ -149,17 +149,17 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_unusual_options_flow",
-            "description": "Fetches unusual institutional options flow (large block sweeps where Volume heavily exceeds Open Interest) from Charles Schwab. Use this to determine if smart money is aggressively positioning for a short-term catalyst.",
+            "name": "fetch_prediction_market",
+            "description": "Queries Kalshi prediction markets to find the market-implied probability (odds) for macro events, Fed rate cuts, elections, or regulatory approvals. Example queries: 'fed rate', 'election', 'inflation'.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ticker": {
+                    "query": {
                         "type": "string",
-                        "description": "The stock ticker symbol (e.g. 'AMZN')",
+                        "description": "The search keywords.",
                     }
                 },
-                "required": ["ticker"],
+                "required": ["query"],
             },
         },
     },
@@ -200,12 +200,7 @@ def execute_tool_call(tool_call):
         logger.info(f"LLM executed tool: fetch_options_chain(ticker='{args.get('ticker')}')")
         result = fetch_options_chain_tool(**args)
         return result or "No options chain data returned."
-    elif function_name == "fetch_unusual_options_flow":
-        from src.clients.schwab_client import get_unusual_options_flow
 
-        logger.info(f"LLM executed tool: fetch_unusual_options_flow(ticker='{args.get('ticker')}')")
-        result = get_unusual_options_flow(args.get("ticker"))
-        return result or "No unusual options flow data returned."
     elif function_name == "fetch_finnhub_news":
         from src.clients.news_client import _fetch_finnhub_news
         
@@ -222,6 +217,11 @@ def execute_tool_call(tool_call):
         if result_dict and result_dict.get("raw_news"):
             return result_dict["raw_news"]
         return f"No Alpaca/Yahoo news found for {ticker}."
+    elif function_name == "fetch_prediction_market":
+        from src.clients.kalshi_client import fetch_prediction_market
+        query = args.get("query")
+        logger.info(f"LLM executed tool: fetch_prediction_market(query='{query}')")
+        return fetch_prediction_market(query)
     else:
         logger.warning(f"Unknown tool called: {function_name}")
         return f"Error: Tool '{function_name}' is not supported."

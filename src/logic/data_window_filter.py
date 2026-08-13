@@ -69,10 +69,10 @@ HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 # Keyed by TradingView indicator label strings. Substring match tolerates minor label drift.
 _FIELD_LABELS = {
     "price": ("close",),
-    "ma20": ("ma 20",),
-    "ma50": ("ma 50",),
-    "ma200": ("ma 200",),
-    "weinstein": ("weinstein",),
+    "ma20": ("ma 20 fast", "ma 20",),
+    "ma50": ("ma 50 mid", "ma 50",),
+    "ma200": ("ma 200 slow", "ma 200",),
+    "weinstein": ("weinstein ma 150", "weinstein",),
     "buy": ("buy score",),
     "sell": ("sell score",),
     "stage": ("stage 1 base 2 up 3 top 4 down", "stage (1=", "stage 1 base", "stage 1"),
@@ -143,6 +143,12 @@ _FIELD_LABELS = {
     "buy_sigma_evidence": ("buy sigma evidence", "buy_sigma_evidence",),
     "sell_sigma_evidence": ("sell sigma evidence", "sell_sigma_evidence",),
     "zone_rr_flags": ("zone rr flags pack",),
+    "signal_pack": ("signal pack",),
+    "premove_pack": ("premove pack",),
+    "darvas_box_top": ("darvas box top",),
+    "buy_category_pack": ("buy category pack",),
+    "sell_category_pack": ("sell category pack",),
+    "long_rr_at_market": ("long rr at market",),
 }
 
 _BEAR_MASK_BITS = {

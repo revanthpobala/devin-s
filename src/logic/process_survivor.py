@@ -590,7 +590,7 @@ def generate_thesis_task(
         # Fallback for single-ticker --ticker runs that bypass the sheet cascade
         # and therefore carry no alert-side. Use the indicator's own Direction
         # Probability (bible §5.13 Group B field 14): >50 = bull, <50 = bear.
-        dir_prob = _pf.get("dir_prob") if _pf.get("dir_prob") is not None else safe_float(data_window.get("Dir Prob % (>50 bull)"))
+        dir_prob = _pf.get("dir_prob") if _pf.get("dir_prob") is not None else safe_float(data_window.get("Dir Prob Pct Above 50 Bull") or data_window.get("Dir Prob % (>50 bull)"))
         if dir_prob > 0:
             side = "LONG" if dir_prob >= 50 else "SHORT"
         else:

@@ -23,6 +23,8 @@ def get_python_exe() -> str:
         return str(nix_py)
     return sys.executable
 
+# Parallel.ai API
+PARALLEL_API_KEY = os.getenv("PARALLEL_API_KEY", "")
 
 # Gmail Credentials
 GMAIL_EMAIL = os.getenv("GMAIL_EMAIL", "")
