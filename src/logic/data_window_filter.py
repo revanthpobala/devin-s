@@ -378,6 +378,8 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
             f["short_in_zone"] = 1.0 if (m & 2) else 0.0
         if f.get("long_rr_valid") is None:
             f["long_rr_valid"] = 1.0 if (m & 4) else 0.0
+        if f.get("short_rr_valid") is None:
+            f["short_rr_valid"] = 1.0 if (m & 8) else 0.0
     # Signal Pack bits: 1 strongBuy  2 strongSell  4 NOT-fade  8 isTopping  16 isBottoming.
     # BIT 2 IS INVERTED in the Pine ('not fadeZoneLong ? 4 : 0'), so bit2 == 0 means the fade /
     # DO NOT CHASE gate is ACTIVE. That state measures -0.038R era-stable, so it is an exclusion.
@@ -474,20 +476,28 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
         if exported_rr_mkt is not None and exported_rr_mkt > 0:
             rr = exported_rr_mkt
 
-    # Dominant side attribution
+    # Dominant side attribution.
+    # THE `side == ev_side` GUARD IS LOAD-BEARING -- do not flatten it. ev_r may only be computed for
+    # the side the scores actually favour. Without it, a bar with Sell 90 > Buy 70 still produces
+    # ev_r = 1.4 for the LONG side, which clears TIER_A_MIN_EV_R (0.5) and buys paid research on a
+    # sell-dominant setup. The non-dominant side must return None so the EV gate ABSTAINS.
     ev_side = "long" if ((f["buy"] or 0.0) >= (f["sell"] or 0.0)) else "short"
-    # NO 'rr_to_target' FALLBACK. That field is exported as
-    # `buyScore >= sellScore ? longRR : shortRR` -- the DOMINANT side's ratio, measured from the
-    # ZONE entry, not at market. It overstates the at-market ratio on 93.7% of bars (median
-    # +2.11 R; AMZN 2026-08-13 zone 4.12 vs at-market 0.59) and on a sell-dominant bar it is the
-    # SHORT ratio entirely. Since it feeds ev_r -> TIER_A_MIN_EV_R, leaving rr as None is
-    # correct: the EV gate then abstains instead of acting on the wrong side of the book.
-    dir_p = f.get("dir_prob")
-    if dir_p is not None:
-        win_prob = dir_p if side == "long" else (100.0 - dir_p)
-        if rr is not None and rr > 0:
-            ev_r = ((win_prob / 100.0) * rr) - (1.0 - (win_prob / 100.0))
+    if side == ev_side:
+        # NO 'rr_to_target' FALLBACK. That field is exported as
+        # `buyScore >= sellScore ? longRR : shortRR` -- the DOMINANT side's ratio, measured from the
+        # ZONE entry, not at market. It overstates the at-market ratio on 93.7% of bars (median
+        # +2.11 R; AMZN 2026-08-13 zone 4.12 vs at-market 0.59) and on a sell-dominant bar it is the
+        # SHORT ratio entirely. Since it feeds ev_r -> TIER_A_MIN_EV_R, leaving rr as None is
+        # correct: the EV gate then abstains instead of acting on the wrong side of the book.
+        dir_p = f.get("dir_prob")
+        if dir_p is not None:
+            win_prob = dir_p if side == "long" else (100.0 - dir_p)
+            if rr is not None and rr > 0:
+                ev_r = ((win_prob / 100.0) * rr) - (1.0 - (win_prob / 100.0))
+            else:
+                ev_r = None
         else:
+            win_prob = None
             ev_r = None
     else:
         win_prob = None
@@ -918,7 +928,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float]
     # gap between adjacent candidates (single-digit % of extension), not merely nudge.
     if rec.get("news_contradiction"):
         primary -= 20.0
-    if rec.get("news_negative"):
+    elif rec.get("news_negative"):
         primary -= 5.0
 
     return (is_pass, is_rev_buy, primary, conviction)
@@ -1202,6 +1212,18 @@ def _self_test() -> None:
         ),
         # Case 8: 'rr_to_target' must NOT be used as a fallback -- here Sell > Buy so that field is
         # the SHORT ratio; rr and ev_r must both stay None (asserted after the loop).
+        # Case 9: Sell-dominant bar where the LONG side still wins side-selection. ev_r must be None
+        # -- the `side == ev_side` guard. Without it this bar reports ev_r 1.4 and buys paid research
+        # on a setup the scores say is short. The triage verdict alone does not catch this.
+        "EV_SIDE_GUARD": dict(
+            price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
+            buy=70.0, sell=90.0, stage=2, dir_prob=60.0, regime=0,
+            ext_pct=4.0, exhaustion=0.0, rev_l=0.0, rev_s=0.0,
+            action_long=1.0, action_short=8.0,
+            long_zbot=99.0, long_ztop=101.0,
+            long_stop_loss=95.0, long_target=115.0,
+            zone_rr_flags=5.0, signal_pack=4.0,
+        ),
         "RR_NO_FALLBACK": dict(
             price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
             buy=40.0, sell=90.0, stage=2, dir_prob=45.0, regime=0,
@@ -1309,6 +1331,7 @@ def _self_test() -> None:
         "RR_LANE": ("long", "TREND_LONG", "PASS", "rr_at_market_lane"),
         "RR_FADE": ("long", "TREND_LONG", "WATCH", "structure_only_no_fresh_long"),
         "RR_NO_FALLBACK": ("short", "NONE", "WATCH", "no_setup"),
+        "EV_SIDE_GUARD": ("long", "TREND_LONG", "PASS", "rr_at_market_lane"),
     }
 
     ok = True
@@ -1340,6 +1363,13 @@ def _self_test() -> None:
             ok = False
             logger.error(f"SELF-TEST RR_NO_FALLBACK {name}: got {nf.get(name)!r}, expected None "
                          f"(rr_to_target must never be used as a fallback)")
+
+    # Assert ev_r is None on EV_SIDE_GUARD despite long PASS
+    esg = results.get("EV_SIDE_GUARD", {})
+    if esg.get("ev_r") is not None:
+        ok = False
+        logger.error(f"SELF-TEST EV_SIDE_GUARD ev_r: got {esg.get('ev_r')!r}, expected None "
+                     f"(sell-dominant setup must not compute long ev_r)")
 
     # A blocked long must still carry a usable structure read, otherwise the demotion-instead-of-CUT
     # is pointless -- the whole reason for not CUTting is that a trade remains constructible.
