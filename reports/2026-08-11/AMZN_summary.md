@@ -1,228 +1,195 @@
-# AMZN | $273.72 | August 11, 2026
-**Bar close:** $273.72 (Data Window) · **Live:** $272.26 (`get_realtime_quote`, 11:06 ET) · **Change:** −$5.73 vs. previous close $277.99 (−2.06%)
+# AMZN | $272.24 | August 11, 2026
+**Bar close:** $273.72 (Data Window) · **Live:** $272.24 (`get_realtime_quote`, time not provided) · **Change:** -$5.75 (-2.07% vs previous close $277.99)
 
 ## ⚡ TLDR / EXECUTIVE SUMMARY
-**The Thesis in 2 Sentences:** AMZN printed **Action Long Code 16 (BLOW-OFF/CAPITULATION)** on the live bar — a measured-negative state (−0.66% SIG) that **outranks all bullish labels and forbids fresh long entries per doctrine**, regardless of the 89.9 Buy Score the bull case fixated on. The Q2 earnings beat and $3T market-cap milestone that powered July's 14% rally are already in the price, RVOL is 0.13 (no fresh institutional flow), and the live tape is gapping below the prior close into a fresh Stage 5 Recovery flip — none of this is a SKIP override.
-**Verdict:** **SKIP** · **Conviction:** 1/10 (state-only — and the state is actively hostile to longs)
-**EARNINGS GATE:** PASS (79 Days Remaining | ~2026-10-29)
-**(If User Owns Shares):** **HOLD with DEFENSIVE COVERED CALL** — Stage 5 Recovery just flipped, BLOW-OFF fired; do not sell naked upside into a regime transition but cap with a deep-OTM call
-
----
+**The Thesis in 2 Sentences:** Amazon has credible fundamental support from the July 30 earnings beat and AWS/AI demand, but the trade is not valid now: the daily engine is in Code 16 BLOW-OFF/CAPITULATION, Stage 5 Recovery with age 0, and the live price remains above the long zone after a failed high-volume confirmation. The current news flow is mixed—strong AWS and earnings momentum versus very large AI capex, valuation, regulatory, and macro-rate risks—so the correct portfolio action is to wait rather than convert a bullish narrative into a fresh position.
+**Verdict:** SKIP · **Conviction:** 2/10
+**EARNINGS GATE:** PASS (>7d) — 79 days remaining, October 29, 2026
+**(If User Owns Shares):** HOLD cautiously; no new directional exposure. Covered-call decision depends on ownership and tax basis, which were not provided.
 
 ## 🛠️ DATA AUDIT (LITERAL VALUES)
+*Verbatim from the Data Window. NOT from the chart image.*
 
-### Action Codes — **THE SUPREME CELL**
-*   **Action Long Code: 16 — BLOW-OFF/CAPITULATION** 🛑 · measured −0.66% [−1.03, −0.30] **SIG NEGATIVE**
-*   **Action Short Code: 8 — WATCH** · not triggered
-*   ⚠️ Per doctrine: **Codes 11–18 forbid a fresh entry and cannot be relaxed by any Contextual Override.** The bull case's "AGGRESSIVE ACCUMULATION" plan directly violates this rule. PRIME/ACTION SELL is structurally impossible — short conviction must be read from Sell Score (76.60) and Short In Zone (false, no cluster).
-*   ⚠️ **Engine math contradiction flagged**: the deterministic triage reports "TREND_LONG / EV 0.69R" — this is **wrong**. Row 8 is supreme; code 16 outranks any score-derived EV math.
+*   **Action codes:** Long **16 — BLOW-OFF / CAPITULATION**, a caution/danger state forbidding a fresh entry. Short **8 — WATCH**, not triggered. PRIME/ACTION SELL is structurally impossible in this system; the short must be read from Sell Score + Sell Sigma Evidence + Short In Zone. The short zone fields are blank.
+*   **Stage / Age:** Stage **5**, Stage Age Bars **0** — Recovery, but the first bar of the stage. Stage-5 PRIME/ACTION outcomes are significantly negative, and Code 16 independently forbids entry.
+*   **Scores:** Buy **89.89141190539351**; Sell **76.59627632046896**. Score arrows were not provided; do not infer them. Buy Sigma Evidence **4.854372352912664**; Sell Sigma Evidence **1.868613338940384**. The high Buy Score is not selective and is not enough to override Code 16.
+*   **Trade geometry:** `Entry At Market = 0`, so `RR To Target = 2.9676922192263966` is the structural/zone ratio for the dominant long side. Engine Math reports R:R used **1.58** and Win Prob **65.63**, but this is only constructible geometry. Long `RR Valid` is not explicitly exported in the supplied window; `Zone RR Flags Pack = 12`. Long zone is present: **269.6200466232113–271.83995337678874**. Long entry is **270.73**, stop **265.18023311605634**, target **287.2**. Current live price $272.24 is above the zone top, so the setup is stale/missed rather than an active fill. Short zone fields are blank.
+*   **Extension:** `Ext Pct vs MA200 = 14.757592771234354%`, in the 10–25% band and below the measured 25–60% exclusion band. `Ext Z Self Relative = 1.1257678714473052`; `Exhaustion Gradient = 0.2549992446334808`.
+*   **Regime / MTF:** Regime **0 Healthy**; Stage must be read separately as **Stage 5 Recovery**. `MTF Long Aligned = 3`, which is full alignment but should be read as mature, not as additional confirmation.
+*   **Rev Zone:** Long Rev Zone **0.0**; Short Rev Zone **5.5**. No active long reversal code.
+*   **Energy / DMI:** Energy State **3 Expansion**; ADX 14 **28.365179503821352**; DMI DI Plus **36.71595176580836** / DMI DI Minus **15.95695641684717**.
+*   **Volume profile:** VP POC **208.8266** / VAH **255.4984** / VAL **199.14** / HVN Above **blank** / HVN Below **272.2298** / RVOL Vs Avg **0.1335149143977652**. The VP fields are populated in this export; the very low RVOL is a material confirmation failure.
+*   **Fresh labels:** Bear Warning Mask **0**, Bear Warning Age **blank** — no fresh bear-warning bit. Reversal Pattern Mask **195**, Age **4**: exact supplied decoding is **KEY_REV_BULL (bullish), KEY_REV_BEAR (bearish), TRAP_BULL (bearish/Bull Trap), TRAP_BEAR (bullish/Bear Trap)** — two bullish and two bearish signals, therefore mixed rather than confirmation. Weak Level Mask **0**, Age **blank**.
+*   **Next earnings:** **October 29, 2026 | 79 days** (deterministic yfinance ground truth; supplied 2e).
 
-### Stage / Age
-*   **Stage = 5 (Recovery), Stage Age Bars = 0** — this is a **fresh Stage 5 birth**, just flipped today from Stage 4. PRIME/ACTION in Stage 5 measures **−0.52% to −0.69% SIG** — the engine's prior is right, the forward returns are wrong.
-
-### Scores
-*   **Buy Score = 89.89, Sell Score = 76.60** — both high (churn flag = two-sided tape)
-*   **Buy Sigma Evidence = +4.85σ**, **Sell Sigma Evidence = +1.87σ** — the long bias is real evidence, not just prior; but the action code vetoes it on maturity grounds
-*   Score arrows: Row 10 ▲ (3-bar delta > +2) on Buy — momentum still climbing, but on a stretched, mature move
-
-### Trade Geometry
-*   **Entry At Market = 0** (structural)
-*   **RR To Target = 2.97** — this is the **zone** ratio (Long Entry $270.73 → Long Target $287.20). It is the dominant side's ratio. Geometrically clean — and irrelevant because the action forbids fresh entries.
-*   **Long In Zone = FALSE** · live close $273.72 is **above the zone top** ($271.84). The setup is "stalked and missed" — and the price is now pulling back from $278 prior close anyway.
-*   **Long RR Valid = TRUE** · but this is an assertion, not a filter (see bible §3.3). Keying on RR Valid alone would be the **zoneless-entry trap**.
-*   **Short Entry Zone Bot/Top = null** — clustering engine found **no valid short cluster**. There is no actionable short setup.
-
-### Extension
-*   **Ext Pct vs MA200 = +14.76%** · outside the 25–60% exclusion band (so not a measured veto), but elevated; the 14% July rally is the move
-*   **Ext Z Self Relative = +1.13σ** · normal-extended, not parabolic
-*   **Exhaustion Gradient = 0.255** · moderate trend maturity
-
-### Regime / MTF
-*   **Regime = 0 (Healthy)** · but Stage separately is **5**; per bible §15.6 these are independent reads. Regime 0 ≠ "not declining"; here it means "no climax/distribution flag" alongside a Stage-5 Recovery.
-*   **MTF Long Aligned = 3/3** · **READ AS MATURE, NOT CONFIRMATION** — in blue chips 3/3 measures −0.13% not significant. Combined with BLOW-OFF on the action side, this is the **Edge Case 10 trap in reverse** (every component looks bullish on the surface, the action vetoes it).
-
-### Rev Zone
-*   **Long Rev Zone = 0.0** · **Short Rev Zone = 5.5 (Z2 forming)** · no actionable reversion — Long is dead-zero, Short is only Z2
-
-### Energy / DMI
-*   **Energy State = 3 (EXPANSION)** · **Energy IV30 = 83.28%**, **IV Rank = 84.92%** (HIGH — favors selling premium)
-*   **Energy IV HV Spread = +37.88** · confirms expansion state
-*   **HV20 = 60.40%** annualized · Exp Move 21b = 17.43% (this is roughly the 21-day statistical envelope — anything beyond is aggressive)
-*   **ADX 14 = 28.37** (strong trend, not choppy) · **DMI +DI = 36.72, −DI = 15.96** (bullish dominance on DMI)
-
-### Volume Profile
-*   **VP POC = 208.83 · VP VAH = 255.50 · VP VAL = 199.14** · **VP HVN Below = 272.23** — the closest structural support below is the HVN at $272.23, very near the live price; the daily long zone bot ($269.62) is the next layer
-*   **RVOL Vs Avg = 0.13** · **13% of average volume** — this is the **single most damning field in the data**. A "breakout continuation" on 13% volume is not institutional accumulation. Z Volume = 0.0 confirms the absence of any demand shock.
-
-### Fresh Labels (count by polarity, lead with Age)
-*   **Reversal Pattern Mask = 195** · Age **4 bars** (fresh)
-    *   KEY_REV_BULL (1, 🟢 Bullish)
-    *   KEY_REV_BEAR (2, 🔴 Bearish)
-    *   TRAP_BULL (64,  Bearish — failed up-break)
-    *   TRAP_BEAR (128, 🟢 Bullish — failed down-break)
-    *   **Net = 2 Bullish vs 2 Bearish — neutral tug-of-war, not directional evidence**
-*   **Bear Warning Mask = 0** · clean (the BLOW-OFF action code is the warning)
-*   **Weak Level Mask = 0** · no weakened structural levels
-
-### Next Earnings
-*   **2026-10-29 (79 days)** — Source: deterministic yfinance export (ground truth)
-
----
-
-## 📐 CALIBRATION DISCLOSURE (MANDATORY)
-
-The firing state is **Action Long Code 16 (BLOW-OFF/CAPITULATION)**, measured at **−0.66% ex21 [−1.03, −0.30] — significantly negative**. This is **not** a rule to enter long, it is a rule to **avoid** entering long. The complementary measured cells are also hostile: PRIME/ACTION in Stage 5 Recovery reads **−0.52% to −0.69% SIG** (the engine's Bayesian prior for Stage 5 is +0.25 long, but forward returns say no). The bull case's only pillar is the high Buy Score (89.9) — but **the bible is explicit that a high Buy Score is the normal condition (median 85.3, 54% of bars clear 82)**; it does not select edge. The "catalyst" the bull case cites — Q2 earnings beat, $3T market cap, AWS strength — is **already in the price** following July's 14% surge. There is no fresh, dated catalyst to override the doctrine-mandated skip. **The verdict is SKIP and no non-indicator pillar exists that could lift conviction above 1.**
-
----
+## 📐 CALIBRATION DISCLOSURE (MANDATORY on any BUY/SELL verdict)
+Not applicable to the SKIP verdict. The state being relied on for exclusion is Code 16 BLOW-OFF/CAPITULATION: **−0.66% ex21 [−1.03%, −0.30%]**, an interval that excludes zero on the downside. Stage-5 PRIME/ACTION are also significantly negative, but no bullish state is being recommended.
 
 ## THE SETUP
+**What the state shows:** The Buy Score is high but non-selective; raw bullish evidence is **4.854372352912664σ**, while the action cascade has priority. Code 16 means the velocity spike is occurring on a mature/exhaustion-prone trend and is not a fresh long entry. Stage 5 age 0, Energy Expansion, `Z Velocity = 2.449690246218472`, RVOL **0.1335149143977652**, and `MTF = 3/3` describe a mature, fast move without current volume confirmation. Key structural levels are the long zone **269.6200466232113–271.83995337678874**, stop **265.18023311605634**, target/Darvas top **287.2**, AVWAP resistance **277.8259353501065**, and MA200 **238.6073055277933**.
 
-AMZN just spent July rallying ~14% from $252 to a 52-week high of $287.20 on the back of the Q2 2026 earnings beat and the $3T market-cap milestone. Today's bar is the **first session after that peak has stalled**: it closed at $273.72 (just above the Sprint Line EMA at $273.46) but the live quote at $272.26 is **already −2.06% below the prior close of $277.99** — the move is fading in real time. The Weinstein stage flipped from Stage 4 to Stage 5 (Recovery) **on this bar (age = 0)**, the first time the engine has labeled this move a Recovery, and `Z Velocity = +2.45σ` is what fires the BLOW-OFF action code — a measured-significantly-negative state. RVOL at 0.13 confirms there is no institutional bid behind the late-July push; this is a thin-air rally topping out.
+**What the image shows:** The recent chart shows a sharp vertical advance into the **287.2** area followed by rejection and volatile candles. The latest structure is closer to an exhaustion/retest configuration than a clean pullback or confirmed breakout. The live price at **272.24** is still above the drawn long-zone top, so buying now would chase rather than obtain the exported structural fill.
 
-From a structural standpoint, the **KEY RES at $287.20** (the 52-week high / Darvas box top) is the ceiling, the **AVWAP Resistance at $277.83** sits squarely in the prior bar's range as immediate resistance, and the **long entry zone at $269.62–$271.84** is below price but un-filled — a pullback to fill it would require the next leg down through $272 (the HVN Below at $272.23) and the Sprint Line EMA cluster around $273.
+**Macro/Policy context:** The live macro search results are internally inconsistent and include stale or weakly sourced claims. The provided search output references elevated yields, persistent inflation concerns, and possible future easing, but it does not establish a reliable August 11, 2026 CPI or FOMC surprise. No tariff, sanctions, or geopolitical policy shift specific to Amazon was verified in this session. Treat rates and AI-capex sensitivity as risk factors, not as a directional catalyst.
 
-Macro context is mixed-to-hostile for high-multiple growth: the Fed is holding 3.50–3.75% for a fifth consecutive meeting with a **~30% probability of a hike** baked in (per CME FedWatch-style reads), CPI is forecast at 3.8% (still sticky), and the **Magnificent Seven have rotated OUT** of the Nasdaq-100 doubling list in 2026 — capital is leaving the mega-cap cohort AMZN belongs to. The $500B Nvidia-led AI infrastructure pact is bullish for the sector but not specifically an AMZN catalyst, and the Zoox robotaxi launch in Las Vegas came with a **safety recall** ("Smoke Incident") — a regulatory headwind, not a tailwind.
+```text
+                         Long Target / Darvas Top: $287.20
+                                      ▲
+                                      │
+          AVWAP Resistance: $277.8259353501065
+                                      │
+                          Live Price: $272.24
+                                      │
+     ┌──────────────────────────────────────────────┐
+     │ Long Entry Zone: $269.6200466232113–$271.83995337678874 │
+     └──────────────────────┬───────────────────────┘
+                            │
+                            ▼
+              Long Stop Loss: $265.18023311605634
 
-```
-                                              (Long Target: 287.20)
-                                                       ▲
-                                                       │
-                                                       │
-                                                       │   ← KEY RES / 52W High
-                                                       │
-   ╔═══════════════════════════════════════════════════╧════════════════════════╗
-   ║     Live Quote: 272.26 (gap down from prior close 277.99)              ║
-   ║     Bar Close:  273.72  ← sitting ON the Sprint Line EMA               ║
-   ╠════════════════════════════════════════════════════════════════════════════╣
-   ║ Hull Baseline HMA:    281.86    (above price — overhead resistance)      ║
-   ║ AVWAP Resistance:     277.83    (gap-fill level)                         ║
-   ║ Sprint Line EMA:      273.46    (immediate support — being tested now)   ║
-   ║ MA 20 Fast:           259.33                                            ║
-   ║ ─── Long Entry Zone:  270.73 (Bot 269.62 / Top 271.84) ── NOT filled  ║
-   ║ MA 50 Mid:            252.05                                            ║
-   ║ Long Stop Loss:       265.18    (below zone bot + buffer)               ║
-   ║ MA 200 Slow:          238.61                                            ║
-   ║ VP POC:               208.83    (deep structural value shelf)            ║
-   ╚════════════════════════════════════════════════════════════════════════════╝
-                                                       │
-                                                       ▼
-                                            (Below: Capitulation if MA50 fails)
+                 MA 200 Support: $238.6073055277933
 ```
 
-The image confirms the picture: a multi-month uptrend into a 52-week high at $287.20, a cluster of **TOP WARNING ⚠️ labels** stacked along the run-up, fresh **KEY REV** (both bull and bear) and **TRAP** labels in the last 4 bars (a tug-of-war, not a continuation), and the long entry zone sitting un-filled just below — a textbook BLOW-OFF signature.
+## 📰 SYNTHESIZED NEWS & CATALYSTS
+**Recent Headlines:**
+- Live ticker research identified Amazon’s **Zoox paid-service launch in Las Vegas** and regulatory discussion after a smoke-related recall. This is a secondary, unproven catalyst for AMZN valuation.
+- The web search reported strong recent operating momentum, including AWS growth and AI-infrastructure monetization, but also a reported **$200 billion 2026 capex plan** and concern about margin/FCF pressure. These figures came from the search synthesis and were not independently confirmed by a primary Amazon filing in the returned results.
+- The supplied earnings research reports July 30 EPS of **$5.75** versus **$1.82** expected, a **215.9% surprise**, with the next earnings date October 29, 2026.
+
+**Web Search/Parallel Insights:** The Finnhub and Alpaca tool outputs were effectively identical local syntheses rather than article-level source lists, so their claims should not be treated as independently corroborated. The macro search results conflict with one another: some imply future easing, while others describe persistent inflation and elevated rates. I therefore reject the local debate’s unsupported certainty that the Fed is either decisively dovish or decisively hawkish. The supplied news also contains a possible timing inconsistency around earnings guidance; the deterministic earnings date controls.
+
+**Catalyst Impact:** The earnings beat and AWS/AI narrative support the fundamental bull case, but the catalyst is already reflected in the sharp run toward **287.2**. There is no fresh session catalyst strong enough to override Code 16, Stage 5 age 0, low RVOL, and the stale entry. The next verified binary catalyst is 79 days away, too distant to justify paying for short-dated directional premium today.
 
 ## THE THESIS
+Amazon’s business momentum may remain constructive: the supplied research reports a large EPS beat, strong AWS growth, and continued AI-infrastructure demand. However, the investment thesis and the trade thesis are different. The business may be good while the entry is poor.
 
-**There is no thesis to construct here.** AMZN is in a measured-negative state (BLOW-OFF, −0.66% SIG) that doctrine forbids entering against. The local bull case attempted to build a momentum thesis around a high Buy Score (89.9) — but a Buy Score above 82 is the **normal condition** on 54% of all bars, and the bull case conflated **score-driven momentum** with **trend continuation evidence**, ignoring that `Z Velocity > 2` on a mature Stage-5-Recovery-flipping bar is the engine's specific signature for **exhaustion, not ignition**. The bear case correctly identified the overextension, the volume absence, and the failure to break $278 — but its short entry plan ($273–274) has **no actionable short cluster** (Short Entry Zone fields are null in the Data Window; the clustering engine found nothing to short into).
-
-The catalyst check for the bull case is fatal: Q2 2026 earnings already priced (the 14% July rally), $3T market cap already hit, AWS strength already discounted. There is **no dated, fresh catalyst** to override the BLOW-OFF state. The macro backdrop (Fed holding with 30% hike tail risk, sticky 3.8% CPI, Magnificent Seven rotation out) is **not** an override — policy overrides in doctrine are **defensive** (tariffs/sanctions), not bullish.
+The decisive fact is that the indicator is not printing a bullish entry state. It is printing **Action Long Code 16**, where the measured 21-day excess return is significantly negative. The bullish debate incorrectly treats the Buy Score, ADX, DI+ dominance, and analyst targets as permission to enter; the framework explicitly says high scores are common and cannot override codes 11–18. The bearish debate is directionally closer on timing, but it overstates the evidence by calling the stock a confirmed bubble and by inferring a short signal from a short-side WATCH code with blank short-zone fields.
 
 ## THE EDGE
+There is no fresh directional edge sufficient for a trade. The only defensible edge today is **exclusion**: Code 16 has a significantly negative measured response, while the live price is above the structural zone and volume is only **0.1335149143977652** times average.
 
-There is none on this bar. The only edge worth discussing is **what not to do**: do not chase the late-July momentum into BLOW-OFF, do not buy Stage 5 Recovery (SIG negative), and do not initiate a short on a name with no actionable short cluster. The discipline here is the **disciplined no**.
+The fundamental earnings/AWS evidence is supportive for a future long thesis, but it is not enough to buy a forbidden state.
+
+```text
+          Strong earnings / AWS narrative
+                         │
+                         ▼
+              Price already surged to $287.20
+                         │
+                         ▼
+       Code 16 + Stage 5 age 0 + low RVOL
+                         │
+                         ▼
+                   WAIT / SKIP
+```
 
 ## THE RISK
-
-- **Primary risk to a long position held from below**: the move has stalled and the action code is BLOW-OFF; if you own AMZN from a prior entry, the right move is defensive hedging, not adding.
-- **Event risk**: 79 days to earnings (October 29, 2026) — far enough that no imminent binary catalyst sits behind the trade, but the **October options expiry** straddles earnings and will carry elevated IV into September (current IV Rank 84.92% — already elevated).
-- **Technical invalidation (for a hypothetical short that the engine does NOT construct)**: a daily close above $287.20 (KEY RES / 52W High) would invalidate the BLOW-OFF read and force a re-label to ACCELERATION; until then, the bias is to fade the rally.
+- **Primary risk:** AI-capex returns, AWS growth, or operating margins disappoint after the reported earnings beat.
+- **Event risk:** Earnings are 79 days away; macro CPI/Fed developments and geopolitical headlines can reprice high-beta technology before then.
+- **Technical risk:** A close below the long stop area **$265.18023311605634** would damage the existing bullish structure; a move above **$277.8259353501065** without volume could still become a failed breakout. The current action state itself invalidates a fresh entry.
 
 ## ⚖️ LOCAL RESEARCHER DEBATE
+**Moderator Consensus:** The bull researchers correctly identify a real fundamental pillar: the supplied dossier reports a substantial EPS beat and strong AWS/AI demand. They incorrectly promote those facts into an immediate buy despite Code 16, the stale zone, Stage 5 age 0, and very low RVOL. The bear researchers correctly emphasize exhaustion, mixed reversal signals, and thin volume, but they hallucinate or overstate several conclusions: the short-side Code 8 is not a short trigger, blank short-zone fields do not establish a short setup, and the claim that the stock will fall to VP VAL **199.14** is not a sourced forecast.
 
-**Moderator Consensus:** The local debate is a **case study in what happens when a research process fixates on a high Buy Score and ignores the action code**. The bull case built its thesis on (a) a Buy Score of 89.9, (b) bullish DMI (+DI 36.7 vs −DI 15.9), (c) the $3T milestone, and (d) the Fed being "horizontally flat" — every one of which is either (a) the **normal condition** for a stock in an uptrend (Buy Score > 82 is met on 54% of all bars), (b) a **lagging indicator** during exhaustion, (c) **already in the price**, or (d) **not dovish — stagnant**. The bull case also explicitly cited a "Stage 5 Ignition" — Stage 5 is **Recovery**, not Ignition, and per bible §16.2 PRIME/ACTION in Stage 5 measures **−0.52% to −0.69% SIG**, which means the Stage-5 prior says buy but the forward returns say no.
+The macro debate is unresolved. The search results conflict on the direction of Fed policy and include stale or low-confidence material; neither the bullish “70% cut” claim nor the bearish “hikes are imminent” claim is accepted as verified session evidence. The judge therefore resolves the debate through the hard technical state and exclusion rules, not through an unsupported macro forecast.
 
-The bear case was more analytically correct on the technicals (overextension, low volume, ceiling at $278–287, false breakout) but its execution plan has **no actionable short cluster** — the Short Entry Zone Bot/Top are null in the Data Window. The clustering engine found no structural setup to short into, which is consistent with the fact that this is a **late-stage exhaustion** rather than a **fresh reversal**: shorting a BLOW-OFF long is typically a **stalking-the-reversal-zone** trade, not an at-market entry.
+## 🎯 BUY-TRIGGER FORECAST (NEW ENGINE)
+**Nearest Actionable State:** `code20_reversal` is identified by the deterministic engine as the nearest state, but it remains **4/4 gates open** and is not a near-term buy signal at current prices.
 
-**Cross-verification on news:** the live Finnhub/Alpaca/news searches confirm the local dossier — Q2 earnings beat (already in), $3T milestone (already in), Magnificent Seven underperformance (a sector rotation AWAY from AMZN's cohort), Zoox safety recall (regulatory drag, not tailwind), $500B AI infrastructure pact (sector-positive but not AMZN-specific). **No fresh dated catalyst exists.** The bull case's only "edge" — the Q2 print and $3T cap — is six weeks old.
+**Open Gates & Requirements:**
+- **REV ZONE:** Needs `Long Rev Zone ≥ 7.00` (Currently **0.00**, Gap **7.00**) — requires a genuine capitulation/reversal catalyst and rejection pattern within 21 days; plausibility **Low** without a new adverse headline followed by absorption.
+- **Buy Score:** Needs `Buy Score < 30.00` (Currently **89.89141190539351**, Gap **59.89**) — requires a substantial deterioration in price/evidence; plausibility **Low to Medium** over 21 days.
+- **Close below MA200:** Needs price below **238.6073055277933** (Currently bar close **273.72**, Gap **35.11**) — requires a major breakdown; plausibility **Low** within 21 days.
+- **RVOL:** Needs `RVOL Vs Avg > 1.50` (Currently **0.1335149143977652**, Gap **1.37**) — would require a capitulation or reversal-volume event; plausibility **Low**, but this is the most catalyst-dependent gate.
+- **Stage-2 Prime alternative:** Requires Stage **2** instead of current Stage **5**, long In Zone **1**, and Buy Score **≥98.00** if relying on the screen exception. This is not actionable while Code 16 and Stage 5 remain active.
 
-**Resolution:** SKIP. The discipline here is to let the move **prove itself** — either a clean break above $287.20 with volume (which would re-label as ACCELERATION and earn re-evaluation), or a flush down through $272 to fill the $269.62–$271.84 long zone (which would earn a fresh stalk). Today's bar is neither.
+**Plausibility:** **Low.** The nearest code-20 lane requires a deep price collapse below the MA200, not a routine pullback to the current long zone.
 
-## COUNTER-TREND ANALYSIS
+## 📊 HISTORICAL STATE RESPONSE (from 2d-iv)
+- **Current bar:** `baseline_all` — Edge vs Baseline **0.0**, reliability **flat**, Median **−0.354**, p10 **−8.82**, p90 **8.1**.
+- **If price → $226.68:** `baseline_all` — Edge vs Baseline **0.0**, reliability **flat**. The trajectory labels this the reversal lane with **+0.85% SIG**, but it still needs Code 20 conditions and should not be treated as already active.
+- **If price → $238.61:** `baseline_all` — Edge vs Baseline **0.0**, reliability **flat**.
+- **If price → $252.05:** `baseline_all` — Edge vs Baseline **0.0**, reliability **flat**.
+- **If price → $287.20:** `baseline_all` — Edge vs Baseline **0.0**, reliability **flat**.
 
+The state-response model provides no positive edge for the current bar or any listed candidate by itself.
+
+## COUNTER-TREND ANALYSIS (only if REV ZONE is active)
 | Check | Finding |
 |---|---|
-| REV ZONE status | Long 0.0 · Short 5.5 (Z2 forming) — neither is actionable |
-| Is it `Action Long Code = 20`? | **NO** — it is **Code 16 (BLOW-OFF)**. Code 20 is the only measured-positive long state, and it is not firing. |
-| MTF alignment | 3/3 — but the BLOW-OFF state outranks alignment |
-| In Zone? | Long In Zone = FALSE (price above zone); Short In Zone = FALSE (no zone) |
-| Key triggers | KEY_REV_BULL + KEY_REV_BEAR + TRAP_BULL + TRAP_BEAR (Age 4) — equal bullish/bearish, not directional |
-| ACTION conflict | **🛑 BLOW-OFF outranks everything** — no reversal trade permitted |
+| REV ZONE status | Long: no zone, raw score **0.0**; Short: Z2, raw score **5.5** |
+| **Is it `Action Long Code = 20`?** | **No.** Action Long Code is **16** |
+| MTF alignment | **3/3**; not a positive reversal subset |
+| In Zone? | Long In Zone **False**; current live price remains above the long-zone top |
+| Key triggers | Reversal Pattern Mask **195**, age **4**, but exactly two bullish and two bearish decoded signals; no long REV ZONE |
+| ACTION conflict | Code **16** is a specific danger state and forbids a fresh entry |
 
-**Reversal Thesis:** None. The reversion lane is dormant. Long Rev Zone = 0 means the engine sees no oversold setup. Short Rev Zone = 5.5 (Z2 forming) is below the actionable Z0 threshold and would require additional structure to trade.
+**Reversal Thesis:** No reversal thesis is active. A future Code-20 setup would require a catalyst-driven capitulation, Buy Score below 30, a close below **238.6073055277933**, RVOL above **1.5**, and preferably rev score ≥10 plus a failed-sweep/OOPS confirmation. None is present now.
 
-## CONVICTION: 1/10
-
-**Because:** The action code is a 🛑 state that doctrine explicitly forbids entering. Even ignoring the action code (which is not permitted), there is **no fresh, dated, non-indicator catalyst** that could override the measured-negative reading. The bull case built its conviction entirely on a high Buy Score — and a high Buy Score is the **normal condition** for any stock in an uptrend; it does not select edge. RVOL at 0.13 means the move has no institutional conviction behind it. The live tape (gap down from $277.99 to $272.26) is **already proving out the bear case** in real time. Conviction 1 is appropriate: the only way this number rises is if the next bar(s) re-label to ACCELERATION on a clean break above $287.20 with volume, **or** if a flush to the long zone fills it and Code 6/20 fires on a capitulation setup.
+## CONVICTION: 2/10
+**Because:** The exclusion evidence is strong, but there is no valid directional entry. Fundamental AWS/earnings strength supports monitoring the name; it does not lift conviction into a trade while Code 16 forbids entry.
 
 ## THE TRADE
 
 ### Stock
-
 | | Price | Rationale |
-|---|---|---|
-| Entry | **NOT ENTERED** | Action Code 16 forbids fresh longs; no short cluster exists |
-| Stop | n/a | n/a |
-| T1 | n/a | n/a |
-| Target | n/a | n/a |
-| R:R | n/a | n/a |
-| Size | **0%** | Per sizing matrix: Codes 11–18 → 0% size |
+|---|---:|---|
+| Entry | **No entry** | Code 16 forbids a fresh position; the live price $272.24 is above the long-zone top **271.83995337678874** |
+| Stop | **$265.18023311605634** | Exported long structural stop; reference only, not an active trade |
+| T1 | **$287.2** | Exported Long Target T1 Waypoint / Darvas Box Top |
+| Target | **$287.2** | Exported Long Target; only a reference level |
+| R:R | **1.58:1** | Engine Math R:R actually used; constructible, not permission to trade |
+| Size | **0%** | Code 16 and Stage 5 are hard exclusions |
 
-> **[M] Do not build the plan around a perfect pullback fill.** A limit resting at the prior bar's zone fills only 32.1% of the time, for −0.00% date-neutral against −0.12% unfilled. Waiting is not free — but in this case, the disciplined wait is the right answer.
+> **[M] Do not build the plan around a perfect pullback fill.** A limit resting at the prior bar's zone fills only 32.1% of the time, for −0.00% date-neutral against −0.12% unfilled. Waiting is not free.
+
+**Expected stock-price range:**
+- **14–21 days:** working support floor **$263.6497–$265.18023311605634**; resistance ceiling **$287.2**. A sustained move above **$277.8259353501065** would be required before discussing renewed momentum, preferably with RVOL materially above **0.1335149143977652**.
+- **60–120 days:** data-supported structural envelope **$238.6073055277933–$287.2**. The supplied analyst target **$324.94** is a research reference, not a model forecast, and cannot be used as a current trade target while the engine is in Code 16.
 
 ### Options
+**The Play:** **No new directional options position.** The live chain confirms expensive/volatile short-dated premium and does not repair the broken technical state.
 
-**The Play:** **No fresh long options position.** The action code vetoes fresh long entries; selling premium on shares already held is the only options activity consistent with doctrine (see Income & Management below).
+**Conditional hedge only for existing shareholders:** Buy the **August 28, 2026 $270 Put**, 17 DTE, only if protection is required. The returned chain shows bid **$5.54**, ask **$5.63**, mid **$5.58**, delta **−0.425**, gamma **0.0227**, and theta **−0.187**. Max loss is approximately the premium paid, about **$563 per contract at the $5.63 ask**, before fees. This is insurance, not a bearish profit target.
 
-### Income & Management (100+ Share Holders)
+**Why this strike:** $270 is near the current long zone and below the live price, with approximately 0.425 absolute delta.  
+**Why this expiry:** 17 DTE provides near-term protection against a failure of the **265.18023311605634** structural area while avoiding an unhedged long-premium bet through a distant earnings event. The supplied `Energy IV Rank Pct` is **84.92063492063492**, favoring defined-risk structures rather than naked long premium.
 
+For a future long re-entry only after Code 16 clears, the returned chain contains a potentially suitable defined-risk call spread, but no trade is recommended now. Do not use the August 26 calls to chase the stale breakout.
+
+### Income & Management (100+ share holders)
+| State | Strategy |
+|---|---|
+| Current Code 16 / Stage 5 Recovery | **Do not add. Tighten risk; avoid selling calls directly into a collapse without considering assignment and tax basis.** |
+| Future healthy Stage 2 | HOLD initially; no CC if upside expansion is the objective |
+| Future Rev Zone 0/1 short side | Aggressive CC only if the reversal is confirmed |
+| Breakdown through $265.18023311605634 | Reduce or exit shares according to the investor’s predetermined risk plan |
+| Toxic/extended future state | Defensive CC at or above structural resistance, avoiding earnings |
+
+```text
+                         AMZN Spot: $272.24
+                                  │
+                                  ▼
+                     Resistance / target: $287.20
+                                  │
+                                  ▼
+              ┌────────────────────────────────────┐
+              │ No covered call recommendation now │
+              ├────────────────────────────────────┤
+              │ Current state is Code 16 / Stage 5 │
+              │ Avoid capping upside before setup  │
+              │ or selling into an unstable break  │
+              └────────────────────────────────────┘
 ```
-                       (AMZN Spot: 272.26  ·  Live tape: gapping down)
-                                    │
-                                    ▼
-                  (KEY RES / 52W High / Darvas Box Top: 287.20)
-                                    │
-                  ┌──────────────────────────────────┐
-                  │  Stage 5 Recovery JUST flipped    │
-                  │  BLOW-OFF (Code 16) fired today   │
-                  │  RVOL = 0.13 — no fresh buyers    │
-                  └─────────────────┬─────────────────┘
-                                    │
-                                    ▼
-                  ┌─────────────────────────────────────────┐
-                  │  DEFENSIVE COVERED CALL                  │
-                  │  Sell 1x Oct 16, 2026 $310.00 Call       │
-                  │  (deep OTM, well above 287.20 KEY RES)   │
-                  │  30-45 DTE window, IV Rank 85% (rich)   │
-                  ├─────────────────────────────────────────┤
-                  │  Strike is ~14% above spot               │
-                  │  Yields premium without capping real    │
-                  │  upside if the move does resume         │
-                  └─────────────────────────────────────────┘
-```
-
-**Strategy:** With **Action Long Code 16** fired and **Stage 5 Recovery** just flipped, the move has stalled. The defensive posture is to **hold shares** (do not exit — you are still in a structural uptrend, MA50 at $252 has not been broken) but **cap the upside with a deep-OTM covered call** because (a) IV Rank is 84.92% (premium-selling environment), (b) a deep-OTM strike at $310 leaves full participation if AMZN does push to a new ATH, and (c) if assigned you exit at $310 — still well above your structural support levels.
-
-**Specific recommendation:** Sell 1x **October 16, 2026 $310 Call** for every 100 shares held. Est. premium ~$4.50–6.00 depending on chain. This is well above the $287.20 KEY RES, well above the $322 analyst consensus, and provides ~1.7–2.2% premium yield while leaving all structural upside intact.
-
-**⚠️ COVERED CALL EXCEPTION (per doctrine):** BLOW-OFF/TOXIC blocks **directional** entries (stock, long calls/puts). It does **NOT** block premium selling on shares already held. Sell calls **at or above KEY RES** ($287.20) — if assigned you sold at a profit. **30–45 DTE, avoid earnings (October 29 = 79 days out, so a Sept or Oct expiry is fine).**
-
-**Alternative (more aggressive):** If you want to harvest more premium and accept the cap, sell a **Sept 18 $295 Call** (~10% OTM, still above KEY RES) for a fatter premium. The trade-off is giving up the move from $295 to $310 in exchange for ~$8–10 of immediate premium. With IV Rank at 85% this is a defensible harvest.
 
 ### If I'm Wrong
-
-**Alternative view (the bullish case the debate built):** If you believe AMZN is mid-trend and the BLOW-OFF code is mis-firing on a Stage-5-flipping bar, the breakout trigger is a **daily close above $287.20** on volume (RVOL > 1.0). Until then, the bull case is a belief, not a setup.
-
-**Exit plan if a position is initiated elsewhere (e.g., a prior long from $260):** The structural stop on the long entry zone ($265.18) is **below** the zone bot ($269.62). A close below $265 invalidates the long thesis. **Never widen a stop after entry.**
+**Alternative view:** The earnings beat, AWS growth, and AI-capex monetization may trigger renewed institutional demand, sending AMZN through **277.8259353501065** toward **287.2** and eventually the supplied analyst reference **324.94**. · **Exit plan before max loss:** Do not initiate the trade today; for existing shares, use **265.18023311605634** as the exported structural risk reference and reassess on a daily close below it.
 
 ## CRITICAL EVENTS
-
 | Event | Date | Impact | Plan |
 |---|---|---|---|
-| AMZN Q3 2026 Earnings | 2026-10-29 (~79d) | EXTREME (binary) | Close any long exposure or roll CCs past expiry before the print |
-| US CPI (next release) | TBD (post-Aug 11) | HIGH | If CPI > 4.0% re-accelerates, Fed hike tail widens → defensive on growth |
-| FOMC Next Meeting | Late September 2026 | HIGH | Rate decision + dot plot; 30% hike probability already priced — watch for shift |
-| Magnificent Seven Sector Rotation | Ongoing 2026 | MEDIUM | Capital is leaving mega-caps; affects AMZN multiple compression |
+| Earnings | October 29, 2026 | High / binary; 79 days | Do not hold new long options unhedged into earnings; reassess the state first |
+| FOMC | Exact August 2026 date not verified in live research | Potentially high for mega-cap growth | Do not assume a dovish or hawkish outcome; reduce exposure if rates volatility rises |
 
 ## BOTTOM LINE
-
-**The bull case ignored the action code.** AMZN printed BLOW-OFF (Code 16, −0.66% SIG) on the live bar — a doctrine-forbidden fresh-long state that cannot be overridden by any Contextual Override. The high Buy Score (89.9) is the **normal condition** for any stock in an uptrend (median 85.3, 54% of bars clear 82). The "catalysts" — Q2 earnings beat, $3T market cap, AWS strength — are **already in the price** following July's 14% surge. RVOL at 0.13 means there is no institutional conviction behind the move. The live tape is already gapping down from $277.99 to $272.26, **proving the bear case in real time**. There is no fresh, dated, non-indicator pillar to lift this above SKIP. **For shareholders: hold with a deep-OTM defensive covered call above $287.20 KEY RES; harvest the 85% IV Rank without capping structural upside. The discipline here is the disciplined no.**
+AMZN may be a strong company, but the current chart is not a valid fresh long: Code 16 is supreme, Stage 5 is newly active, RVOL is only **0.1335149143977652**, and the live price is above the long zone. The bullish earnings/AWS narrative belongs on a watchlist, not in a new position. The one thing that must go right before reconsidering a long is a clean state reset—Code 16 clearing, price accepting back through **277.8259353501065** with real volume, or a future catalyst-driven Code-20 capitulation setup. Until then, the correct trade is no trade.

@@ -409,16 +409,12 @@ class TVScraper:
                 f"realvol_10d={realvol_10d}, ret_10d={ret_10d})"
             )
 
-            # ── 3. Zoomed-in screenshot (DISABLED) ────────────────────────────────
-            # logger.info("Taking zoomed-in chart screenshot...")
-            # try:
-            #     page.mouse.move(0, 0)
-            #     time.sleep(0.3)
-            #     zoom_path = self.screenshots_dir / f"{safe_symbol}_chart_zoom.png"
-            #     page.screenshot(path=str(zoom_path))
-            #     logger.info(f"Zoomed screenshot saved to {zoom_path}")
-            # except Exception as zoom_err:
-            #     logger.error(f"Zoomed screenshot failed for {symbol}: {zoom_err}")
+            # ── 4. TradingView Options Suite (Strategies & Heatmap) ───────────────
+            try:
+                from src.data.tv_options_scraper import TVOptionsScraper
+                TVOptionsScraper().scrape_options_suite(page, safe_symbol, self.screenshots_dir)
+            except Exception as opt_err:
+                logger.warning(f"Options Suite capture failed for {symbol}: {opt_err}")
 
             context.close()
             logger.info(f"Finished capturing {symbol}.")

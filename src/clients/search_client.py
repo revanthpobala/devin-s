@@ -16,41 +16,62 @@ BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 
 def _search_parallel(query: str, max_results: int = 3) -> list:
-    """Parallel.ai Search API. Provides LLM-optimized, citation-backed excerpts."""
+    """Parallel.ai Search API via REST. Provides LLM-optimized, citation-backed excerpts."""
     key = os.getenv("PARALLEL_API_KEY")
     if not key:
         return []
     try:
-        from parallel import Parallel
-        client = Parallel(api_key=key)
-        
-        # Parallel Search API requires search_queries list
-        response = client.search(
-            objective=query,
-            search_queries=[query]
+        url = "https://api.parallel.ai/v1/search"
+        payload = json.dumps({"objective": query, "search_queries": [query]}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "User-Agent": "stock-research/1.0",
+            },
         )
-        
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
         out = []
-        for item in getattr(response, "results", []):
-            # Parallel returns `excerpts` as a list of strings
-            body = "\n".join(item.excerpts) if getattr(item, "excerpts", None) else ""
+        for item in data.get("results", []):
+            excerpts = item.get("excerpts", [])
+            body = "\n".join(excerpts) if isinstance(excerpts, list) else str(excerpts)
             out.append(
                 {
-                    "title": getattr(item, "title", "") or "",
-                    "href": getattr(item, "url", "") or "",
+                    "title": item.get("title", ""),
+                    "href": item.get("url", ""),
                     "body": body,
                 }
             )
         return out
     except Exception as e:
-        logger.warning(f"Parallel search failed for '{query}': {e}")
+        logger.debug(f"Parallel search failed for '{query}': {e}")
+        return []
+
+
+def _search_ddgs(query: str, max_results: int = 3) -> list:
+    """DuckDuckGo Search (ddgs). Keyless multi-domain live web search."""
+    try:
+        out = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results * 2):
+                out.append(
+                    {
+                        "title": r.get("title", ""),
+                        "href": r.get("href", ""),
+                        "body": r.get("body", ""),
+                    }
+                )
+        return out
+    except Exception as e:
+        logger.debug(f"DDGS search failed for '{query}': {e}")
         return []
 
 
 def _search_brave(query: str, max_results: int = 3) -> list:
-    """Brave Search API (api.search.brave.com). Used as the PRIMARY live
-    search backend when BRAVE_SEARCH_API_KEY is configured; falls back to DDGS
-    on any failure. Returns the same {title,href,body} shape as DDGS."""
+    """Brave Search API (api.search.brave.com). Fast privacy-focused web index."""
     key = os.getenv("BRAVE_SEARCH_API_KEY")
     if not key:
         return []
@@ -85,7 +106,7 @@ def _search_brave(query: str, max_results: int = 3) -> list:
             )
         return out
     except Exception as e:
-        logger.warning(f"Brave search failed for '{query}': {e}")
+        logger.debug(f"Brave search failed for '{query}': {e}")
         return []
 
 
@@ -132,9 +153,9 @@ def _filter_search_results(results: list) -> list:
 
 def search_web(query: str, max_results: int = 3, backend: str = "auto") -> list:
     """
-    Live web search. PRIMARY = Parallel.ai (when PARALLEL_API_KEY is set);
-    SECONDARY = Brave Search API; FALLBACK = keyless DuckDuckGo (ddgs).
-    backend options: "auto" (Parallel -> Brave -> DDGS), "parallel", "brave", "ddgs", "all"
+    Live concurrent multi-source web search.
+    Executes Brave, DDGS, and Parallel.ai simultaneously in parallel threads,
+    filters junk domains, deduplicates URLs, and returns ranked results.
     """
     aggregated_results = []
     seen_urls = set()
@@ -142,56 +163,30 @@ def search_web(query: str, max_results: int = 3, backend: str = "auto") -> list:
     def add_results(raw_results):
         filtered = _filter_search_results(raw_results)
         for r in filtered:
-            if r["href"] not in seen_urls:
-                seen_urls.add(r["href"])
+            href = r.get("href", "").lower()
+            if href and href not in seen_urls:
+                seen_urls.add(href)
                 aggregated_results.append(r)
 
-    # 1. Parallel
-    if backend in ("auto", "parallel", "all"):
-        try:
-            parallel_res = _search_parallel(query, max_results)
-            if parallel_res:
-                add_results(parallel_res)
-                if backend == "auto":
-                    return aggregated_results[:max_results]
-        except Exception as e:
-            logger.warning(f"Parallel search errored for '{query}': {e}")
-        if backend == "parallel":
-            return aggregated_results[:max_results]
+    # Concurrently query available search backends in parallel
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_engine = {}
+        if backend in ("auto", "brave", "all"):
+            future_to_engine[executor.submit(_search_brave, query, max_results)] = "Brave"
+        if backend in ("auto", "ddgs", "all"):
+            future_to_engine[executor.submit(_search_ddgs, query, max_results)] = "DDGS"
+        if backend in ("auto", "parallel", "all") and os.getenv("PARALLEL_API_KEY"):
+            future_to_engine[executor.submit(_search_parallel, query, max_results)] = "Parallel"
 
-    # 2. Brave
-    if backend in ("auto", "brave", "all"):
-        try:
-            brave = _search_brave(query, max_results)
-            if brave:
-                add_results(brave)
-                if backend == "auto":
-                    return aggregated_results[:max_results]
-        except Exception as e:
-            logger.warning(f"Brave search errored for '{query}': {e}")
-        if backend == "brave":
-            return aggregated_results[:max_results]
+        for future in as_completed(future_to_engine):
+            engine = future_to_engine[future]
+            try:
+                res = future.result()
+                if res:
+                    add_results(res)
+            except Exception as e:
+                logger.debug(f"Search engine {engine} error on '{query}': {e}")
 
-    # 3. DuckDuckGo
-    if backend in ("auto", "ddgs", "all"):
-        try:
-            ddgs_results = []
-            with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=max_results * 2):
-                    ddgs_results.append(
-                        {
-                            "title": r.get("title", ""),
-                            "href": r.get("href", ""),
-                            "body": r.get("body", ""),
-                        }
-                    )
-            if ddgs_results:
-                add_results(ddgs_results)
-        except Exception as e:
-            logger.error(f"DDGS fallback search failed for query '{query}': {e}")
-
-    # Return up to max_results (or more if backend="all" we might want to return max_results PER engine, 
-    # but the user requested all options, so let's return max_results * 3 for "all")
     if backend == "all":
         return aggregated_results[: max_results * 3]
     return aggregated_results[:max_results]

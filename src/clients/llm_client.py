@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Any
 
 from openai import OpenAI
@@ -33,24 +34,56 @@ def _create_completion(client, provider: str, **kwargs):
     return client.chat.completions.create(**kwargs)
 
 
-def encode_image_to_base64(image_path: str) -> str:
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
+import io
+from PIL import Image
+
+def encode_image_to_base64(image_path: str, max_dim: int = 640) -> str:
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert("RGB")
+            w, h = img.size
+            if max(w, h) > max_dim:
+                scale = max_dim / max(w, h)
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode("utf-8")
 
 
-# Define the standard tool schema
 TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_earnings_calendar",
+            "description": "Deterministic ground-truth lookup for the next confirmed earnings date and days remaining. ALWAYS use this deterministic tool instead of web search when verifying earnings gates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g., 'AAPL')",
+                    }
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_web",
-            "description": "Performs a DuckDuckGo search and returns the top results. Use this to fetch real-time news, earnings dates, analyst upgrades/downgrades, and macro market context. CRITICAL: You MUST include the current date (e.g. 'Aug 5 2026' or '2026') in your query to avoid pulling years-old stale news.",
+            "description": "Performs concurrent multi-source web search (Brave + DuckDuckGo + Parallel.ai). Use this for non-deterministic catalyst research: breaking news, analyst commentary, product announcements, and sentiment. For deterministic earnings dates, use fetch_earnings_calendar.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query. ALWAYS include the current date/year! (e.g., 'AAPL earnings date Q3 2026', 'site:finviz.com AAPL 2026')",
+                        "description": "The search query. ALWAYS include the current date/year! (e.g., 'AAPL product AI announcement August 2026', 'site:finviz.com AAPL 2026')",
                     }
                 },
                 "required": ["query"],
@@ -149,26 +182,53 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_prediction_market",
-            "description": "Queries Kalshi prediction markets to find the market-implied probability (odds) for macro events, Fed rate cuts, elections, or regulatory approvals. Example queries: 'fed rate', 'election', 'inflation'.",
+            "name": "scrape_tradingview_options_finder",
+            "description": "Opens TradingView Options Suite for the ticker, applies custom parameters (prediction_period, expected_move, min_volume, moneyness), and returns pre-computed multi-leg options spreads (Bull Call Spread, Bull Put Spread, Jade Lizard) with exact Max Profit, Max Loss, R:R, and Breakevens.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "ticker": {
                         "type": "string",
-                        "description": "The search keywords.",
-                    }
+                        "description": "The stock ticker symbol (e.g. AAPL, HOOD)",
+                    },
+                    "prediction_period": {
+                        "type": "string",
+                        "enum": ["Next week", "Next 2 weeks", "Next month", "Next 3 months", "Next 6 months"],
+                        "description": "Target time horizon / expiry window based on catalyst or earnings date.",
+                    },
+                    "expected_move": {
+                        "type": "string",
+                        "enum": ["+5% to +10%", "+10% to +15%", "+15% to +20%", "-5% to -10%", "-10% to -15%"],
+                        "description": "Expected price direction and percentage magnitude.",
+                    },
+                    "min_volume": {
+                        "type": "string",
+                        "enum": ["100 to 500", "500 to 2 K", "2 K to 10 K", "Above 10 K"],
+                        "description": "Minimum option liquidity tier.",
+                    },
+                    "moneyness": {
+                        "type": "string",
+                        "enum": ["Out of the money", "At the money", "In the money"],
+                        "description": "Moneyness filter preference.",
+                    },
+                    "capture_volume_charts": {
+                        "type": "boolean",
+                        "description": "Whether to capture high-res dialog screenshots of the Volume Heatmap and Expiration charts.",
+                    },
                 },
-                "required": ["query"],
+                "required": ["ticker", "prediction_period", "expected_move"],
             },
         },
     },
 ]
 
 
-def execute_tool_call(tool_call):
-    """Executes the mapped python function for a given tool call."""
+def execute_tool_call(tool_call, date_str: str = None):
+    """Executes the mapped python function for a given tool call with TTL artifact caching."""
+    from src.data.artifact_cache import artifact_cache
+    
     function_name = tool_call.function.name
+    date_str = date_str or time.strftime("%Y-%m-%d")
 
     try:
         args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
@@ -176,52 +236,87 @@ def execute_tool_call(tool_call):
         logger.error(f"Failed to parse arguments for tool {function_name}: {e}")
         return f"Error: Invalid JSON arguments provided for tool '{function_name}': {str(e)}. Please correct your JSON and try again."
 
+    ticker = (args.get("ticker") or args.get("symbol") or "GLOBAL").upper()
+
+    # Check TTL Artifact Cache first
+    cache_key = function_name
+    if function_name in ("search_web", "fetch_prediction_market"):
+        query_slug = str(args.get("query", ""))[:30].replace(" ", "_").replace("/", "_")
+        cache_key = f"{function_name}_{query_slug}"
+    elif function_name == "scrape_tradingview_options_finder":
+        period_slug = args.get("prediction_period", "month").replace(" ", "_")
+        move_slug = args.get("expected_move", "5to10").replace("%", "").replace(" ", "").replace("+", "").replace("-", "down_")
+        cache_key = f"tv_options_{period_slug}_{move_slug}"
+
+    cached_val = artifact_cache.get(date_str, ticker, cache_key)
+    if cached_val is not None:
+        return cached_val
+
     if function_name == "search_web":
         query = args.get("query")
         logger.info(f"LLM executed tool: search_web(query='{query}')")
         results = search_web(query, max_results=3, backend="auto")
-        # Format the result nicely
         if not results:
             return "No results found."
 
         output = f"Search Results for '{query}':\n"
         for r in results:
             output += f"- [{r['title']}] {r['body']}\n"
+        artifact_cache.save(date_str, ticker, cache_key, output)
         return output
+    elif function_name == "fetch_earnings_calendar":
+        from src.clients.earnings_client import format_earnings_fact_block
+
+        logger.info(f"LLM executed deterministic tool: fetch_earnings_calendar(ticker='{ticker}')")
+        res_str = format_earnings_fact_block(ticker)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     elif function_name == "get_realtime_quote":
         from src.clients.options_client import get_realtime_quote
 
-        logger.info(f"LLM executed tool: get_realtime_quote(ticker='{args.get('ticker')}')")
-        result = get_realtime_quote(args.get("ticker"))
-        return result or "No real-time quote data returned."
+        logger.info(f"LLM executed tool: get_realtime_quote(ticker='{ticker}')")
+        result = get_realtime_quote(ticker)
+        res_str = result or "No real-time quote data returned."
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_options_chain":
         from src.clients.options_client import fetch_options_chain_tool
 
-        logger.info(f"LLM executed tool: fetch_options_chain(ticker='{args.get('ticker')}')")
+        logger.info(f"LLM executed tool: fetch_options_chain(ticker='{ticker}')")
         result = fetch_options_chain_tool(**args)
-        return result or "No options chain data returned."
-
+        res_str = result or "No options chain data returned."
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_finnhub_news":
         from src.clients.news_client import _fetch_finnhub_news
         
-        ticker = args.get("ticker")
         logger.info(f"LLM executed tool: fetch_finnhub_news(ticker='{ticker}')")
         result = _fetch_finnhub_news(ticker, days=3)
-        return result or f"No Finnhub news found for {ticker}."
+        res_str = result or f"No Finnhub news found for {ticker}."
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_alpaca_news":
         from src.clients.news_client import get_ticker_news
         
-        ticker = args.get("ticker")
         logger.info(f"LLM executed tool: fetch_alpaca_news(ticker='{ticker}')")
         result_dict = get_ticker_news(ticker, days=3)
-        if result_dict and result_dict.get("raw_news"):
-            return result_dict["raw_news"]
-        return f"No Alpaca/Yahoo news found for {ticker}."
+        res_str = result_dict.get("raw_news") if result_dict and result_dict.get("raw_news") else f"No Alpaca/Yahoo news found for {ticker}."
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "scrape_tradingview_options_finder":
+        from src.data.tv_options_scraper import scrape_tv_options_finder_tool
+
+        logger.info(f"LLM executed tool: scrape_tradingview_options_finder(ticker='{ticker}', args={args})")
+        res_str = scrape_tv_options_finder_tool(**args)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_prediction_market":
         from src.clients.kalshi_client import fetch_prediction_market
         query = args.get("query")
         logger.info(f"LLM executed tool: fetch_prediction_market(query='{query}')")
-        return fetch_prediction_market(query)
+        res_str = fetch_prediction_market(query)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     else:
         logger.warning(f"Unknown tool called: {function_name}")
         return f"Error: Tool '{function_name}' is not supported."
@@ -382,7 +477,7 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
         client = OpenAI(
             base_url=API_URL,
             api_key="sk-no-key-required",
-            timeout=600,
+            timeout=int(os.getenv("LOCAL_LLM_TIMEOUT", "1800")),
         )
         try:
             models = client.models.list()
@@ -558,7 +653,37 @@ def query_local_llm(
 
         while tool_call_count < MAX_TOOL_CALLS:
             try:
-                response = _create_completion(client, provider, **kwargs)
+                if not attach_tools and provider == "local":
+                    kwargs["stream"] = True
+                    stream_response = _create_completion(client, provider, **kwargs)
+                    collected_chunks = []
+                    finish_reason = None
+                    for chunk in stream_response:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if hasattr(delta, "content") and delta.content:
+                                collected_chunks.append(delta.content)
+                            if chunk.choices[0].finish_reason:
+                                finish_reason = chunk.choices[0].finish_reason
+                    full_content = "".join(collected_chunks)
+
+                    class _DummyMessage:
+                        def __init__(self, content):
+                            self.content = content
+                            self.tool_calls = None
+
+                    class _DummyChoice:
+                        def __init__(self, content, finish_reason):
+                            self.message = _DummyMessage(content)
+                            self.finish_reason = finish_reason
+
+                    class _DummyResponse:
+                        def __init__(self, content, finish_reason):
+                            self.choices = [_DummyChoice(content, finish_reason)]
+
+                    response = _DummyResponse(full_content, finish_reason)
+                else:
+                    response = _create_completion(client, provider, **kwargs)
             except Exception as e:
                 # NVIDIA model doesn't support tools (HTTP 400) — retry without them.
                 if attach_tools and ("400" in str(e) or "tool" in str(e).lower()):
@@ -577,9 +702,17 @@ def query_local_llm(
             if message.tool_calls:
                 # Add the assistant's tool_calls message to the history
                 messages.append(message)
+                
+                # Extract simulated date if present in context
+                sim_date = None
+                if summarize_tool_context:
+                    import re
+                    m_date = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", summarize_tool_context)
+                    if m_date:
+                        sim_date = m_date.group(1)
 
                 for tool_call in message.tool_calls:
-                    tool_result = execute_tool_call(tool_call)
+                    tool_result = execute_tool_call(tool_call, date_str=sim_date)
                     tool_result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
 
                     if summarize_tool_context and tool_call.function.name in ("search_web", "fetch_finnhub_news", "fetch_alpaca_news") and len(tool_result_str) > 200:
@@ -623,7 +756,7 @@ def query_local_llm(
                 full_content = content or ""
                 cont_attempts = 0
 
-                MAX_CONT_ATTEMPTS = 3
+                MAX_CONT_ATTEMPTS = int(os.getenv("MAX_CONT_ATTEMPTS", "10"))
                 while finish_reason == "length":
                     cont_attempts += 1
                     if cont_attempts > MAX_CONT_ATTEMPTS:

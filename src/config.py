@@ -61,7 +61,7 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "8192"))
 # returns HTTP 400 and the ticker falls back to deterministic with no LLM screen.
 # Raise --parallel AND -c AND this together if VRAM headroom allows; if you drop
 # to --parallel 3 you MUST also drop -c to ~24000 (8000/slot) and set this to 3.
-LLM_LOCAL_CONCURRENCY = int(os.getenv("LLM_LOCAL_CONCURRENCY", "3"))
+LLM_LOCAL_CONCURRENCY = int(os.getenv("LLM_LOCAL_CONCURRENCY", "1"))
 # LLM_TRIAGE_MAX_TOKENS: output budget for attempt 1 of the local triage ladder
 # (attempts 2/3 use 2x/4x of this). Small by design — the triage JSON is tiny.
 LLM_TRIAGE_MAX_TOKENS = int(os.getenv("LLM_TRIAGE_MAX_TOKENS", "2048"))

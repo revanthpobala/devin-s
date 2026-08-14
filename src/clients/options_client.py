@@ -494,3 +494,64 @@ def fetch_options_chain_tool(
         "options_rationale": "Tool-invoked live chain request from deep research model.",
     }
     return fetch_targeted_chain(ticker, intent)
+
+
+def format_gex_block(ticker: str) -> str:
+    """Compute and format a clean Options Gamma Exposure (GEX) & Open Interest
+    wall summary for the deep-research prompt. Identifies Put Walls (dealer support),
+    Call Walls (dealer resistance), and Put/Call positioning."""
+    try:
+        import yfinance as yf
+        import pandas as pd
+
+        t = yf.Ticker(ticker)
+        expiries = t.options
+        if not expiries:
+            return ""
+
+        calls_list, puts_list = [], []
+        for exp in expiries[:4]:  # front 4 expirations
+            try:
+                opt = t.option_chain(exp)
+                if not opt.calls.empty:
+                    calls_list.append(opt.calls)
+                if not opt.puts.empty:
+                    puts_list.append(opt.puts)
+            except Exception:
+                continue
+
+        if not calls_list or not puts_list:
+            return ""
+
+        c_df = pd.concat(calls_list)
+        p_df = pd.concat(puts_list)
+
+        c_walls = c_df.groupby("strike")["openInterest"].sum().sort_values(ascending=False).head(3)
+        p_walls = p_df.groupby("strike")["openInterest"].sum().sort_values(ascending=False).head(3)
+
+        total_call_oi = c_df["openInterest"].sum()
+        total_put_oi = p_df["openInterest"].sum()
+        pcr = round(total_put_oi / max(total_call_oi, 1), 2)
+
+        lines = [
+            f"--- OPTIONS POSITIONING & GAMMA WALLS (GEX) FOR {ticker} ---",
+            f"• Put/Call Open Interest Ratio: {pcr}",
+            "• Major Put Walls (Dealer Support / Floor Pins):",
+        ]
+        for s, oi in p_walls.items():
+            lines.append(f"  - Strike ${s:.2f}: {int(oi):,} open contracts")
+
+        lines.append("• Major Call Walls (Dealer Resistance / Ceiling Pins):")
+        for s, oi in c_walls.items():
+            lines.append(f"  - Strike ${s:.2f}: {int(oi):,} open contracts")
+
+        top_put = p_walls.index[0] if len(p_walls) > 0 else "N/A"
+        top_call = c_walls.index[0] if len(c_walls) > 0 else "N/A"
+        lines.append(
+            f"• Dealer Expected Pinning Corridor: ${top_put} (Put Floor) to ${top_call} (Call Ceiling)"
+        )
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"[{ticker}] format_gex_block failed: {e}")
+        return ""
+

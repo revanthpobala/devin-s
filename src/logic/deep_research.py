@@ -1,11 +1,15 @@
+import os
+import sys
 import glob
 import json
 import logging
-import os
 import re
 from pathlib import Path
-
 from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 from src import config
 from src.clients import adanos_client, alphavantage_client, earnings_client, google_grounding_client, finnhub_client
@@ -373,7 +377,7 @@ def _format_unmasked_recency_block(dw_dict: dict) -> str:
 
 
 
-def run_deep_research(date_str, target_ticker=None):
+def run_deep_research(date_str, target_ticker=None, force_local=False):
     """
     Automates the Deep Research validation phase using OpenAI-compatible tool calling.
 
@@ -505,7 +509,6 @@ def run_deep_research(date_str, target_ticker=None):
     if not chart_files:
         logger.warning("No charts found for deep research.")
         return
-    # Load the split prompt files
     original_gem_path = config.BASE_DIR / "gems" / "revanth-original-gem.md"
     response_path = config.BASE_DIR / "gems" / "response.md"
     bible_path = config.BASE_DIR / "gems" / "revanth-bible.md"
@@ -521,9 +524,8 @@ def run_deep_research(date_str, target_ticker=None):
     with open(bible_path, "r", encoding="utf-8") as f:
         bible_text = f.read()
 
-    # Load the generalized few-shot template for Minimax
-    example_path = config.BASE_DIR / "gems" / "few_shot_template.md"
     few_shot_example = ""
+    example_path = config.BASE_DIR / "gems" / "few_shot_template.md"
     if example_path.exists():
         with open(example_path, "r", encoding="utf-8") as f:
             few_shot_example = f.read()
@@ -679,7 +681,15 @@ def run_deep_research(date_str, target_ticker=None):
                 logger.warning(f"[{ticker}] News research dossier not found at {dossier_path}.")
                 news_dossier = "No pre-compiled news research dossier available."
 
-        image_paths = glob.glob(str(tdir / f"{ticker}_*.png"))
+        if force_local:
+            zoom_p = tdir / f"{ticker}_chart_zoom.png"
+            image_paths = [str(zoom_p)] if zoom_p.exists() else [str(tdir / f"{ticker}_chart.png")]
+            image_paths = [p for p in image_paths if os.path.exists(p)]
+        else:
+            image_paths = [
+                str(p) for p in [tdir / f"{ticker}_chart.png", tdir / f"{ticker}_chart_zoom.png"]
+                if p.exists()
+            ]
 
         # ── FRESH, DATED NEWS (live pull so the paid pass never sees stale macro) ──
         fresh_news = _pull_fresh_news(ticker, date_str)
@@ -732,7 +742,36 @@ def run_deep_research(date_str, target_ticker=None):
                 "do NOT invent a live price)"
             )
 
-        options_block = ""
+        # Pre-fetch GEX and options positioning
+        try:
+            gex_block = options_client.format_gex_block(ticker) or ""
+        except Exception as e:
+            logger.warning(f"[{ticker}] GEX block failed: {e}")
+            gex_block = ""
+
+        # Pre-load TradingView scraped strategies if available
+        tv_strat_path = tdir / f"{ticker}_tv_strategies.json"
+        tv_strat_block = ""
+        if tv_strat_path.exists():
+            try:
+                strat_data = json.loads(tv_strat_path.read_text(encoding="utf-8"))
+                if strat_data:
+                    lines = [
+                        f"--- TRADINGVIEW STRATEGY FINDER (PRE-COMPUTED SPREADS FOR {ticker}) ---",
+                        "| Expiry | Days | Strategy | Formula/Strikes | Max Profit | Max Loss | R:R | Breakeven |",
+                        "|---|---|---|---|---|---|---|---|",
+                    ]
+                    for s in strat_data[:6]:  # top 6 spreads
+                        lines.append(
+                            f"| {s.get('expiration')} | {s.get('days')} | {s.get('strategy_type')} | "
+                            f"{s.get('formula')} | {s.get('max_profit')} | {s.get('max_loss')} | "
+                            f"{s.get('reward_risk')} | {s.get('breakeven')} |"
+                        )
+                    tv_strat_block = "\n".join(lines)
+            except Exception as e:
+                logger.warning(f"[{ticker}] Error loading tv_strategies: {e}")
+
+        options_block = f"{gex_block}\n\n{tv_strat_block}".strip()
 
         # ========================================================
         # MULTI-AGENT BULL VS BEAR DEBATE (Local LLM)
@@ -765,6 +804,8 @@ def run_deep_research(date_str, target_ticker=None):
         {grounded_block}
         {macro_grounded_block}
 
+        {gex_block}
+
         --- 2d. ENGINE FLAGS ---
         {flags_block}
         {engine_math_block}
@@ -782,35 +823,60 @@ def run_deep_research(date_str, target_ticker=None):
             return query_local_llm(
                 system_prompt=sys_prompt,
                 user_prompt=u_prompt,
-                use_openrouter=False,
+                use_openrouter=not force_local,
                 use_tools=False,
                 disable_thinking=True,
                 max_tokens=tokens
             )
 
-        logger.info(f"[{ticker}] Running Bull and Bear Agents concurrently...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            f_bull = executor.submit(_run_debate_agent, bull_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 2048)
-            f_bear = executor.submit(_run_debate_agent, bear_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 2048)
-            bull_case = f_bull.result()
-            bear_case = f_bear.result()
+        debate_cache_file = tdir / f"{ticker}_debate.json"
+        if debate_cache_file.exists():
+            logger.info(f"[{ticker}] Found cached Multi-Agent Debate transcript at {debate_cache_file}. Resuming directly to Pass 2...")
+            try:
+                d_cached = json.loads(debate_cache_file.read_text(encoding="utf-8"))
+                bull_case = d_cached.get("bull_case", "")
+                bear_case = d_cached.get("bear_case", "")
+                bull_rebuttal = d_cached.get("bull_rebuttal", "")
+                bear_rebuttal = d_cached.get("bear_rebuttal", "")
+            except Exception as e:
+                logger.warning(f"Failed to read cached debate ({e}), recomputing...")
+                debate_cache_file = None
 
-        logger.info(f"[{ticker}] Running Rebuttal Agents concurrently...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            f_bull_reb = executor.submit(
-                _run_debate_agent,
-                bull_sys + " You are now in the rebuttal phase. Read the Bear Case below and systematically destroy their arguments.",
-                f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BEAR CASE ---\n{bear_case}",
-                1024
-            )
-            f_bear_reb = executor.submit(
-                _run_debate_agent,
-                bear_sys + " You are now in the rebuttal phase. Read the Bull Case below and systematically destroy their arguments.",
-                f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BULL CASE ---\n{bull_case}",
-                1024
-            )
-            bull_rebuttal = f_bull_reb.result()
-            bear_rebuttal = f_bear_reb.result()
+        if not debate_cache_file or not debate_cache_file.exists():
+            debate_workers = 1 if force_local else 2
+            logger.info(f"[{ticker}] Running Bull and Bear Agents (workers={debate_workers})...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=debate_workers) as executor:
+                f_bull = executor.submit(_run_debate_agent, bull_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 4096)
+                f_bear = executor.submit(_run_debate_agent, bear_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 4096)
+                bull_case = f_bull.result()
+                bear_case = f_bear.result()
+
+            logger.info(f"[{ticker}] Running Rebuttal Agents (workers={debate_workers})...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=debate_workers) as executor:
+                f_bull_reb = executor.submit(
+                    _run_debate_agent,
+                    bull_sys + " You are now in the rebuttal phase. Read the Bear Case below and systematically destroy their arguments.",
+                    f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BEAR CASE ---\n{bear_case}",
+                    4096
+                )
+                f_bear_reb = executor.submit(
+                    _run_debate_agent,
+                    bear_sys + " You are now in the rebuttal phase. Read the Bull Case below and systematically destroy their arguments.",
+                    f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}\n\n--- THE BULL CASE ---\n{bull_case}",
+                    4096
+                )
+                bull_rebuttal = f_bull_reb.result()
+                bear_rebuttal = f_bear_reb.result()
+
+            try:
+                (tdir / f"{ticker}_debate.json").write_text(json.dumps({
+                    "bull_case": bull_case,
+                    "bear_case": bear_case,
+                    "bull_rebuttal": bull_rebuttal,
+                    "bear_rebuttal": bear_rebuttal
+                }, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to cache debate: {e}")
 
         debate_block = (
             "--- 2f. LOCAL RESEARCHER DEBATE (MULTI-AGENT) ---\n"
@@ -825,6 +891,8 @@ def run_deep_research(date_str, target_ticker=None):
             f"{bear_rebuttal}\n\n"
             "You are the Portfolio Manager (Judge). You MUST settle these disagreements in your final thesis and formulate the trade plan."
         )
+
+        use_remote = not force_local
         user_prompt = f"""
         RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
         VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
@@ -872,6 +940,8 @@ def run_deep_research(date_str, target_ticker=None):
         --- 2c-ii. MACRO GROUNDING (Google Search) ---
         {macro_grounded_block}
 
+        {gex_block}
+
         --- 2d. ENGINE FLAGS (deterministic) ---
         {flags_block}
 
@@ -896,10 +966,12 @@ def run_deep_research(date_str, target_ticker=None):
         ## 2B. LATEST CHART STATE (from Pass 1)
 
         {options_block}
-        You have access to LIVE TOOLS for fundamental discovery. BEFORE you finalize the thesis you MUST call them:
+        
+        You have access to LIVE TOOLS for fundamental discovery and derivatives strategy execution. BEFORE you finalize the thesis you MUST call them:
         - `fetch_finnhub_news` and `fetch_alpaca_news` for the latest ticker-specific news.
         - `search_web` for broader macro or catalyst context.
-        - `fetch_options_chain` for exact strikes.
+        - `fetch_options_chain` for real-time Greeks and exact contract quotes.
+        - `scrape_tradingview_options_finder` to dynamically search TradingView's proprietary Strategy Finder for pre-computed spreads matching your desired prediction period and expected move direction.
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Then synthesize the FINAL thesis and
@@ -918,26 +990,50 @@ def run_deep_research(date_str, target_ticker=None):
         {few_shot_example}
         """
 
-        meta_key = os.getenv("META_AI_API_KEY")
-        if meta_key:
-            provider_model = os.getenv("META_LLM", "muse-spark-1.2-contributor")
+        use_remote = not force_local
+        if use_remote:
+            meta_key = os.getenv("META_AI_API_KEY")
+            if meta_key:
+                provider_model = os.getenv("META_LLM", "muse-spark-1.2-contributor")
+            else:
+                provider_model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3")
         else:
-            provider_model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3")
+            provider_model = "local-gpu (llama-cpp-server)"
             
         logger.info(
-            f"[{ticker}] Pass 2 — Transmitting full payload + {len(image_paths)} images to {provider_model} (tools enabled)..."
+            f"[{ticker}] Pass 2 — Transmitting full payload + {len(image_paths)} images to {provider_model}..."
         )
         try:
-            response = query_local_llm(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                json_mode=False,
-                use_openrouter=True,
-                image_paths=image_paths,
-                use_tools=True,  # let M3 pull live quotes / chains / news itself
-                max_tokens=8192,
-                summarize_tool_context=f"The simulated date is {date_str}. CRITICAL: Filter out any news from 2024 or other years that contradicts this date. Treat {date_str} as the present day."
-            )
+            response = None
+            if use_remote:
+                try:
+                    response = query_local_llm(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        json_mode=False,
+                        use_openrouter=True,
+                        image_paths=image_paths,
+                        use_tools=True,  # let remote LLM pull live quotes / chains / news
+                        max_tokens=8192,
+                        summarize_tool_context=f"The simulated date is {date_str}. CRITICAL: Filter out any news from 2024 or other years that contradicts this date. Treat {date_str} as the present day."
+                    )
+                except Exception as e_remote:
+                    logger.warning(f"[{ticker}] Remote API inference failed ({e_remote}) — falling back to Local GPU LLM!")
+                    response = None
+
+            if not response:
+                logger.info(f"[{ticker}] Executing Pass 2 with Local GPU LLM Server (Qwen3.8-27B Vision & Reasoning)...")
+                response = query_local_llm(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    json_mode=False,
+                    use_openrouter=False,
+                    image_paths=image_paths,  # Local multimodal vision enabled with mmproj
+                    use_tools=True,
+                    disable_thinking=True,
+                    max_tokens=8192,
+                    summarize_tool_context=f"The simulated date is {date_str}. CRITICAL: Filter out any news from 2024 or other years that contradicts this date. Treat {date_str} as the present day."
+                )
 
             if response:
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -1025,6 +1121,7 @@ if __name__ == "__main__":
         "it is treated as --ticker using today's date.",
     )
     parser.add_argument("--ticker", type=str, help="Run only on a specific ticker")
+    parser.add_argument("--local", action="store_true", help="Force 100% local LLM inference (no OpenRouter/remote API calls)")
 
     args = parser.parse_args()
 
@@ -1035,4 +1132,4 @@ if __name__ == "__main__":
         target_ticker = target_date
         target_date = None
 
-    run_deep_research(target_date or datetime.now().strftime("%Y-%m-%d"), target_ticker)
+    run_deep_research(target_date or datetime.now().strftime("%Y-%m-%d"), target_ticker, force_local=args.local)
