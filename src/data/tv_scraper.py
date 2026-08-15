@@ -304,6 +304,8 @@ class TVScraper:
 
             logger.info("Capture initiated!")
             safe_symbol = symbol.replace(":", "_")
+            ticker_dir = self.screenshots_dir / safe_symbol
+            ticker_dir.mkdir(parents=True, exist_ok=True)
 
             # ── 1. Wide-view chart screenshot (default range) ─────────────────────
             # Taken BEFORE the Go-to, so it keeps the long structural view: where price
@@ -311,7 +313,7 @@ class TVScraper:
             # context and it is not visible once we zoom in. Pan right + zoom out first so
             # the view scrolls into future space and widens the context window.
             self._pan_zoom_chart(page)
-            chart_path = self.screenshots_dir / f"{safe_symbol}_chart.png"
+            chart_path = ticker_dir / f"{safe_symbol}_chart.png"
             logger.info("Taking wide-view chart screenshot...")
             page.screenshot(path=str(chart_path))
 
@@ -351,7 +353,7 @@ class TVScraper:
             page.keyboard.press("Escape")  # extra escape to ensure crosshair is gone
             time.sleep(0.5)
             
-            zoom_path = self.screenshots_dir / f"{safe_symbol}_chart_zoom.png"
+            zoom_path = ticker_dir / f"{safe_symbol}_chart_zoom.png"
             page.screenshot(path=str(zoom_path))
             logger.info(f"Saved zoomed chart screenshot to {zoom_path}")
 
@@ -377,8 +379,8 @@ class TVScraper:
                 except Exception as e:
                     logger.warning(f"Go-to-date selector bypassed for CSV: {e}")
                 
-            csv_path = self.screenshots_dir / f"{safe_symbol}_datawindow.csv"
-            data_window_path = self.screenshots_dir / f"{safe_symbol}_datawindow.json"
+            csv_path = ticker_dir / f"{safe_symbol}_datawindow.csv"
+            data_window_path = ticker_dir / f"{safe_symbol}_datawindow.json"
 
             page.click(MENU_BTN, timeout=15000)
             page.click(DL_ITEM, timeout=15000)
@@ -412,7 +414,7 @@ class TVScraper:
             # ── 4. TradingView Options Suite (Strategies & Heatmap) ───────────────
             try:
                 from src.data.tv_options_scraper import TVOptionsScraper
-                TVOptionsScraper().scrape_options_suite(page, safe_symbol, self.screenshots_dir)
+                TVOptionsScraper().scrape_options_suite(page, safe_symbol, ticker_dir)
             except Exception as opt_err:
                 logger.warning(f"Options Suite capture failed for {symbol}: {opt_err}")
 

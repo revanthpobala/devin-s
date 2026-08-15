@@ -445,13 +445,14 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
     raw_dir = config.BASE_DIR / "data" / "raw" / date_str
 
     def _triage_subdir_for(tkr: str) -> Path | None:
-        """Return the triage subfolder holding this ticker's artifacts, or None.
-        Segregated tickers live in _DEEP_RESEARCH (auto-flagged by local triage)
-        or force (manually forced in via --force); everything else stays in raw."""
+        """Return the subfolder holding this ticker's artifacts, or None.
+        Checks ticker directory inside _DEEP_RESEARCH, force, or raw."""
         safe = tkr.replace(":", "_")
-        for d in (deep_dir, triage_dir / "force"):
+        for d in (deep_dir / safe, deep_dir, triage_dir / "force" / safe, triage_dir / "force"):
             if (d / f"{safe}_chart.png").exists() or (d / f"{safe}_thesis.json").exists():
                 return d
+        if (raw_dir / safe).exists() and any((raw_dir / safe).iterdir()):
+            return raw_dir / safe
         return None
 
     chart_files = []
@@ -459,7 +460,9 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
     if target_ticker:
         safe_target = target_ticker.replace(":", "_")
         tdir = _triage_subdir_for(target_ticker)
-        target_file = (tdir or raw_dir) / f"{safe_target}_chart.png"
+        target_file = (tdir or (raw_dir / safe_target) or raw_dir) / f"{safe_target}_chart.png"
+        if not target_file.exists():
+            target_file = raw_dir / f"{safe_target}_chart.png"
         if target_file.exists():
             chart_files.append(str(target_file))
         else:
@@ -532,10 +535,11 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             if not sd.exists():
                 continue
             # Discovery is via _thesis.json (markdown generation was removed).
-            thesis_files = glob.glob(str(sd / "*_thesis.json"))
+            thesis_files = glob.glob(str(sd / "**" / "*_thesis.json"), recursive=True)
             for thesis_file in thesis_files:
                 t = Path(thesis_file).name.replace("_thesis.json", "")
-                flagged.append((t, _load_triage_record(raw_dir, deep_dir, t, tdir=sd)))
+                t_parent = Path(thesis_file).parent
+                flagged.append((t, _load_triage_record(raw_dir, deep_dir, t, tdir=t_parent)))
 
         # Deterministic RANK + hard cap: only the top-N setups reach paid research.
         from src.logic.data_window_filter import rank_pass_tickers
@@ -554,8 +558,10 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             if rec and cap > 0 and t.upper() not in keep:
                 logger.info(f"[{t}] Below deep-research cap ({cap}) - deferred.")
                 continue
-            tdir = _triage_subdir_for(t) or raw_dir
+            tdir = _triage_subdir_for(t) or (raw_dir / t) or raw_dir
             matches = glob.glob(str(tdir / f"{t}_*.png"))
+            if not matches:
+                matches = glob.glob(str(raw_dir / f"{t}_*.png"))
             if matches:
                 chart_files.append(matches[0])
 
@@ -595,24 +601,28 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
     for chart_path in chart_files:
         ticker = Path(chart_path).name.replace("_chart.png", "")
-        # Artifacts live in the deep-research folder after local-research
-        # segregation; fall back to raw for ad-hoc / non-segregated tickers.
-        tdir = _triage_subdir_for(ticker) or raw_dir
-        # The Gemini thesis is written next to the ticker's artifacts (deep_dir for
-        # batch runs, raw for ad-hoc --ticker runs not yet segregated). Re-running
-        # OVERWRITES the existing thesis (regenerate, not append).
+        # Artifacts live in the ticker subfolder (or deep-research folder after segregation)
+        ticker_raw_dir = raw_dir / ticker
+        ticker_raw_dir.mkdir(parents=True, exist_ok=True)
+        tdir = _triage_subdir_for(ticker) or ticker_raw_dir
         out_dir = tdir
         out_path = out_dir / f"{ticker}_gemini_thesis.md"
 
         logger.info(f"[{ticker}] Initiating Deep Research (2-pass flow)...")
 
         dw_path = tdir / f"{ticker}_datawindow.json"
-        if not dw_path.exists() and (raw_dir / f"{ticker}_datawindow.json").exists():
-            dw_path = raw_dir / f"{ticker}_datawindow.json"
+        if not dw_path.exists():
+            if (raw_dir / ticker / f"{ticker}_datawindow.json").exists():
+                dw_path = raw_dir / ticker / f"{ticker}_datawindow.json"
+            elif (raw_dir / f"{ticker}_datawindow.json").exists():
+                dw_path = raw_dir / f"{ticker}_datawindow.json"
 
         dossier_path = tdir / f"{ticker}_news_research.md"
-        if not dossier_path.exists() and (raw_dir / f"{ticker}_news_research.md").exists():
-            dossier_path = raw_dir / f"{ticker}_news_research.md"
+        if not dossier_path.exists():
+            if (raw_dir / ticker / f"{ticker}_news_research.md").exists():
+                dossier_path = raw_dir / ticker / f"{ticker}_news_research.md"
+            elif (raw_dir / f"{ticker}_news_research.md").exists():
+                dossier_path = raw_dir / f"{ticker}_news_research.md"
 
         # Load data window JSON (math state) early for fallback filtering
         data_window_str = "{}"
@@ -759,15 +769,21 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 logger.warning(f"[{ticker}] News research dossier not found at {dossier_path}.")
                 news_dossier = "No pre-compiled news research dossier available."
 
+        def _get_image_path(name: str) -> str | None:
+            for p in (tdir / name, raw_dir / ticker / name, raw_dir / name):
+                if p.exists():
+                    return str(p)
+            return None
+
         if force_local:
-            zoom_p = tdir / f"{ticker}_chart_zoom.png"
-            image_paths = [str(zoom_p)] if zoom_p.exists() else [str(tdir / f"{ticker}_chart.png")]
-            image_paths = [p for p in image_paths if os.path.exists(p)]
+            zoom_p = _get_image_path(f"{ticker}_chart_zoom.png")
+            chart_p = _get_image_path(f"{ticker}_chart.png")
+            image_paths = [zoom_p or chart_p]
+            image_paths = [p for p in image_paths if p and os.path.exists(p)]
         else:
-            image_paths = [
-                str(p) for p in [tdir / f"{ticker}_chart.png", tdir / f"{ticker}_chart_zoom.png"]
-                if p.exists()
-            ]
+            chart_p = _get_image_path(f"{ticker}_chart.png")
+            zoom_p = _get_image_path(f"{ticker}_chart_zoom.png")
+            image_paths = [p for p in (chart_p, zoom_p) if p and os.path.exists(p)]
 
         # ── FRESH, DATED NEWS (live pull so the paid pass never sees stale macro) ──
         fresh_news = _pull_fresh_news(ticker, date_str)

@@ -14,16 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 def _find_artifact(out_dir: Path, filename: str) -> Path:
-    """Finds an artifact in out_dir, or the triage segregation folders if it was moved."""
+    """Finds an artifact in out_dir/<ticker>/, out_dir/, or the triage segregation folders if it was moved."""
+    ticker = filename.split("_")[0]
+    ticker_p = out_dir / ticker / filename
+    if ticker_p.exists():
+        return ticker_p
     p = out_dir / filename
     if p.exists():
         return p
     triage_dir = config.BASE_DIR / "data" / "triage" / out_dir.name
     for sub in ("_DEEP_RESEARCH", "force"):
+        d_sub = triage_dir / sub / ticker / filename
+        if d_sub.exists():
+            return d_sub
         d = triage_dir / sub / filename
         if d.exists():
             return d
-    return p
+    return ticker_p
 
 
 # Serializes ledger writes: multiple thesis workers call _update_research_ledger
@@ -106,8 +113,9 @@ def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days:
     ticker = ticker.strip().upper()
     safe_ticker = ticker.replace(":", "_")
 
-    json_path = out_dir / f"{safe_ticker}_datawindow.json"
-    chart_path = out_dir / f"{safe_ticker}_chart.png"
+    ticker_dir = out_dir / safe_ticker
+    json_path = (ticker_dir / f"{safe_ticker}_datawindow.json") if (ticker_dir / f"{safe_ticker}_datawindow.json").exists() else (out_dir / f"{safe_ticker}_datawindow.json")
+    chart_path = (ticker_dir / f"{safe_ticker}_chart.png") if (ticker_dir / f"{safe_ticker}_chart.png").exists() else (out_dir / f"{safe_ticker}_chart.png")
 
     if json_path.exists() and chart_path.exists():
         logger.info(
