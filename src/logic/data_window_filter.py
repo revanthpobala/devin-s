@@ -841,13 +841,13 @@ def run_data_window_filter(
         # the same as "no trade". Consumers should read these instead of re-deriving them.
         "no_fresh_long": no_fresh_long,
         "fade_long": f.get("fade_long"),
-        "long_bot": f.get("long_bot"),
-        "long_top": f.get("long_top"),
+        "long_bot": f.get("long_zbot"),
+        "long_top": f.get("long_ztop"),
         "structure": structure,
         "structure_strikes": structure_strikes,
         "iv_rank": iv_rank,
         "exp_move_pct": exp_move,
-        "rr_at_market": rr_mkt if W["side"] == "long" else None,
+        "rr_at_market": f.get("long_rr_at_market"),
     }
 
     # Buy-Trigger Gap Engine: compute how far the current bar is from each
