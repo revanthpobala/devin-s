@@ -25,14 +25,32 @@ import subprocess
 from datetime import datetime
 
 
-def _load_triage_record(raw_dir: Path, deep_dir: Path, ticker: str) -> dict:
+def _load_triage_record(raw_dir: Path, deep_dir: Path, ticker: str, tdir: Optional[Path] = None) -> dict:
     """Load the deterministic triage dict (chosen_side/in_zone/regime/dir_prob/rr)
-    persisted in the thesis JSON, for rank_pass_tickers. Returns empty dict if unavailable."""
-    for cand in (raw_dir / f"{ticker}_thesis.json", deep_dir / f"{ticker}_thesis.json"):
-        if cand.exists():
+    persisted in the thesis JSON or triage JSON. If not found on disk but datawindow.json exists,
+    computes it directly via run_data_window_filter. Returns empty dict if unavailable."""
+    search_dirs = [d for d in (tdir, deep_dir, raw_dir) if d is not None]
+    for d in search_dirs:
+        for fname in (f"{ticker}_thesis.json", f"{ticker}_triage.json"):
+            cand = d / fname
+            if cand.exists():
+                try:
+                    data = json.loads(cand.read_text(encoding="utf-8"))
+                    rec = data.get("triage") if isinstance(data, dict) and "triage" in data else data
+                    if isinstance(rec, dict) and rec.get("triage"):
+                        rec.setdefault("ticker", ticker.upper())
+                        return rec
+                except Exception:
+                    pass
+
+    # Fallback: compute directly from datawindow.json if available
+    for d in search_dirs:
+        dw_cand = d / f"{ticker}_datawindow.json"
+        if dw_cand.exists():
             try:
-                data = json.loads(cand.read_text(encoding="utf-8"))
-                rec = data.get("triage")
+                from src.logic.data_window_filter import run_data_window_filter
+                dw_data = json.loads(dw_cand.read_text(encoding="utf-8"))
+                rec = run_data_window_filter(ticker, dw_data)
                 if isinstance(rec, dict):
                     rec.setdefault("ticker", ticker.upper())
                     return rec
@@ -514,7 +532,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             thesis_files = glob.glob(str(sd / "*_thesis.json"))
             for thesis_file in thesis_files:
                 t = Path(thesis_file).name.replace("_thesis.json", "")
-                flagged.append((t, _load_triage_record(raw_dir, deep_dir, t)))
+                flagged.append((t, _load_triage_record(raw_dir, deep_dir, t, tdir=sd)))
 
         # Deterministic RANK + hard cap: only the top-N setups reach paid research.
         from src.logic.data_window_filter import rank_pass_tickers
@@ -586,9 +604,14 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         logger.info(f"[{ticker}] Initiating Deep Research (2-pass flow)...")
 
         dw_path = tdir / f"{ticker}_datawindow.json"
-        dossier_path = tdir / f"{ticker}_news_research.md"
+        if not dw_path.exists() and (raw_dir / f"{ticker}_datawindow.json").exists():
+            dw_path = raw_dir / f"{ticker}_datawindow.json"
 
-        triage_record = _load_triage_record(raw_dir, deep_dir, ticker) or {}
+        dossier_path = tdir / f"{ticker}_news_research.md"
+        if not dossier_path.exists() and (raw_dir / f"{ticker}_news_research.md").exists():
+            dossier_path = raw_dir / f"{ticker}_news_research.md"
+
+        triage_record = _load_triage_record(raw_dir, deep_dir, ticker, tdir=tdir) or {}
 
         # Snapshot the deterministic verdict BEFORE the flags fallback below. An empty
         # `flags` list is normal on a clean bar, so that fallback can replace a perfectly
@@ -763,6 +786,9 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         options_client.set_active_ticker(ticker)
         # Pre-fetch the live quote with disk snapshot caching
         quote_path = tdir / f"{ticker}_quote.json"
+        if not quote_path.exists() and (raw_dir / f"{ticker}_quote.json").exists():
+            quote_path = raw_dir / f"{ticker}_quote.json"
+
         if quote_path.exists():
             try:
                 live_quote_block = json.loads(quote_path.read_text(encoding="utf-8")).get("quote", "")
@@ -775,6 +801,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             try:
                 live_quote_block = options_client.get_realtime_quote(ticker) or ""
                 if live_quote_block:
+                    quote_path = tdir / f"{ticker}_quote.json"
                     quote_path.write_text(json.dumps({"ticker": ticker, "quote": live_quote_block, "date": date_str}, indent=2), encoding="utf-8")
             except Exception as e:
                 logger.warning(f"[{ticker}] Live quote pre-fetch failed: {e}")
@@ -788,6 +815,9 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         # Pre-fetch GEX and options positioning with disk snapshot caching
         gex_path = tdir / f"{ticker}_gex.json"
+        if not gex_path.exists() and (raw_dir / f"{ticker}_gex.json").exists():
+            gex_path = raw_dir / f"{ticker}_gex.json"
+
         if gex_path.exists():
             try:
                 gex_block = json.loads(gex_path.read_text(encoding="utf-8")).get("gex", "")
@@ -800,6 +830,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             try:
                 gex_block = options_client.format_gex_block(ticker) or ""
                 if gex_block:
+                    gex_path = tdir / f"{ticker}_gex.json"
                     gex_path.write_text(json.dumps({"ticker": ticker, "gex": gex_block, "date": date_str}, indent=2), encoding="utf-8")
             except Exception as e:
                 logger.warning(f"[{ticker}] GEX block failed: {e}")
@@ -807,6 +838,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         # Pre-load TradingView scraped strategies with deterministic strike validation
         tv_strat_path = tdir / f"{ticker}_tv_strategies.json"
+        if not tv_strat_path.exists() and (raw_dir / f"{ticker}_tv_strategies.json").exists():
+            tv_strat_path = raw_dir / f"{ticker}_tv_strategies.json"
         tv_strat_block = ""
         if tv_strat_path.exists():
             try:

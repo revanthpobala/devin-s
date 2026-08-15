@@ -27,6 +27,10 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
         f"{safe}_datawindow.csv",
         f"{safe}_news_research.md",
         f"{safe}_thesis.json",
+        f"{safe}_triage.json",
+        f"{safe}_tv_strategies.json",
+        f"{safe}_quote.json",
+        f"{safe}_gex.json",
     ):
         src = src_dir / fname
         if src.exists():
