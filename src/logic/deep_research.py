@@ -903,14 +903,32 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
                     if valid_strats:
                         lines = [
-                            f"--- TRADINGVIEW STRATEGY FINDER (VALIDATED SPREADS FOR {ticker}) ---",
-                            "| Expiry | Days | Strategy | Formula/Strikes | Max Profit | Max Loss | R:R | Breakeven |",
+                            f"--- TRADINGVIEW STRATEGY FINDER (GEOMETRY-VALIDATED STRUCTURES FOR {ticker}) ---",
+                            "(Note: Geometry-validated implies strikes are OTM / within ExpMove bounds. Naked short puts & Jade Lizards carry undefined downside assignment risk on 100 shares.)",
+                            "| Expiry | Days | Strategy | Formula/Strikes | Max Profit | Max Loss / Risk Profile | R:R | Breakeven |",
                             "|---|---|---|---|---|---|---|---|",
                         ]
                         for s in valid_strats[:6]:  # top 6 valid spreads
+                            raw_loss = s.get("max_loss")
+                            try:
+                                loss_val = float(raw_loss or 0)
+                            except (ValueError, TypeError):
+                                loss_val = 0.0
+
+                            stype_name = s.get("strategy_type", "")
+                            is_undefined_risk = (
+                                abs(loss_val) > (dw_spot * 100 * 0.5)
+                                or stype_name in ("Short Put", "Jade Lizard", "Cash Secured Put")
+                                or loss_val < -50000
+                            )
+                            if is_undefined_risk:
+                                loss_str = "Undefined (Assignment Risk on 100sh)"
+                            else:
+                                loss_str = str(raw_loss)
+
                             lines.append(
-                                f"| {s.get('expiration')} | {s.get('days')} | {s.get('strategy_type')} | "
-                                f"{s.get('formula')} | {s.get('max_profit')} | {s.get('max_loss')} | "
+                                f"| {s.get('expiration')} | {s.get('days')} | {stype_name} | "
+                                f"{s.get('formula')} | {s.get('max_profit')} | {loss_str} | "
                                 f"{s.get('reward_risk')} | {s.get('breakeven')} |"
                             )
                         tv_strat_block = "\n".join(lines)

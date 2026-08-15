@@ -48,13 +48,13 @@ def validate_strike_geometry(
                 f"Bear call credit spread short strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Credit spreads must be strictly OTM."
             )
-    elif "SHORT_PUT" in strat or "PUT_SALE" in strat or "CASH_SECURED" in strat or "CSP" in strat:
+    elif "SHORT_PUT" in strat or "PUT_SALE" in strat or "CASH_SECURED" in strat or "CSP" in strat or "COVERED_PUT" in strat:
         if short_strike is not None and short_strike >= spot_price:
             defects.append(
                 f"Cash-secured/short put strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Income put sales must be strictly OTM."
             )
-    elif "SHORT_CALL" in strat or "CALL_SALE" in strat or "COVERED_CALL" in strat or "COVERED" in strat:
+    elif "SHORT_CALL" in strat or "CALL_SALE" in strat or "COVERED_CALL" in strat:
         if short_strike is not None and short_strike <= spot_price:
             defects.append(
                 f"Covered/short call strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
