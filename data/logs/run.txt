@@ -1,0 +1,121 @@
+2026-08-15 15:23:06,280 [INFO] Starting Agentic Deep Research Phase for 1 tickers...
+2026-08-15 15:23:06,771 [INFO] [AAPL] Initiating Deep Research (2-pass flow)...
+2026-08-15 15:23:06,787 [WARNING] watch_ranker unavailable, falling back to tiebreak_score: No module named 'lightgbm'
+2026-08-15 15:23:06,790 [INFO] response_model loaded: 10 buckets from D:\My-Projects\Stock\data\models\state_response.json
+2026-08-15 15:23:06,792 [WARNING] [AAPL] News research dossier not found at D:\My-Projects\Stock\data\raw\2026-08-15\AAPL\AAPL_news_research.md.
+2026-08-15 15:23:12,473 [WARNING] [Adanos] Monthly quota exceeded (429) on news/stocks/v1/market-sentiment
+2026-08-15 15:23:13,048 [WARNING] [Adanos] Monthly quota exceeded (429) on reddit/stocks/v1/market-sentiment
+2026-08-15 15:23:13,054 [INFO] [AAPL] Fetching Alpha Vantage OVERVIEW...
+2026-08-15 15:23:13,991 [WARNING] [Adanos] Monthly quota exceeded (429) on news/stocks/v1/stock/AAPL
+2026-08-15 15:23:14,573 [WARNING] [Adanos] Monthly quota exceeded (429) on reddit/stocks/v1/stock/AAPL
+2026-08-15 15:23:47,718 [INFO] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/interactions "HTTP/1.1 200 OK"
+2026-08-15 15:24:18,434 [INFO] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/interactions "HTTP/1.1 200 OK"
+2026-08-15 15:24:18,499 [WARNING] [AAPL] Cached news dossier is STALE (run date 2026-08-15) � relying on freshly pulled live news.
+2026-08-15 15:24:19,671 [INFO] [AAPL] Strategy Filter rejected '320C / 410C': Bull call short strike ($410.00) sits > 1.5x ExpMove ($350.79). Short leg contributes ~0 premium; structure is a naked long disguised as a spread., Spread math reconciliation mismatch: max_profit (1546.3) + abs_loss (89.5) does not reconcile with spread width $90.00.
+2026-08-15 15:24:19,671 [INFO] [AAPL] Strategy Filter rejected '305C / 410C': Bull call short strike ($410.00) sits > 1.5x ExpMove ($350.79). Short leg contributes ~0 premium; structure is a naked long disguised as a spread., Spread math reconciliation mismatch: max_profit (2521.8) + abs_loss (614.0) does not reconcile with spread width $105.00.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '305P / 310P': Bull put credit spread short strike ($310.00) is ITM/ATM vs spot ($305.93). Credit spreads must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '305P / 310P': Bull put credit spread short strike ($310.00) is ITM/ATM vs spot ($305.93). Credit spreads must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '305P / 310P': Bull put credit spread short strike ($310.00) is ITM/ATM vs spot ($305.93). Credit spreads must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '305P / 310P': Bull put credit spread short strike ($310.00) is ITM/ATM vs spot ($305.93). Credit spreads must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '310P': Cash-secured/short put strike ($310.00) is ITM/ATM vs spot ($305.93). Income put sales must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '310P': Cash-secured/short put strike ($310.00) is ITM/ATM vs spot ($305.93). Income put sales must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '310P': Cash-secured/short put strike ($310.00) is ITM/ATM vs spot ($305.93). Income put sales must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '310P': Cash-secured/short put strike ($310.00) is ITM/ATM vs spot ($305.93). Income put sales must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '300P / 305C / 310C': Jade Lizard short call ($305.00) is ITM/ATM vs spot ($305.93). Call spread must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '300P / 305C / 310C': Jade Lizard short call ($305.00) is ITM/ATM vs spot ($305.93). Call spread must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '300P / 305C / 310C': Jade Lizard short call ($305.00) is ITM/ATM vs spot ($305.93). Call spread must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Strategy Filter rejected '300P / 305C / 310C': Jade Lizard short call ($305.00) is ITM/ATM vs spot ($305.93). Call spread must be strictly OTM.
+2026-08-15 15:24:19,672 [INFO] [AAPL] Running Bull and Bear Agents (workers=1)...
+2026-08-15 15:24:19,673 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:24:20,141 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:24:20,987 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:25:46,052 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:25:46,170 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:25:46,328 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:28:14,781 [INFO] [AAPL] Running Rebuttal Agents (workers=1)...
+2026-08-15 15:28:14,781 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:28:14,916 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:28:15,086 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:31:09,730 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:31:09,870 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:31:10,035 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:33:58,989 [INFO] [AAPL] Pass 2 � Transmitting full payload + 1 images to local-gpu (llama-cpp-server)...
+2026-08-15 15:33:58,989 [INFO] [AAPL] Executing Pass 2 with Local GPU LLM Server (Qwen3.8-27B Vision & Reasoning)...
+2026-08-15 15:33:59,049 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:33:59,183 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:41:37,940 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:41:37,945 [INFO] LLM executed tool: fetch_finnhub_news(ticker='AAPL')
+2026-08-15 15:41:38,291 [INFO] Summarizing raw output of fetch_finnhub_news locally to filter hallucinations...
+2026-08-15 15:41:38,291 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:41:38,425 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:41:38,847 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:42:39,145 [INFO] LLM executed tool: fetch_alpaca_news(ticker='AAPL')
+2026-08-15 15:42:39,458 [INFO] Using Finnhub news for AAPL.
+2026-08-15 15:42:39,458 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:42:39,601 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:43:03,495 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:43:03,496 [INFO] LLM executed deterministic tool: fetch_earnings_calendar(ticker='GOOGL')
+2026-08-15 15:43:03,624 [INFO] Tool execution loop 1 complete. Requesting next action from LLM...
+2026-08-15 15:43:14,032 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:43:14,032 [INFO] Local LLM parsed sentiment: BULLISH | Catalyst: Berkshire Hathaway (Greg Abel) bought 48M Alphabet shares, making GOOGL its No. 3 holding; plus Maryland court voided digital ad tax (refunds to Google)
+2026-08-15 15:43:14,033 [INFO] Summarizing raw output of fetch_alpaca_news locally to filter hallucinations...
+2026-08-15 15:43:14,033 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:43:14,163 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:43:14,349 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:44:06,875 [INFO] LLM executed deterministic tool: fetch_earnings_calendar(ticker='AAPL')
+2026-08-15 15:44:06,926 [INFO] LLM executed tool: get_realtime_quote(ticker='AAPL')
+2026-08-15 15:44:07,749 [INFO] Tool execution loop 1 complete. Requesting next action from LLM...
+2026-08-15 15:44:42,733 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:44:42,733 [INFO] LLM executed tool: fetch_options_chain(ticker='AAPL')
+2026-08-15 15:44:43,143 [INFO] [AAPL] Alpaca options chain table: 44 rows
+2026-08-15 15:44:43,144 [INFO] LLM executed tool: fetch_options_chain(ticker='AAPL')
+2026-08-15 15:44:43,553 [INFO] [AAPL] Alpaca options chain table: 47 rows
+2026-08-15 15:44:43,567 [INFO] LLM executed tool: scrape_tradingview_options_finder(ticker='AAPL', args={'ticker': 'AAPL', 'prediction_period': 'Next month', 'expected_move': '-5% to -10%', 'min_volume': 'Above 10 K', 'moneyness': 'Out of the money'})
+2026-08-15 15:44:43,569 [INFO] Tool execution loop 2 complete. Requesting next action from LLM...
+2026-08-15 15:45:50,301 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:45:50,302 [INFO] LLM executed tool: fetch_options_chain(ticker='AAPL')
+2026-08-15 15:45:50,649 [INFO] [AAPL] Alpaca options chain table: 28 rows
+2026-08-15 15:45:50,649 [INFO] LLM executed tool: search_web(query='Apple AAPL stock price target analyst August 2026 supply chain memory chip margin')
+2026-08-15 15:45:53,118 [INFO] Summarizing raw output of search_web locally to filter hallucinations...
+2026-08-15 15:45:53,118 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:45:53,265 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:45:53,801 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:46:09,594 [INFO] Tool execution loop 3 complete. Requesting next action from LLM...
+2026-08-15 15:56:54,105 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:56:54,124 [INFO] Using Local LLM Server (local-first for local research)...
+2026-08-15 15:56:54,239 [INFO] HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+2026-08-15 15:57:44,463 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:57:44,468 [INFO] LLM executed deterministic tool: fetch_earnings_calendar(ticker='AAPL')
+2026-08-15 15:57:44,596 [INFO] LLM executed tool: search_web(query='Jefferies Apple AAPL price target cut $263.66 2026')
+2026-08-15 15:57:46,629 [INFO] LLM executed tool: search_web(query='Morgan Stanley Apple AAPL price target raise July 2026')
+2026-08-15 15:57:48,929 [INFO] LLM executed tool: search_web(query='Apple AAPL July 2026 retail sales -0.6% consumer weakness')
+2026-08-15 15:57:49,494 [INFO] HTTP Request: POST https://html.duckduckgo.com/html/ "HTTP/2 202 Accepted"
+2026-08-15 15:57:50,866 [INFO] Tool execution loop 1 complete. Requesting next action from LLM...
+2026-08-15 15:58:05,161 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:58:05,163 [INFO] LLM executed tool: search_web(query='Apple AAPL FQ3 earnings date July 30 2026')
+2026-08-15 15:58:05,618 [INFO] HTTP Request: POST https://html.duckduckgo.com/html/ "HTTP/2 202 Accepted"
+2026-08-15 15:58:07,226 [INFO] LLM executed tool: search_web(query='Apple AAPL earnings date October 2026 fiscal Q3')
+2026-08-15 15:58:09,655 [INFO] LLM executed tool: search_web(query='Apple AAPL record revenue July 2026 Services $30.7 billion')
+2026-08-15 15:58:12,589 [INFO] Tool execution loop 2 complete. Requesting next action from LLM...
+2026-08-15 15:58:43,767 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:58:43,773 [INFO] LLM executed tool: fetch_finnhub_news(ticker='AAPL')
+2026-08-15 15:58:44,161 [INFO] Tool execution loop 3 complete. Requesting next action from LLM...
+2026-08-15 15:58:59,533 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 15:58:59,541 [INFO] [AAPL] Reusing fresh cached artifact 'fetch_finnhub_news' (age: 15.4s)
+2026-08-15 15:58:59,541 [INFO] Tool execution loop 4 complete. Requesting next action from LLM...
+2026-08-15 16:00:22,543 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 16:00:22,544 [WARNING] [local:gpt-4] Output truncated (finish_reason='length') at 3099 chars. Auto-continuation pass 1...
+2026-08-15 16:02:07,208 [INFO] HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-15 16:02:07,209 [WARNING] [AAPL] drift check JSON parse failed: Expecting value: line 1 column 1 (char 0)
+2026-08-15 16:02:07,210 [INFO] Authenticating with Google API using Service Account...
+2026-08-15 16:02:07,232 [INFO] Opening Google Sheet by Name: TradingView Alerts Tracker
+2026-08-15 16:02:09,457 [INFO] Opening Trades Google Sheet: TradingView Trades Tracker
+2026-08-15 16:02:11,814 [INFO] Opening SWING-SPX Google Sheet: SWING-SPX
+2026-08-15 16:02:12,782 [INFO] Automatically sharing Google Sheets with revanthtradingview@gmail.com as Editor...
+2026-08-15 16:02:14,722 [INFO] Successfully shared Trades sheet with user.
+2026-08-15 16:02:16,198 [INFO] Successfully shared SWING-SPX sheet with user.
+2026-08-15 16:02:16,198 [INFO] Successfully connected to Google Sheets.
+2026-08-15 16:02:16,516 [INFO] Opened existing Trades worksheet tab: '2026-08-15'
+2026-08-15 16:02:16,940 [INFO] Fetching existing rows to update cache for worksheet '2026-08-15' inside 'TradingView Trades Tracker'...
+2026-08-15 16:02:17,178 [WARNING] Ticker AAPL not found in sheet 2026-08-15, cannot update deep research.
+2026-08-15 16:02:17,179 [INFO] [AAPL] Deep Research completed, Sheet updated, and Summary generated successfully!
