@@ -168,11 +168,11 @@ TOOLS = [
                     },
                     "min_dte": {
                         "type": "integer",
-                        "description": "Minimum days to expiry (default 14)",
+                        "description": "Minimum days to expiry (default 14, or 120+ for multi-month / LEAPS)",
                     },
                     "max_dte": {
                         "type": "integer",
-                        "description": "Maximum days to expiry (default 120)",
+                        "description": "Maximum days to expiry (default 120, or 365-730 for long-term LEAPS)",
                     },
                 },
                 "required": ["ticker"],
@@ -183,18 +183,18 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "scrape_tradingview_options_finder",
-            "description": "Opens TradingView Options Suite for the ticker, applies custom parameters (prediction_period, expected_move, min_volume, moneyness), and returns pre-computed multi-leg options spreads (Bull Call Spread, Bull Put Spread, Jade Lizard) with exact Max Profit, Max Loss, R:R, and Breakevens.",
+            "description": "Opens TradingView Options Suite for the ticker, applies custom parameters (prediction_period: 'Next week', 'Next 2 weeks', 'Next month', 'Next 3 months', 'Next 6 months'; expected_move; min_volume; moneyness), and returns pre-computed multi-leg options spreads (Bull Call Spread, Bull Put Spread, Jade Lizard) with exact Max Profit, Max Loss, R:R, and Breakevens across both tactical (30d) and multi-quarter swing horizons.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ticker": {
                         "type": "string",
-                        "description": "The stock ticker symbol (e.g. AAPL, HOOD)",
+                        "description": "The stock ticker symbol (e.g. AAPL, HOOD, UBER)",
                     },
                     "prediction_period": {
                         "type": "string",
                         "enum": ["Next week", "Next 2 weeks", "Next month", "Next 3 months", "Next 6 months"],
-                        "description": "Target time horizon / expiry window based on catalyst or earnings date.",
+                        "description": "Target time horizon / expiry window ('Next month' for 30d tactical swing, 'Next 3 months' or 'Next 6 months' for multi-quarter swing/LEAPS).",
                     },
                     "expected_move": {
                         "type": "string",

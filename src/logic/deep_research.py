@@ -970,16 +970,15 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         You have access to LIVE TOOLS for fundamental discovery and derivatives strategy execution. BEFORE you finalize the thesis you MUST call them:
         - `fetch_finnhub_news` and `fetch_alpaca_news` for the latest ticker-specific news.
         - `search_web` for broader macro or catalyst context.
-        - `fetch_options_chain` for real-time Greeks and exact contract quotes.
-        - `scrape_tradingview_options_finder` to dynamically search TradingView's proprietary Strategy Finder for pre-computed spreads matching your desired prediction period and expected move direction.
+        - `fetch_options_chain` for real-time Greeks, multi-horizon strikes (both short-dated and LEAPS with min_dte=120, max_dte=365+), and exact contract quotes.
+        - `scrape_tradingview_options_finder` to dynamically search TradingView's proprietary Strategy Finder for pre-computed spreads matching your desired prediction period ('Next month', 'Next 3 months', 'Next 6 months') and expected move direction.
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Then synthesize the FINAL thesis and
         EMIT a concrete trade plan with ALL of:
         - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected
             14-120 day trading range, justified from the chart + live data.
-        - OPTIONS PLAN: direction, specific strike(s), expiry/DTE window, and why that
-            structure fits the range + catalyst.
+        - OPTIONS PLAN (DUAL HORIZON): Evaluate both Tactical Swing (21-45 DTE) AND Multi-Quarter / LEAPS (90-365+ DTE, e.g. Deep ITM Calls with Delta 0.70-0.85) when long-term fundamental catalysts justify multi-quarter compounding without rapid theta decay.
         - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) derived from the live chain
             and the expected range.
         - CONVICTION and the risk/reward rationale.
