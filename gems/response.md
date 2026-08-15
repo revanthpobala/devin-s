@@ -13,9 +13,7 @@
    - Always emit the complete **Multi-Regime Action Plan (Plan A, Plan B, Plan C, Plan D)**.
 6. **Emit the full OUTPUT FORMAT** from the system prompt, in order, with the headers verbatim.
 7. **DRAW THE ASCII ART.** You MUST explicitly draw the ASCII diagram in THE SETUP section showing Target, Resistance, Live Spot, Local Base Floor, and Local Stop. Do not skip it.
-8. **Dual-Horizon Options Structure in Plan B (Tactical Swing vs. Multi-Quarter / LEAPS):**
-   - For high-conviction fundamental compounders (strong FCF, institutional accumulation, multi-year re-rating catalysts), direct equity is often gated by low at-market R:R. In **Plan B**, evaluate BOTH:
-     - **Plan B-1: Tactical Swing (21–45 DTE)**: Defined-risk vertical spreads (Bull Call / Bull Put) capturing immediate technical breakout or support defense.
-     - **Plan B-2: Multi-Quarter / LEAPS (90–365+ DTE)**: Deep In-The-Money Calls (Delta 0.70–0.85) or Long Diagonals (Poor Man's Covered Call). This completely avoids rapid theta decay, bypasses intermediate binary earnings volatility, and captures the full multi-quarter fundamental re-rating target.
-
-
+8. **Options Horizon & Structure Evaluation in Plan B (Tactical vs. Multi-Quarter / LEAPS):**
+   - The LLM should evaluate whether the stock's regime, IV Rank, and fundamental outlook favor a tactical swing, a multi-quarter / LEAPS structure, or selling credit / skipping:
+     - **Plan B-1: Tactical Swing (21–45 DTE)**: Defined-risk vertical spreads (e.g. Bull Call / Bull Put) capturing near-term technical levels or support defense.
+     - **Plan B-2: Multi-Quarter / LEAPS (120–500+ DTE)**: If fundamental compounding and long-term re-rating warrant a multi-quarter horizon, evaluate Deep ITM Calls (Delta 0.70–0.85) or Long Diagonals. If the setup does not justify buying multi-year premium (e.g. extreme IV Rank >80 or Stage 4 distribution where credit selling or skipping is superior), state why clearly.

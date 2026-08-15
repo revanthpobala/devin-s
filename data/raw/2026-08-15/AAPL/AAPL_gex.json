@@ -1,0 +1,5 @@
+{
+  "ticker": "AAPL",
+  "gex": "--- OPTIONS POSITIONING & GAMMA WALLS (GEX) FOR AAPL ---\n\u2022 Put/Call Open Interest Ratio: 0.71\n\u2022 Major Put Walls (Dealer Support / Floor Pins):\n  - Strike $300.00: 36,174 open contracts\n  - Strike $315.00: 20,724 open contracts\n  - Strike $290.00: 19,965 open contracts\n\u2022 Major Call Walls (Dealer Resistance / Ceiling Pins):\n  - Strike $340.00: 48,236 open contracts\n  - Strike $310.00: 43,259 open contracts\n  - Strike $320.00: 34,723 open contracts\n\u2022 Dealer Expected Pinning Corridor: $300.0 (Put Floor) to $340.0 (Call Ceiling)",
+  "date": "2026-08-15"
+}

@@ -468,7 +468,7 @@ def fetch_options_chain_tool(
     strike_low: float = None,
     strike_high: float = None,
     min_dte: int = 30,
-    max_dte: int = 120,
+    max_dte: int = 365,
 ) -> Optional[str]:
     """LLM-facing wrapper around fetch_targeted_chain. Derives a strike range from
     the live underlying spot (via Alpaca) when the model does not supply one.
@@ -493,7 +493,26 @@ def fetch_options_chain_tool(
         "key_catalyst_date": None,
         "options_rationale": "Tool-invoked live chain request from deep research model.",
     }
-    return fetch_targeted_chain(ticker, intent)
+    res = fetch_targeted_chain(ticker, intent)
+    if res:
+        try:
+            from src import config
+            today_str = date.today().strftime("%Y-%m-%d")
+            out_dir = config.BASE_DIR / "data" / "raw" / today_str / ticker.upper()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            snap_file = out_dir / f"{ticker.upper()}_options_chain_{direction.upper()}_{min_dte}_{max_dte}.json"
+            snap_file.write_text(json.dumps({
+                "ticker": ticker.upper(),
+                "direction": direction.upper(),
+                "min_dte": min_dte,
+                "max_dte": max_dte,
+                "strike_low": strike_low,
+                "strike_high": strike_high,
+                "table": res,
+            }, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"Failed to write options chain snapshot: {e}")
+    return res
 
 
 def format_gex_block(ticker: str) -> str:

@@ -92,47 +92,87 @@ class TVOptionsScraper:
             return False
 
     def set_prediction_period(self, page, period_text: str = "Next month") -> bool:
-        """Sets the prediction period filter (e.g., 'Next month', 'Next 2 weeks', 'Next 3 months')."""
+        """Sets the prediction period filter (e.g., 'Next month', 'Next 2 weeks', 'Next 3 months', 'Next 6 months', 'Next year')."""
         try:
             pill = page.locator(DATES_RANGE_PILL).first
             if pill.is_visible():
                 current_text = pill.inner_text().strip()
-                if period_text.lower() in current_text.lower():
+                # If already set
+                clean_target = period_text.lower().replace("next ", "").strip()
+                if clean_target in current_text.lower():
                     return True
                 pill.click()
-                time.sleep(1.0)
+                time.sleep(1.2)
 
-                option = page.locator(f'[role="menuitem"]:has-text("{period_text}"), [data-role="menuitem"]:has-text("{period_text}")').first
-                if option.is_visible():
-                    option.click()
-                    time.sleep(1.5)
-                    logger.info(f"Set prediction period to '{period_text}'")
+                # Try multi-level matching for TradingView dropdown items
+                candidates = [
+                    period_text,
+                    clean_target,
+                    period_text.capitalize(),
+                ]
+                clicked = False
+                for cand in candidates:
+                    for selector in (
+                        f'[role="menuitem"]:has-text("{cand}")',
+                        f'[data-role="menuitem"]:has-text("{cand}")',
+                        f'div[class*="item"]:has-text("{cand}")',
+                        f'span:has-text("{cand}")',
+                        f'button:has-text("{cand}")',
+                    ):
+                        loc = page.locator(selector).first
+                        if loc.is_visible():
+                            loc.click()
+                            time.sleep(1.5)
+                            clicked = True
+                            break
+                    if clicked:
+                        break
+
+                new_text = pill.inner_text().strip()
+                if clean_target in new_text.lower():
+                    logger.info(f"Successfully set prediction period to '{new_text}'")
                     return True
                 else:
+                    logger.warning(f"Failed to switch prediction period to '{period_text}' (pill still '{new_text}')")
                     page.keyboard.press("Escape")
         except Exception as e:
             logger.warning(f"Could not set prediction period: {e}")
         return False
 
     def set_expected_price_range(self, page, move_text: str = "+5% to +10%") -> bool:
-        """Sets the expected price range move pill (e.g., '+5% to +10%', '-5% to -10%')."""
+        """Sets the expected price range move pill (e.g., '+5% to +10%', '-5% to -10%', '+10% to +15%')."""
         try:
             pill = page.locator(PRICE_RANGE_PILL).first
             if pill.is_visible():
                 current_text = pill.inner_text().strip()
-                if move_text.lower() in current_text.lower():
+                clean_target = move_text.lower().replace(" ", "")
+                if clean_target in current_text.lower().replace(" ", ""):
                     return True
                 pill.click()
-                time.sleep(1.0)
+                time.sleep(1.2)
 
-                option = page.locator(f'[role="menuitem"]:has-text("{move_text}"), [data-role="menuitem"]:has-text("{move_text}")').first
-                if option.is_visible():
-                    option.click()
-                    time.sleep(1.5)
-                    logger.info(f"Set expected price range to '{move_text}'")
-                    return True
-                else:
-                    page.keyboard.press("Escape")
+                candidates = [move_text, move_text.replace("+", ""), move_text.replace(" ", "")]
+                clicked = False
+                for cand in candidates:
+                    for selector in (
+                        f'[role="menuitem"]:has-text("{cand}")',
+                        f'[data-role="menuitem"]:has-text("{cand}")',
+                        f'div[class*="item"]:has-text("{cand}")',
+                        f'span:has-text("{cand}")',
+                        f'button:has-text("{cand}")',
+                    ):
+                        loc = page.locator(selector).first
+                        if loc.is_visible():
+                            loc.click()
+                            time.sleep(1.5)
+                            clicked = True
+                            break
+                    if clicked:
+                        break
+
+                new_text = pill.inner_text().strip()
+                logger.info(f"Set expected price range (pill is now '{new_text}')")
+                return True
         except Exception as e:
             logger.warning(f"Could not set price range: {e}")
         return False
@@ -325,7 +365,17 @@ class TVOptionsScraper:
                     continue
 
             if strategies:
-                out_path = out_dir / f"{symbol}_tv_strategies.json"
+                is_default = (
+                    "month" in (prediction_period or "").lower()
+                    and not any(k in (prediction_period or "").lower() for k in ("3", "6", "year"))
+                    and "+5" in (expected_move or "")
+                )
+                if is_default:
+                    out_path = out_dir / f"{symbol}_tv_strategies.json"
+                else:
+                    p_slug = (prediction_period or "default").lower().replace(" ", "_")
+                    m_slug = (expected_move or "default").replace("%", "").replace(" ", "").replace("+", "").replace("-", "down_")
+                    out_path = out_dir / f"{symbol}_tv_strategies_{p_slug}_{m_slug}.json"
                 out_path.write_text(json.dumps(strategies, indent=2, ensure_ascii=False), encoding="utf-8")
                 logger.info(f"[{symbol}] Successfully saved {len(strategies)} clean targeted strategies -> {out_path}")
 
