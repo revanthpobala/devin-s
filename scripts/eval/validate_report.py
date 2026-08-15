@@ -112,7 +112,7 @@ def validate_report(report_path: Path, datawindow_path: Path, output_json: Path)
     deep_ctx_data = json.loads(deep_ctx_p.read_text(encoding="utf-8")) if deep_ctx_p.exists() else {}
 
     # Load canonical measured bible numbers
-    base_dir = Path(__file__).resolve().parent.parent
+    base_dir = Path(__file__).resolve().parent.parent.parent
     bible_p = base_dir / "gems" / "revanth-bible.md"
     bible_text = bible_p.read_text(encoding="utf-8") if bible_p.exists() else ""
 
