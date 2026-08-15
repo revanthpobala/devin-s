@@ -16,6 +16,6 @@
   "expected_decodes": {
     "fade_gate": "OFF",
     "stage": "STAGE 4",
-    "zone_position": "OUTSIDE ZONE"
+    "zone_position": "ZONELESS"
   }
 }

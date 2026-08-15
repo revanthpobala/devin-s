@@ -840,6 +840,9 @@ def run_data_window_filter(
         # Structure read (see the note above): no_fresh_long says "do not BUY here", which is not
         # the same as "no trade". Consumers should read these instead of re-deriving them.
         "no_fresh_long": no_fresh_long,
+        "fade_long": f.get("fade_long"),
+        "long_bot": f.get("long_bot"),
+        "long_top": f.get("long_top"),
         "structure": structure,
         "structure_strikes": structure_strikes,
         "iv_rank": iv_rank,

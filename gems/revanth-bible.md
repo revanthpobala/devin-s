@@ -772,13 +772,14 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 
 ### 8.4 Canonical Triage Reasons Reference (`data_window_filter.py`)
 To prevent models from hallucinating nonexistent exclusion names (e.g. `stage_5_not_actionable`), the deterministic engine evaluates strictly against the following canonical enumeration:
-- **`reversal_buy_lane`**: Code 20 Reversal in-zone with valid R:R (`triage = PASS`).
-- **`rr_at_market_lane` / `rr_at_market_lane_strong`**: At-market R:R $\ge 2.0$ / $\ge 5.0$ in-zone, fade gate OFF (`triage = PASS`).
-- **`structure_only_no_fresh_long`**: Fade gate active or extension reached; fresh long prohibited; context evaluated for options structure (`triage = WATCH`).
-- **`constructible_watch`**: Staging setup or in-zone with open trigger gap (`triage = WATCH`).
+- **`bad_data`**: Missing close, zero price, or corrupt data window row (`triage = CUT`).
+- **`toxic_geometry`**: Action code 18 (STOP_UNANCHORED_FAR / toxic geometry), inverted target/stop bounds, or missing stop (`triage = CUT`).
 - **`warmup_stage_0`**: Early stage 0 warmup without confirmed baseline (`triage = CUT`).
 - **`chasing_without_target`**: Price above zone without valid waypoint target (`triage = CUT`).
-- **`toxic_geometry`**: Inverted target/stop or stop distance $>2\times$ ATR (`triage = CUT`).
+- **`reversal_buy_lane`**: Code 20 Reversal in-zone with valid R:R (`triage = PASS`).
+- **`rr_at_market_lane` / `rr_at_market_lane_strong`**: At-market R:R >= 2.0 / >= 5.0 in-zone, fade gate OFF (`triage = PASS`).
+- **`structure_only_no_fresh_long`**: Action code 17 (PARABOLIC), fade gate ACTIVE, or extension extreme (Ext Z >= 2.0); fresh long prohibited; context evaluated for options structure (`triage = WATCH`).
+- **`constructible_watch`**: Staging setup or in-zone with open trigger gap (`triage = WATCH`).
 - **`no_setup`**: No actionable signal or R:R criteria met (`triage = WATCH`).
 
 

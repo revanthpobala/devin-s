@@ -150,7 +150,11 @@ def _format_engine_math_block(rec: dict) -> str:
 
     in_zone = rec.get("in_zone")
     missed = rec.get("missed")
-    if in_zone:
+    long_bot = rec.get("long_bot")
+    long_top = rec.get("long_top")
+    if long_bot is None or long_top is None:
+        zone_pos = "ZONELESS (no surviving entry zone; bounds are blank)"
+    elif in_zone:
         zone_pos = "IN THE ZONE"
     elif missed:
         zone_pos = "ABOVE THE LONG ZONE (chased)"
@@ -801,25 +805,51 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 logger.warning(f"[{ticker}] GEX block failed: {e}")
                 gex_block = ""
 
-        # Pre-load TradingView scraped strategies if available
+        # Pre-load TradingView scraped strategies with deterministic strike validation
         tv_strat_path = tdir / f"{ticker}_tv_strategies.json"
         tv_strat_block = ""
         if tv_strat_path.exists():
             try:
                 strat_data = json.loads(tv_strat_path.read_text(encoding="utf-8"))
                 if strat_data:
-                    lines = [
-                        f"--- TRADINGVIEW STRATEGY FINDER (PRE-COMPUTED SPREADS FOR {ticker}) ---",
-                        "| Expiry | Days | Strategy | Formula/Strikes | Max Profit | Max Loss | R:R | Breakeven |",
-                        "|---|---|---|---|---|---|---|---|",
-                    ]
-                    for s in strat_data[:6]:  # top 6 spreads
-                        lines.append(
-                            f"| {s.get('expiration')} | {s.get('days')} | {s.get('strategy_type')} | "
-                            f"{s.get('formula')} | {s.get('max_profit')} | {s.get('max_loss')} | "
-                            f"{s.get('reward_risk')} | {s.get('breakeven')} |"
+                    from src.logic.strike_validator import validate_strike_geometry
+                    dw_spot = float(dw_data.get("close") or 0.0) if isinstance(dw_data, dict) else 0.0
+                    dw_exp_move = float(dw_data.get("Exp Move Pct 21b") or dw_data.get("exp_move_pct") or 0.0) if isinstance(dw_data, dict) else None
+
+                    valid_strats = []
+                    for s in strat_data:
+                        formula = s.get("formula", "")
+                        strikes = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[CPcp]\b", formula)]
+                        long_st = strikes[0] if len(strikes) > 0 else None
+                        short_st = strikes[1] if len(strikes) > 1 else None
+
+                        is_valid, defects = validate_strike_geometry(
+                            strategy_type=s.get("strategy_type", ""),
+                            spot_price=dw_spot,
+                            exp_move_pct_21b=dw_exp_move,
+                            long_strike=long_st,
+                            short_strike=short_st,
+                            max_profit=float(s.get("max_profit", 0) or 0) if s.get("max_profit") is not None else None,
+                            max_loss=float(s.get("max_loss", 0) or 0) if s.get("max_loss") is not None else None,
                         )
-                    tv_strat_block = "\n".join(lines)
+                        if is_valid:
+                            valid_strats.append(s)
+                        else:
+                            logger.info(f"[{ticker}] Strategy Filter rejected '{formula}': {', '.join(defects)}")
+
+                    if valid_strats:
+                        lines = [
+                            f"--- TRADINGVIEW STRATEGY FINDER (VALIDATED SPREADS FOR {ticker}) ---",
+                            "| Expiry | Days | Strategy | Formula/Strikes | Max Profit | Max Loss | R:R | Breakeven |",
+                            "|---|---|---|---|---|---|---|---|",
+                        ]
+                        for s in valid_strats[:6]:  # top 6 valid spreads
+                            lines.append(
+                                f"| {s.get('expiration')} | {s.get('days')} | {s.get('strategy_type')} | "
+                                f"{s.get('formula')} | {s.get('max_profit')} | {s.get('max_loss')} | "
+                                f"{s.get('reward_risk')} | {s.get('breakeven')} |"
+                            )
+                        tv_strat_block = "\n".join(lines)
             except Exception as e:
                 logger.warning(f"[{ticker}] Error loading tv_strategies: {e}")
 
@@ -958,6 +988,10 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         use_remote = not force_local
         user_prompt = f"""
+        RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
+        VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
+        prior-session news is current.
+
         I am requesting a Deep Research Validation for the ticker: {ticker}.
 
         --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
@@ -990,6 +1024,11 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL (fetched live for this ticker) ---
         {av_block}
         {social_block}
+        {institutional_block}
+        {grounded_block}
+
+        --- 2c-ii. MACRO GROUNDING (Google Search) ---
+        {macro_grounded_block}
 
         --- 2d. ENGINE FLAGS (deterministic) ---
         {flags_block}
