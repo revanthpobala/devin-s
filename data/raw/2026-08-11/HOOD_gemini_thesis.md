@@ -1,143 +1,183 @@
-# HOOD | $93.47 | August 11, 2026
-**Bar close:** $94.40 (Data Window) · **Live:** $93.47 (Alpaca, 11:02 ET) · **Change:** -$1.02 (-1.07%) from prior close $94.49
+# HOOD | $94.37 | August 11, 2026
+**Bar close:** $94.38 (Data Window) · **Live:** $94.37 (`get_realtime_quote`, time not provided) · **Change:** -$0.12 (-0.13% vs previous close)
 
 ## ⚡ TLDR / EXECUTIVE SUMMARY
-**The Thesis in 2 Sentences:** Despite the fresh August 9 Golden Cross and the UK crypto launch this week, the engine remains in **Stage 1 BASING** with `Action Long Code = 8 (WATCH)` — not triggered, baseline state — and the short side carries an exit-only TOP/BOT WARNING (Code 15). Volume is structurally dead (RVOL 0.19 = 19% of average) on a $93 stock with HV20 of 59%, the DMI is bearish, and the stock just lost the EMA20 today. The bull narrative is real but unconfirmed by the structural read; the trade is not constructible from this state.
+**The Thesis in 2 Sentences:** HOOD has a credible live catalyst in its UK crypto expansion and broader product diversification, but the daily engine is only WATCH, volume is 0.60x average, the pattern mask is bearish, and price has already moved above the actionable long zone. The catalyst is directionally interesting but not sufficient to override stale entry geometry, a Stage-1/age-0 structure, and the absence of verified options flow.
 
-**Verdict:** SKIP · **Conviction:** 1/10
-**EARNINGS GATE:** PASS (85 days | ~Nov 4, 2026)
-**(If User Owns Shares):** DEFENSIVE COVERED CALL — the TOP/BOT WARNING (Code 15) is an exit-style signal.
+**Verdict:** SKIP · **Conviction:** 3/10  
+**EARNINGS GATE:** PASS (>7d) — 85 days remaining, November 4, 2026  
+**(If User Owns Shares):** HOLD cautiously; no aggressive covered call recommendation from this state
 
 ## 🛠️ DATA AUDIT (LITERAL VALUES)
 *Verbatim from the Data Window. NOT from the chart image.*
 
-*   **Action codes:** `Action Long Code = 8` (WATCH — catch-all "no entry right now", 63% of bars; **NOT triggered**). `Action Short Code = 15` (TOP/BOT WARNING — an exit instruction for stretched names that subsequently revert; **NOT a short trigger**). The asymmetry here is by design: `Action Short Code` can never be 1 or 2, so any short-side read must come from Sell Score + zone stats — and Sell Score 60.2 is only moderately bearish, well below the threshold that would constitute a high-conviction short.
-*   **Stage / Age:** `Stage = 1` (BASING) · `Stage Age Bars = 0` — first bar of the new stage. The HMA150 just rolled: MA50 (95.65) crossed MA200 (92.66) for the Golden Cross per news on Aug 9, but the HMA150 hasn't confirmed Stage 2 yet. Per §16.2: **WATCH in Stage 1 = −0.34% [−0.65, −0.06] SIG**.
-*   **Scores:** Buy Score 52.87 (mediocre, below the 85 PRIME threshold) · Sell Score 60.21 (moderate, dominant side). `Buy Sigma Evidence = +1.39σ` (weak positive) · `Sell Sigma Evidence = −0.60σ` (slight negative). The Buy Score is NOT prior-driven; sigma is +1.39σ, but the score is still under 60. With Sell Score dominant, the `RR To Target = 2.025` is the **short-side** ratio (not the long).
-*   **Trade geometry:** `Entry At Market = 0` (structural). `Long Entry = 93.29` · `Long Entry Zone = 92.61–93.97` (live price 93.47 is **inside the long zone**). `Long In Zone = 0` (strict on the breakout side — bidirectional tolerance not binding). `Long Stop = 89.88` · `Long Target = 101.88` (T1 waypoint = Target = 101.88; no partial trim wall). `Long RR Valid` — not explicitly exported but the RR Flags Pack = 12, which decodes to the field's structural setting.
-*   **Extension:** `Ext Pct vs MA200 = +1.87%` (below the 25–60% exclusion band, but the "buy below MA200" effect doesn't survive the $20 filter per §16.7). `Ext Z Self Relative = −0.12σ` (not stretched). `Exhaustion Gradient = 0.0094` (very low — far from climax).
-*   **Regime / MTF:** `Regime = 0` (Healthy) but **Stage 1 BASING** — the priority enum hides the structural reality. §16.3: Regime 0 + Stage 2 measures −0.17% (negative lean); this is the *worse* Regime 0 + Stage 1. **MTF Long Aligned = 0/3** — no timeframe confirms the long.
-*   **Rev Zone:** Long Rev Zone = 3.0, Short Rev Zone = 3.0 — **both below the Z2 threshold (4+)**, no active reversal zones.
-*   **Energy / DMI:** `Energy State = 2` (WARMING) · `IV30 = 65.22` (Rank 38.9%) · `IV−HV Spread = +9.92` (consistent with WARMING). `ADX 14 = 20.39` (weak trend) · `DMI +DI = 19.65 / −DI = 24.44` — **bearish directional**. `HV20 = 59.34%` (extremely high realized vol).
-*   **Volume profile:** `VP POC = 76.52` · `VAH = 94.04` · `VAL = 69.17` · `HVN Below = 91.22` (live price 93.47 is just above VP VAH 94.04… wait, 94.04 > 93.47, so price is *below* VAH). `RVOL Vs Avg = 0.1947` — **19% of average volume**.
-*   **Fresh labels:** `Bear Warning Mask = 0` (clean). `Reversal Pattern Mask = 576 = 512 + 64` → **HIKKAKE_BEAR (Bearish) + TRAP_BULL (Bearish)**, both 18 bars old → both **STALE** (presence is uninformative at 18 bars; rank by freshness, not presence). `Weak Level Mask = 0`.
-*   **Next earnings:** ~85 days (Nov 4, 2026) (Source: yfinance).
+*   **Action codes:** Long Code **8 — WATCH**, not triggered; Short Code **15 — TOP / BOT WARNING**, an exit/caution state rather than a fresh short trigger. Code 15 does not authorize shorting.
+*   **Stage / Age:** Stage **1 — BASING**, `Stage Age Bars` **0**. This is a brand-new stage read, not a settled Stage 2 advance.
+*   **Scores:** Buy **52.88381070998192** with no score arrow supplied; Sell **60.21434747587431** with no score arrow supplied. Buy Sigma Evidence **1.3875633745435407**; Sell Sigma Evidence **-0.5948733192792676**. The score is not selective and is not supported by strong raw evidence.
+*   **Trade geometry:** `Entry At Market = 0`, so `RR To Target = 2.0658321773231685` is the **structural-zone ratio**, not an at-market ratio. The dominant score side is short by score, but the short action is Code 15 and therefore not actionable. Long RR Valid is not explicitly exported; the zone exists because `Long Entry Zone Bot = 92.60703424087887` and `Long Entry Zone Top = 93.97296575912114` are populated. Live price is above the long zone, so the setup is stale.
+*   **Extension:** `Ext Pct vs MA200 = 1.8526912730818208%`, within the 0–10% band and outside the 25–60% exclusion band. `Ext Z Self Relative = -0.1272159282106056`; `Exhaustion Gradient = 0.0092634563654091`.
+*   **Regime / MTF:** Regime **0 — Healthy**; Stage must be read separately as **Stage 1 Basing**. `MTF Long Aligned = 0`.
+*   **Rev Zone:** Long Rev Zone **3.0**; Short Rev Zone **3.0**. Neither side is active: both are below the Z2 threshold of 4.
+*   **Energy / DMI:** Energy State **2 — WARMING**; `ADX 14 = 20.38702887672897`; `DMI DI Plus = 19.64937218764318`; `DMI DI Minus = 24.44090545362321`. Minus DI is higher.
+*   **Volume profile:** `VP POC = 76.51805` / `VP VAH = 94.0439` / `VP VAL = 69.1685` / `VP HVN Above = blank` / `VP HVN Below = 91.21715` / `RVOL Vs Avg = 0.6001808822349658`. The populated VP fields are expected one-bar companion exports; `VP HVN Above` is blank.
+*   **Fresh labels:** Bear Warning Mask **0**, Age **blank** — no fresh bear-warning bit in the 30-bar window. Reversal Pattern Mask **576**, Age **18**: **TRAP_BULL — bearish Bull Trap** and **HIKKAKE_BEAR — bearish**, exactly as pre-decoded by the engine. Net signals: **0 bullish vs 2 bearish**. Weak Level Mask **0**, Age **blank**.
+*   **Next earnings:** **November 4, 2026 | 85 days** (deterministic yfinance earnings record supplied in this session).
 
-## 📐 CALIBRATION DISCLOSURE (MANDATORY)
-The firing state is `Action Long Code = 8 (WATCH)`, measured at **−0.06% [−0.34, +0.15] flat** — the interval straddles zero, so the code is a description, not a rule. The relevant refinement is **WATCH in Stage 1 = −0.34% [−0.65, −0.06] SIG negative**, the measured live read for this exact state. `Action Short Code = 15` (TOP/BOT WARNING) measures +0.32% [−0.01, +0.67] — just misses significance, and is an exit instruction, not a short trigger. **No measured cell is positive here.** The only non-indicator pillars available are the Aug 9 Golden Cross and the UK crypto launch — both real but unconfirmed by the structural read (Stage 1 BASING, MTF 0/3, bearish DMI, dead volume). The verdict is SKIP because conviction requires a pillar that lifts the trade above mechanical "indicator state", and the available pillars here are not yet integrated into the engine's stage or score.
+## 📐 CALIBRATION DISCLOSURE (MANDATORY on any BUY/SELL verdict)
+Not applicable because the verdict is SKIP. For context, the current Code 8 WATCH state is flat: **−0.06% ex21**, with the interval reported in the Bible as **[−0.34%, +0.15%]**, which includes zero. The only measured positive entry lane, Code 20 REVERSAL BUY at **+0.85% [ +0.34%, +1.36% ]**, is not active here.
 
 ## THE SETUP
-The daily chart shows HOOD in a structural decline from its April 2026 highs above $120 to current levels near $93. The short-term moving averages (MA20/MA50 cluster at ~$95.65) sit overhead as resistance, and price is trading below them. The MA200 (92.66) is right at the live price — the floor pivot. The Weinstein MA150 (Hull, 103.37) is well above price and is still declining, confirming the engine's **Stage 1 BASING** classification. Volume is structurally dead: only 19% of the 20-day average.
+**What the state shows:** The stock closed at **$94.38**, just above the structural long zone of **$92.60703424087887–$93.97296575912114**, with the long entry at **$93.29**, stop at **$89.87517120439436**, T1 and target at **$101.88**, and structural `Entry At Market = 0`. Extension is modest at **1.8526912730818208%**, but Stage 1 age 0, RVOL 0.6001808822349658, DMI-minus dominance, and Code 8 prevent entry.
 
+**What the image shows:** The recent chart view shows a rebound from the lower-$80s area into a congested zone near the mid-$90s rather than a clean confirmed breakout. Price is visually above the drawn long zone, while the recent **BULL TRAP** and **HIKKAKE** labels are bearish and not freshly clustered enough to create a reversal trade.
+
+**Macro/Policy context:** Live research dated August 11, 2026 describes ongoing FOMC disagreement and market attention on upcoming inflation data. The search results did not provide a sufficiently verified current CPI release result for this date; therefore, the stale dossier's specific CPI assumptions and asserted rate-hike probabilities are not used. HOOD remains highly beta-sensitive, with the supplied beta of **2.321**.
+
+**Expected stock-price range:**  
+- **Near support:** Long zone **$92.60703424087887–$93.97296575912114**  
+- **Structural invalidation:** **$89.87517120439436**  
+- **Lower external support:** AVWAP Support **$85.37297716683406**  
+- **Near resistance:** VP VAH **$94.0439**  
+- **Primary target/resistance:** **$101.88** and AVWAP Resistance **$101.92831077998343**  
+- **14–120 day working range:** approximately **$85.37297716683406–$101.92831077998343**, with the supplied trajectory also identifying **$88.03**, **$92.66**, **$95.65**, and **$101.88** as candidate prices. This is a scenario range, not a forecast with measured positive expectancy.
+
+```text
+                    Resistance: $101.88 / $101.92831077998343
+                                      ▲
+                                      │
+          VP VAH: $94.0439 ──────────┼── Live: $94.37
+                                      │
+       Long zone: $92.60703424087887–$93.97296575912114
+                                      │
+                                      ▼
+                  Stop: $89.87517120439436
+                                      │
+             AVWAP Support: $85.37297716683406
 ```
-                            (Weinstein MA 150: 103.37) ── STAGE 1 BASING
-                                       │
-                                       │  ← Key Resistance 101.88
-                                       │
-                                       │   ← MA20/MA50 cluster: 95.65
-                                       │
-        ┌──────────────────────────────┼─────────────────────────┐
-        │  Long Entry Zone: 92.61–93.97│  ← Live Price: 93.47    │
-        └──────────────────────────────┼─────────────────────────┘
-                                       │
-                                       ▼
-                              (Hull HMA: 89.82 ← KEY SUPPORT 88.41)
-                                       │
-                                       ▼
-                              (MA 200 Slow: 92.66 ← price just above)
-                                       │
-                                       ▼
-                              (VP HVN Below: 91.22)
-                                       │
-                                       ▼
-                              (VP VAL: 69.17)
-```
-
-**Macro context:** The Fed is widely expected to hold rates at 3.50–3.75% at the next FOMC, with a 30% probability of a hike per the July 2026 dot plot. CPI is forecast to ease to 3.8% YoY in June 2026 — still the highest since April 2023. The policy backdrop is **hawkish-leaning** with continued pricing uncertainty. For HOOD specifically, **high realized volatility (HV20 59.34%) is a feature when the company is monetizing options flow** — but the Beta of 2.32 means the stock amplifies any market drawdown. The current climate is not a tailwind for a stock with a P/E of 41× and Forward P/E of 44×.
-
-**What the image shows:** Bounce off the MA200 attempted today (94.40 close, 93.47 live) but failed to hold above the MA20/MA50 cluster. The Hull MA (89.82) is the structural support; failure there targets the AVWAP Support at 85.35. The recent Golden Cross (Aug 9) is fresh but the structural MA (Hull 150) hasn't confirmed — the engine is still showing Stage 1 BASING. Warning labels are stale (18 bars old).
 
 ## THE THESIS
-HOOD sits at a genuine inflection point: the **Golden Cross** (MA50 > MA200) is the first real long-term bullish signal since January 2024, and the **UK crypto launch** via Bitstamp with zero fees is a tangible revenue diversification event. But the engine has not yet processed these into Stage 2 — the HMA150 is still declining, the Stage just rolled to 1 BASING today, and the structural read is "transition, not trend". Mechanical entry is not available; the closest substrate is a stage 1 base forming, which on the measured data is **−0.34% SIG negative** for WATCH.
+Robinhood has a real expansion narrative: live search results dated August 11, 2026 report a UK launch involving no-fee crypto trading, more than 50 assets, AI tools, and Robinhood Chain developer access. The same research reports H1 2026 transaction revenue of **$1.19 billion**, with equities, options, and event contracts helping offset crypto softness.
 
-Why this stock should move (if it does): the UK launch is a real revenue catalyst that could materialize in 1–2 quarters of accounts. The crypto/options retail flow engine is intact. The pipeline of operating leverage from tighter expense guidance ($2.675–2.775B) supports multiple expansion if growth sustains.
+That is a legitimate non-indicator pillar, but the market must still prove adoption and monetization. The current chart does not yet show that proof: volume is below average, the stage has just reset to Stage 1, the price is above the zone, and the only measured entry state with a positive historical edge—Code 20—is four gates away.
 
 ## THE EDGE
-**What I know that the market might be missing:** The Golden Cross is only 2 trading days old (Aug 9). Historically, post-Golden-Cross entries in Stage 1 BASING have a structural read but the change is fresh — the classic "too early to enter, but the pattern is real" state. The UK launch is a 50-asset crypto rollout via Bitstamp, which is differentiated from a simple licensing arrangement. The analyst consensus target of $120.52 (17 analysts, 12-month) implies ~28% upside. **However:** none of this rises to the non-indicator pillar threshold required to override the Stage 1 BASING negative read. The structural read is "don't enter yet". The pillar is real; the timing is not.
+The live fundamental edge is the UK product expansion and broader ecosystem diversification into crypto, AI tools, and developer infrastructure. The edge is **not** the Buy Score, Dir Prob, analyst targets, or the bullish narrative in the local debate.
 
-**Counter-research from the LIVE tools:** The Aug 9 Golden Cross claim is cross-verified by the news feed (first occurrence since January 2024). The UK launch is confirmed ("live rollout as of August 2026"). Sentiment is "cautiously optimistic" — retail investors remain skeptical ("stands by bearish bet"). The local-researcher bull case (UK launch + $120 target + fiscal discipline) is interpreting the same data, but the engine has not been persuaded and the structural read remains Stage 1 BASING.
+The analyst target figures in the supplied research are inconsistent across sources: the live search returned **$120.52**, while the supplied fundamentals field showed **$119.82**. They are not used as trade targets.
 
 ## THE RISK
-- **Primary risk:** The structural downtrend continues. The HMA150 (103.37) is still declining and the price is below it. A daily close below the Hull HMA (89.82) and the KEY SUPPORT (88.41) invalidates the basing thesis and targets the AVWAP Support at 85.35, then the VP HVN Below at 91.22 (already broken on the live print).
-- **Event risk:** Earnings (~85 days, Nov 4) — the company has guided operating expenses tighter, but Q2 EPS was "boosted by one-offs"; Q3 read will be a clean test. Beta 2.32 means any market drawdown amplifies.
-- **Technical risk:** RVOL 0.19 means no institutional accumulation. The bearish DMI, the Sell Score dominance, and the just-lost EMA20 (Trend Bars Up = 0) all suggest momentum is fading on the wrong side. The TOP/BOT WARNING on the short side is an exit-signal — the stock had a major run-up earlier in the year (from $63 52-week low to $153 high) and the engine is flagging distribution risk.
+- **Primary risk:** HOOD's supplied beta is **2.321**, leaving it exposed to a broad risk-off move and crypto-volume contraction.
+- **Event risk:** Earnings are 85 days away, so the immediate issue is not earnings proximity but the possibility that the UK launch fails to generate measurable user activity.
+- **Technical risk:** Failure to hold the long zone, followed by a break toward the structural stop at **$89.87517120439436**, invalidates the current long construction. A move toward AVWAP Support at **$85.37297716683406** would indicate materially weaker structure.
 
 ## ⚖️ LOCAL RESEARCHER DEBATE
-**Moderator Consensus:** The local researchers split into two mutually-exclusive camps. The BULL case argues the golden cross + UK launch + Q2 record revenue + lowered expense guidance + favorable analyst targets ($120 avg) constitute a structurally bullish setup; the BEAR case argues the trend is broken, the stock is in distribution (DI- > DI+, RVOL 0.19), the Q2 EPS was boosted by one-offs, and the headwinds (sticky inflation, potential rate hike, valuation contraction) are bigger than the catalysts. **My verdict as Judge:** Both sides have merit on the facts. The Golden Cross is real and cross-verified. The UK launch is real. The bearish technicals are also real. The deciding factor is the **timing** — the engine has not yet integrated these into Stage 2; the structural read is still Stage 1 BASING. Until the HMA150 confirms Stage 2 (which requires more bars and a structural breakout above the MA20/MA50 cluster at $95.65), the mechanical entry is not available. **The trade is too early.** The bull case is structurally valid but chronologically misplaced relative to the engine's stage read.
+**Moderator Consensus:** The bull researchers correctly identified a dated expansion catalyst, but they incorrectly promoted Code 8 WATCH into a buy and treated the bearish pattern mask as bullish. The bear researchers correctly emphasized the 0.60x volume, price below the 20- and 50-period averages, and bearish pattern polarity, but they overstated several unsupported claims, including “70% breakout failure,” a confirmed Stage 4 reading, and specific current CPI/rate-hike conclusions.
 
-**Cross-verification of facts:** Aug 9 Golden Cross confirmed by news feed (first since January 2024). UK launch details (Bitstamp, 50+ assets, zero fees) confirmed multiple sources. Analyst target $120.52 confirmed (MarketBeat, 17 analysts). Q2 revenue $1.31B confirmed (Simply Wall St). Expense guidance $2.675–2.775B confirmed (Yahoo Finance). Beta 2.32, P/E 41.28, Forward P/E 44.44 confirmed (fundamentals). **No hallucinated claims detected.**
+The actual Data Window says **Stage 1**, not Stage 4; the current Regime is **0**, not a standalone distribution or decline state; and the pattern engine explicitly decodes Mask 576 as **TRAP_BULL bearish** plus **HIKKAKE_BEAR bearish**. I resolve the debate in favor of **SKIP**, not because the UK catalyst is false, but because the catalyst has not yet converted into an actionable state or verified flow.
 
-## COUNTER-TREND ANALYSIS
+The live news tools also returned a competitive warning: Kalshi and Polymarket are intensifying activity in prediction markets, including recruiting personnel from Robinhood, Coinbase, and Nasdaq. That does not directly invalidate HOOD's expansion thesis, but it argues against assuming a dominant moat.
+
+## 🎯 BUY-TRIGGER FORECAST (NEW ENGINE)
+**Nearest Actionable State:** `CODE20_REVERSAL` is the nearest listed actionable state by the deterministic gap engine, but it remains unlikely without a genuine capitulation event.
+
+**Open Gates & Requirements:**
+- **REV ZONE:** Needs `Long Rev Zone ≥ 7.00` (currently **3.0**, gap **4.0**) — requires a larger oversold/reversal pattern, likely a sharp price decline with rejection rather than a routine dip. Plausibility within 21 days: **Low to Medium**.
+- **Buy Score:** Needs `Buy Score < 30.00` (currently **52.88381070998192**, gap **22.88**) — requires materially weaker long evidence. Plausibility: **Low** without a sharp selloff.
+- **Close below MA200:** Needs price below **92.66323630757438** (currently **94.38**, gap **1.72**) — a close below the MA200 could occur on an ordinary risk-off session. Plausibility: **Medium**.
+- **RVOL:** Needs `RVOL > 1.50` (currently **0.6001808822349658**, gap **0.90**) — requires a high-volume flush or reversal session. Plausibility: **Low to Medium**.
+
+The alternative `STAGE2_PRIME` requires the stock to return to the zone, develop Stage 2, and lift Buy Score to at least **98.00** or clear the screen condition. It is not a near-term trigger merely because the zone exists.
+
+**Plausibility:** **Low** for Code 20 within 21 days. The more plausible bullish path is a pullback into the zone followed by a fresh confirmed action state, but the deterministic engine does not currently certify that path.
+
+## 📊 HISTORICAL STATE RESPONSE (from 2d-iv)
+- **Current bar:** `watch_code8` — Edge vs Baseline **-0.024**, `n/a`, Median **-0.346**, p10 **-8.54**, p90 **7.79**, **flat**.
+- **If price → $88.03:** `watch_code8` — Edge vs Baseline **-0.024**, flat.
+- **If price → $92.66:** `watch_code8` — Edge vs Baseline **-0.024**, flat.
+- **If price → $95.65:** `watch_code8` — Edge vs Baseline **-0.024**, flat.
+- **If price → $101.88:** `watch_code8` — Edge vs Baseline **-0.024**, flat.
+
+The state-response model does not project a change in state or a tradeable edge at any supplied candidate price. I therefore do not present any of these levels as historically validated long entries.
+
+## COUNTER-TREND ANALYSIS (only if REV ZONE is active)
 | Check | Finding |
 |---|---|
-| REV ZONE status | Long 3.0 / Short 3.0 — both below Z2 threshold (4+), **no active reversal zones** |
-| **Is it `Action Long Code = 20`?** | **NO** — Action Long Code is 8 (WATCH). The reversal-buy lane is closed. |
-| MTF alignment | 0/3 — no alignment, but for Code 20, MTF 0/3 is the *best* subset. Not applicable here. |
-| In Zone? | N/A — no Code 20 today |
-| Key triggers | N/A — no RSI(2) extreme, no failed-sweep, no setup present |
-| ACTION conflict | Top Warning (Code 15) is exit-only, not a short trigger |
+| REV ZONE status | No active zone: Long Rev Zone **3.0**, Short Rev Zone **3.0** |
+| **Is it `Action Long Code = 20`?** | No. Action Long Code is **8 WATCH** |
+| MTF alignment | **0/3**, but the measured 0/3 Code-20 subset is irrelevant because Code 20 is not active |
+| In Zone? | Long In Zone is **0**; price is above the structural long zone |
+| Key triggers | No active REV ZONE trigger; Reversal Pattern Mask 576 is **bearish**, age 18 |
+| ACTION conflict | No Code-20 conflict; Short Code 15 is a warning/exit state, not a short trigger |
 
-**Reversal Thesis:** No reversal-buy setup is present. The Long Rev Zone score of 3.0 is below the Z2 threshold (4+); the trap-bull pattern is 18 bars old (stale); no failed-sweep or OOPS signals in the mask. This is not a counter-trend setup.
+**Reversal Thesis:** There is no reversal thesis at the current bar. A valid counter-trend long would require Code 20, a REV Zone score of at least 7, Buy Score below 30, a close below **$92.66323630757438**, and RVOL above 1.50. Those conditions are not present.
 
-## CONVICTION: 1/10
-**Because:** No actionable entry code on the long side (8 = WATCH baseline). No actionable short trigger (Code 15 is exit-only). The Stage 1 BASING structural read is **measured −0.34% SIG negative**. The only non-indicator pillars available (Golden Cross, UK launch) are real but unconfirmed by the engine's stage. **The indicator is not triggered, and the only available pillars are insufficient to lift the trade above mechanical skip.** This is a deterministic skip — the discipline is the answer.
+## CONVICTION: 3/10
+**Because:** The UK expansion is a legitimate non-indicator catalyst, but the technical state is unconfirmed and stale. The current data supplies no measured positive edge for WATCH, no active Code 20 reversal, no verified institutional options flow, and no clean breakout confirmation.
 
 ## THE TRADE
-**No trade construction.** The state is not triggered for long; the short side is exit-only. The setup is for patience, not for entry.
 
-### Stock (If Hypothetical Trade Were Constructed)
+### Stock
 | | Price | Rationale |
-|---|---|---|
-| Entry | $93.29 | Long Entry — live price 93.47 is inside the long zone, but state is WATCH |
-| Stop | $89.88 | Just below the Hull HMA (89.82) |
-| T1 | $101.88 | No partial-trim wall (T1 = Target) |
-| Target | $101.88 | Long Target |
-| R:R | 2.03:1 | DOMINANT SIDE is short (Sell Score 60.21 > Buy Score 52.87), so this is the short ratio — **not a long recommendation** |
-| Size | 0% | State not triggered |
+|---|---:|---|
+| Entry | No entry | Live price **$94.37** is above the long-zone top **$93.97296575912114**; the setup is stale |
+| Stop | $89.87517120439436 | Data Window structural stop, but no position should be opened now |
+| T1 | $101.88 | Data Window T1 waypoint |
+| Target | $101.88 | Data Window target; AVWAP Resistance is **$101.92831077998343** |
+| R:R | 2.0658321773231685:1 | Structural-zone ratio because `Entry At Market = 0`; not a valid reason to chase |
+| Size | 0% | Code 8 WATCH, stale entry, and no measured long edge |
 
-**If, hypothetically, the Stage 2 confirmation arrives** (price closes above MA20/MA50 at $95.65 with RVOL > 1.0), revisit. Until then, no trade.
+> **[M] Do not build the plan around a perfect pullback fill.** A limit resting at the prior bar's zone fills only 32.1% of the time for −0.00% date-neutral against −0.12% unfilled. Waiting is not free.
 
 ### Options
-**No options position recommended.** The state is not constructible:
-- **Long calls:** Buying calls against a structural basing + bearish DMI + dead volume is buying into a falling knife. IV Rank 38.9% is moderate; not cheap enough to justify a long premium.
-- **Long puts:** A short position is not warranted (Code 15 is exit-only, not a short trigger). Buying puts against the Golden Cross catalyst is fighting the cross.
-- **Spreads:** Not justified without a directional conviction.
+**The Play:** No current options position. Conditional only: if HOOD returns to the long zone, develops a confirmed long state, and the fundamental catalyst remains intact, consider a defined-risk **September 18, 2026, $95/$105 bull call spread**.  
+**Cost:** Approximately **$7.25 debit** using the supplied $95 call mid and **$3.79** credit reference for the $105 call mid; exact executable spread pricing is not guaranteed because the chain is wide.  
+**Breakeven:** Approximately **$102.25** at expiration.  
+**Max loss:** Approximately **$725 per spread**, before fees and slippage.
 
-### Income & Management (If User Owns Shares)
-The TOP/BOT WARNING (Code 15) on the short side is an exit-style instruction. Stage 1 BASING is a fragile state. The convexity of the recent run-up (from $63 to $153) means downside risk is asymmetric on a structural break.
+**Why this strike:** The $95 call has delta **0.534** and gamma **0.0215**; the $105 short call has delta **0.338** and caps risk near the supplied $101.88–$101.92831077998343 resistance area.  
+**Why this expiry:** September 18 provides **38 DTE**, more than the minimum three weeks for a possible pullback/reversal, while remaining well before the deterministic November 4 earnings date. This is a conditional structure, not a recommendation to enter today.
+
+- `Energy IV Rank Pct = 38.888888888888886`, below 50, but the supplied chain has meaningful bid/ask dislocations. Treat the displayed mids cautiously.
+- Do not use a naked long call at the current stale price.
+- Counter-trend/reversal options are deferred until Code 20 and a genuine Z0-type setup appear.
+
+### Income & Management (100+ share holders)
+The current state does not justify aggressive covered calls, but it also does not qualify as a Code 15 exit of long shares by itself. A conservative shareholder can hold while monitoring the zone and the **$89.87517120439436** structural stop.
+
+```text
+                         HOOD Spot: $94.37
+                                  │
+                                  ▼
+                 Resistance: $101.88 / $101.92831077998343
+                                  │
+             ┌────────────────────────────────────┐
+             │ Hold shares; no aggressive CC now  │
+             ├────────────────────────────────────┤
+             │ Reassess on zone loss or breakout  │
+             └────────────────────────────────────┘
+                                  │
+                                  ▼
+              Structural stop: $89.87517120439436
+```
 
 | State | Strategy |
 |---|---|
-| 🚀 ROCKET / healthy Stage 2 | N/A — not in Stage 2 |
-| Rev Zone 0/1 short side | **N/A — Rev Zone 3.0 (no active zone)** |
-| **TOP/BOT WARNING (Code 15)** + Stage 1 BASING | **DEFENSIVE CC** — Deep OTM cushion above KEY RES 101.88 |
-| 🛑 Breakdown below Hull HMA | **EXIT SHARES** — do not sell CC into a collapse |
-
-**Action:** If the user owns shares, **sell a defensive covered call at or above KEY RES ($101.88)** to harvest premium while capping upside. Suggested strike: **September 18 $103 call** (mid $3.44, 31 DTE, delta 0.319) — above the Long Target, captures ~3.7% premium while reducing exposure to a potential breakdown. If the stock breaks below the Hull HMA ($89.82), buy back the call and exit shares.
+| Current WATCH / Stage 1 | HOLD cautiously; no aggressive CC |
+| Rev Zone 0/1 short side | Not active |
+| Rev Zone 2 / chop | Not active; both scores are 3.0 |
+| 🛑 Breakdown | Exit shares if the structural thesis is invalidated |
+| 🛑 TOXIC, extended | Not present |
 
 ### If I'm Wrong
-**Alternative bullish view:** The Golden Cross fires, the HMA150 rolls to Stage 2 ADVANCING, the UK launch surprises to the upside, and the stock breaks above the MA20/MA50 cluster ($95.65) with rising volume. In that case, the trade to enter would be a close above $95.65 with RVOL > 1.0, targeting $101.88 (Long Target) with a stop at $89.88. **Until that setup materializes, the trade is not constructible.**
-
-**Exit plan before max loss:** If the price breaks below the Hull HMA ($89.82) on a daily close, the basing thesis is invalidated — close any long exposure and let the short zone set up at $97.23–$98.60 for a proper short entry.
+**Alternative view:** The UK launch may quickly increase crypto activity, user engagement, and transaction revenue, causing HOOD to reclaim the short-term averages and move toward **$101.88**. Exit the no-trade stance only after price returns to the zone and the daily state confirms an actionable setup; do not chase the current **$94.37** live quote.
 
 ## CRITICAL EVENTS
 | Event | Date | Impact | Plan |
 |---|---|---|---|
-| **FOMC Rate Decision** | Late July 2026 | HIGH | Avoid holding through the print; 30% probability of a hike per dot plot |
-| **UK Crypto Launch (live)** | This week | MEDIUM | Already priced; watch for volume surge / revenue disclosures |
-| **CPI (June)** | Mid-Aug 2026 | HIGH | Sticky inflation (>4%) = hawkish constraint on multiples |
-| **HOOD Q3 Earnings** | ~Nov 4, 2026 (85d) | EXTREME | Clean test of one-off EPS; close any directional positions before |
-| **MA20/MA50 Breakout** | Pending | MEDIUM | Stage 2 confirmation trigger — revisit if it fires with RVOL > 1 |
+| Earnings | November 4, 2026 | High | 85 days away; avoid holding an unhedged options position into earnings |
+| UK crypto ecosystem expansion | August 2026, exact event date not independently supplied | Medium/High | Track user adoption, asset availability, and monetization rather than headline launch claims |
+| CPI / inflation data | Current release date/result not verified by live sources in this session | High | Do not rely on the stale dossier's specific CPI assumptions |
+| FOMC | Next exact meeting date not verified by live search in this session | High | Treat rate-policy uncertainty as a risk to HOOD's 2.321 beta |
 
 ## BOTTOM LINE
-The Golden Cross is real, the UK launch is real, and the analyst targets are real — but the engine has not yet absorbed these into Stage 2, and the structural read is Stage 1 BASING (measured −0.34% SIG negative). `Action Long Code = 8` is the baseline "no entry" state, and `Action Short Code = 15` is an exit instruction, not a short trigger. Buy Score 52.87 is below the meaningful threshold, Sell Score 60.21 dominates, DMI is bearish, and RVOL is 19% of average. **The trade is not constructible from this state.** Patience is the position — wait for Stage 2 confirmation (close above $95.65 with volume) before sizing. If shares are already owned, harvest premium via a defensive CC above KEY RES.
+HOOD has a real catalyst, but the current bar is not a trade: Code 8 WATCH, price above the zone, RVOL 0.6001808822349658, Stage 1 age 0, and a bearish reversal mask. The live quote is also accompanied by a suspect **$88.2 / $98.0** bid/ask spread, so the last price is usable but the displayed spread should not be interpreted as normal liquidity. The one thing that must go right before taking risk is a return to the structural zone followed by a confirmed state change with volume; until then, the correct portfolio action is **SKIP**.
