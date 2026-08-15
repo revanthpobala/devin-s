@@ -111,6 +111,13 @@ class ArtifactCache:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, default=str)
             logger.debug(f"[{ticker}] Cached artifact '{artifact_type}' -> {file_path}")
+
+            # Also mirror directly into data/raw/<date>/<ticker>/ for instant visibility
+            raw_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker.upper()
+            if raw_dir.exists():
+                raw_file = raw_dir / f"{ticker.upper()}_{artifact_type}.json"
+                with open(raw_file, "w", encoding="utf-8") as rf:
+                    json.dump(payload, rf, indent=2, default=str)
             return file_path
         except Exception as e:
             logger.error(f"[{ticker}] Failed to write artifact '{artifact_type}': {e}")

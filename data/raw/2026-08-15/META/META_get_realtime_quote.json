@@ -1,0 +1,8 @@
+{
+  "_ticker": "META",
+  "_date": "2026-08-15",
+  "_artifact_type": "get_realtime_quote",
+  "_cached_at": 1786827995.810114,
+  "_cached_at_iso": "2026-08-15T21:06:35Z",
+  "data": "REAL-TIME QUOTE for META (source: Alpaca):\n- Last: 589.76\n- Bid/Ask: 566.2 / 0.0\n- Day Range: 589.34 - 601.78\n- Previous Close: 594.85\n- 52-Week Range: 520.26 - 796.25\n- Volume: 372187"
+}

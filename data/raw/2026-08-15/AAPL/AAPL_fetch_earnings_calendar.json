@@ -1,0 +1,8 @@
+{
+  "_ticker": "AAPL",
+  "_date": "2026-08-15",
+  "_artifact_type": "fetch_earnings_calendar",
+  "_cached_at": 1786831064.5957706,
+  "_cached_at_iso": "2026-08-15T21:57:44Z",
+  "data": "--- DETERMINISTIC EARNINGS DATE (yfinance, ground truth) ---\nNext earnings in 75 day(s) (~2026-10-29).\nTrust this over anything found via search/grounding for this ticker's earnings date.\n"
+}

@@ -1,0 +1,8 @@
+{
+  "_ticker": "AAPL",
+  "_date": "2026-08-15",
+  "_artifact_type": "get_realtime_quote",
+  "_cached_at": 1786830247.7497756,
+  "_cached_at_iso": "2026-08-15T21:44:07Z",
+  "data": "REAL-TIME QUOTE for AAPL (source: Alpaca):\n- Last: 305.94\n- Bid/Ask: 290.32 / 0.0\n- Day Range: 304.33 - 307.47\n- Previous Close: 305.305\n- 52-Week Range: 201.5 - 344.57\n- Volume: 813147"
+}

@@ -114,17 +114,17 @@ Action Long Code 8 is a baseline staging state carrying zero measured directiona
 ### Plan B: Defined-Risk Options Structure (Derivatives Strategy)
 *   **The Play:** Sep 18, 2026 $340C / $350C Call Credit Spread (sell 1 $340 Call, buy 1 $350 Call)
 *   **Cost / Credit:** Sell $340C at ~$0.88 (bid $0.84, ask $0.91), buy $350C at ~$0.43 (bid $0.39, ask $0.47). Net credit ≈ $0.45 per contract ($45 per spread).
-*   **Max Profit & Max Loss:** Max Profit $45 (if AAPL ≤ $340 at expiry) | Max Loss $555 (if AAPL ≥ $350 at expiry) | Reward/Risk: 0.08:1
-*   **Breakeven Price:** $339.55 at expiration
+*   **Max Profit & Max Loss:** Max Profit $45 (if AAPL ≤ $340 at expiry) | Max Loss $955 (if AAPL ≥ $350 at expiry; $1,000 width − $45 credit) | Reward/Risk: 0.05:1
+*   **Breakeven Price:** $340.45 at expiration ($340.00 short strike + $0.45 credit)
 *   **Why this Strike & Expiry:** $340 is the major Call Wall (48,236 contracts) and is beyond 1.25× ExpMove ($343.31 is the 1.25× strike, but $340 is the nearest structural Call Wall below it — the level ladder takes precedence when ExpMove is inflated). $350 is the 1.5× ExpMove strike ($350.79). 34 DTE clears the Sep 4 NFP and Sep 11 CPI but expires before the Sep 17 FOMC. IV Rank 91.27% means premium is rich. P(UP touch) at 1.5× ExpMove with IV Rank >80 is 15.6% (bible §17.1).
-*   **Touch Probability:** 15.6% (P(price touches $350 within 21 bars) at IV Rank >80, 1.5× ExpMove). For the $340 strike (1.25× ExpMove), P(UP touch) is 22.8%.
+*   **Touch Probability:** 15.6% (P(price touches $350 within 21 bars) at IV Rank >80, 1.5× ExpMove). For the $340 strike (near 1.25× ExpMove), P(UP touch) sits monotonically between 32.7% (at 1.0×) and 15.6% (at 1.5×), approximately ~24.1%.
 *   **Strategy Finder Selection:** The TradingView Strategy Finder returned a Sep 18, 2026 Bull Call Spread 320C/325C (R:R 3.22, Breakeven $321.07) for a +5% to +10% move scenario. However, given the Stage 4 distribution and IV Rank 91.27%, the CREDIT structure is more appropriate. The 340C/350C credit spread is the geometry-validated structure for the current state.
 
 **Plan B-2: Multi-Quarter / LEAPS (If Long-Term Compounding Justified)**
 *   **The Play:** Dec 18, 2026 $280C / $320C Bull Call Spread (Deep ITM LEAPS)
 *   **Cost / Credit:** Buy $280C at ~$37.55 (bid $36.44, ask $38.66), sell $320C at ~$13.93 (bid $13.88, ask $13.97). Net debit ≈ $23.62 per spread ($2,362 max risk).
-*   **Max Profit & Max Loss:** Max Profit $400 (if AAPL ≥ $320 at expiry) | Max Loss $2,362 (if AAPL ≤ $280 at expiry) | Reward/Risk: 0.17:1
-*   **Breakeven Price:** $303.62 at expiration
+*   **Max Profit & Max Loss:** Max Profit $1,638 (if AAPL ≥ $320 at expiry; $4,000 width − $2,362 debit) | Max Loss $2,362 (if AAPL ≤ $280 at expiry) | Reward/Risk: 0.69:1
+*   **Breakeven Price:** $303.62 at expiration ($280.00 long strike + $23.62 debit)
 *   **Why this Strike & Expiry:** 125 DTE clears the Oct 29 earnings and the Sep 4/11/17 macro events. $280 is deep ITM (Delta 0.753) — the LEAPS behaves like a synthetic stock position with 25% less capital at risk. $320 is the major Call Wall and the analyst consensus target area. This structure captures the multi-quarter fundamental re-rating (Services growth, AI monetization) without rapid theta decay.
 *   **Touch Probability:** N/A (LEAPS — the question is whether AAPL reaches $320 within 125 days, which is the analyst consensus target area).
 
