@@ -238,7 +238,21 @@ def execute_tool_call(tool_call, date_str: str = None):
         logger.error(f"Failed to parse arguments for tool {function_name}: {e}")
         return f"Error: Invalid JSON arguments provided for tool '{function_name}': {str(e)}. Please correct your JSON and try again."
 
-    ticker = (args.get("ticker") or args.get("symbol") or "GLOBAL").upper()
+    from src.clients import options_client
+    active_ticker = options_client._ACTIVE_TICKER
+    req_ticker = (args.get("ticker") or args.get("symbol") or active_ticker or "GLOBAL").upper()
+
+    if active_ticker and req_ticker != active_ticker and function_name != "search_web":
+        logger.warning(
+            f"Cross-contamination guardrail: LLM attempted tool '{function_name}' for ticker '{req_ticker}' "
+            f"while researching '{active_ticker}'. Overriding to '{active_ticker}'."
+        )
+        req_ticker = active_ticker
+        args["ticker"] = active_ticker
+        if "symbol" in args:
+            args["symbol"] = active_ticker
+
+    ticker = req_ticker
 
     # Check TTL Artifact Cache first
     cache_key = function_name
@@ -788,7 +802,12 @@ def query_local_llm(
                         cont_messages.append({"role": "assistant", "content": full_content})
                         cont_messages.append({
                             "role": "user",
-                            "content": "Your response was cut off due to the model output token limit. Please CONTINUE your analysis from the exact sentence/character where you stopped. Do NOT repeat headings or sections you already wrote."
+                            "content": (
+                                "Your response was cut off due to the model output token limit. "
+                                "Please CONTINUE your analysis from the exact character/word where you stopped. "
+                                "CRITICAL: Maintain strict mathematical continuity for all options spreads and strike calculations "
+                                "(e.g., Max Profit + Max Loss == Spread Width * 100). Do NOT repeat headings or sections you already wrote."
+                            )
                         })
                     else:
                         cont_messages.append({

@@ -1334,7 +1334,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
                 # Update Google Sheets with the Deep Research Verdict
                 tracker = SheetsTracker()
-                tracker.update_deep_research(date_str, ticker, payload_dict)
+                sheet_updated = tracker.update_deep_research(date_str, ticker, payload_dict)
 
                 # Save identical copy to reports folder
                 reports_dir = config.BASE_DIR / "reports" / date_str
@@ -1343,9 +1343,14 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 with open(digest_path, "w", encoding="utf-8") as f:
                     f.write(response)
 
-                logger.info(
-                    f"[{ticker}] Deep Research completed, Sheet updated, and Summary generated successfully!"
-                )
+                if sheet_updated:
+                    logger.info(
+                        f"[{ticker}] Deep Research completed, Google Sheet updated, and Summary generated successfully!"
+                    )
+                else:
+                    logger.info(
+                        f"[{ticker}] Deep Research completed and Summary generated successfully (Sheet update skipped: ticker not found in today's sheet)."
+                    )
             else:
                 logger.error(f"[{ticker}] LLM returned empty response.")
         except Exception as e:

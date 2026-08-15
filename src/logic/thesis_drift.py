@@ -81,8 +81,13 @@ class ThesisDriftChecker:
         if "</think>" in clean_raw:
             clean_raw = clean_raw.split("</think>")[-1].strip()
         if "```" in clean_raw:
-            lines = [line for line in clean_raw.splitlines() if not line.strip().startswith("```")]
-            clean_raw = "\n".join(lines).strip()
+            clean_raw = re.sub(r"^```(?:json)?", "", clean_raw, flags=re.MULTILINE)
+            clean_raw = re.sub(r"```$", "", clean_raw, flags=re.MULTILINE).strip()
+
+        # Extract JSON object with regex if surrounded by text
+        m = re.search(r"\{.*\}", clean_raw, re.DOTALL)
+        if m:
+            clean_raw = m.group(0)
 
         try:
             result = json.loads(clean_raw)
@@ -90,7 +95,7 @@ class ThesisDriftChecker:
                 result["prior_date"] = prior_date
                 return result
         except Exception as e:
-            logger.warning(f"[{ticker}] drift check JSON parse failed: {e}")
+            logger.debug(f"[{ticker}] drift check JSON parse failed: {e}")
             return None
         return None
 
