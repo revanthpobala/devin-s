@@ -861,8 +861,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
                         extra_short_st = None
                         if "JADE_LIZARD" in stype or "JADE" in stype:
-                            puts = [float(x) for x in re.findall(r"\b(\d+(?:\d+)?)\s*[Pp]\b", formula)]
-                            calls = [float(x) for x in re.findall(r"\b(\d+(?:\d+)?)\s*[Cc]\b", formula)]
+                            puts = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[Pp]\b", formula)]
+                            calls = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[Cc]\b", formula)]
                             if len(puts) >= 1 and len(calls) >= 2:
                                 extra_short_st = puts[0]
                                 short_st = min(calls)
