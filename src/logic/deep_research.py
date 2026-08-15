@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Optional
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -846,15 +847,27 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 strat_data = json.loads(tv_strat_path.read_text(encoding="utf-8"))
                 if strat_data:
                     from src.logic.strike_validator import validate_strike_geometry
-                    dw_spot = float(dw_data.get("close") or 0.0) if isinstance(dw_data, dict) else 0.0
-                    dw_exp_move = float(dw_data.get("Exp Move Pct 21b") or dw_data.get("exp_move_pct") or 0.0) if isinstance(dw_data, dict) else None
+                    dw_spot = float(dw_dict.get("close") or 0.0) if isinstance(dw_dict, dict) else 0.0
+                    dw_exp_move = float(dw_dict.get("Exp Move Pct 21b") or dw_dict.get("exp_move_pct") or 0.0) if isinstance(dw_dict, dict) else None
 
                     valid_strats = []
+                    rejected_count = 0
                     for s in strat_data:
                         formula = s.get("formula", "")
+                        stype = (s.get("strategy_type", "") or "").upper().replace(" ", "_")
                         strikes = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[CPcp]\b", formula)]
-                        long_st = strikes[0] if len(strikes) > 0 else None
-                        short_st = strikes[1] if len(strikes) > 1 else None
+
+                        # For credit spreads (Bear Call, Call Credit, Bull Put, Put Credit),
+                        # the first strike in the formula is the SHORT leg and the second is the LONG wing.
+                        # For debit spreads (Bull Call, Call Debit, Bear Put, Put Debit),
+                        # the first strike is the LONG leg and the second is the SHORT wing.
+                        is_credit = any(tag in stype for tag in ("BEAR_CALL", "CALL_CREDIT", "BULL_PUT", "PUT_CREDIT"))
+                        if is_credit and len(strikes) >= 2:
+                            short_st = strikes[0]
+                            long_st = strikes[1]
+                        else:
+                            long_st = strikes[0] if len(strikes) > 0 else None
+                            short_st = strikes[1] if len(strikes) > 1 else None
 
                         is_valid, defects = validate_strike_geometry(
                             strategy_type=s.get("strategy_type", ""),
@@ -868,6 +881,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                         if is_valid:
                             valid_strats.append(s)
                         else:
+                            rejected_count += 1
                             logger.info(f"[{ticker}] Strategy Filter rejected '{formula}': {', '.join(defects)}")
 
                     if valid_strats:
@@ -883,6 +897,15 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                                 f"{s.get('reward_risk')} | {s.get('breakeven')} |"
                             )
                         tv_strat_block = "\n".join(lines)
+                    elif rejected_count > 0:
+                        tv_strat_block = (
+                            f"--- TRADINGVIEW STRATEGY FINDER ({ticker}) ---\n"
+                            f"The Strategy Finder returned {len(strat_data)} pre-computed spreads, "
+                            f"but ALL {rejected_count} were rejected by the deterministic strike geometry validator "
+                            f"(ITM short legs, naked-long disguises, or accounting mismatches). "
+                            f"Do NOT invent a spread. Use the live `fetch_options_chain` and `scrape_tradingview_options_finder` tools "
+                            f"to find a valid structure, or recommend SKIP if no clean geometry exists."
+                        )
             except Exception as e:
                 logger.warning(f"[{ticker}] Error loading tv_strategies: {e}")
 
@@ -1080,7 +1103,6 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}
-        {institutional_block}
 
         {debate_block}
 
