@@ -747,14 +747,14 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 | 38 | Long RR At Market | ratio | **(Long Target − close) / (close − Long Stop Loss)** — the ratio you get buying at THIS price. **Prefer this over `RR To Target` for any "should I buy now" question.** The zone ratio overstates it on 53.7% of bars, median **+2.11 R**. `0 = invalid` |
 | 39 | Long Target T1 Waypoint | price/∅ | First wall above entry |
 | 40 | Short Target T1 Waypoint | price/∅ | First wall below entry |
-| 41 | Zone RR Flags Pack | bitmask | Four booleans packed to free plot slots: **1 Long In Zone · 2 Short In Zone · 4 Long RR Valid · 8 Short RR Valid.** Replaces the four standalone columns that older scrapes carry |
-| 42 | Signal Pack | bitmask | **1 strongBuySignalFinal · 2 strongSellSignalFinal · 4 NOT fadeZoneLong · 8 isTopping · 16 isBottoming.** ⚠️ **Bit 2 is INVERTED** — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate **IS** active |
+| 41 | Zone RR Flags Pack | bitmask | Four booleans packed: **1 Long In Zone · 2 Short In Zone · 4 Long RR Valid · 8 Short RR Valid.** (Pre-decoded for the agent in prompt sections 1b / 2d-i — do not hand-decode) |
+| 42 | Signal Pack | bitmask | **1 strongBuySignalFinal · 2 strongSellSignalFinal · 4 NOT fadeZoneLong · 8 isTopping · 16 isBottoming.** ⚠️ **Bit 2 is INVERTED** — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate **IS** active. (Pre-decoded in prompt section 2d-i) |
 | 43 | Action Long Code | 0–21 | Row 8 left cell (§3.1) |
 | 44 | Action Short Code | 0–21 | Row 8 right cell (§3.1) |
 | 45 | MTF Long Aligned 0 To 3 | 0–3 | Monthly/Weekly/Daily uptrend count |
-| 46 | Bear Warning Mask | bitmask | Bear warnings in last 30 bars (§8.3) |
-| 47 | Reversal Pattern Mask | bitmask | Reversal patterns in last 30 bars (§8.3) |
-| 48 | Weak Level Mask | bitmask | Weak-level events in last 30 bars (§8.3) |
+| 46 | Bear Warning Mask | bitmask | Bear warnings in last 30 bars (§8.3) (Pre-decoded in section 1b) |
+| 47 | Reversal Pattern Mask | bitmask | Reversal patterns in last 30 bars (§8.3) (Pre-decoded in section 1b) |
+| 48 | Weak Level Mask | bitmask | Weak-level events in last 30 bars (§8.3) (Pre-decoded in section 1b) |
 | 49 | Bear Warning Age | 0–30/∅ | Bars since freshest bear warning |
 | 50 | Reversal Pattern Age | 0–30/∅ | Bars since freshest reversal pattern |
 | 51 | Weak Level Age | 0–30/∅ | Bars since freshest weak-level event |
@@ -769,6 +769,17 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 | 60 | Darvas Box Top | price/∅ | Pivot level — the stalk trigger. **Blank when no box exists; read as null, not 0** |
 | 61 | Buy Category Pack | bitmask | Five 0-15 sub-scores base 16: `trend + momentum×16 + volume×256 + volatility×4096 + divergence×65536`. Decode `v%16`, `(v//16)%16`, `(v//256)%16`, `(v//4096)%16`, `v//65536` |
 | 62 | Sell Category Pack | bitmask | Same packing as Buy Category Pack, sell-side sub-scores |
+
+### 8.4 Canonical Triage Reasons Reference (`data_window_filter.py`)
+To prevent models from hallucinating nonexistent exclusion names (e.g. `stage_5_not_actionable`), the deterministic engine evaluates strictly against the following canonical enumeration:
+- **`reversal_buy_lane`**: Code 20 Reversal in-zone with valid R:R (`triage = PASS`).
+- **`rr_at_market_lane` / `rr_at_market_lane_strong`**: At-market R:R $\ge 2.0$ / $\ge 5.0$ in-zone, fade gate OFF (`triage = PASS`).
+- **`structure_only_no_fresh_long`**: Fade gate active or extension reached; fresh long prohibited; context evaluated for options structure (`triage = WATCH`).
+- **`constructible_watch`**: Staging setup or in-zone with open trigger gap (`triage = WATCH`).
+- **`warmup_stage_0`**: Early stage 0 warmup without confirmed baseline (`triage = CUT`).
+- **`chasing_without_target`**: Price above zone without valid waypoint target (`triage = CUT`).
+- **`toxic_geometry`**: Inverted target/stop or stop distance $>2\times$ ATR (`triage = CUT`).
+- **`no_setup`**: No actionable signal or R:R criteria met (`triage = WATCH`).
 
 
 > **Field numbering vs CSV column position.** The **62** fields above occupy CSV columns **6–67**; the 17
@@ -1827,6 +1838,7 @@ structures; it is not a recommendation and nothing here has been measured on **P
 | `⚖️ R:R ≥5@mkt` (teal) | strongest tier (+0.252R, win 23%) | long, sized for a 23% hit rate; leave upside uncapped | any short-call structure |
 | **`Ext Z > 2` / `🚫 DO NOT CHASE`** | extension, −0.038R for buying, and P(UP touch) 8.8% at 1.5×EM | **covered call / call credit spread above 1.25-1.5×EM**; short strangle if IV rank also high | fresh long entry |
 | **`IV rank > 80`** (Row 9) | premium rich; P(NEITHER) 71.8% at 1.5×EM | **any premium sale, strike scaled to EM** | debit structures — you are buying the expensive side |
+| **`IV rank > 80` + chased/missed / R:R < 2.0** | rich premium on dead directional geometry | **call credit spread / covered call pinned to 1.25×EM & call wall** | directional longs / naked calls |
 | `IV rank < 20` | premium cheap; P(NEITHER) only 59.9% | long calls / debit spreads / LEAPs | selling premium for thin credit |
 | `Ext Z < −1.5` washed out + `⚖️ REVERSAL` | capitulation, the one positive counter-trend state | long shares / cash-secured put at support | covered calls (you are selling the rebound) |
 | short column levels (zone / stop / target) | real resistance cluster, **no** directional edge | strike selection for calls, spread short legs | shorting shares or buying puts on it |

@@ -773,6 +773,9 @@ def run_data_window_filter(
     elif ext_z_self <= -1.5 or (W["rev"] or 0.0) >= 10:
         # Washed out: put side, and P(DN touch) < P(UP touch) at every distance (30.2% vs 38.2%).
         structure = "cash_secured_put_or_put_credit" if premium_rich else "put_side_watch"
+    elif premium_rich and (W["chased"] or W["missed"] or (rr_mkt is not None and rr_mkt < RR_MKT_PASS)):
+        # Rich premium on a dead-geometry / chased bar: call credit or covered call
+        structure = "call_credit_or_covered_call"
     elif iv_rank is not None and iv_rank <= 20:
         structure = "debit_long_premium_cheap"
 

@@ -1,0 +1,21 @@
+{
+  "ticker": "META",
+  "date": "2026-08-14",
+  "expected_triage": "WATCH",
+  "expected_reason": "no_setup",
+  "expected_posture": "STALK / SKIP",
+  "expected_literals": {
+    "close": 591.79,
+    "ma50": 601.59,
+    "ma200": 624.82,
+    "ext_pct": -5.29,
+    "signal_pack": 4,
+    "action_long": 8,
+    "rr_at_market": 1.57
+  },
+  "expected_decodes": {
+    "fade_gate": "OFF",
+    "stage": "STAGE 4",
+    "zone_position": "OUTSIDE ZONE"
+  }
+}

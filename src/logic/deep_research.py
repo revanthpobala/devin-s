@@ -138,14 +138,44 @@ def _format_engine_math_block(rec: dict) -> str:
         v = rec.get(key)
         return fmt.format(v) if isinstance(v, (int, float)) else "n/a"
 
+    triage_v = rec.get("triage") or "WATCH"
+    reason_v = rec.get("reason") or "no_setup"
+    fade_long = rec.get("fade_long")
+    if fade_long is None:
+        fade_str = "ABSENT / UNCOMPUTED"
+    elif fade_long == 1.0:
+        fade_str = "ACTIVE / DO NOT CHASE (bit 2 is 0 -> fade active)"
+    else:
+        fade_str = "OFF (bit 2 is 1 -> fade gate not active)"
+
+    in_zone = rec.get("in_zone")
+    missed = rec.get("missed")
+    if in_zone:
+        zone_pos = "IN THE ZONE"
+    elif missed:
+        zone_pos = "ABOVE THE LONG ZONE (chased)"
+    else:
+        zone_pos = "BELOW/OUTSIDE ZONE (pullback / forming)"
+
+    # Posture lock definition
+    if triage_v == "PASS":
+        permitted_primary = "DIRECTIONAL LONG OK (meets PASS criteria)"
+    elif triage_v == "WATCH":
+        permitted_primary = "STALK / CONDITIONAL TRIGGER / NON-DIRECTIONAL STRUCTURE ONLY (no 'enter now' primary)"
+    else:
+        permitted_primary = "SKIP (structure note only if structure is populated)"
+
     lines = [
-        f"- Triage verdict: {rec.get('triage') or 'n/a'} ({rec.get('reason') or 'n/a'})",
+        f"- Triage verdict: {triage_v} ({reason_v})",
+        f"- Permitted Primary Posture: {permitted_primary}",
         f"- Chosen side / mode: {rec.get('chosen_side') or 'n/a'} / {rec.get('mode') or 'n/a'}",
-        f"- Win Prob: {f('win_prob')}   (Dir-Prob mapped through the EV gate, haircut 0.5)",
-        f"- Expected Value: {f('ev_r')} R   (= Win Prob x R:R - (1 - Win Prob))",
-        f"- R:R used: {f('rr')}   |  Rev score: {f('rev', '{:.1f}')}",
-        f"- In zone: {rec.get('in_zone')}   |  Missed (above/below zone): {rec.get('missed')}",
-        "(deterministic — these are computed, not model output. Do NOT recompute them.)",
+        f"- Fade Gate Status: {fade_str}",
+        f"- Price vs Zone: {zone_pos}  (in_zone={in_zone}, missed={missed})",
+        f"- Long R:R at Market: {f('rr_at_market')}  (2.0+ is the verified PASS lane threshold)",
+        f"- Expected Value: {f('ev_r')} R   |  Win Prob: {f('win_prob')}  |  R:R used: {f('rr')}",
+        f"- Structure read: {rec.get('structure') or 'none'}  |  Strikes: {rec.get('structure_strikes') or 'none'}",
+        f"- IV Rank: {f('iv_rank', '{:.1f}%')}  |  Expected Move 21b: {f('exp_move_pct', '{:.2f}%')}",
+        "(deterministic — these are computed by Python. Read them verbatim. Do NOT recompute.)",
     ]
 
     return "\n".join(lines)
@@ -530,7 +560,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         with open(example_path, "r", encoding="utf-8") as f:
             few_shot_example = f.read()
 
-    system_prompt = f"{gem_text}\n\n{response_text}"
+    # Move invariant prompt blocks into system_prompt for prefix caching across all tickers in the run
+    system_prompt = f"{gem_text}\n\n--- REVANTH BIBLE (Rules & Framework) ---\n{bible_text}\n\n--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}\n\n{response_text}"
 
     logger.info(f"Starting Agentic Deep Research Phase for {len(chart_files)} tickers...")
 
@@ -726,28 +757,49 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         from src.clients import options_client
 
         options_client.set_active_ticker(ticker)
-        # Pre-fetch the live quote rather than relying on the model to call the tool.
-        # The Data Window is the last CLOSED bar, so without this the thesis can be
-        # built on a stale anchor whenever the model skips get_realtime_quote — and
-        # whether it did is not auditable after the fact. The tool stays enabled for
-        # refresh; this just guarantees a deterministic price is always in the payload.
-        try:
-            live_quote_block = options_client.get_realtime_quote(ticker) or ""
-        except Exception as e:
-            logger.warning(f"[{ticker}] Live quote pre-fetch failed: {e}")
+        # Pre-fetch the live quote with disk snapshot caching
+        quote_path = tdir / f"{ticker}_quote.json"
+        if quote_path.exists():
+            try:
+                live_quote_block = json.loads(quote_path.read_text(encoding="utf-8")).get("quote", "")
+            except Exception:
+                live_quote_block = ""
+        else:
             live_quote_block = ""
+
+        if not live_quote_block:
+            try:
+                live_quote_block = options_client.get_realtime_quote(ticker) or ""
+                if live_quote_block:
+                    quote_path.write_text(json.dumps({"ticker": ticker, "quote": live_quote_block, "date": date_str}, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[{ticker}] Live quote pre-fetch failed: {e}")
+                live_quote_block = ""
+
         if not live_quote_block:
             live_quote_block = (
                 "(unavailable — say so explicitly and anchor on the Data Window bar close; "
                 "do NOT invent a live price)"
             )
 
-        # Pre-fetch GEX and options positioning
-        try:
-            gex_block = options_client.format_gex_block(ticker) or ""
-        except Exception as e:
-            logger.warning(f"[{ticker}] GEX block failed: {e}")
+        # Pre-fetch GEX and options positioning with disk snapshot caching
+        gex_path = tdir / f"{ticker}_gex.json"
+        if gex_path.exists():
+            try:
+                gex_block = json.loads(gex_path.read_text(encoding="utf-8")).get("gex", "")
+            except Exception:
+                gex_block = ""
+        else:
             gex_block = ""
+
+        if not gex_block:
+            try:
+                gex_block = options_client.format_gex_block(ticker) or ""
+                if gex_block:
+                    gex_path.write_text(json.dumps({"ticker": ticker, "gex": gex_block, "date": date_str}, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[{ticker}] GEX block failed: {e}")
+                gex_block = ""
 
         # Pre-load TradingView scraped strategies if available
         tv_strat_path = tdir / f"{ticker}_tv_strategies.json"
@@ -814,8 +866,20 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         {earnings_fact_block}
         """
 
-        bull_sys = "You are a ruthless, aggressive Bullish Analyst. Your job is to find the absolute strongest bull case for this stock based on the technicals, catalysts, and macros. Ignore all bearish signals. Output your bull case in a concise, punchy markdown format."
-        bear_sys = "You are a skeptical, aggressive Bearish Analyst. Your job is to find every reason this setup will fail. Focus on overhead supply, weak catalysts, macro headwinds, and overextension. Output your bear case in a concise, punchy markdown format."
+        bull_sys = (
+            "You are a rigorous, evidence-based Bullish Technical & Fundamental Analyst. "
+            "Your job is to identify valid positive drivers, catalyst timelines, and support levels for this ticker. "
+            "CRITICAL RULES: Every claim must cite an exact Data Window field name or verified news item. "
+            "Never fabricate moving average levels or invent technical indicators. Never contradict the pre-decoded Section 2d-1 engine math. "
+            "Output your bull case in a concise, punchy markdown format."
+        )
+        bear_sys = (
+            "You are a skeptical, disciplined Bearish Technical & Fundamental Analyst. "
+            "Your job is to identify risks, overhead supply resistance, catalyst timing risks, and valuation/extension headwinds. "
+            "CRITICAL RULES: Every claim must cite an exact Data Window field name or verified news item. "
+            "Never fabricate moving average levels or invent technical indicators. Never contradict the pre-decoded Section 2d-1 engine math. "
+            "Output your bear case in a concise, punchy markdown format."
+        )
 
         import concurrent.futures
 
@@ -823,13 +887,13 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             return query_local_llm(
                 system_prompt=sys_prompt,
                 user_prompt=u_prompt,
-                use_openrouter=not force_local,
+                use_openrouter=False,  # Unconditionally local to avoid burning remote budget on debate
                 use_tools=False,
                 disable_thinking=True,
                 max_tokens=tokens
             )
 
-        debate_cache_file = tdir / f"{ticker}_debate.json"
+        debate_cache_file = tdir / f"{ticker}_debate_v2.json"
         if debate_cache_file.exists():
             logger.info(f"[{ticker}] Found cached Multi-Agent Debate transcript at {debate_cache_file}. Resuming directly to Pass 2...")
             try:
@@ -869,7 +933,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 bear_rebuttal = f_bear_reb.result()
 
             try:
-                (tdir / f"{ticker}_debate.json").write_text(json.dumps({
+                (tdir / f"{ticker}_debate_v2.json").write_text(json.dumps({
                     "bull_case": bull_case,
                     "bear_case": bear_case,
                     "bull_rebuttal": bull_rebuttal,
@@ -880,7 +944,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         debate_block = (
             "--- 2f. LOCAL RESEARCHER DEBATE (MULTI-AGENT) ---\n"
-            "Local analysts conducted a ruthless debate on this ticker. Here is their full debate transcript:\n\n"
+            "Local analysts conducted a debate on this ticker citing Data Window ground truth:\n\n"
             "🟢 BULL CASE:\n"
             f"{bull_case}\n\n"
             "🔴 BEAR CASE:\n"
@@ -894,14 +958,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         use_remote = not force_local
         user_prompt = f"""
-        RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
-        VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
-        prior-session news is current.
-
         I am requesting a Deep Research Validation for the ticker: {ticker}.
-
-        --- 0. REVANTH BIBLE (Rules & Framework) ---
-        {bible_text}
 
         --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
         {data_window_str}
@@ -917,8 +974,6 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         - Bit 1024 IS OOPS_BULL (Bullish) — NOT Oops Bear
         - Bit 512 IS HIKKAKE_BEAR (Bearish)
         - Bit 2048 IS OOPS_BEAR (Bearish)
-        For Mask 1473 (= 1024 + 256 + 128 + 64 + 1), the exact decoded sequence is: OOPS_BULL (1024) + HIKKAKE_BULL (256) + TRAP_BEAR (128, Bullish) + TRAP_BULL (64, Bearish) + KEY_REV_BULL (1, Bullish) = 4 Bullish vs 1 Bearish signals.
-
 
         --- 2. NEWS RESEARCH DOSSIER (Pre-compiled by Local Pipeline) ---
         {news_dossier}
@@ -935,12 +990,6 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL (fetched live for this ticker) ---
         {av_block}
         {social_block}
-        {grounded_block}
-        
-        --- 2c-ii. MACRO GROUNDING (Google Search) ---
-        {macro_grounded_block}
-
-        {gex_block}
 
         --- 2d. ENGINE FLAGS (deterministic) ---
         {flags_block}
@@ -983,10 +1032,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             and the expected range.
         - CONVICTION and the risk/reward rationale.
         
-        CRITICAL: Emit your final Portfolio Manager Thesis EXACTLY as instructed in the STRICT EXAMPLE OF THE EXACT FORMAT below. You MUST draw the ASCII art explicitly.
-
-        --- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---
-        {few_shot_example}
+        CRITICAL: Emit your final Portfolio Manager Thesis EXACTLY as instructed in the system prompt format. You MUST draw the ASCII art explicitly.
         """
 
         use_remote = not force_local
@@ -1064,23 +1110,37 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 )
 
                 entry_match = re.search(
-                    r"\|\s*Entry\s*\|\s*\$([\d\.]+)", response_for_parse, re.IGNORECASE
+                    r"(?:\|\s*[*]*Entry[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*Entry[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                    response_for_parse, re.IGNORECASE
                 )
                 stop_match = re.search(
-                    r"\|\s*Stop\s*\|\s*\$([\d\.]+)", response_for_parse, re.IGNORECASE
+                    r"(?:\|\s*[*]*(?:Tactical\s+)?Stop(?:\s*Loss)?[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*(?:Tactical\s+)?Stop(?:\s*Loss)?[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                    response_for_parse, re.IGNORECASE
                 )
                 target_match = re.search(
-                    r"\|\s*Target\s*\|\s*\$([\d\.]+)", response_for_parse, re.IGNORECASE
+                    r"(?:\|\s*[*]*Target(?:\s*1(?:\s*\([^)]*\))?)?[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*Target(?:\s*1(?:\s*\([^)]*\))?)?[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                    response_for_parse, re.IGNORECASE
                 )
+
+                if not verdict_match:
+                    logger.error(f"[{ticker}] FORMAT DRIFT: Failed to parse '**Verdict:**' from report!")
+                if not conviction_match:
+                    logger.error(f"[{ticker}] FORMAT DRIFT: Failed to parse '**Conviction:**' from report!")
+                if not entry_match:
+                    logger.warning(f"[{ticker}] FORMAT DRIFT: Failed to parse Entry price from action plan.")
+
+                entry_val = (entry_match.group(1) or entry_match.group(2)) if entry_match else ""
+                stop_val = (stop_match.group(1) or stop_match.group(2)) if stop_match else ""
+                target_val = (target_match.group(1) or target_match.group(2)) if target_match else ""
 
                 payload_dict = {
                     "verdict": verdict_match.group(1).strip() if verdict_match else "N/A",
                     "conviction": conviction_match.group(1).strip() if conviction_match else "N/A",
                     "thesis": thesis_match.group(1).strip() if thesis_match else "",
                     "action_plan": {
-                        "entry": entry_match.group(1).strip() if entry_match else "",
-                        "stop": stop_match.group(1).strip() if stop_match else "",
-                        "target": target_match.group(1).strip() if target_match else "",
+                        "entry": entry_val,
+                        "stop": stop_val,
+                        "target": target_val,
                         "rationale": "See markdown for full rationale.",
                     },
                 }

@@ -4,12 +4,12 @@
 2. **Price: report the bar close AND the pre-fetched live quote (section 1a).** If the live price has moved past an initial level, re-derive the tactical plan from the live price.
 3. **Multi-Perspective Synthesis Over Mechanical Vetoes:**
    - Codes 1, 2, and 20 are mechanical indicator entries.
-   - Codes 8 and 10 are **Baseline Staging States**. You ARE authorized to take an **Anticipatory Base Swing (Plan A)** or **Options Spread (Plan B)** during Code 8/10 if supported by Pillar 2 (Support Defense / Low RVOL Absorption) + Pillar 3 (Catalyst).
+   - Codes 8 and 10 are **Baseline Staging States**. They carry zero measured directional edge at market. You may define an **Anticipatory / Conditional Stalk (Plan A)** or **Options Structure (Plan B)** during Code 8/10 only when supported by verified Support Defense + Catalyst, with conviction strictly capped at the deterministic `conviction_ceiling`. Never claim 'Low RVOL Absorption' as a measured edge.
    - Codes 11–18 forbid fresh direct entries due to exhaustion/parabolic danger.
 4. **Do not recompute what is already computed.** Win Prob, Expected Value, and Data Window fields are deterministic ground truths. Quote them literally.
 5. **Name the Pillars in your Calibration Disclosure:**
    - If taking an indicator-based entry (Code 20 or in-zone Code 1/2), cite its measured interval.
-   - If taking an **Anticipatory Base Swing (during Code 8/10)**, explicitly state that Pillar 2 (Floor Defense & Supply Absorption) + Pillar 3 (Catalyst) carry the trade with a tactical stop anchored below the local base.
+   - If staging an **Anticipatory Setup (during Code 8/10)**, explicitly disclose that the indicator carries zero measured edge at market, conviction is capped at the deterministic ceiling, and the trade relies on verified catalyst + base floor defense.
    - Always emit the complete **Multi-Regime Action Plan (Plan A, Plan B, Plan C, Plan D)**.
 6. **Emit the full OUTPUT FORMAT** from the system prompt, in order, with the headers verbatim.
 7. **DRAW THE ASCII ART.** You MUST explicitly draw the ASCII diagram in THE SETUP section showing Target, Resistance, Live Spot, Local Base Floor, and Local Stop. Do not skip it.

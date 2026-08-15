@@ -602,8 +602,11 @@ def query_local_llm(
         # will otherwise burn the token budget on chain-of-thought and return an
         # empty `content` with finish_reason='length'. Disable thinking for direct
         # summarization / extraction tasks. NVIDIA models ignore this extra_body.
-        if disable_thinking and provider == "local":
-            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+        if provider == "local":
+            extra_body = kwargs.setdefault("extra_body", {})
+            extra_body["cache_prompt"] = True
+            if disable_thinking:
+                extra_body["chat_template_kwargs"] = {"enable_thinking": False}
 
         # Only attach tool definitions when the caller explicitly wants tool-calling.
         # NVIDIA's free models change often; some don't support function calling and
