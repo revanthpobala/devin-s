@@ -33,6 +33,7 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
         f"{safe}_tv_strategies.json",
         f"{safe}_quote.json",
         f"{safe}_gex.json",
+        f"{safe}_deep_context.json",
     ):
         src = src_dir / fname
         if src.exists():

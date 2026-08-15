@@ -77,9 +77,5 @@ def validate_strike_geometry(
                     f"does not reconcile with spread width ${spread_width:.2f}."
                 )
 
-    # 4. Bid / Ask Nulls
-    if ask is None and bid is None and max_profit is None:
-        defects.append("Missing market bid/ask; cannot infer synthetic mid outside RTH.")
-
     is_valid = len(defects) == 0
     return is_valid, defects

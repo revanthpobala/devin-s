@@ -407,8 +407,11 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     try:
         with open(thesis_json_path, "w", encoding="utf-8") as f:
             json.dump(result_dict, f, indent=4)
+        triage_json_path = out_dir / f"{safe_ticker}_triage.json"
+        with open(triage_json_path, "w", encoding="utf-8") as f:
+            json.dump(triage, f, indent=4)
     except Exception as e:
-        logger.error(f"[Prefilter-{worker_id}] Failed to cache thesis JSON for {ticker}: {e}")
+        logger.error(f"[Prefilter-{worker_id}] Failed to cache thesis/triage JSON for {ticker}: {e}")
     _update_research_ledger(out_dir, result_dict)
     if not survivor.get("_row_index"):
         logger.warning(
@@ -1043,8 +1046,11 @@ Example Output:
     try:
         with open(thesis_json_path, "w", encoding="utf-8") as f:
             json.dump(result_dict, f, indent=4)
+        triage_json_path = out_dir / f"{safe_ticker}_triage.json"
+        with open(triage_json_path, "w", encoding="utf-8") as f:
+            json.dump(triage, f, indent=4)
     except Exception as e:
-        logger.error(f"[Analyzer-{worker_id}] Failed to cache thesis JSON for {ticker}: {e}")
+        logger.error(f"[Analyzer-{worker_id}] Failed to cache thesis/triage JSON for {ticker}: {e}")
 
     # Aggregate into a per-date ledger so there is one consolidated view of
     # every ticker's research + decision prior to the Sheets batch update.

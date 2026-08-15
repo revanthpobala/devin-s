@@ -6,10 +6,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
     try:
-        from ddgs import DDGS
+        from duckduckgo_search import DDGS
     except ImportError:
         DDGS = None
 from dotenv import load_dotenv

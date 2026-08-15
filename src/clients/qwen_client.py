@@ -5,12 +5,16 @@ import os
 from base64 import b64encode
 
 _DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_client_instance = None
 
 def _get_client():
-    return OpenAI(
-        api_key=os.getenv("DASHSCOPE_API_KEY") or "EMPTY",
-        base_url=_DASHSCOPE_BASE_URL,
-    )
+    global _client_instance
+    if _client_instance is None:
+        _client_instance = OpenAI(
+            api_key=os.getenv("DASHSCOPE_API_KEY") or "EMPTY",
+            base_url=_DASHSCOPE_BASE_URL,
+        )
+    return _client_instance
 
 
 def query_qwen(

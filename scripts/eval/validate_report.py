@@ -78,7 +78,26 @@ def validate_report(report_path: Path, datawindow_path: Path, output_json: Path)
     data_dir = datawindow_path.parent
 
     triage_p = data_dir / f"{ticker}_triage.json"
-    triage_data = json.loads(triage_p.read_text(encoding="utf-8")) if triage_p.exists() else {}
+    triage_data = {}
+    if triage_p.exists():
+        try:
+            triage_data = json.loads(triage_p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if not triage_data:
+        thesis_p = data_dir / f"{ticker}_thesis.json"
+        if thesis_p.exists():
+            try:
+                td = json.loads(thesis_p.read_text(encoding="utf-8"))
+                triage_data = td.get("triage", {})
+            except Exception:
+                pass
+    if not triage_data and dw_data:
+        try:
+            from src.logic.data_window_filter import run_data_window_filter
+            triage_data = run_data_window_filter(ticker, dw_data)
+        except Exception:
+            pass
 
     gex_p = data_dir / f"{ticker}_gex.json"
     gex_data = json.loads(gex_p.read_text(encoding="utf-8")) if gex_p.exists() else {}
@@ -89,8 +108,18 @@ def validate_report(report_path: Path, datawindow_path: Path, output_json: Path)
     news_p = data_dir / f"{ticker}_news_research.md"
     news_text = news_p.read_text(encoding="utf-8") if news_p.exists() else ""
 
+    deep_ctx_p = data_dir / f"{ticker}_deep_context.json"
+    deep_ctx_data = json.loads(deep_ctx_p.read_text(encoding="utf-8")) if deep_ctx_p.exists() else {}
+
+    # Load canonical measured bible numbers
+    base_dir = Path(__file__).resolve().parent.parent
+    bible_p = base_dir / "gems" / "revanth-bible.md"
+    bible_text = bible_p.read_text(encoding="utf-8") if bible_p.exists() else ""
+
     extracted = extract_numbers_from_text(report_text)
-    ground_truth_numbers = collect_ground_truth_numbers(dw_data, triage_data, gex_data, tv_strat_data, news_text)
+    ground_truth_numbers = collect_ground_truth_numbers(
+        dw_data, triage_data, gex_data, tv_strat_data, news_text, deep_ctx_data, bible_text
+    )
 
     # Check for known fabricated phrases
     fabricated_phrases = []

@@ -859,17 +859,17 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                         stype = (s.get("strategy_type", "") or "").upper().replace(" ", "_")
                         strikes = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[CPcp]\b", formula)]
 
-                        # For credit spreads (Bear Call, Call Credit, Bull Put, Put Credit),
-                        # the first strike in the formula is the SHORT leg and the second is the LONG wing.
-                        # For debit spreads (Bull Call, Call Debit, Bear Put, Put Debit),
-                        # the first strike is the LONG leg and the second is the SHORT wing.
-                        is_credit = any(tag in stype for tag in ("BEAR_CALL", "CALL_CREDIT", "BULL_PUT", "PUT_CREDIT"))
-                        if is_credit and len(strikes) >= 2:
-                            short_st = strikes[0]
-                            long_st = strikes[1]
+                        if len(strikes) < 2:
+                            long_st = strikes[0] if strikes else None
+                            short_st = None
                         else:
-                            long_st = strikes[0] if len(strikes) > 0 else None
-                            short_st = strikes[1] if len(strikes) > 1 else None
+                            lo, hi = min(strikes), max(strikes)
+                            is_put = bool(re.search(r"\d+\s*[Pp]\b", formula)) or "PUT" in stype
+                            is_credit = any(tag in stype for tag in ("BEAR_CALL", "CALL_CREDIT", "BULL_PUT", "PUT_CREDIT")) or "CREDIT" in stype
+                            if is_credit:
+                                short_st, long_st = (hi, lo) if is_put else (lo, hi)
+                            else:
+                                long_st, short_st = (hi, lo) if is_put else (lo, hi)
 
                         is_valid, defects = validate_strike_geometry(
                             strategy_type=s.get("strategy_type", ""),
@@ -912,6 +912,30 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 logger.warning(f"[{ticker}] Error loading tv_strategies: {e}")
 
         options_block = f"{gex_block}\n\n{tv_strat_block}".strip()
+
+        # Persist fetched blocks for validation and auditability
+        deep_context = {
+            "ticker": ticker,
+            "date": date_str,
+            "fresh_news": fresh_news,
+            "macro_news": macro_news,
+            "market_sentiment": market_sentiment_block,
+            "av_block": av_block,
+            "social_block": social_block,
+            "earnings_fact_block": earnings_fact_block,
+            "institutional_block": institutional_block,
+            "grounded_block": grounded_block,
+            "macro_grounded_block": macro_grounded_block,
+            "live_quote_block": live_quote_block,
+            "gex_block": gex_block,
+            "tv_strat_block": tv_strat_block,
+        }
+        try:
+            (tdir / f"{ticker}_deep_context.json").write_text(
+                json.dumps(deep_context, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.debug(f"[{ticker}] Failed to write deep_context.json: {e}")
 
         # ========================================================
         # MULTI-AGENT BULL VS BEAR DEBATE (Local LLM)
