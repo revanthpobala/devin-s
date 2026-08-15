@@ -246,9 +246,14 @@ def execute_tool_call(tool_call, date_str: str = None):
         query_slug = str(args.get("query", ""))[:30].replace(" ", "_").replace("/", "_")
         cache_key = f"{function_name}_{query_slug}"
     elif function_name == "scrape_tradingview_options_finder":
-        period_slug = args.get("prediction_period", "month").replace(" ", "_")
-        move_slug = args.get("expected_move", "5to10").replace("%", "").replace(" ", "").replace("+", "").replace("-", "down_")
+        period_slug = str(args.get("prediction_period", "month")).replace(" ", "_")
+        move_slug = str(args.get("expected_move", "5to10")).replace("%", "").replace(" ", "").replace("+", "").replace("-", "down_")
         cache_key = f"tv_options_{period_slug}_{move_slug}"
+    elif function_name == "fetch_options_chain":
+        direction_slug = str(args.get("direction", "CALL")).upper()
+        min_dte_slug = str(args.get("min_dte", 30))
+        max_dte_slug = str(args.get("max_dte", 120))
+        cache_key = f"options_chain_{direction_slug}_{min_dte_slug}_{max_dte_slug}"
 
     cached_val = artifact_cache.get(date_str, ticker, cache_key)
     if cached_val is not None:

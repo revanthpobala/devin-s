@@ -941,7 +941,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                             "| Expiry | Days | Strategy | Formula/Strikes | Max Profit | Max Loss / Risk Profile | R:R | Breakeven |",
                             "|---|---|---|---|---|---|---|---|",
                         ]
-                        for s in valid_strats[:6]:  # top 6 valid spreads
+                        for s in valid_strats[:12]:  # provide top 12 valid diverse spreads across bullish/bearish/income
                             raw_loss = s.get("max_loss")
                             try:
                                 loss_val = float(raw_loss or 0)

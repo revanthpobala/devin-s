@@ -1,0 +1,5 @@
+{
+  "ticker": "META",
+  "gex": "--- OPTIONS POSITIONING & GAMMA WALLS (GEX) FOR META ---\n\u2022 Put/Call Open Interest Ratio: 0.41\n\u2022 Major Put Walls (Dealer Support / Floor Pins):\n  - Strike $550.00: 8,851 open contracts\n  - Strike $500.00: 8,498 open contracts\n  - Strike $580.00: 7,405 open contracts\n\u2022 Major Call Walls (Dealer Resistance / Ceiling Pins):\n  - Strike $700.00: 23,784 open contracts\n  - Strike $720.00: 22,604 open contracts\n  - Strike $750.00: 18,977 open contracts\n\u2022 Dealer Expected Pinning Corridor: $550.0 (Put Floor) to $700.0 (Call Ceiling)",
+  "date": "2026-08-15"
+}

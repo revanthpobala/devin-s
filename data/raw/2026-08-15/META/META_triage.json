@@ -1,0 +1,177 @@
+{
+  "ticker": "META",
+  "bar_date": "2026-08-14",
+  "chosen_side": "short",
+  "mode": "TREND_SHORT",
+  "triage": "WATCH",
+  "reason": "constructible_watch",
+  "conviction": 86.96279907124402,
+  "conviction_str": "HIGH",
+  "rev": 3.5,
+  "rr": 0.8990634069111932,
+  "ev_r": 0.3879649378090302,
+  "win_prob": 73.08681388719614,
+  "in_zone": false,
+  "missed": true,
+  "dir_prob": 26.913186112803864,
+  "regime": 4.0,
+  "flags": [
+    "short_levels_only",
+    "churn",
+    "chased",
+    "rich_high_volatility"
+  ],
+  "long_plan": {
+    "zone": [
+      573.5552774318537,
+      578.9612472566243
+    ],
+    "stop": 562.7433377823124,
+    "target": 612.43
+  },
+  "short_plan": {
+    "zone": [
+      601.0,
+      607.5265351044201
+    ],
+    "stop": 618.3384747539613,
+    "target": 564.23705483
+  },
+  "recency": {
+    "warnings_fresh": [
+      "TOP"
+    ],
+    "warnings_age": 21.0,
+    "reversals_fresh": [
+      "KEY_REV_BULL",
+      "SWEEP_BULL",
+      "SWEEP_BEAR",
+      "TRAP_BULL",
+      "OOPS_BULL"
+    ],
+    "reversals_age": 14.0,
+    "weak_levels": [],
+    "weak_levels_age": null
+  },
+  "action_long": "WATCH",
+  "action_short": "WATCH",
+  "action": "WATCH",
+  "action_actionable": false,
+  "mtf_long": 0.0,
+  "mtf_short": null,
+  "realvol_10d": null,
+  "ret_10d": null,
+  "ext_pct": -5.594299829071299,
+  "tiebreak": 0.5622199769259537,
+  "rank_model_score": null,
+  "bad_data": false,
+  "no_fresh_long": false,
+  "fade_long": 0.0,
+  "long_bot": 573.5552774318537,
+  "long_top": 578.9612472566243,
+  "structure": "debit_long_premium_cheap",
+  "structure_strikes": {
+    "call_1_25x": 683.65,
+    "call_1_50x": 702.41,
+    "put_1_25x": 496.05,
+    "put_1_50x": 477.29
+  },
+  "iv_rank": 7.142857142857143,
+  "exp_move_pct": 12.72139577207241,
+  "rr_at_market": 0.8330055474430957,
+  "triggers": {
+    "hard_exclusions": [],
+    "blocked_now": false,
+    "edge_note": "Edge is in code20_reversal (open_gates=3)",
+    "code20_reversal": {
+      "state": "code20_reversal",
+      "all_passed": false,
+      "open_gates": [
+        {
+          "name": "rev_zone_l_gte_7",
+          "field": "rev_l",
+          "comparator": ">=",
+          "ref_level": 7.0,
+          "current_value": 0.0,
+          "gap": 7.0,
+          "change_type": "catalyst_dependent",
+          "required": true
+        },
+        {
+          "name": "buy_score_lt_30",
+          "field": "buy",
+          "comparator": "<",
+          "ref_level": 30.0,
+          "current_value": 60.62909173457096,
+          "gap": 30.629091734570963,
+          "change_type": "price_mechanical",
+          "required": true
+        },
+        {
+          "name": "rvol_above_1_5",
+          "field": "rvol",
+          "comparator": ">",
+          "ref_level": 1.5,
+          "current_value": 0.5550548765714761,
+          "gap": 0.9449451234285239,
+          "change_type": "catalyst_dependent",
+          "required": true
+        }
+      ],
+      "passed_gates": [
+        "close_below_ma200"
+      ],
+      "open_count": 3,
+      "total_count": 4,
+      "lane_edge": "+0.85% SIG - only measured long edge (bible 16.1); needs close<MA200 + RVOL>1.5 + Buy<30; ~60d hold"
+    },
+    "stage2_prime": {
+      "state": "stage2_prime",
+      "all_passed": false,
+      "open_gates": [
+        {
+          "name": "in_zone",
+          "field": "long_in_zone",
+          "comparator": "==",
+          "ref_level": 1.0,
+          "current_value": 0.0,
+          "gap": 1.0,
+          "change_type": "price_mechanical",
+          "required": true
+        },
+        {
+          "name": "stage_2",
+          "field": "stage",
+          "comparator": "==",
+          "ref_level": 2.0,
+          "current_value": 4.0,
+          "gap": 2.0,
+          "change_type": "catalyst_dependent",
+          "required": true
+        },
+        {
+          "name": "triple_screen_or_buy_gte_98",
+          "field": "buy",
+          "comparator": ">=",
+          "ref_level": 98.0,
+          "current_value": 60.62909173457096,
+          "gap": 37.37090826542904,
+          "change_type": "catalyst_dependent",
+          "required": false
+        }
+      ],
+      "passed_gates": [
+        "rr_valid",
+        "ext_below_25",
+        "ext_above_neg60",
+        "ext_z_self_lt_1_5"
+      ],
+      "open_count": 3,
+      "total_count": 7,
+      "lane_edge": "flat - no measured edge (bible 16.9); pullback/breakout lanes are exclusion, not alpha"
+    },
+    "nearest_actionable_state": "code20_reversal",
+    "open_gates_count": 3,
+    "conviction_ceiling": 6
+  }
+}

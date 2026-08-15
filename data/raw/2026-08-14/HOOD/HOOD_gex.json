@@ -1,0 +1,5 @@
+{
+  "ticker": "HOOD",
+  "gex": "--- OPTIONS POSITIONING & GAMMA WALLS (GEX) FOR HOOD ---\n\u2022 Put/Call Open Interest Ratio: 0.83\n\u2022 Major Put Walls (Dealer Support / Floor Pins):\n  - Strike $75.00: 16,897 open contracts\n  - Strike $60.00: 13,492 open contracts\n  - Strike $70.00: 12,836 open contracts\n\u2022 Major Call Walls (Dealer Resistance / Ceiling Pins):\n  - Strike $100.00: 21,556 open contracts\n  - Strike $120.00: 16,825 open contracts\n  - Strike $110.00: 16,115 open contracts\n\u2022 Dealer Expected Pinning Corridor: $75.0 (Put Floor) to $100.0 (Call Ceiling)",
+  "date": "2026-08-14"
+}

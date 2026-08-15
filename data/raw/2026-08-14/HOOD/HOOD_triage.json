@@ -1,0 +1,163 @@
+{
+  "ticker": "HOOD",
+  "bar_date": "2026-08-14",
+  "chosen_side": "long",
+  "mode": "NONE",
+  "triage": "WATCH",
+  "reason": "no_setup",
+  "conviction": 79.09043518752071,
+  "conviction_str": "HIGH",
+  "rev": 3.5,
+  "rr": 2.0494856902688325,
+  "ev_r": 1.4270488557472558,
+  "win_prob": 79.58879307065367,
+  "in_zone": true,
+  "missed": false,
+  "dir_prob": 79.58879307065367,
+  "regime": 0.0,
+  "flags": [
+    "soft_caution_action"
+  ],
+  "long_plan": {
+    "zone": [
+      96.6290536997853,
+      97.91489630021468
+    ],
+    "stop": 94.05736849892652,
+    "target": 104.34216
+  },
+  "short_plan": {
+    "zone": [
+      null,
+      null
+    ],
+    "stop": 103.24168520085878,
+    "target": 91.215
+  },
+  "recency": {
+    "warnings_fresh": [],
+    "warnings_age": null,
+    "reversals_fresh": [
+      "TRAP_BULL",
+      "HIKKAKE_BEAR"
+    ],
+    "reversals_age": 21.0,
+    "weak_levels": [],
+    "weak_levels_age": null
+  },
+  "action_long": "SCREEN BLOCK",
+  "action_short": "TOP/BOT WARNING",
+  "action": "SCREEN BLOCK",
+  "action_actionable": false,
+  "mtf_long": 1.0,
+  "mtf_short": null,
+  "realvol_10d": null,
+  "ret_10d": null,
+  "ext_pct": 4.990751574683984,
+  "tiebreak": 1.2913122382506357,
+  "rank_model_score": null,
+  "bad_data": false,
+  "no_fresh_long": false,
+  "fade_long": 0.0,
+  "long_bot": 96.6290536997853,
+  "long_top": 97.91489630021468,
+  "structure": null,
+  "structure_strikes": null,
+  "iv_rank": 39.68253968253968,
+  "exp_move_pct": 14.82752149518938,
+  "rr_at_market": 2.0494856902688325,
+  "triggers": {
+    "hard_exclusions": [],
+    "blocked_now": false,
+    "edge_note": "Edge is in code20_reversal (open_gates=4)",
+    "code20_reversal": {
+      "state": "code20_reversal",
+      "all_passed": false,
+      "open_gates": [
+        {
+          "name": "rev_zone_l_gte_7",
+          "field": "rev_l",
+          "comparator": ">=",
+          "ref_level": 7.0,
+          "current_value": 3.5,
+          "gap": 3.5,
+          "change_type": "catalyst_dependent",
+          "required": true
+        },
+        {
+          "name": "buy_score_lt_30",
+          "field": "buy",
+          "comparator": "<",
+          "ref_level": 30.0,
+          "current_value": 79.09043518752071,
+          "gap": 49.09043518752071,
+          "change_type": "price_mechanical",
+          "required": true
+        },
+        {
+          "name": "close_below_ma200",
+          "field": "price",
+          "comparator": "<",
+          "ref_level": 92.79864991793518,
+          "current_value": 97.46,
+          "gap": 4.661350082064814,
+          "change_type": "price_mechanical",
+          "required": true
+        },
+        {
+          "name": "rvol_above_1_5",
+          "field": "rvol",
+          "comparator": ">",
+          "ref_level": 1.5,
+          "current_value": 0.1616422866124582,
+          "gap": 1.3383577133875417,
+          "change_type": "catalyst_dependent",
+          "required": true
+        }
+      ],
+      "passed_gates": [],
+      "open_count": 4,
+      "total_count": 4,
+      "lane_edge": "+0.85% SIG - only measured long edge (bible 16.1); needs close<MA200 + RVOL>1.5 + Buy<30; ~60d hold"
+    },
+    "stage2_prime": {
+      "state": "stage2_prime",
+      "all_passed": false,
+      "open_gates": [
+        {
+          "name": "stage_2",
+          "field": "stage",
+          "comparator": "==",
+          "ref_level": 2.0,
+          "current_value": 1.0,
+          "gap": 1.0,
+          "change_type": "catalyst_dependent",
+          "required": true
+        },
+        {
+          "name": "triple_screen_or_buy_gte_98",
+          "field": "buy",
+          "comparator": ">=",
+          "ref_level": 98.0,
+          "current_value": 79.09043518752071,
+          "gap": 18.90956481247929,
+          "change_type": "catalyst_dependent",
+          "required": false
+        }
+      ],
+      "passed_gates": [
+        "in_zone",
+        "rr_valid",
+        "ext_below_25",
+        "ext_above_neg60",
+        "ext_z_self_lt_1_5"
+      ],
+      "open_count": 2,
+      "total_count": 7,
+      "lane_edge": "flat - no measured edge (bible 16.9); pullback/breakout lanes are exclusion, not alpha"
+    },
+    "nearest_actionable_state": "code20_reversal",
+    "open_gates_count": 4,
+    "conviction_ceiling": 6
+  }
+}

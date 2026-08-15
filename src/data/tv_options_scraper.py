@@ -19,8 +19,11 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from src import config
 
 logger = logging.getLogger(__name__)
 
@@ -387,13 +390,19 @@ def scrape_tv_options_finder_tool(
     capture_volume_charts: bool = False,
 ) -> str:
     """Tool function callable by the Brain LLM to dynamically fetch TradingView Strategy Finder spreads."""
-    from datetime import datetime
-    from src import config
-
     today_str = datetime.now().strftime("%Y-%m-%d")
-    out_dir = config.BASE_DIR / "data" / "raw" / today_str
+    out_dir = config.BASE_DIR / "data" / "raw" / today_str / ticker.upper()
     out_dir.mkdir(parents=True, exist_ok=True)
-    strat_file = out_dir / f"{ticker.upper()}_tv_strategies.json"
+    
+    period_slug = prediction_period.lower().replace(" ", "_")
+    move_slug = expected_move.replace("%", "").replace(" ", "").replace("+", "").replace("-", "down_")
+    strat_file = out_dir / f"{ticker.upper()}_tv_strategies_{period_slug}_{move_slug}.json"
+    
+    # If default 1-month is requested, fall back to standard tv_strategies.json if present
+    if not strat_file.exists() and "month" in period_slug and not any(k in period_slug for k in ("3", "6", "year")):
+        default_strat = out_dir / f"{ticker.upper()}_tv_strategies.json"
+        if default_strat.exists():
+            strat_file = default_strat
 
     strategies = []
     if strat_file.exists():
@@ -428,6 +437,11 @@ def scrape_tv_options_finder_tool(
                     capture_volume_charts=capture_volume_charts,
                 )
                 strategies = res.get("strategies", [])
+                if strategies:
+                    try:
+                        strat_file.write_text(json.dumps(strategies, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
                 context.close()
         except Exception as e:
             logger.error(f"Live TV options scrape failed for {ticker}: {e}")
