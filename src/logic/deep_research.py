@@ -860,8 +860,12 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                         strikes = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[CPcp]\b", formula)]
 
                         if len(strikes) < 2:
-                            long_st = strikes[0] if strikes else None
-                            short_st = None
+                            if any(tag in stype for tag in ("SHORT", "COVERED", "SELL")):
+                                short_st = strikes[0] if strikes else None
+                                long_st = None
+                            else:
+                                long_st = strikes[0] if strikes else None
+                                short_st = None
                         else:
                             lo, hi = min(strikes), max(strikes)
                             is_put = bool(re.search(r"\d+\s*[Pp]\b", formula)) or "PUT" in stype

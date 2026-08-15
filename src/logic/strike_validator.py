@@ -34,7 +34,7 @@ def validate_strike_geometry(
     exp_move_dist = (spot_price * (exp_move_pct_21b / 100.0)) if exp_move_pct_21b else None
     max_allowed_dist = (1.5 * exp_move_dist) if exp_move_dist else None
 
-    # 1. Credit spread OTM checks
+    # 1. Credit spread and naked short leg OTM checks
     if "BULL_PUT" in strat or "PUT_CREDIT" in strat:
         if short_strike is not None and short_strike >= spot_price:
             defects.append(
@@ -46,6 +46,18 @@ def validate_strike_geometry(
             defects.append(
                 f"Bear call credit spread short strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Credit spreads must be strictly OTM."
+            )
+    elif "SHORT_PUT" in strat or "PUT_SALE" in strat or "CASH_SECURED" in strat:
+        if short_strike is not None and short_strike >= spot_price:
+            defects.append(
+                f"Short put strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
+                f"Income put sales must be strictly OTM."
+            )
+    elif "SHORT_CALL" in strat or "CALL_SALE" in strat:
+        if short_strike is not None and short_strike <= spot_price:
+            defects.append(
+                f"Short call strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
+                f"Income call sales must be strictly OTM."
             )
 
     # 2. Debit spread 1.5x ExpMove checks
