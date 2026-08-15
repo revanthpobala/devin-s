@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from openai import OpenAI
 import os
 from base64 import b64encode

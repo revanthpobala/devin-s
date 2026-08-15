@@ -16,6 +16,8 @@ Design (agreed with the user):
 The local 9B is a narrator, not a risk manager. Exits are external (TV alerts).
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import queue

@@ -30,6 +30,8 @@ The file is written atomically (temp file + rename) so a crash mid-write can
 never leave a half-corrupted state that would break the monitor on next boot.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import threading

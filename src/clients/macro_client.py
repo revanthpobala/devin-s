@@ -12,6 +12,8 @@ Sources (all FREE):
                 time-of-day session label, VIX spike flags
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone

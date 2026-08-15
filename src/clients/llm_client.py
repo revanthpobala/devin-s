@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -35,10 +37,10 @@ def _create_completion(client, provider: str, **kwargs):
 
 
 import io
-from PIL import Image
 
 def encode_image_to_base64(image_path: str, max_dim: int = 640) -> str:
     try:
+        from PIL import Image
         with Image.open(image_path) as img:
             img = img.convert("RGB")
             w, h = img.size
