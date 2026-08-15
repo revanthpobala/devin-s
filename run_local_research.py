@@ -22,6 +22,16 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
     triage folder is self-contained: chart png, data window json, news dossier,
     and both thesis files (md + json)."""
     safe = ticker.replace(":", "_")
+    target_ticker_dir = target_dir / safe
+    target_ticker_dir.mkdir(parents=True, exist_ok=True)
+
+    src_ticker_dir = src_dir / safe
+    if src_ticker_dir.exists() and src_ticker_dir.is_dir():
+        for item in src_ticker_dir.iterdir():
+            if item.is_file():
+                shutil.move(str(item), str(target_ticker_dir / item.name))
+        return
+
     for fname in (
         f"{safe}_chart.png",
         f"{safe}_chart_zoom.png",
@@ -37,7 +47,7 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
     ):
         src = src_dir / fname
         if src.exists():
-            shutil.move(str(src), str(target_dir / fname))
+            shutil.move(str(src), str(target_ticker_dir / fname))
 
 
 def _consolidate_ledger(out_dir: Path):
@@ -61,7 +71,7 @@ def _consolidate_ledger(out_dir: Path):
         if d.exists():
             search_dirs.append(d)
     for base in search_dirs:
-        for p in base.glob("*_thesis.json"):
+        for p in base.glob("**/*_thesis.json"):
             try:
                 rec = json.loads(p.read_text(encoding="utf-8"))
             except Exception:
@@ -359,7 +369,7 @@ def run_local_research(
             name = old.name.upper()
             is_stale = True
             for tk in keep:
-                if name.startswith(tk + "_") or name.startswith(tk + "."):
+                if name == tk or name.startswith(tk + "_") or name.startswith(tk + "."):
                     is_stale = False
                     break
             if is_stale:

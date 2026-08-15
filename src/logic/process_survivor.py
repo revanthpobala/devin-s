@@ -1038,6 +1038,11 @@ Example Output:
     # done and the resulting decision. It is written for EVERY ticker, including
     # --ticker runs that have no _row_index and therefore won't be pushed to
     # Sheets in this pass.
+    ticker_dir = out_dir / safe_ticker
+    ticker_dir.mkdir(parents=True, exist_ok=True)
+    thesis_json_path = ticker_dir / f"{safe_ticker}_thesis.json"
+    triage_json_path = ticker_dir / f"{safe_ticker}_triage.json"
+
     result_dict = {
         "ticker": safe_ticker,
         "trade_id": trade_id,
@@ -1054,7 +1059,6 @@ Example Output:
     try:
         with open(thesis_json_path, "w", encoding="utf-8") as f:
             json.dump(result_dict, f, indent=4)
-        triage_json_path = out_dir / f"{safe_ticker}_triage.json"
         with open(triage_json_path, "w", encoding="utf-8") as f:
             json.dump(triage, f, indent=4)
     except Exception as e:
