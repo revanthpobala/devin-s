@@ -51,6 +51,26 @@ def verify_csv_integrity(df: pd.DataFrame) -> Tuple[pd.Series, Optional[str]]:
     return df, last_bar_date
 
 
+def _format_datawindow_val(val: Any) -> Optional[str]:
+    """Format Data Window value: limit floats to 3 decimal places, keep ints clean, handle nulls."""
+    if pd.isna(val) or val is None:
+        return None
+    s_val = str(val).strip()
+    if not s_val or s_val.lower() in ("nan", "none", "null"):
+        return None
+    try:
+        f = float(s_val)
+        if np.isnan(f) or np.isinf(f):
+            return None
+        # Whole integer values (e.g. 0, 1, 4, 10, 360, "0.0") -> format cleanly
+        if f.is_integer() and ("." not in s_val or s_val.endswith(".0")):
+            return str(int(f))
+        # Float values: round to at most 3 decimal places
+        return str(round(f, 3))
+    except (ValueError, TypeError):
+        return s_val
+
+
 def csv_to_datawindow(
     csv_path: str, json_out_path: Optional[str] = None
 ) -> Tuple[Dict[str, Any], pd.DataFrame, Optional[float], Optional[float]]:
@@ -81,10 +101,8 @@ def csv_to_datawindow(
     snapshot = {}
     for col in df.columns:
         val = last_row[col]
-        if pd.isna(val):
-            snapshot[col] = None
-        else:
-            snapshot[col] = str(val)
+        formatted = _format_datawindow_val(val)
+        snapshot[col] = formatted
 
     # Extract & stamp last bar date onto snapshot
     time_col = next((c for c in df.columns if c.lower() in ("time", "date", "datetime")), None)
