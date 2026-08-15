@@ -59,6 +59,8 @@ def _search_parallel(query: str, max_results: int = 3) -> list:
 
 def _search_ddgs(query: str, max_results: int = 3) -> list:
     """DuckDuckGo Search (ddgs). Keyless multi-domain live web search."""
+    if DDGS is None:
+        return []
     try:
         out = []
         with DDGS() as ddgs:

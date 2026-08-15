@@ -6,10 +6,11 @@ from base64 import b64encode
 
 _DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url=_DASHSCOPE_BASE_URL,
-)
+def _get_client():
+    return OpenAI(
+        api_key=os.getenv("DASHSCOPE_API_KEY") or "EMPTY",
+        base_url=_DASHSCOPE_BASE_URL,
+    )
 
 
 def query_qwen(
@@ -30,7 +31,8 @@ def query_qwen(
                 }
             )
 
-    resp = _client.chat.completions.create(
+    client = _get_client()
+    resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": content}],
         temperature=0.0,
