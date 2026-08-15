@@ -614,13 +614,22 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         if not dossier_path.exists() and (raw_dir / f"{ticker}_news_research.md").exists():
             dossier_path = raw_dir / f"{ticker}_news_research.md"
 
+        # Load data window JSON (math state) early for fallback filtering
+        data_window_str = "{}"
+        dw_dict = {}
+        if dw_path.exists():
+            try:
+                with open(dw_path, "r", encoding="utf-8") as f:
+                    dw_dict = json.load(f)
+                    data_window_str = json.dumps(dw_dict, indent=2)
+            except Exception as e:
+                logger.warning(f"[{ticker}] Error loading data window: {e}")
+        else:
+            logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
+
         triage_record = _load_triage_record(raw_dir, deep_dir, ticker, tdir=tdir) or {}
 
-        # Snapshot the deterministic verdict BEFORE the flags fallback below. An empty
-        # `flags` list is normal on a clean bar, so that fallback can replace a perfectly
-        # good filter record — potentially with `llm_data`, which is model output. EV /
-        # Win Prob must never come from that, so the math block only ever reads a record
-        # that carries the filter's own `triage` verdict.
+        # Snapshot the deterministic verdict BEFORE the flags fallback below.
         verdict_record = triage_record if triage_record.get("triage") else {}
 
         # Default to an empty flag list; the thesis-file path below may override it.
@@ -641,12 +650,30 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             except (json.JSONDecodeError, OSError):
                 pass
 
-            # Re-read flags from the (possibly replaced) triage_record.
             flags = (
                 triage_record.get("flags")
                 if isinstance(triage_record, dict)
                 else None
             ) or []
+
+        # If no triage record exists on disk, compute it deterministically from DW
+        if not verdict_record and dw_dict:
+            try:
+                from src.logic.data_window_filter import run_data_window_filter
+                verdict_record = run_data_window_filter(ticker, dw_dict)
+                triage_record = verdict_record
+                flags = verdict_record.get("flags") or []
+            except Exception as e:
+                logger.warning(f"[{ticker}] Fallback data_window_filter failed: {e}")
+
+        # Persist _triage.json so validate_report and downstream consumers have the exact ground truth
+        if verdict_record:
+            try:
+                triage_out = tdir / f"{ticker}_triage.json"
+                if not triage_out.exists():
+                    triage_out.write_text(json.dumps(verdict_record, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.debug(f"[{ticker}] Failed to write {ticker}_triage.json: {e}")
 
         # Multi-Agent Debate will be run live.
         # We ignore the stale mod_agree/mod_disagree from local triage.
@@ -654,16 +681,6 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         flags_block = _format_flags_block(flags)
         engine_math_block = _format_engine_math_block(verdict_record)
         triggers_block = _format_triggers_block(verdict_record)
-
-        # Load data window JSON (math state)
-        data_window_str = "{}"
-        dw_dict = {}
-        if dw_path.exists():
-            with open(dw_path, "r") as f:
-                dw_dict = json.load(f)
-                data_window_str = json.dumps(dw_dict, indent=2)
-        else:
-            logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
 
         from src.logic.data_window_filter import parse_data_window
 
@@ -1236,13 +1253,14 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             if response:
                 out_dir.mkdir(parents=True, exist_ok=True)
 
-                # OVERWRITE: re-running deep research regenerates the ticker's
-                # thesis. The file is replaced wholesale — no append, no delete
-                # of other research. For ad-hoc --ticker runs the Gemini thesis is
-                # written next to the ticker's artifacts (data/raw or
-                # _DEEP_RESEARCH), so it never collides with other tickers.
+                # Clean leading tool-call chatter / pre-synthesis thoughts if present
+                clean_response = response.strip()
+                match_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_response)
+                if match_header and match_header.start() > 0:
+                    clean_response = clean_response[match_header.start():].strip()
+
                 with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(response)
+                    f.write(clean_response)
 
                 try:
                     _drift_checker.check_and_write(ticker, date_str, response, out_dir)

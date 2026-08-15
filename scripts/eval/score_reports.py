@@ -21,7 +21,9 @@ def score_report(report_path: Path, fixture_path: Path) -> Dict[str, Any]:
     if not fixture_path.exists():
         raise FileNotFoundError(f"Fixture not found: {fixture_path}")
 
-    text = report_path.read_text(encoding="utf-8")
+    raw_text = report_path.read_text(encoding="utf-8")
+    # Normalize unicode minuses and dashes to standard ASCII minus
+    text = raw_text.replace("−", "-").replace("–", "-").replace("—", "-")
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
 
     # Extract all floating point numbers in text for Bucket A tolerance checking

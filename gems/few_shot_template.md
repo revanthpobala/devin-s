@@ -18,6 +18,7 @@ Mathematical State (Data Window)
 - Exp Move Pct 21b: 9.95%
 - Dir Prob Pct Above 50 Bull: 95.03 (gate input only — NOT conviction, and not comparable across names)
 - Long Ignition Fresh Breakout: 0
+- Signal Pack: 4 (Bit 2 is 1 -> Fade Gate Status: OFF)
 - Entry At Market 0No 1L 2S 3Both: 1 (Long RR At Market is the valid live ratio)
 - Action Long Code / Action Short Code: 6 (ACCELERATION) / 10 (WAIT)
 - Stage 1 Base 2 Up 3 Top 4 Down: 2 · Stage Age Bars: 21
@@ -168,7 +169,8 @@ Mathematical State (Data Window)
 - Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz: 4 (Down)
 - Exp Move Pct 21b: 12.71%
 - Dir Prob Pct Above 50 Bull: 68.85
-- Signal Pack: 4 (Bit 2 is 1 -> Fade Gate is OFF)
+- Signal Pack: 4 (Bit 2 is 1 -> Fade Gate Status: OFF)
+- Price vs Zone: ZONELESS (no surviving entry zone; bounds are blank)
 - Action Long Code / Action Short Code: 8 (WAIT / STAGING) / 8 (WAIT / STAGING)
 - Long RR At Market: 1.57 (Below 2.0 PASS lane threshold)
 - Stage 1 Base 2 Up 3 Top 4 Down: 4 · Stage Age Bars: 15
