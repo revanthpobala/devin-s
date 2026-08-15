@@ -62,7 +62,7 @@ def score_report(report_path: Path, fixture_path: Path) -> Dict[str, Any]:
             if val_str == "OFF":
                 matched = bool(re.search(r"fade\s*gate[^\n\.\,]{0,40}\b(?:off|not active|inactive)\b", text, re.IGNORECASE))
             elif val_str == "ACTIVE":
-                matched = bool(re.search(r"fade\s*gate[^\n\.\,]{0,40}\b(?:active|do not chase)\b", text, re.IGNORECASE))
+                matched = bool(re.search(r"fade\s*gate[^\n\.\,]{0,40}\b(?:(?<!not )active|do not chase)\b", text, re.IGNORECASE))
         elif k == "zone_position":
             if val_str == "ZONELESS":
                 matched = bool(re.search(r"\b(?:zoneless|no surviving entry zone|bounds are blank|blank)\b", text, re.IGNORECASE))
