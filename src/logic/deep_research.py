@@ -859,8 +859,18 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                         stype = (s.get("strategy_type", "") or "").upper().replace(" ", "_")
                         strikes = [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)\s*[CPcp]\b", formula)]
 
-                        if len(strikes) < 2:
-                            if any(tag in stype for tag in ("SHORT", "COVERED", "SELL")):
+                        extra_short_st = None
+                        if "JADE_LIZARD" in stype or "JADE" in stype:
+                            puts = [float(x) for x in re.findall(r"\b(\d+(?:\d+)?)\s*[Pp]\b", formula)]
+                            calls = [float(x) for x in re.findall(r"\b(\d+(?:\d+)?)\s*[Cc]\b", formula)]
+                            if len(puts) >= 1 and len(calls) >= 2:
+                                extra_short_st = puts[0]
+                                short_st = min(calls)
+                                long_st = max(calls)
+                            else:
+                                long_st, short_st = None, None
+                        elif len(strikes) < 2:
+                            if any(tag in stype for tag in ("SHORT", "COVERED", "SELL", "CASH_SECURED", "CSP", "WRITE")):
                                 short_st = strikes[0] if strikes else None
                                 long_st = None
                             else:
@@ -881,6 +891,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                             exp_move_pct_21b=dw_exp_move,
                             long_strike=long_st,
                             short_strike=short_st,
+                            extra_short_strike=extra_short_st,
                             max_profit=float(s.get("max_profit", 0) or 0) if s.get("max_profit") is not None else None,
                             max_loss=float(s.get("max_loss", 0) or 0) if s.get("max_loss") is not None else None,
                         )
