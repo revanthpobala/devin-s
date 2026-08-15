@@ -53,7 +53,9 @@ def run_news_research(
 
     Returns: (dossier_path, contradicts_bool, sentiment_label)
     """
-    out_path = out_dir / f"{ticker}_news_research.md"
+    ticker_dir = out_dir / ticker if out_dir.name != ticker else out_dir
+    ticker_dir.mkdir(parents=True, exist_ok=True)
+    out_path = ticker_dir / f"{ticker}_news_research.md"
 
     # ---------------------------------------------------------
     # Pass 1: Gather raw context from sources
