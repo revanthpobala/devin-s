@@ -398,8 +398,24 @@ def _alpaca_quote(ticker: str) -> Optional[str]:
 
         yr = _alpaca_52w(ticker)
 
+        import pytz
+        from datetime import datetime
+        ny_time = datetime.now(pytz.timezone('America/New_York'))
+        current_time = ny_time.time()
+        
+        if ny_time.weekday() >= 5:
+            session = "closed"
+        elif current_time < datetime.strptime("04:00", "%H:%M").time() or current_time >= datetime.strptime("20:00", "%H:%M").time():
+            session = "closed"
+        elif current_time < datetime.strptime("09:30", "%H:%M").time():
+            session = "pre-market"
+        elif current_time < datetime.strptime("16:00", "%H:%M").time():
+            session = "intraday"
+        else:
+            session = "after-hours"
+
         lines = [
-            f"REAL-TIME QUOTE for {ticker} (source: Alpaca):",
+            f"REAL-TIME QUOTE for {ticker} (source: Alpaca, {session}):",
             f"- Last: {last}",
             f"- Bid/Ask: {bp} / {ap}",
             f"- Day Range: {day_low} - {day_high}",

@@ -222,7 +222,417 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_historical_zone_and_regime_analytics",
+            "description": "Calculates deep historical statistics from the 1-year OHLCV data: zone dwell duration, consecutive bars in zone, 30-day touch count, Darvas box duration, volume accumulation ratio, and realized vs implied volatility spread.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g., 'AMD')",
+                    },
+                    "lookback_bars": {
+                        "type": "integer",
+                        "description": "Number of bars to analyze (default: 60, max: 250)",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_quantitative_plugin",
+            "description": "Runs a specialized quantitative market analytics plugin ('order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', or 'all') on the trailing 1-year data and Data Window.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'CRWD', 'AMD', 'CRWV')",
+                    },
+                    "plugin_name": {
+                        "type": "string",
+                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence"],
+                        "description": "The specific analytics plugin to execute. Use 'order_flow' for volume accumulation ratios, Chaikin Money Flow, and Volume Profile liquidity nodes.",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_python_code",
+            "description": (
+                "Executes Python in a quantitative sandbox with pre-loaded 'df' (300 daily bars x 85 indicators), 'dw' (Data Window dict), 'np', 'pd', 'scipy', 'stats', and 'math'.\n"
+                "ROLE: You are the Lead Quantitative Strategist. Do NOT blindly copy boilerplate code. Formulate an open-ended mathematical hypothesis for this specific stock and execute custom Python to prove or disprove it.\n\n"
+                "APPLICATIONS & QUANTITATIVE WORKFLOWS:\n"
+                "1. Empirical Regime & Setup Backtesting: Query `df` for similar historical setups (e.g., matching Stage, Buy Score, RVOL, or Extension) and compute sample size N, forward return distribution, and win rates.\n"
+                "2. Volatility Risk Premium & Edge: Compare Historical Volatility (`HV20`) vs Implied Volatility (`Energy IV30`) to determine if options premium is statistically overpriced (sell credit) or cheap (buy debit).\n"
+                "3. Volume Flow & Absorption Dynamics: Analyze volume accumulation ratio (`_volume_acc_dist_ratio_60d`) and price interaction at High Volume Nodes (`VP HVN`) or Anchored VWAPs.\n"
+                "4. Options Payoff, Breakeven & EV Modeling: Model candidate multi-leg spreads (Bull Put, Bull Call, LEAP Diagonal) with exact net debit/credit, maximum profit, max risk, and breakeven.\n"
+                "5. Probabilistic Path & Touch Modeling: Simulate empirical price paths (e.g. Monte Carlo or drift-diffusion) to estimate probability of touching specific structural stops vs targets over 21-120 days.\n\n"
+                "MUST use print() to output results. Code runs in a secure sandbox with instant execution."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Executable Python code. Pre-loaded variables: df, dw, ticker, np, pd, math, json, datetime. Use print() to output results.",
+                    },
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g., 'AMD')",
+                    },
+                },
+                "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_prior_research",
+            "description": "Retrieves the most recent prior research summary and trade plan from 'reports/<date>/<ticker>_summary.md' within the last lookback_days (default 14 days). Use this to audit active stalk states, track thesis evolution, and check whether prior limit orders or triggers have played out.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g., 'HOOD', 'AAPL', 'NVDA')",
+                    },
+                    "lookback_days": {
+                        "type": "integer",
+                        "description": "Maximum calendar days to look back for prior research (default: 14)",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "detect_candlestick_patterns",
+            "description": (
+                "Scans the 1-year OHLCV dataset for high-conviction candlestick and price action patterns:\n"
+                "1. Bullish Pin Bars / Hammers (lower rejection wicks, buyer absorption at key floors).\n"
+                "2. Bearish Shooting Stars (upper rejection wicks, seller defense at overhead supply).\n"
+                "3. Gap Fill Retests (detects if price is testing an earnings or momentum gap window).\n"
+                "4. Inside Day Compressions (Harami volatility squeeze before ignition).\n"
+                "5. Bullish & Bearish Engulfing Bars."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'AMZN', 'AAPL', 'NVDA')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
 ]
+
+
+def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str: str = None) -> str:
+    """Executes quantitative analytics plugins on demand for the LLM."""
+    import pandas as pd
+    import json
+    from src.plugins import plugin_manager
+
+    ticker = ticker.upper()
+    date_str = date_str or time.strftime("%Y-%m-%d")
+
+    chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
+    csv_path = chart_dir / f"{ticker}_datawindow.csv"
+    dw_path = chart_dir / f"{ticker}_datawindow.json"
+
+    if not csv_path.exists():
+        raw_root = config.BASE_DIR / "data" / "raw"
+        for d in sorted(raw_root.glob("*/"), reverse=True):
+            cand = d / ticker / f"{ticker}_datawindow.csv"
+            if cand.exists():
+                csv_path = cand
+                dw_path = d / ticker / f"{ticker}_datawindow.json"
+                break
+
+    if not csv_path.exists():
+        # Also check triage directory
+        triage_root = config.BASE_DIR / "data" / "triage"
+        for d in sorted(triage_root.glob("*/"), reverse=True):
+            for sub in ["_DEEP_RESEARCH", "force", ""]:
+                cand = d / sub / ticker / f"{ticker}_datawindow.csv" if sub else d / ticker / f"{ticker}_datawindow.csv"
+                if cand.exists():
+                    csv_path = cand
+                    dw_path = cand.parent / f"{ticker}_datawindow.json"
+                    break
+
+    if not csv_path.exists():
+        return f"Error: No historical datawindow.csv found for {ticker}."
+
+    df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
+    dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
+
+    p_key = plugin_name.lower().strip().replace("-", "_").replace(" ", "_")
+    if p_key in ("orderflow", "order_flow_plugin"):
+        p_key = "order_flow"
+    elif p_key in ("squeeze", "squeeze_expansion_plugin"):
+        p_key = "squeeze_expansion"
+    elif p_key in ("earnings", "earnings_history_plugin"):
+        p_key = "earnings_history"
+    elif p_key in ("htf", "htf_confluence_plugin"):
+        p_key = "htf_confluence"
+    elif p_key in ("candlesticks", "candlestick", "patterns", "candles", "candle", "candlestick_patterns_plugin"):
+        p_key = "candlestick_patterns"
+
+    if p_key == "all":
+        res = plugin_manager.run_all(ticker, df, dw)
+    else:
+        plugin = plugin_manager.get_plugin(p_key)
+        if not plugin:
+            return f"Error: Unknown plugin '{plugin_name}'. Available: {list(plugin_manager._plugins.keys())}"
+        res = plugin.run(ticker, df, dw)
+
+    lines = [f"### Quantitative Plugin Results for {ticker} [Plugin: {p_key}]"]
+    for k, v in res.items():
+        if isinstance(v, list):
+            lines.append(f"- **{k}**:")
+            for item in v:
+                lines.append(f"  • {item}")
+        elif isinstance(v, dict):
+            lines.append(f"- **{k}**:")
+            for sub_k, sub_v in v.items():
+                lines.append(f"  • {sub_k}: {sub_v}")
+        else:
+            lines.append(f"- **{k}**: {v}")
+
+    return "\n".join(lines)
+
+
+def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = None) -> str:
+    """Safely executes a Python code snippet with pre-loaded df, dw, and math/pandas modules."""
+    import io
+    import sys
+    import math
+    import json
+    import numpy as np
+    import pandas as pd
+    from datetime import datetime
+
+    # Security check: Block destructive OS commands or file modifications
+    forbidden_terms = ["os.system", "os.remove", "os.rmdir", "shutil.rmtree", "subprocess", "socket", "write_text", "to_csv", "__import__('os')"]
+    for term in forbidden_terms:
+        if term in code:
+            return f"Security Error: '{term}' is not permitted in the quantitative sandbox."
+
+    ticker = ticker.upper()
+    date_str = date_str or time.strftime("%Y-%m-%d")
+
+    # Locate datawindow.csv and datawindow.json
+    chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
+    csv_path = chart_dir / f"{ticker}_datawindow.csv"
+    dw_path = chart_dir / f"{ticker}_datawindow.json"
+
+    if not csv_path.exists():
+        raw_root = config.BASE_DIR / "data" / "raw"
+        for d in sorted(raw_root.glob("*/"), reverse=True):
+            cand = d / ticker / f"{ticker}_datawindow.csv"
+            if cand.exists():
+                csv_path = cand
+                dw_path = d / ticker / f"{ticker}_datawindow.json"
+                break
+
+    if not csv_path.exists():
+        triage_root = config.BASE_DIR / "data" / "triage"
+        for d in sorted(triage_root.glob("*/"), reverse=True):
+            for sub in ["_DEEP_RESEARCH", "force", ""]:
+                cand = d / sub / ticker / f"{ticker}_datawindow.csv" if sub else d / ticker / f"{ticker}_datawindow.csv"
+                if cand.exists():
+                    csv_path = cand
+                    dw_path = cand.parent / f"{ticker}_datawindow.json"
+                    break
+
+    df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
+    dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
+
+    try:
+        import scipy
+        import scipy.stats as stats
+    except ImportError:
+        scipy = None
+        stats = None
+
+    # Sandbox environment
+    sandbox_globals = {
+        "pd": pd,
+        "np": np,
+        "scipy": scipy,
+        "stats": stats,
+        "math": math,
+        "json": json,
+        "datetime": datetime,
+        "df": df,
+        "dw": dw,
+        "ticker": ticker,
+        "print": print,
+    }
+
+    # Capture stdout
+    stdout_buf = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = stdout_buf
+
+    try:
+        exec(code, sandbox_globals)
+        output = stdout_buf.getvalue()
+        if not output.strip():
+            output = "(Code executed successfully with no print output. Tip: Use print(...) to return calculated values.)"
+        return output.strip()
+    except Exception as e:
+        return f"Python Execution Error: {type(e).__name__}: {str(e)}"
+    finally:
+        sys.stdout = old_stdout
+
+
+def fetch_historical_zone_and_regime_analytics_tool(ticker: str, lookback_bars: int = 60, date_str: str = None) -> str:
+    """Computes on-demand deep historical analytics from datawindow.csv for the LLM brain."""
+    import pandas as pd
+    ticker = ticker.upper()
+    date_str = date_str or time.strftime("%Y-%m-%d")
+    chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
+    csv_path = chart_dir / f"{ticker}_datawindow.csv"
+    if not csv_path.exists():
+        raw_root = config.BASE_DIR / "data" / "raw"
+        for d in sorted(raw_root.glob("*/"), reverse=True):
+            cand = d / ticker / f"{ticker}_datawindow.csv"
+            if cand.exists():
+                csv_path = cand
+                break
+    if not csv_path.exists():
+        return f"Error: No historical datawindow.csv found for {ticker}."
+
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        return f"Error: Empty CSV for {ticker}."
+
+    lines = [f"### Quantitative Zone & Regime Analytics for {ticker} (Lookback: {lookback_bars} bars)"]
+    curr_c = float(df['close'].iloc[-1]) if 'close' in df.columns else 0.0
+    lines.append(f"- Current Price: ${curr_c:.2f}")
+
+    # 1. Zone Analytics
+    z_bot = float(df['Long Entry Zone Bot'].iloc[-1]) if 'Long Entry Zone Bot' in df.columns else 0.0
+    z_top = float(df['Long Entry Zone Top'].iloc[-1]) if 'Long Entry Zone Top' in df.columns else 0.0
+    if z_bot > 0 and z_top > 0 and 'low' in df.columns and 'high' in df.columns:
+        in_zone = (df['low'] <= z_top) & (df['high'] >= z_bot)
+        consec_zone = 0
+        for z in reversed(in_zone):
+            if z: consec_zone += 1
+            else: break
+        touches = int(in_zone.tail(lookback_bars).sum())
+        lines.append(f"- Long Entry Zone: ${z_bot:.2f} – ${z_top:.2f}")
+        lines.append(f"- Consecutive Bars in Zone: {consec_zone}")
+        lines.append(f"- Zone Touches in last {lookback_bars} bars: {touches} touches")
+        if consec_zone >= 5:
+            lines.append("- Dwell Assessment: ⚠️ LINGERING / SATURATED (Support weakening risk)")
+        elif consec_zone == 1 and touches <= 3:
+            lines.append("- Dwell Assessment: ✅ FRESH RE-TEST (High-conviction buyer defense)")
+        elif touches >= 8:
+            lines.append("- Dwell Assessment: ⚔️ HEAVILY CONTESTED ZONE (Compression at boundary)")
+
+    # 2. Darvas Base Duration
+    if 'Darvas Box Top' in df.columns and 'high' in df.columns:
+        box_top = float(df['Darvas Box Top'].iloc[-1])
+        if box_top > 0:
+            under_box = df['high'] <= box_top
+            consec_box = 0
+            for u in reversed(under_box):
+                if u: consec_box += 1
+                else: break
+            lines.append(f"- Darvas Base Ceiling: ${box_top:.2f}")
+            lines.append(f"- Compression Duration: {consec_box} consecutive bars inside base")
+            if consec_box >= 12:
+                lines.append(f"- Base Readiness: 🚀 MATURE BASE ({consec_box} bars) — High energy compression ready for expansion")
+
+    # 3. Volume Flow (60-day)
+    c_col = next((c for c in df.columns if c.lower() == 'close'), None)
+    v_col = next((c for c in df.columns if c.lower() == 'volume'), None)
+    if c_col and v_col and len(df) >= 20:
+        c_ser = pd.to_numeric(df[c_col], errors='coerce').tail(60)
+        v_ser = pd.to_numeric(df[v_col], errors='coerce').tail(60)
+        up_vol = float(v_ser[c_ser > c_ser.shift(1)].sum())
+        dn_vol = float(v_ser[c_ser < c_ser.shift(1)].sum())
+        if dn_vol > 0:
+            ratio = round(up_vol / dn_vol, 3)
+            lines.append(f"- Volume Accumulation Ratio (60d): {ratio:.3f}x (Up-volume / Down-volume)")
+            lines.append(f"- Institutional Flow: {'Institutional Accumulation' if ratio >= 1.15 else 'Institutional Distribution' if ratio <= 0.85 else 'Balanced Flow'}")
+
+    return "\n".join(lines)
+
+
+def fetch_prior_research_tool(ticker: str, lookback_days: int = 14, date_str: str = None) -> str:
+    """Retrieves the most recent prior research summary and trade plan from reports/<date>/<ticker>_summary.md."""
+    import re
+    from datetime import datetime
+
+    reports_dir = config.BASE_DIR / "reports"
+    if not reports_dir.exists():
+        return f"No prior research found for {ticker} (reports/ directory does not exist)."
+
+    date_cutoff = date_str or datetime.now().strftime("%Y-%m-%d")
+    dates = sorted([d.name for d in reports_dir.glob("202*") if d.is_dir() and d.name < date_cutoff], reverse=True)
+
+    for d in dates[:lookback_days]:
+        p = reports_dir / d / f"{ticker}_summary.md"
+        if p.exists():
+            try:
+                text = p.read_text(encoding="utf-8")
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                header = lines[0] if lines else f"# {ticker} | {d}"
+
+                tldr_match = re.search(r"## ⚡ TLDR / EXECUTIVE SUMMARY\s*\n(.*?)(?=\n##|\Z)", text, re.DOTALL)
+                tldr = tldr_match.group(1).strip() if tldr_match else ""
+
+                plan_a_match = re.search(r"### Plan A.*?\n(.*?)(?=\n###|\n##|\Z)", text, re.DOTALL)
+                plan_a = plan_a_match.group(1).strip() if plan_a_match else ""
+
+                pm_audit_match = re.search(r"## 🧐 SENIOR PM PONYTAIL AUDIT.*?\n(.*?)(?=\n##|\Z)", text, re.DOTALL)
+                pm_audit = pm_audit_match.group(1).strip() if pm_audit_match else ""
+
+                try:
+                    d_obj = datetime.strptime(d, "%Y-%m-%d")
+                    curr_obj = datetime.strptime(date_cutoff, "%Y-%m-%d")
+                    days_ago = (curr_obj - d_obj).days
+                except Exception:
+                    days_ago = "N/A"
+
+                output = [
+                    f"### PRIOR RESEARCH SUMMARY FOR {ticker} (From {d} — {days_ago} days ago)",
+                    f"**File:** `reports/{d}/{ticker}_summary.md`",
+                    f"**Header:** {header}",
+                    "",
+                    "#### Prior Executive Summary & Verdict:",
+                    tldr,
+                ]
+                if plan_a:
+                    output.extend(["", "#### Prior Plan A Levels:", plan_a])
+                if pm_audit:
+                    output.extend(["", "#### Prior Senior PM Audit & Invalidation Level:", pm_audit])
+
+                return "\n".join(output)
+            except Exception as e:
+                return f"Error reading prior report for {ticker} from {d}: {e}"
+
+    return f"No prior research found for {ticker} in reports/ prior to {date_cutoff} (looked back {min(len(dates), lookback_days)} dates)."
 
 
 def execute_tool_call(tool_call, date_str: str = None):
@@ -268,6 +678,16 @@ def execute_tool_call(tool_call, date_str: str = None):
         min_dte_slug = str(args.get("min_dte", 30))
         max_dte_slug = str(args.get("max_dte", 120))
         cache_key = f"options_chain_{direction_slug}_{min_dte_slug}_{max_dte_slug}"
+    elif function_name == "run_quantitative_plugin":
+        plugin_slug = str(args.get("plugin_name", "all")).lower()
+        cache_key = f"quant_plugin_{plugin_slug}"
+    elif function_name == "fetch_prior_research":
+        lookback_slug = str(args.get("lookback_days", 14))
+        cache_key = f"prior_research_{lookback_slug}"
+    elif function_name == "execute_python_code":
+        import hashlib
+        code_hash = hashlib.md5(str(args.get("code", "")).encode("utf-8")).hexdigest()[:8]
+        cache_key = f"py_code_{code_hash}"
 
     cached_val = artifact_cache.get(date_str, ticker, cache_key)
     if cached_val is not None:
@@ -336,6 +756,35 @@ def execute_tool_call(tool_call, date_str: str = None):
         query = args.get("query")
         logger.info(f"LLM executed tool: fetch_prediction_market(query='{query}')")
         res_str = fetch_prediction_market(query)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "fetch_historical_zone_and_regime_analytics":
+        lookback = int(args.get("lookback_bars", 60))
+        logger.info(f"LLM executed tool: fetch_historical_zone_and_regime_analytics(ticker='{ticker}', lookback={lookback})")
+        res_str = fetch_historical_zone_and_regime_analytics_tool(ticker, lookback_bars=lookback, date_str=date_str)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "execute_python_code":
+        code_str = args.get("code", "")
+        logger.info(f"LLM executed tool: execute_python_code(ticker='{ticker}', code_len={len(code_str)})")
+        res_str = execute_python_code_tool(code=code_str, ticker=ticker, date_str=date_str)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "run_quantitative_plugin":
+        plugin_name = args.get("plugin_name", "all")
+        logger.info(f"LLM executed tool: run_quantitative_plugin(ticker='{ticker}', plugin='{plugin_name}')")
+        res_str = run_quantitative_plugin_tool(ticker, plugin_name=plugin_name, date_str=date_str)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "fetch_prior_research":
+        lookback = int(args.get("lookback_days", 14))
+        logger.info(f"LLM executed tool: fetch_prior_research(ticker='{ticker}', lookback_days={lookback})")
+        res_str = fetch_prior_research_tool(ticker=ticker, lookback_days=lookback, date_str=date_str)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "detect_candlestick_patterns":
+        logger.info(f"LLM executed tool: detect_candlestick_patterns(ticker='{ticker}')")
+        res_str = run_quantitative_plugin_tool(ticker, plugin_name="candlestick_patterns", date_str=date_str)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     else:
@@ -486,7 +935,7 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     Returns (client, model, provider_tag). provider_tag is "meta" | "openrouter" | "nvidia" | "local".
     """
     meta_key = os.getenv("META_AI_API_KEY")
-    openrouter_key = os.getenv("OPENROUTER_KEY")
+    openrouter_key = os.getenv("OPENROUTER_KEY") or os.getenv("OPENROUTER_API_KEY")
 
     # LOCAL-FIRST: any use_openrouter=False call uses the local 9B. No remote
     # key can hijack the free local-research path. The local 9B can be
@@ -672,7 +1121,7 @@ def query_local_llm(
                 kwargs["response_format"] = {"type": "json_object"}
 
         # Tool execution loop
-        MAX_TOOL_CALLS = 10
+        MAX_TOOL_CALLS = 25
         tool_call_count = 0
 
         while tool_call_count < MAX_TOOL_CALLS:
@@ -735,7 +1184,9 @@ def query_local_llm(
                     if m_date:
                         sim_date = m_date.group(1)
 
-                for tool_call in message.tool_calls:
+                import concurrent.futures
+                
+                def _process_tool_call(tool_call):
                     tool_result = execute_tool_call(tool_call, date_str=sim_date)
                     tool_result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
 
@@ -756,16 +1207,18 @@ def query_local_llm(
                             tool_result_str = f"[LOCAL LLM SYNTHESIS]:\n{summary}"
                         else:
                             logger.warning(f"Local summarization of {tool_call.function.name} failed, falling back to raw output.")
+                    
+                    return {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "content": tool_result_str,
+                    }
 
-                    # Append the tool's response to the history
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.function.name,
-                            "content": tool_result_str,
-                        }
-                    )
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(message.tool_calls))) as executor:
+                    futures = [executor.submit(_process_tool_call, tc) for tc in message.tool_calls]
+                    for future in futures:
+                        messages.append(future.result())
 
                 tool_call_count += 1
                 logger.info(

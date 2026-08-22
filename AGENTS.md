@@ -16,7 +16,7 @@
 - Polls Gmail for TradingView alerts every `POLLING_INTERVAL` seconds during market hours
 - Routes alerts through `PositionManager` (entry opens position + monitor thread, exit closes position + stops thread)
 - Logs alerts to Google Sheets with full context (price, news, LLM decision)
-- Runs local LLM inference (`revanth-0dte.md` rules card) for Intraday alerts only
+- Runs local LLM inference (`gems/revanth-0dte.md` rules card) for every incoming alert, with the pre-alert open-position snapshot + live quote/VIX + Alpaca/Finnhub news injected as context
 - Supports Swing (screener candidates via `survivors.json`) and Intraday strategies
 - Rehydrates open positions from `data/positions.json` on restart
 
@@ -45,7 +45,7 @@ python main.py --once
 
 **Capabilities**:
 - Monitors market hours (7:15 AM - 8:00 PM MT Mon-Fri)
-- Starts/stops `llama-cpp-server` on port 8000 (Qwen3.5-9B-Q8_0.gguf, --parallel 4, --reasoning off)
+- Starts/stops `llama-cpp-server` on port 8000 (Qwen3.5-9B-Q8_0.gguf, `-c 32768`, `--parallel 3`, `--reasoning off`)
 - Starts/stops Email Alert Ingestor (`main.py --loop`)
 - Watchdog: restarts wedged LLM server if `/health` becomes unresponsive
 - Detects externally-managed LLM server on port 8000 (uses it instead of starting local)
@@ -54,6 +54,9 @@ python main.py --once
 **Usage**:
 ```bash
 python run_market_orchestrator.py
+
+# One-click (applies sleep prevention first)
+scripts\launchers\start_market.bat
 ```
 
 **Workflow**:
@@ -69,39 +72,43 @@ python run_market_orchestrator.py
 **Entry Point**: `run_swing_research.py`
 
 **Capabilities**:
-- Deterministic Cascade (`deterministic_cascade.py`) → survivor list
-- Parallel TradingView chart scraping via Chrome (`src/logic/process_survivor.py:scrape_survivor_task`)
-- Writes `data/raw/<date>/survivors.json` with ticker, source, and sheet row index
-- Supports single-ticker override (`--ticker AAPL`)
+- Deterministic Cascade (`src/logic/deterministic_cascade.py`) → survivor list from the Trades sheet
+- SPX mode: load all S&P 500 constituents from `EveryDay/SPX-constituents.csv` (1-year history) into the SWING-SPX sheet
+- Parallel TradingView chart scraping via Playwright + Chrome profiles (`src/data/tv_scraper.py`, `src/logic/process_survivor.py:scrape_survivor_task`)
+- Writes `data/raw/<date>/` artifacts per ticker: chart png (naked + 90d zoom), datawindow json/csv, news dossier
+- Supports single-ticker override (`--ticker AAPL`) and forced re-scrape (`--force`)
 
 **Usage**:
 ```bash
 # Scrape phase for all survivors
-python run_swing_research.py 2026-07-24
+python run_swing_research.py 2026-08-22
 
 # Scrape phase for specific ticker
 python run_swing_research.py --ticker AAPL
+
+# All S&P 500 constituents (1-year history -> SWING-SPX sheet)
+python run_swing_research.py --spx
 ```
 
 ---
 
 ## Local Research Agent
 
-**Purpose**: Local-LLM triage, news research, and thesis generation for swing trade candidates.
+**Purpose**: Local-LLM triage, news research, and thesis generation for swing trade candidates (free path — no paid APIs).
 
 **Entry Point**: `run_local_research.py`
 
 **Capabilities**:
-- Phase 2C-1: Deterministic prefilter (cheap, no LLM) — ranks all survivors, selects top-N
-- Phase 2C-2: Qwen enrichment (expensive, top-N only) — local LLM + Finnhub + Alpha Vantage + Adanos
+- Phase 2C-1: Deterministic prefilter (`src/logic/data_window_filter.py`) — era-robust, exclusion-first triage (PASS / WATCH / CUT); only action code 20 (REVERSAL BUY) is a validated PASS lane
+- Phase 2C-2: Qwen enrichment (local LLM + Finnhub + Alpha Vantage + Adanos) — strict GBNF `json_schema` triage verdict; local-first, with remote rescue only on local failure
 - Batch Google Sheets update for all ticker decisions
-- Phase 2E: Segregate tickers into `data/triage/<date>/_DEEP_RESEARCH` (send_for_deep_research=True) or `force/` (manual override)
-- Rebuilds `consolidated_results.json` ledger from per-ticker `_thesis.json` files
+- Phase 2E: Segregate tickers into `data/triage/<date>/_DEEP_RESEARCH` (send_for_deep_research=True, cap applied via `deep_research_sort_key` + `rank_pass_tickers`) or `force/` (manual override)
+- Rebuilds `data/<date>/consolidate/consolidated_results.json` ledger from per-ticker `_thesis.json` files (globbing both `out_dir` and the triage folders so reruns stay complete)
 
 **Usage**:
 ```bash
 # Local research for all survivors (after scrape phase)
-python run_local_research.py 2026-07-24
+python run_local_research.py 2026-08-22
 
 # Local research for specific ticker
 python run_local_research.py --ticker AAPL
@@ -117,22 +124,36 @@ python run_local_research.py --regenerate
 
 ## Deep Research Agent
 
-**Purpose**: Paid Minimax-powered deep research on tickers flagged by local triage.
+**Purpose**: Agentic deep research on tickers flagged by local triage. Runs a multi-pass flow: local bull/bear debate → paid (or local-vision) dual-report synthesis → independent report → senior-PM arbitration.
 
-**Entry Point**: `src/logic/deep_research.py`
+**Entry Point**: `run_deep_research.py` (wrapper) / `src/logic/deep_research.py:run_deep_research`
 
 **Capabilities**:
-- Processes tickers in `data/triage/<date>/_DEEP_RESEARCH/` (capped at `DEEP_RESEARCH_CAP`, default 8)
-- Generates enriched thesis with Minimax LLM
-- Writes `_thesis.json` per ticker
-- Social sentiment analysis via Google Grounding
-- Re-ranks candidates using full triage record (contradiction-aware)
+- Processes tickers in `data/triage/<date>/_DEEP_RESEARCH/` (and `force/`), ranked by `rank_pass_tickers`; capped at `DEEP_RESEARCH_CAP` (0 = uncapped, rank still sets order)
+- COST GATE: paid passes run ONLY for tickers the free local triage flagged `send_for_deep_research == true`; an explicit `--ticker` is always run
+- **Debate (local, free)**: Bull vs Bear agents + rebuttals on the full data payload (Data Window, live quote, news dossier, fresh/macro news, social sentiment, GEX, engine math, flags, earnings). Cached to `<ticker>_debate_v2.json`.
+- **Pass 2 (paid or local-vision)**: full multimodal payload (naked + 90d chart images) with tool calling. Provider: Meta AI (`META_AI_API_KEY`) → OpenRouter (`OPENROUTER_MODEL`, default `minimax/minimax-m3`) → fallback to local GPU (Qwen3.8-27B + mmproj vision).
+- **Pass 2-IND**: independent macro & technical thesis (separate gem: `independent_gem.md`)
+- **Pass 2-JUDGE**: local senior-PM Ponytail arbitration cross-examines both reports → final binding directive; appended to both reports
+- Writes per ticker: `<ticker>_gemini_thesis.md`, `_deep_context.json`, `reports/<date>/<ticker>_summary.md` (+ `_independent.md`, `_arbitration.md`), updates the Google Sheet verdict, and runs the local thesis-drift consistency check vs the prior thesis
+- `--local` forces 100% local inference (no remote API calls)
 
 **Usage**:
 ```bash
 # Run deep research on today's triage folder
-python src/logic/deep_research.py 2026-07-24
+python run_deep_research.py 2026-08-22
+
+# Single ticker (auto-scrapes + local-researches first if no artifacts exist)
+python run_deep_research.py --ticker META
+
+# Force tickers through local research first, then deep research
+python run_deep_research.py --force META,AMD
+
+# 100% local (no paid calls)
+python src/logic/deep_research.py 2026-08-22 --local
 ```
+
+**Gem Files** (`gems/`): `revanth-original-gem.md` (engine rules), `revanth-bible.md` (framework), `response.md` (output format), `ponytail_finance.md` (PM discipline), `independent_gem.md` (independent report), `few_shot_template.md`.
 
 ---
 
@@ -146,12 +167,13 @@ python src/logic/deep_research.py 2026-07-24
 - `data/positions.json` is the authoritative record (ticker, side, entry, stop, target, last eval)
 - ENTRY alert → opens a position + spawns a per-ticker monitor thread
 - EXIT alert (TradingView) → closes the position + stops the thread (LLM never authorizes exits)
-- Each monitor polls live quotes every `POSITION_POLL_INTERVAL` sec, hard-checks stop/target deterministically
+- Each monitor polls live quotes every `POSITION_POLL_INTERVAL` sec, hard-checks stop/target deterministically (no LLM); the local LLM only writes a playbook/commentary string
 - On tracker restart, monitors are rehydrated from `data/positions.json`
 
 **Files**:
 - `src/tracking/position_state.py` — atomic load/save/upsert/close of `data/positions.json`
 - `src/tracking/position_monitor.py` — `PositionManager` (queue router) + `PositionMonitor` (per-ticker thread)
+- `src/tracking/sheets_tracker.py` — Google Sheets mirror (Alerts, Trades, SWING-SPX sheets)
 
 **Config**:
 - `POSITION_POLL_INTERVAL` (default 60) — seconds between quote polls per open position
@@ -160,33 +182,52 @@ python src/logic/deep_research.py 2026-07-24
 
 ## LLM Server
 
-**Purpose**: Run local GPU-accelerated LLM inference for trade analysis and triage.
+**Purpose**: Local GPU LLM inference via `llama-cpp-server` (llama-server.exe), OpenAI-compatible API on port 8000.
 
-**Binary**: `llama-cpp-server` (llama-server.exe on Windows)
+**Profiles** (all in `scripts/launchers/`):
+- `start_llm_server.bat` — Qwen3.5-9B-Q8_0, `-c 32768`, `--parallel 3` (~10923 ctx/slot). The tracker/triage default.
+- `start_llm_server_markewt_orch.bat` — Qwen3.5-9B, `-c 130000`, `--parallel 1` (single 130k slot; for very large deep-research payloads; serializes concurrency)
+- `start_llm_server_qwen38_27b_q4.bat` / `_q6.bat` — Qwen3.8-27B UD-Q4/Q6_K_XL + `--mmproj` vision projector, `-c 262144`, `--parallel 2` (131k/slot; needs ~28-32GB VRAM). Used for local vision deep research.
 
-**Configuration**:
-- Model: Qwen3.5-9B-Q8_0.gguf
-- Port: 8000
-- GPU: Automatic CUDA detection (`--ngl 999`)
-- API: llama-server (not FastAPI) with `/health` endpoint
-- `--parallel 4` / `-c 32768` → 8192 tokens/slot
-- `--reasoning off` — no thinking trace, clean JSON output only
+**Common flags**: `--host 127.0.0.1 --port 8000 -fa on -ctk q8_0 -ctv q8_0 -ngl 999 --reasoning off --jinja`. `--reasoning off` is required so clean JSON + GBNF `json_schema` response formats work (no thinking trace to conflict).
 
-**Lifecycle**: Managed by `run_market_orchestrator.py` (auto-start/stop/healthcheck)
+**Sync rule**: `LLM_LOCAL_CONCURRENCY` in `.env` MUST match the server's `--parallel` flag, and per-slot context (`-c / --parallel`) must exceed the largest prompt (~6.2k triage, ~8.6k deep-research).
+
+**Lifecycle**: Managed by `run_market_orchestrator.py` (auto-start/stop/healthcheck); any externally-managed server on port 8000 is adopted instead of started.
 
 ---
 
 ## LLM Clients
 
-**Purpose**: Python wrapper clients for LLM inference across different backends.
+**Purpose**: Python wrapper clients for LLM inference across backends, with a native tool-calling loop.
 
 **Files**: `src/clients/llm_client.py`
 
 **Capabilities**:
-- `query_local_llm()` — llama-cpp-server inference
-- `query_gemini()` — Google Gemini API
-- Supports system prompt + user prompt pattern
-- Handles markdown code fence stripping from model output
+- `query_local_llm()` — single entry point; provider priority: Meta AI (`META_AI_API_KEY`) → OpenRouter (`OPENROUTER_KEY`/`OPENROUTER_MODEL`) → local llama-server (local-first when `use_openrouter=False`)
+- Vision: `image_paths` (base64 PNG, resized to 640px) for multimodal chart analysis
+- Structured output: `json_schema` (GBNF-compiled on the local server) and `json_mode`
+- Local concurrency throttled by `LLM_LOCAL_CONCURRENCY` semaphore
+- **Tool-calling loop** (`use_tools=True`) with these tools: `fetch_earnings_calendar`, `search_web` (Brave+DDG+Parallel), `fetch_finnhub_news`, `fetch_alpaca_news`, `get_realtime_quote`, `fetch_options_chain` (Alpaca), `scrape_tradingview_options_finder` (TV Strategy Finder + volume charts), `fetch_historical_zone_and_regime_analytics`, `run_quantitative_plugin`, `execute_python_code` (sandboxed: pre-loaded `df` 300 bars × 85 indicators, `dw`, numpy/pandas/scipy), `fetch_prior_research`, `detect_candlestick_patterns`
+- `query_qwen()` (`src/clients/qwen_client.py`) — DashScope Qwen API (cloud, optional vision)
+
+---
+
+## Analytics Plugins
+
+**Purpose**: Decoupled quantitative analytics plugins that enrich Data Window snapshots and are callable by the LLM via the `run_quantitative_plugin` tool.
+
+**Files**: `src/plugins/`
+
+| Plugin | File |
+|---|---|
+| Order Flow (volume accumulation, CMF, VP liquidity nodes) | `order_flow_plugin.py` |
+| Earnings History | `earnings_history_plugin.py` |
+| Squeeze Expansion | `squeeze_expansion_plugin.py` |
+| HTF Confluence | `htf_confluence_plugin.py` |
+| Candlestick Patterns (pin bars, shooting stars, gap fill retests, inside days, engulfing) | `candlestick_patterns_plugin.py` |
+
+**Registry**: `plugin_manager.py` — `PluginManager.run_all(ticker, df, dw)` / `enrich_datawindow_with_plugins()`.
 
 ---
 
@@ -194,38 +235,39 @@ python src/logic/deep_research.py 2026-07-24
 
 **Purpose**: External data source integrations.
 
-**Files**:
-- `src/clients/gmail_client.py` — Gmail IMAP (TradingView alert emails)
-- `src/clients/price_client.py` — Real-time price quotes (multiple exchanges)
-- `src/clients/news_client.py` — Alpaca/Finnhub news headlines
-- `src/clients/search_client.py` — Web search via DuckDuckGo / Brave
-- `src/clients/google_grounding_client.py` — Google Grounding (Gemini + web search)
-- `src/clients/finnhub_client.py` — Finnhub API (macro, earnings)
-- `src/clients/alphavantage_client.py` — Alpha Vantage (technical data)
-- `src/clients/adanos_client.py` — Adanos API (social sentiment)
-- `src/clients/earnings_client.py` — Earnings data
-- `src/clients/macro_client.py` — Macro context builder
-- `src/clients/options_client.py` — Options chain data
+**Files** (`src/clients/`):
+- `gmail_client.py` — Gmail IMAP (TradingView alert emails)
+- `price_client.py` — Real-time price quotes (multiple exchanges)
+- `news_client.py` — Alpaca/Finnhub news headlines
+- `news_researcher.py` — Multi-pass local-LLM news synthesis (free)
+- `search_client.py` — Web search via DuckDuckGo / Brave
+- `google_grounding_client.py` — Google Grounding (Gemini + web search)
+- `finnhub_client.py` — Finnhub API (macro, earnings)
+- `alphavantage_client.py` — Alpha Vantage (technical data)
+- `adanos_client.py` — Adanos API (social sentiment; 250 req/month free tier)
+- `earnings_client.py` — Earnings data
+- `macro_client.py` — Macro context builder
+- `options_client.py` — Live options chains (Alpaca snapshot, yfinance fallback) + quote tools for the deep-research LLM
+- `schwab_client.py` — Schwab API (unusual options flow scan); first-time auth via `setup_schwab.py`
+- `kalshi_client.py` — Kalshi prediction markets (RSA-signed requests; key at `kalshi/tradingview.txt`)
+- `qwen_client.py` — DashScope Qwen cloud API
 
 ---
 
-## Data Research Agent
+## Data Layer
 
-**Purpose**: Fetch and analyze market data from TradingView, Alpaca, and other sources.
+**Purpose**: Fetch and normalize market data.
 
-**Capabilities**:
-- Scrape TradingView charts and data via Chrome browser automation (`src/data/tv_scraper.py`)
-- Retrieve historical price data via `src/clients/price_client.py`
-- Analyze technical indicators and market conditions
-- Consolidate data windows for research
-- Fetch real-time news from Alpaca API for sentiment analysis
-- Build macro context for market analysis
+**Files** (`src/data/`):
+- `tv_scraper.py` — TradingView chart scraper (Playwright + Chrome profile): naked + 90d zoom screenshots, Data Window JSON/CSV (300 daily bars × ~85 indicator columns)
+- `tv_options_scraper.py` — TradingView Options Suite: Strategy Finder (spreads with max P/L, R:R, breakevens) → `{symbol}_tv_strategies.json` + volume heatmap/expiration/strike screenshots
+- `csv_adapter.py` — CSV integrity checks + Data Window snapshot conversion, trailing 10d volatility/return
+- `artifact_cache.py` — TTL-based artifact cache under `data/artifacts/<date>/<ticker>/` (quotes, news, options, debate transcripts)
+- `backfill_news.py` — Backfill news for historical dates
+- `import_all_history.py` — Import all historical TradingView alerts from Gmail
 
 **Commands**:
 ```bash
-# Run daily TradingView chart scraping
-python src/data/tv_scraper.py
-
 # Backfill news data for historical dates
 python src/data/backfill_news.py --date 2026-07-09
 
@@ -235,28 +277,39 @@ python src/data/import_all_history.py
 
 ---
 
-## Data Processing Agent
+## Deterministic Logic
 
-**Purpose**: Process and clean market data, generate survivor lists and analysis reports.
+**Purpose**: The exclusion-first math layer. The deterministic filter owns the trading verdict; the LLM never overrides it.
 
-**Capabilities**:
-- Clean and normalize market data from various sources
-- Generate survivor lists of active stocks/tickers
-- Filter and aggregate data windows
-- Process alerts through deterministic cascade logic
-- Create analysis reports and finetune datasets for LLMs
-- Parse TradingView alert emails and extract structured data
+**Files** (`src/logic/`):
+- `data_window_filter.py` — Revanth Data Window pre-filter: parses the TV scrape, decodes action codes/masks, emits PASS/WATCH/CUT + long & short trade plans; `deep_research_sort_key` / `rank_pass_tickers` rank candidates
+- `trigger_gaps.py` — Buy-trigger gap engine: deterministic distance-to-buy per gate (feature flag `TRIGGERS_ENABLED`)
+- `scenario_model.py` — One-step scenario projection (zone/stop/target per candidate price)
+- `watch_ranker.py` — Learned (LightGBM) ordering for WATCH candidates competing for paid slots (flag `RANK_MODEL_ENABLED`; never affects PASS/WATCH/CUT)
+- `response_model.py` — Historical state-response lookup (edge vs baseline buckets)
+- `buy_precedent.py` — Last Code-20 (REVERSAL BUY) performance for a ticker
+- `strike_validator.py` — Deterministic option-structure geometry validation (kills naked-leg/ITM-credit rationalizations)
+- `thesis_drift.py` — Local-only consistency check between today's thesis and the prior one (contradictions vs expected setup changes)
+- `deterministic_cascade.py` — Survivor list builder (screener → cascade → sheet rows)
+- `process_survivor.py` — Per-ticker scrape task + local triage task (`prefilter_ticker`, `generate_thesis_task`)
+- `alert_parser.py` — TradingView alert email → structured dict
+- `deep_research.py` — Deep research pipeline (see Deep Research Agent)
 
-**Commands**:
+---
+
+## ML Models & Training
+
+**Purpose**: Offline trained models used by the deterministic layer.
+
+**Artifacts**: `data/models/` (`watch_ranker.txt` LightGBM + feature manifest, `state_response.json`)
+
+**Commands** (`scripts/ml/`):
 ```bash
-# Process survivor data
-python src/logic/process_survivor.py
+# Train the Watch Ranker (requires the full_v2 corpus checkout)
+CORPUS=full_v2 python scripts/ml/train_watch_ranker.py --out-dir data/models
 
-# Run deep research analysis
-python src/logic/deep_research.py
-
-# Execute deterministic cascade analysis
-python src/logic/deterministic_cascade.py
+# Build the state-response model buckets
+python scripts/ml/build_state_response.py
 ```
 
 ---
@@ -282,20 +335,53 @@ python scripts/attribution/attribution.py
 
 **Purpose**: Download and set up LLM models for local inference.
 
-**Entry Point**: `scripts/llm_setup/`
-
-**Capabilities**:
-- Download GGUF models (Llama, DeepSeek, etc.)
-- Generate finetune datasets for custom models
-- Set up Unsloth for 4-bit quantization
+**Entry Point**: `scripts/dev/`, `scripts/llm_setup/`
 
 **Commands**:
 ```bash
+# Download Qwen3.8-27B GGUF + mmproj vision projector (hf-transfer)
+python scripts/dev/download_qwen38.py
+
+# Download latest Qwen
+python scripts/dev/download_latest_qwen.py
+
 # Download any model by name
 python scripts/llm_setup/download_model.py --model-name "model-name"
 
 # Generate finetune dataset
 python scripts/llm_setup/generate_finetune_data.py
+```
+
+Models land in `models/`; vision deep research requires the matching `mmproj-*.gguf` projector.
+
+---
+
+## Report Evaluation
+
+**Purpose**: Score deep-research reports against fixtures across 4 buckets: (A) Data Window literal transcription, (B) deterministic decode/derivation, (C) measured-claim attribution/citations, (D) posture agreement with the deterministic verdict.
+
+**Commands** (`scripts/eval/`):
+```bash
+python scripts/eval/score_reports.py
+python scripts/eval/validate_report.py
+```
+
+---
+
+## Triage Utilities
+
+**Purpose**: Re-triage and watch-trigger tooling on persisted artifacts.
+
+**Commands** (`scripts/triage/`):
+```bash
+# Re-run data window filter over existing artifacts
+python scripts/triage/retriage_datawindows.py
+
+# Validate trigger-gap computation
+python scripts/triage/validate_trigger_gaps.py
+
+# Print open buy triggers for a date
+python scripts/triage/watch_triggers.py 2026-08-22
 ```
 
 ---
@@ -314,6 +400,12 @@ python scripts/llm_setup/test_llm_call.py
 ```
 Test local LLM connectivity and inference.
 
+### Test LLM Tools
+```bash
+python test_llm_tools.py
+```
+Exercise the tool-calling loop (Kalshi prediction markets + earnings lookup).
+
 ### Fix Imports
 ```bash
 python scripts/dev/update_imports.py
@@ -331,3 +423,22 @@ Regenerate news data for existing alerts.
 python scripts/launchers/llm_watchdog.py
 ```
 Monitor LLM server health and auto-restart if wedged.
+
+---
+
+## Research & Test Scripts
+
+One-off experiments and targeted tests (not part of the daily pipeline). Highlights:
+
+- `scripts/research/run_meta_deep_research.py` — local agentic deep research benchmark (Qwen3.8-27B vision, `force_local=True`)
+- `scripts/research/compare_meta_deep_research.py` — local vs frontier-cloud deep research A/B benchmark
+- `scripts/research/test_llm_code_interpreter.py` — verify the LLM drives `execute_python_code` against `datawindow.csv`
+- `scripts/research/test_vision_chart.py` / `test_vision_targeted_levels.py` — chart vision checks
+- `scripts/research/test_candlestick_patterns_plugin.py` / `test_order_flow_plugin.py` — plugin unit checks
+- `scripts/dev/test_meta_vision.py` / `test_vision_recognition.py` — vision recognition dev tests
+- `test_finnhub.py`, `test_kalshi.py` — client smoke tests
+
+**Unit tests**: `tests/` (pytest) — trigger gaps, scenario model, response model, price client, position state, CSV adapter, config.
+```bash
+pytest
+```

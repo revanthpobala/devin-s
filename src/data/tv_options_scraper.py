@@ -81,7 +81,10 @@ class TVOptionsScraper:
                 btn = page.locator('button[data-tooltip="Options"]').first
 
             if btn.is_visible():
-                btn.click()
+                try:
+                    btn.click(force=True, timeout=5000)
+                except Exception:
+                    page.evaluate("el => el.click()", btn.element_handle())
                 time.sleep(self.load_wait_s)
                 return True
 
@@ -101,7 +104,10 @@ class TVOptionsScraper:
                 clean_target = period_text.lower().replace("next ", "").strip()
                 if clean_target in current_text.lower():
                     return True
-                pill.click()
+                try:
+                    pill.click(force=True, timeout=5000)
+                except Exception:
+                    page.evaluate("el => el.click()", pill.element_handle())
                 time.sleep(1.2)
 
                 # Try multi-level matching for TradingView dropdown items
@@ -225,7 +231,10 @@ class TVOptionsScraper:
         try:
             vol_tab = page.locator(VOLUME_TAB).first
             if vol_tab.is_visible():
-                vol_tab.click()
+                try:
+                    vol_tab.click(force=True, timeout=5000)
+                except Exception:
+                    page.evaluate("el => el.click()", vol_tab.element_handle())
                 time.sleep(2.0)
 
             dialog = page.locator(OPTIONS_DIALOG).first
@@ -234,7 +243,10 @@ class TVOptionsScraper:
             if "heatmap" in chart_types:
                 hm_tab = page.locator(HEATMAP_SUBTAB).first
                 if hm_tab.is_visible():
-                    hm_tab.click()
+                    try:
+                        hm_tab.click(force=True, timeout=5000)
+                    except Exception:
+                        page.evaluate("el => el.click()", hm_tab.element_handle())
                     time.sleep(2.0)
                     hm_path = out_dir / f"{symbol}_options_heatmap.png"
                     if dialog.is_visible():
@@ -248,7 +260,10 @@ class TVOptionsScraper:
             if "by_expiration" in chart_types:
                 exp_tab = page.locator(BY_EXPIRATION_SUBTAB).first
                 if exp_tab.is_visible():
-                    exp_tab.click()
+                    try:
+                        exp_tab.click(force=True, timeout=5000)
+                    except Exception:
+                        page.evaluate("el => el.click()", exp_tab.element_handle())
                     time.sleep(2.0)
                     exp_path = out_dir / f"{symbol}_options_expirations.png"
                     if dialog.is_visible():
@@ -262,7 +277,10 @@ class TVOptionsScraper:
             if "by_strike" in chart_types:
                 strike_tab = page.locator(BY_STRIKE_SUBTAB).first
                 if strike_tab.is_visible():
-                    strike_tab.click()
+                    try:
+                        strike_tab.click(force=True, timeout=5000)
+                    except Exception:
+                        page.evaluate("el => el.click()", strike_tab.element_handle())
                     time.sleep(2.0)
                     strike_path = out_dir / f"{symbol}_options_strikes.png"
                     if dialog.is_visible():
@@ -295,7 +313,10 @@ class TVOptionsScraper:
             # 1. Switch to Strategy finder tab (#spreadex)
             tab = page.locator(STRATEGY_FINDER_TAB).first
             if tab.is_visible():
-                tab.click()
+                try:
+                    tab.click(force=True, timeout=5000)
+                except Exception:
+                    page.evaluate("el => el.click()", tab.element_handle())
                 time.sleep(3.0)
 
             # 2. Configure Filters if requested

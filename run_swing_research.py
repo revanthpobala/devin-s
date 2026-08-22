@@ -3,6 +3,7 @@ import logging
 import os
 from datetime import datetime
 
+import concurrent.futures
 from pathlib import Path
 import pandas as pd
 
@@ -21,6 +22,7 @@ def run_swing_pipeline(
     target_ticker: str | None = None,
     spx_mode: bool = False,
     spx_csv: str | None = None,
+    force: bool = False,
 ):
     logger.info("=" * 60)
     logger.info("STARTING SWING RESEARCH PIPELINE (Scrape Phase)")
@@ -60,11 +62,6 @@ def run_swing_pipeline(
                 }
             )
 
-        if target_ticker:
-            target = target_ticker.upper()
-            matched = [s for s in survivors if s["Ticker"] == target]
-            survivors = matched if matched else [{"Ticker": target, "_sheet_type": "spx"}]
-
         # Batch upload to SWING-SPX Google Sheet tab
         sheets = SheetsTracker()
         logger.info(f"Uploading {len(survivors)} SPX constituents to SWING-SPX sheet for tab '{today_str}'...")
@@ -72,81 +69,64 @@ def run_swing_pipeline(
 
     elif target_ticker:
         logger.info("\n--- PHASE 1: TARGET TICKER OVERRIDE ---")
-        target = target_ticker.upper()
-        logger.info(f"Resolving existing Trades-sheet row for: {target}")
-        cascade = DeterministicCascade(date_str=today_str)
-        all_survivors = cascade.run()
-        matched = [
-            s
-            for s in all_survivors
-            if (s.get("Ticker") or s.get("Symbol") or s.get("ticker") or "").upper() == target
+        ticker = target_ticker.strip().upper()
+        logger.info(f"Resolving existing Trades-sheet row for: {ticker}")
+
+        row_idx = None
+        sheet_type = "trades"
+        try:
+            tracker = SheetsTracker()
+            tracker.connect()
+            date_tab = today_str
+            headers, rows = tracker.get_raw_alerts_from_trades_tracker(date_tab)
+            for idx, r in enumerate(rows):
+                if r.get("Ticker") == ticker:
+                    row_idx = idx + 2
+                    logger.info(f"Found {ticker} on '{date_tab}' Trades tab at row {row_idx}")
+                    break
+            if row_idx is None:
+                logger.warning(f"{ticker} not found in today's Trades sheet; decision will be saved locally only.")
+        except Exception as e:
+            logger.warning(f"Failed to check Trades sheet for {ticker}: {e}; continuing local-only.")
+
+        survivors = [
+            {
+                "Trade ID": f"SWING-{today_str}-{ticker}",
+                "Symbol": ticker,
+                "Ticker": ticker,
+                "source": "cli_override",
+                "row_index": row_idx,
+                "_sheet_type": sheet_type,
+            }
         ]
-        survivors = matched if matched else [{"ticker": target}]
-        if matched:
-            logger.info(
-                f"Found {target} at sheet row {matched[0].get('_row_index')} — Sheets update enabled."
-            )
-        else:
-            logger.warning(
-                f"{target} not found in today's Trades sheet; decision will be saved locally only."
-            )
     else:
-        logger.info("\n--- PHASE 1: DETERMINISTIC CASCADE ---")
-        cascade = DeterministicCascade(date_str=today_str)
+        logger.info("\n--- PHASE 1: RUNNING DETERMINISTIC CASCADE ---")
+        cascade = DeterministicCascade(target_date=today_str)
         survivors = cascade.run()
 
     if not survivors:
-        logger.info("No survivors found today. Pipeline finished.")
+        logger.info("No survivors found. Pipeline terminating.")
         return
 
     logger.info(f"Pipeline advancing with {len(survivors)} survivor(s).")
-
     out_dir = config.BASE_DIR / "data" / "raw" / today_str
     out_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_path = out_dir / "survivors.json"
-    if not target_ticker and manifest_path.exists():
-        try:
-            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(existing, list):
-                existing_tickers = {
-                    (s.get("Ticker") or s.get("ticker") or s.get("Symbol") or "").upper()
-                    for s in survivors
-                }
-                for item in existing:
-                    t = (item.get("Ticker") or item.get("ticker") or item.get("Symbol") or "").upper()
-                    if t and t not in existing_tickers:
-                        survivors.append(item)
-                        existing_tickers.add(t)
-        except Exception as e:
-            logger.warning(f"Failed to merge existing survivors.json: {e}")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(survivors, f, indent=4)
+    logger.info("Wrote survivor manifest -> %s", manifest_path)
 
-    try:
-        manifest_path.write_text(json.dumps(survivors, indent=2), encoding="utf-8")
-        logger.info(f"Wrote survivor manifest -> {manifest_path}")
-    except Exception as e:
-        logger.error(f"Failed to write survivors.json: {e}")
+    # 2. Assign Chrome profiles across survivors
+    CHROME_PROFILES = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    if not CHROME_PROFILES:
+        CHROME_PROFILES = ["tv_chrome_profile_1"]
+    logger.info(f"Using {len(CHROME_PROFILES)} existing Chrome profile(s): {CHROME_PROFILES}")
 
-    # 2. Setup ThreadPoolExecutor and Chrome Profiles
-    import concurrent.futures
+    num_workers = min(len(survivors), len(CHROME_PROFILES), 4)
 
-    # Fixed, pre-logged-in Chrome profiles (in the exact order requested). We
-    # REUSE these on disk — never clone/overwrite them, or we'd blow away the
-    # TradingView logins the user set up once.
-    CHROME_PROFILES = [
-        "tv_chrome_profile_1",
-        "tv_chrome_profile_2",
-        "tv_chrome_profile_4",
-        "tv_chrome_profile_3",
-        "tv_chrome_profile_5",
-    ]
-
-    scraper_workers = int(os.getenv("SCRAPER_WORKERS", "5"))
-    num_workers = min(scraper_workers, len(survivors), len(CHROME_PROFILES))
-    logger.info(f"Using {num_workers} existing Chrome profile(s): {CHROME_PROFILES[:num_workers]}")
-
-    # Just clean stale Singleton locks from each reused profile (do NOT clone).
-    for profile_name in CHROME_PROFILES[:num_workers]:
+    # Remove stale singleton lock files before launching parallel workers
+    for profile_name in CHROME_PROFILES:
         target_profile = config.BASE_DIR / profile_name
         if target_profile.exists():
             for item in target_profile.rglob("*"):
@@ -162,6 +142,8 @@ def run_swing_pipeline(
     )
     from src.logic.process_survivor import scrape_survivor_task
 
+    is_force = force or bool(target_ticker)
+
     scrape_futures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         for index, survivor in enumerate(survivors):
@@ -176,6 +158,7 @@ def run_swing_pipeline(
                     worker_id,
                     lookback_days=lookback_days,
                     chrome_profile=profile,
+                    force=is_force,
                 )
             )
 
@@ -207,6 +190,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ticker", type=str, help="Run only on a specific ticker")
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force re-scrape even if screenshots/datawindow already exist",
+    )
+    parser.add_argument(
         "--spx",
         action="store_true",
         help="Run scrape phase for all S&P 500 constituents with 1-year history logged to SWING-SPX sheet",
@@ -235,4 +223,5 @@ if __name__ == "__main__":
         target_ticker=target_ticker,
         spx_mode=args.spx,
         spx_csv=args.spx_csv,
+        force=args.force,
     )

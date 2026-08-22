@@ -45,7 +45,8 @@ SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 
 class TVScraper:
     def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None):
-        self.chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/")
+        self.chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/jPAQSlZC/")
+        self.plain_chart_url = os.getenv("TV_PLAIN_CHART_URL", "https://www.tradingview.com/chart/92oElFWJ/")
         # Store Chrome profile locally or read from TV_CHROME_PROFILE_DIR
         env_profile = os.getenv("TV_CHROME_PROFILE_DIR")
         if env_profile and os.path.exists(env_profile):
@@ -411,12 +412,41 @@ class TVScraper:
                 f"realvol_10d={realvol_10d}, ret_10d={ret_10d})"
             )
 
-            # ── 4. TradingView Options Suite (Strategies & Heatmap) ───────────────
+            # ── 3. Plain Chart Screenshot (Clean Naked Price Action) ─────────────
+            plain_url = f"{self.plain_chart_url}?symbol={symbol}"
+            logger.info(f"Navigating to Plain Chart layout: {plain_url}")
             try:
-                from src.data.tv_options_scraper import TVOptionsScraper
-                TVOptionsScraper().scrape_options_suite(page, safe_symbol, ticker_dir)
-            except Exception as opt_err:
-                logger.warning(f"Options Suite capture failed for {symbol}: {opt_err}")
+                page.goto(plain_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_selector("canvas", timeout=20000)
+                time.sleep(3.0)  # let plain candles render
+
+                # Set 3-month zoom range for consistent geometry
+                try:
+                    page.keyboard.press("Alt+r")
+                    time.sleep(0.5)
+                    page.wait_for_selector(GOTO_BTN, state="visible", timeout=3000)
+                    page.click(GOTO_BTN, timeout=3000)
+                    try:
+                        page.click('button:has-text("Custom range")', timeout=1500)
+                    except Exception:
+                        pass
+                    if page.is_visible(GOTO_START):
+                        page.fill(GOTO_START, zoom_start_date, timeout=3000)
+                        page.fill(GOTO_END, datetime.now().strftime("%Y-%m-%d"), timeout=3000)
+                        page.click(GOTO_SUBMIT, timeout=3000)
+                        time.sleep(2.0)
+                except Exception as e_goto:
+                    logger.debug(f"Plain chart range jump bypassed: {e_goto}")
+
+                self._pan_zoom_chart(page, move_right=4, zoom_out=0)
+                page.keyboard.press("Escape")
+                time.sleep(0.5)
+
+                plain_path = ticker_dir / f"{safe_symbol}_chart_plain.png"
+                page.screenshot(path=str(plain_path))
+                logger.info(f"Saved plain chart screenshot to {plain_path}")
+            except Exception as e_plain:
+                logger.warning(f"[{symbol}] Plain chart capture failed: {e_plain}")
 
             context.close()
             logger.info(f"Finished capturing {symbol}.")

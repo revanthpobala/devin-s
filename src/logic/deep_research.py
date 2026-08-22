@@ -431,6 +431,68 @@ def _format_unmasked_recency_block(dw_dict: dict) -> str:
     return "\n".join(lines)
 
 
+def run_ponytail_pm_review(
+    ticker: str,
+    date_str: str,
+    draft_thesis: str,
+    dw_dict: dict,
+) -> str:
+    """
+    Pass 2B: Senior Quantitative PM Ponytail Review & Due Diligence.
+    Audits the generated thesis and trades against Ponytail Finance rules:
+    - R:R & Chase Audit (Flag R:R < 1.5:1).
+    - Regime-Matched Structure & Downside Risk Audit (4-leg Iron Condor vs 2-leg spread vs Shares).
+    - Single Point of Failure (The ONE Thing).
+    - Actionable adjustments for the trader.
+    """
+    ponytail_file = config.BASE_DIR / "gems" / "ponytail_finance.md"
+    ponytail_rules = ponytail_file.read_text(encoding="utf-8") if ponytail_file.exists() else ""
+
+    pm_sys_prompt = (
+        f"You are a battle-tested Senior Quantitative Portfolio Manager executing the Ponytail Finance Review.\n\n"
+        f"{ponytail_rules}\n\n"
+        f"Your task is to ruthlessly critique the draft thesis for {ticker} and provide due-diligence feedback.\n"
+        f"Output in concise markdown format with these exact 4 sections:\n"
+        f"### 1. R:R & Entry Audit\n"
+        f"- Is at-market R:R < 1.5:1? Is price chased above the long zone? (If so, mandate limit/stalk/skip).\n"
+        f"### 2. Structure & Downside Risk Audit\n"
+        f"- Does the structure properly cap downside risk? (Audit if 4-leg Iron Condor / Box is superior for Darvas box coiling vs 2-leg spread for trend).\n"
+        f"### 3. The ONE Thing Invalidation\n"
+        f"- State the single binary condition that kills the trade.\n"
+        f"### 4. Senior PM Final Recommendation & Adjustments\n"
+        f"- Final verdict (ENTER / STALK / SKIP) with dense, bulleted strike/level adjustments."
+    )
+
+    close_price = dw_dict.get("close") or dw_dict.get("Time")
+    poc = dw_dict.get("VP POC") or dw_dict.get("Volume Profile POC")
+    darvas_top = dw_dict.get("Darvas Box Top")
+    darvas_bot = dw_dict.get("Darvas Box Bottom")
+
+    pm_user_prompt = (
+        f"TICKER: {ticker} | DATE: {date_str}\n"
+        f"SPOT CLOSE: {close_price}\n"
+        f"KEY DATA: VP POC={poc}, Darvas Top={darvas_top}, Darvas Bottom={darvas_bot}, "
+        f"Buy Score={dw_dict.get('Buy Score')}, Sell Score={dw_dict.get('Sell Score')}, "
+        f"IV Rank={dw_dict.get('IV Rank Pct')}\n\n"
+        f"--- DRAFT THESIS TO AUDIT ---\n{draft_thesis}"
+    )
+
+    try:
+        logger.info(f"[{ticker}] Running Pass 2B — Senior PM Ponytail Due-Diligence Audit...")
+        review_output = query_local_llm(
+            system_prompt=pm_sys_prompt,
+            user_prompt=pm_user_prompt,
+            json_mode=False,
+            use_openrouter=False,
+            use_tools=False,
+            disable_thinking=True,
+            max_tokens=2048,
+        )
+        return review_output.strip()
+    except Exception as e:
+        logger.warning(f"[{ticker}] Ponytail PM Review failed: {e}")
+        return ""
+
 
 def run_deep_research(date_str, target_ticker=None, force_local=False):
     """
@@ -458,71 +520,69 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
     chart_files = []
 
     if target_ticker:
-        safe_target = target_ticker.replace(":", "_")
-        tdir = _triage_subdir_for(target_ticker)
-        target_file = (tdir or (raw_dir / safe_target) or raw_dir) / f"{safe_target}_chart.png"
-        if not target_file.exists():
-            target_file = raw_dir / f"{safe_target}_chart.png"
-        if target_file.exists():
-            chart_files.append(str(target_file))
-        else:
-            search_pattern = str(
-                config.BASE_DIR / "data" / "raw" / "**" / f"{safe_target}_chart.png"
-            )
-            all_matches = glob.glob(search_pattern, recursive=True)
-            if all_matches:
-                all_matches.sort(key=os.path.getmtime, reverse=True)
-                chart_files.append(all_matches[0])
-                logger.info(f"[{target_ticker}] Found existing screenshot at {all_matches[0]}")
+        target_tickers = [t.strip() for t in target_ticker.split(",") if t.strip()]
+        for single_ticker in target_tickers:
+            safe_target = single_ticker.replace(":", "_")
+            tdir = _triage_subdir_for(single_ticker)
+            target_file = (tdir or (raw_dir / safe_target) or raw_dir) / f"{safe_target}_chart.png"
+            if not target_file.exists():
+                target_file = raw_dir / f"{safe_target}_chart.png"
+            if target_file.exists():
+                chart_files.append(str(target_file))
             else:
-                logger.info(
-                    f"[{target_ticker}] Screenshot not found. Running scrape + local research..."
+                search_pattern = str(
+                    config.BASE_DIR / "data" / "raw" / "**" / f"{safe_target}_chart.png"
                 )
-                try:
-                    base_cmd = [config.get_python_exe()]
-                    subprocess.run(
-                        base_cmd
-                        + [
-                            str(config.BASE_DIR / "run_swing_research.py"),
-                            "--ticker",
-                            target_ticker,
-                        ],
-                        check=True,
+                all_matches = glob.glob(search_pattern, recursive=True)
+                if all_matches:
+                    all_matches.sort(key=os.path.getmtime, reverse=True)
+                    chart_files.append(all_matches[0])
+                    logger.info(f"[{single_ticker}] Found existing screenshot at {all_matches[0]}")
+                else:
+                    logger.info(
+                        f"[{single_ticker}] Screenshot not found. Running scrape + local research..."
                     )
-                    # Scrape phase no longer runs the local-LLM research, so run it
-                    # separately so deep research has the news dossier + triage.
-                    subprocess.run(
-                        base_cmd
-                        + [
-                            str(config.BASE_DIR / "run_local_research.py"),
-                            "--ticker",
-                            target_ticker,
-                        ],
-                        check=True,
-                    )
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    new_matches = glob.glob(
-                        str(
-                            config.BASE_DIR
-                            / "data"
-                            / "raw"
-                            / today_str
-                            / "**"
-                            / f"{target_ticker}_chart.png"
-                        ),
-                        recursive=True,
-                    )
-                    if new_matches:
-                        new_matches.sort(key=os.path.getmtime, reverse=True)
-                        chart_files.append(new_matches[0])
-                    else:
-                        logger.error(
-                            f"[{target_ticker}] Scraper finished but failed to generate screenshot."
+                    try:
+                        base_cmd = [config.get_python_exe()]
+                        subprocess.run(
+                            base_cmd
+                            + [
+                                str(config.BASE_DIR / "run_swing_research.py"),
+                                "--ticker",
+                                single_ticker,
+                            ],
+                            check=True,
                         )
-                        return
-                except Exception as e:
-                    logger.error(f"[{target_ticker}] Error running scraper: {e}")
-                    return
+                        subprocess.run(
+                            base_cmd
+                            + [
+                                str(config.BASE_DIR / "run_local_research.py"),
+                                "--ticker",
+                                single_ticker,
+                            ],
+                            check=True,
+                        )
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        new_matches = glob.glob(
+                            str(
+                                config.BASE_DIR
+                                / "data"
+                                / "raw"
+                                / today_str
+                                / "**"
+                                / f"{safe_target}_chart.png"
+                            ),
+                            recursive=True,
+                        )
+                        if new_matches:
+                            new_matches.sort(key=os.path.getmtime, reverse=True)
+                            chart_files.append(new_matches[0])
+                        else:
+                            logger.error(
+                                f"[{single_ticker}] Scraper finished but failed to generate screenshot."
+                            )
+                    except Exception as e:
+                        logger.error(f"[{single_ticker}] Error running scraper: {e}")
     else:
         # Batch mode: the local-research pipeline already MOVED the
         # deep-research-flagged tickers (send_for_deep_research == True) into
@@ -565,6 +625,14 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             if matches:
                 chart_files.append(matches[0])
 
+        # Fallback: if triage has no flagged tickers, discover all chart files directly in raw_dir
+        if not chart_files and raw_dir.exists():
+            for sub_p in sorted(raw_dir.glob("*/")):
+                if sub_p.is_dir() and not sub_p.name.startswith((".", "NASDAQ_", "NYSE_", "BATS_", "AMEX_")):
+                    t_matches = glob.glob(str(sub_p / "*_chart.png"))
+                    if t_matches:
+                        chart_files.append(t_matches[0])
+
         chart_files = list(dict.fromkeys(chart_files))
 
     if not chart_files:
@@ -573,6 +641,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
     original_gem_path = config.BASE_DIR / "gems" / "revanth-original-gem.md"
     response_path = config.BASE_DIR / "gems" / "response.md"
     bible_path = config.BASE_DIR / "gems" / "revanth-bible.md"
+    ponytail_path = config.BASE_DIR / "gems" / "ponytail_finance.md"
+    independent_gem_path = config.BASE_DIR / "gems" / "independent_gem.md"
 
     if not original_gem_path.exists() or not response_path.exists() or not bible_path.exists():
         logger.error("Cannot find Deep Research Gem files.")
@@ -584,6 +654,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         response_text = f.read()
     with open(bible_path, "r", encoding="utf-8") as f:
         bible_text = f.read()
+    ponytail_text = ponytail_path.read_text(encoding="utf-8") if ponytail_path.exists() else ""
+    independent_gem_text = independent_gem_path.read_text(encoding="utf-8") if independent_gem_path.exists() else ""
 
     few_shot_example = ""
     example_path = config.BASE_DIR / "gems" / "few_shot_template.md"
@@ -592,15 +664,22 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             few_shot_example = f.read()
 
     # Move invariant prompt blocks into system_prompt for prefix caching across all tickers in the run
-    system_prompt = f"{gem_text}\n\n--- REVANTH BIBLE (Rules & Framework) ---\n{bible_text}\n\n--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}\n\n{response_text}"
+    system_prompt = f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n{gem_text}\n\n--- REVANTH BIBLE (Rules & Framework) ---\n{bible_text}\n\n--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}\n\n{response_text}"
+    system_prompt_independent = f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n{independent_gem_text}\n\n{response_text}"
 
-    logger.info(f"Starting Agentic Deep Research Phase for {len(chart_files)} tickers...")
+    logger.info(f"Starting Agentic Deep Research Phase for {len(chart_files)} tickers (Dual Report Mode: Proprietary + Independent)...")
 
     _drift_checker = ThesisDriftChecker()
     macro_news = _pull_macro_news(date_str)
 
+    seen_tickers = set()
     for chart_path in chart_files:
-        ticker = Path(chart_path).name.replace("_chart.png", "")
+        raw_name = Path(chart_path).name.replace("_chart.png", "")
+        ticker = raw_name.split("_")[-1].upper()
+        if ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
+
         # Artifacts live in the ticker subfolder (or deep-research folder after segregation)
         ticker_raw_dir = raw_dir / ticker
         ticker_raw_dir.mkdir(parents=True, exist_ok=True)
@@ -616,6 +695,13 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 dw_path = raw_dir / ticker / f"{ticker}_datawindow.json"
             elif (raw_dir / f"{ticker}_datawindow.json").exists():
                 dw_path = raw_dir / f"{ticker}_datawindow.json"
+
+        csv_path = tdir / f"{ticker}_datawindow.csv"
+        if not csv_path.exists():
+            if (raw_dir / ticker / f"{ticker}_datawindow.csv").exists():
+                csv_path = raw_dir / ticker / f"{ticker}_datawindow.csv"
+            elif (raw_dir / f"{ticker}_datawindow.csv").exists():
+                csv_path = raw_dir / f"{ticker}_datawindow.csv"
 
         dossier_path = tdir / f"{ticker}_news_research.md"
         if not dossier_path.exists():
@@ -775,15 +861,17 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                     return str(p)
             return None
 
-        if force_local:
-            zoom_p = _get_image_path(f"{ticker}_chart_zoom.png")
-            chart_p = _get_image_path(f"{ticker}_chart.png")
-            image_paths = [zoom_p or chart_p]
-            image_paths = [p for p in image_paths if p and os.path.exists(p)]
+        plain_p = _get_image_path(f"{ticker}_chart_plain.png")
+        zoom_p = _get_image_path(f"{ticker}_chart_zoom.png")
+        wide_p = _get_image_path(f"{ticker}_chart.png")
+
+        # Multimodal image pair: Plain (clean naked price action) + Zoom (indicator & structural overlay)
+        if plain_p and zoom_p:
+            image_paths = [plain_p, zoom_p]
+        elif zoom_p:
+            image_paths = [zoom_p]
         else:
-            chart_p = _get_image_path(f"{ticker}_chart.png")
-            zoom_p = _get_image_path(f"{ticker}_chart_zoom.png")
-            image_paths = [p for p in (chart_p, zoom_p) if p and os.path.exists(p)]
+            image_paths = [p for p in (wide_p, zoom_p) if p and os.path.exists(p)]
 
         # ── FRESH, DATED NEWS (live pull so the paid pass never sees stale macro) ──
         fresh_news = _pull_fresh_news(ticker, date_str)
@@ -1045,14 +1133,14 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         """
 
         bull_sys = (
-            "You are a rigorous, evidence-based Bullish Technical & Fundamental Analyst. "
+            "You are a rigorous, evidence-based Bullish Technical & Fundamental Analyst operating under Ponytail Finance rules (Occam's Razor, minimal bloat, hard math). "
             "Your job is to identify valid positive drivers, catalyst timelines, and support levels for this ticker. "
             "CRITICAL RULES: Every claim must cite an exact Data Window field name or verified news item. "
             "Never fabricate moving average levels or invent technical indicators. Never contradict the pre-decoded Section 2d-1 engine math. "
             "Output your bull case in a concise, punchy markdown format."
         )
         bear_sys = (
-            "You are a skeptical, disciplined Bearish Technical & Fundamental Analyst. "
+            "You are a skeptical, disciplined Bearish Technical & Fundamental Analyst operating under Ponytail Finance rules (Occam's Razor, minimal bloat, hard math). "
             "Your job is to identify risks, overhead supply resistance, catalyst timing risks, and valuation/extension headwinds. "
             "CRITICAL RULES: Every claim must cite an exact Data Window field name or verified news item. "
             "Never fabricate moving average levels or invent technical indicators. Never contradict the pre-decoded Section 2d-1 engine math. "
@@ -1198,27 +1286,89 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         {debate_block}
 
-        ## 2B. LATEST CHART STATE (from Pass 1)
+        ## 2B. MULTIMODAL CHART STATE (2 High-Resolution Vision Images Provided)
+        - Image 1 (Plain Chart: `{ticker}_chart_plain.png`): Clean naked Japanese candlesticks & raw volume sub-pane. Use this to visually identify swing pivot highs/lows, rejection tails (pin bars), and gap boundaries without indicator clutter.
+        - Image 2 (Indicator Overlay: `{ticker}_chart_zoom.png`): 90-day technical view displaying Darvas compression boxes, Volume Profile POC/VAH/VAL, and Anchored VWAPs.
 
-        {options_block}
+        --- 2g. QUANTITATIVE SANDBOX & 1-YEAR HISTORICAL DATA DICTIONARY (`df` & `dw`) ---
+        The quantitative sandbox (`execute_python_code`) automatically pre-loads:
+        - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`)
+        - `dw`: Latest closed bar dictionary (JSON File: `{dw_path}`)
+        - `np`, `pd`, `scipy`, `stats`, `math`, `json`, `datetime`
         
-        You have access to LIVE TOOLS for fundamental discovery and derivatives strategy execution. BEFORE you finalize the thesis you MUST call them:
+        📊 COLUMN HEADERS & DEFINITIONS IN `df`:
+        1. OHLCV & Volume:
+           - `time` (bar date), `open`, `high`, `low`, `close`, `Volume`
+           - `RVOL Vs Avg` (Relative Volume vs 20-day baseline; >1.5 = institutional surge)
+           - `Z Volume` (Normalized volume Z-score)
+        2. Moving Averages & Trend Anchors:
+           - `Sprint Line EMA` (Fast 8 EMA), `Hull Baseline HMA` (Hull moving average baseline)
+           - `MA 20 Fast`, `MA 50 Mid`, `MA 200 Slow`
+           - `Weinstein MA 150` (150-day SMA, Stan Weinstein Stage Analysis baseline)
+           - `Golden Cross`, `Death Cross` (50/200 MA cross flags: 1/0)
+        3. Multi-Factor Scores & Market Stages:
+           - `Buy Score` (0-100 composite score), `Sell Score` (0-100)
+           - `Buy Sigma Evidence`, `Sell Sigma Evidence` (Statistical sigma evidence for directional bias)
+           - `Stage 1 Base 2 Up 3 Top 4 Down` (1=Base/Accumulation, 2=Advancing Uptrend, 3=Top/Distribution, 4=Declining Downtrend, 5=Recovery)
+           - `Stage Age Bars` (Number of bars elapsed in current stage)
+           - `Action Long Code` (8=Watch, 10=Wait, 16=Blow-off Exhaustion, 20=Reversal, etc.)
+           - `Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz` (0=Healthy, 1=Extended, 2=Climax, 3=Distribution, 4=Down, 5=Ignition, 6=Squeeze)
+        4. Trade Geometry & Structural Zones:
+           - `Long Entry Zone Bot`, `Long Entry Zone Top` (Bounding box of low-risk buyer defense)
+           - `Long Stop Loss`, `Long Target`, `Long Target T1 Waypoint`
+           - `Short Entry Zone Bot`, `Short Entry Zone Top`, `Short Stop Loss`, `Short Target`
+           - `Long RR At Market` (Current at-market Reward-to-Risk ratio), `RR To Target` (Zone R:R)
+           - `Entry At Market 0No 1L 2S 3Both` (0=No market entry, 1=Long at market OK)
+           - `Long Ignition Fresh Breakout` (Flag: 1 if fresh breakout ignition bar)
+        5. Extension, Momentum & Z-Scores:
+           - `Ext Pct vs MA200` ((Close - MA200)/MA200 * 100; >25-60% = negative expectancy exclusion)
+           - `Exhaustion Gradient` (Slope of overextension), `Ext Z Self Relative` (Z-score vs distribution)
+           - `Z Velocity` (>2.0 indicates blow-off velocity), `Z RSI`, `Z Elasticity`
+           - `Trend Bars Up` (Consecutive bars closing higher)
+        6. Volume Profile & Anchored VWAPs:
+           - `Darvas Box Top` (Upper boundary of recent consolidation base)
+           - `VP POC` (Point of Control), `VP VAH` (Value Area High), `VP VAL` (Value Area Low)
+           - `VP HVN Above`, `VP HVN Below` (High Volume Nodes)
+           - `AVWAP Support`, `AVWAP Resistance` (Anchored VWAP from key swing pivots)
+        7. Volatility, Implied Energy & Options State:
+           - `HV20 Ann Pct` (20-day annualized Historical Realized Volatility)
+           - `Energy IV30 Ann Pct` (30-day annualized Implied Volatility)
+           - `Energy IV Rank Pct` (IV percentile rank 0-100%)
+           - `Energy IV HV Spread` (IV minus HV; positive = IV rich / premium selling, negative = IV cheap / debit buying)
+           - `Energy State 3 Exp 2 Warm 1 Sqz 0 Dorm` (3=Expansion, 2=Warming, 1=Squeeze, 0=Dormant)
+           - `Exp Move Pct 21b` (21-bar Expected Move percentage)
+           - `ADX 14`, `DMI DI Plus`, `DMI DI Minus`
+        8. Bitmasks & Signal Packs:
+           - `Signal Pack` (Bit 2 = Fade Gate active/inactive)
+           - `Reversal Pattern Mask`, `Bear Warning Mask`, `Weak Level Mask`
+           - `MTF Long Short Pack` (Multi-Timeframe alignment)
+
+        You have access to LIVE TOOLS for fundamental discovery, pattern recognition, and quantitative execution:
+        - `detect_candlestick_patterns` to scan the 1-year OHLCV dataset for high-conviction Pin Bars (rejection wicks), Gap Retests, Inside Day compressions, and Engulfing patterns.
         - `fetch_finnhub_news` and `fetch_alpaca_news` for the latest ticker-specific news.
         - `search_web` for broader macro or catalyst context.
         - `fetch_options_chain` for real-time Greeks, multi-horizon strikes (both short-dated and LEAPS with min_dte=120, max_dte=365+), and exact contract quotes.
         - `scrape_tradingview_options_finder` to dynamically search TradingView's proprietary Strategy Finder for pre-computed spreads matching your desired prediction period ('Next month', 'Next 3 months', 'Next 6 months') and expected move direction.
+        - `run_quantitative_plugin` to run specialized analytics ('candlestick_patterns', 'order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', or 'all').
+        - `fetch_prior_research` to retrieve our most recent prior research report from reports/<date>/<ticker>_summary.md within the last 14 days. Use this to audit active stalk states, track thesis evolution, and check whether prior limit orders or triggers have played out.
+        - `execute_python_code`: Act as Lead Quantitative Trader. You MUST write and execute a Python script to run a Monte Carlo simulation (10,000 paths) using the provided IV30 and HV20 to calculate the exact mathematical probability of hitting your Profit Target vs your Stop Loss before finalizing your Options Plan. CRITICAL: Your python code MUST be concise. Use arrays and for-loops to test multiple horizons or targets. DO NOT unroll scenarios into 50+ lines of repeated code. Also formulate any other open-ended mathematical hypothesis tailored to this specific ticker and market regime (e.g., historical setup backtesting on `df`, volume absorption flow, volatility risk premium $IV - HV$, or options $EV$ / spread payoff math).
+
+        --- PRIOR RESEARCH & PATTERN SYNTHESIS WORKFLOW ---
+        When `fetch_prior_research` is called alongside `detect_candlestick_patterns`:
+        1. **Stalk vs Trigger Audit:** Audit whether price tested or rejected the prior session's stalk limit, entry zone, or breakout trigger level.
+        2. **Fresh Rejection Wicks & Gap Retests:** Check if a fresh Pin Bar (rejection wick) or Gap Retest formed today at the key floor that confirms buyer defense and resolves the stalk into an actionable entry.
+        3. **Tactical Stop Refinement:** If buyer defense is confirmed by a lower rejection wick, anchor the updated tactical stop directly below the rejection wick low.
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
-        assume any prior read is correct. Then synthesize the FINAL thesis and
-        EMIT a concrete trade plan with ALL of:
-        - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected
-            14-120 day trading range, justified from the chart + live data.
-        - OPTIONS PLAN (DUAL HORIZON): Evaluate both Tactical Swing (21-45 DTE) AND Multi-Quarter / LEAPS (90-365+ DTE, e.g. Deep ITM Calls with Delta 0.70-0.85) when long-term fundamental catalysts justify multi-quarter compounding without rapid theta decay.
-        - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) derived from the live chain
-            and the expected range.
-        - CONVICTION and the risk/reward rationale.
+        assume any prior read is correct. Act as Senior Quantitative Portfolio Manager and EMIT a single-pass, high-conviction trade thesis:
+        - ACCURATE STRUCTURAL R:R: Calculate mathematical R:R as `(Target 1 - Entry) / (Entry - Tactical Stop)`. If price is testing a defended structural floor (e.g. Doji low, Gap floor, MA20) with tactical R:R >= 2.0, evaluate it as an actionable floor-defense limit entry rather than blindly disqualifying it on the distant macro zone.
+        - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected 14-120 day trading range.
+        - OPTIONS PLAN (DUAL HORIZON): Evaluate both Tactical Swing (21-45 DTE credit/debit) AND Multi-Quarter / LEAPS (90-365+ DTE Deep ITM Calls). If IV Rank > 70% and IV/HV spread is positive, explicitly favor defined-risk credit spreads (e.g. Bull Put Spread) over buying expensive extrinsic premium.
+        - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) with strict binary invalidation ("The ONE Thing").
+        - CONVICTION and risk/reward rationale.
         
-        CRITICAL: Emit your final Portfolio Manager Thesis EXACTLY as instructed in the system prompt format. You MUST draw the ASCII art explicitly.
+        CRITICAL: Emit your final Portfolio Manager Thesis EXACTLY as instructed in the system prompt format.
+        CRITICAL: At the very end of your response, you MUST append a strict JSON array of falsifiable predictions with exact probabilities (the "SUPERFORECASTING PREDICTIONS" block) exactly as shown in the example.
         """
 
         use_remote = not force_local
@@ -1275,29 +1425,45 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 if match_header and match_header.start() > 0:
                     clean_response = clean_response[match_header.start():].strip()
 
+                # Emit final clean report directly in 1-pass Senior PM quality
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write(clean_response)
 
                 try:
-                    _drift_checker.check_and_write(ticker, date_str, response, out_dir)
+                    _drift_checker.check_and_write(ticker, date_str, clean_response, out_dir)
                 except Exception as e:
                     logger.warning(f"[{ticker}] Thesis drift check failed: {e}")
 
-                response_for_parse = response
+                response_for_parse = clean_response
 
+                # Parse metrics via regex for Google Sheets tracker
                 # Parse metrics via regex for Google Sheets tracker
                 verdict_match = re.search(
                     r"\*\*Verdict:\*\*\s*(.*?)(?=\s*·|\s*\*\*Conviction|$)", response_for_parse, re.IGNORECASE
                 )
+                if not verdict_match:
+                    verdict_match = re.search(
+                        r"\|\s*[*]*Equity[^\*|]*[*]*\s*\|\s*[*]*([A-Z\s\(\)]+?)[*]*\s*\|", response_for_parse, re.IGNORECASE
+                    )
+                if not verdict_match:
+                    verdict_match = re.search(
+                        r"\|\s*[*]*Options[^\*|]*[*]*\s*\|\s*[*]*([A-Z\s\(\)]+?)[*]*\s*\|", response_for_parse, re.IGNORECASE
+                    )
+
                 conviction_match = re.search(
-                    r"\*\*Conviction[^\*]*:\*\*\s*([\d\.]+)(?:/10)?", response_for_parse, re.IGNORECASE
+                    r"\*\*Conviction[^\*]*:\*\*\s*([\d\.]+)(?:\s*/\s*10)?", response_for_parse, re.IGNORECASE
                 )
+                if not conviction_match:
+                    conviction_match = re.search(
+                        r"\|\s*([\d\.]+)\s*/\s*10\s*\|", response_for_parse, re.IGNORECASE
+                    )
+
                 thesis_match = re.search(
                     r"\*\*The Thesis in 2 Sentences:\*\*\s*(.+)", response_for_parse, re.IGNORECASE
                 )
 
                 entry_match = re.search(
-                    r"(?:\|\s*[*]*Entry[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*Entry[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                    r"(?:\|\s*[*]*(?:Pullback\s+)?(?:Limit\s+)?Entry[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*(?:Pullback\s+)?(?:Limit\s+)?Entry[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
                     response_for_parse, re.IGNORECASE
                 )
                 stop_match = re.search(
@@ -1341,7 +1507,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 reports_dir.mkdir(parents=True, exist_ok=True)
                 digest_path = reports_dir / f"{ticker}_summary.md"
                 with open(digest_path, "w", encoding="utf-8") as f:
-                    f.write(response)
+                    f.write(clean_response)
 
                 if sheet_updated:
                     logger.info(
@@ -1351,6 +1517,180 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                     logger.info(
                         f"[{ticker}] Deep Research completed and Summary generated successfully (Sheet update skipped: ticker not found in today's sheet)."
                     )
+
+                # ========================================================
+                # PASS 2-IND: INDEPENDENT MACRO & TECHNICAL THESIS
+                # ========================================================
+                logger.info(f"[{ticker}] Generating Independent Macro & Technical Summary Report...")
+                independent_user_prompt = f"""
+                RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
+                VERIFY every macro, CPI, Fed, and earnings reference against this date.
+
+                I am requesting an INDEPENDENT Macro & Technical Analysis for the ticker: {ticker}.
+
+                --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
+                {data_window_str}
+
+                --- 1a. LIVE QUOTE (pre-fetched at run time) ---
+                {live_quote_block}
+
+                --- 2. NEWS RESEARCH DOSSIER ---
+                {news_dossier}
+
+                --- 2a. FRESH NEWS (LIVE) ---
+                {fresh_news}
+
+                --- 2b. MACRO NEWS (LIVE) ---
+                {macro_news}
+
+                {market_sentiment_block}
+
+                --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL ---
+                {av_block}
+                {social_block}
+                {institutional_block}
+                {grounded_block}
+
+                --- 2c-ii. MACRO GROUNDING ---
+                {macro_grounded_block}
+
+                --- 2e. EARNINGS DATE ---
+                {earnings_fact_block}
+
+                ## MULTIMODAL CHART STATE (Vision Images Provided)
+                - Image 1: Naked Japanese candlesticks & raw volume.
+                - Image 2: 90-day technical view displaying Darvas compression boxes, Volume Profile POC/VAH/VAL, and Anchored VWAPs.
+
+                --- QUANTITATIVE SANDBOX & 1-YEAR HISTORICAL DATAFRAME (`df`) ---
+                The quantitative sandbox (`execute_python_code`) pre-loads:
+                - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`)
+                - `dw`: Latest closed bar dictionary (JSON File: `{dw_path}`)
+                - `np`, `pd`, `scipy`, `stats`, `math`, `json`, `datetime`
+                - Live tools: `fetch_options_chain`, `detect_candlestick_patterns`, `run_quantitative_plugin`.
+
+                MANDATORY QUANTITATIVE WORKFLOW:
+                1. Act as Lead Quantitative Trader & Macro Strategist.
+                2. You MUST use your python sandbox (`execute_python_code`) for MATHEMATICAL VERIFICATION:
+                   - Verify exact historical levels in `df` (52W high/low, MA 50/200 baselines, gap boundaries, and volume profile nodes). Do not invent prices.
+                   - Run Monte Carlo simulations using `HV20` and `IV30` to model P(Target First) vs P(Stop First) across 21d, 30d, 45d, and 90d horizons.
+                   - Test live options contracts from `fetch_options_chain` to calculate exact mathematical Greeks, Net Credit/Debit, and risk-to-reward.
+                3. Synthesize the macro backdrop (Treasury yields, DXY, SPY/QQQ regime) vs micro company news, evaluate the auction liquidity (VP POC, VAH/VAL, RVOL), compute your independent Technical Rating, and emit your comprehensive thesis and trade plan into the exact markdown structure defined in your rules card.
+                """
+
+                ind_response = None
+                if use_remote:
+                    try:
+                        ind_response = query_local_llm(
+                            system_prompt=system_prompt_independent,
+                            user_prompt=independent_user_prompt,
+                            json_mode=False,
+                            use_openrouter=True,
+                            image_paths=image_paths,
+                            use_tools=True,
+                            max_tokens=8192,
+                            summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day."
+                        )
+                    except Exception as e_ind_remote:
+                        logger.warning(f"[{ticker}] Remote Independent API inference failed ({e_ind_remote}) — falling back to Local GPU LLM!")
+                        ind_response = None
+
+                if not ind_response:
+                    logger.info(f"[{ticker}] Executing Independent Pass with Local GPU LLM Server...")
+                    ind_response = query_local_llm(
+                        system_prompt=system_prompt_independent,
+                        user_prompt=independent_user_prompt,
+                        json_mode=False,
+                        use_openrouter=False,
+                        image_paths=image_paths,
+                        use_tools=True,
+                        disable_thinking=True,
+                        max_tokens=8192,
+                        summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day."
+                    )
+
+                if ind_response:
+                    clean_ind_response = ind_response.strip()
+                    match_ind_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_ind_response)
+                    if match_ind_header and match_ind_header.start() > 0:
+                        clean_ind_response = clean_ind_response[match_ind_header.start():].strip()
+
+                    ind_report_path = reports_dir / f"{ticker}_independent.md"
+                    with open(ind_report_path, "w", encoding="utf-8") as f:
+                        f.write(clean_ind_response)
+
+                    ind_triage_path = out_dir / f"{ticker}_independent_thesis.md"
+                    with open(ind_triage_path, "w", encoding="utf-8") as f:
+                        f.write(clean_ind_response)
+
+                    logger.info(f"[{ticker}] Independent Macro & Technical Summary generated at {ind_report_path}!")
+
+                    # ========================================================
+                    # PASS 2-JUDGE: PONYTAIL PM ARBITRATION & CROSS-EXAMINATION
+                    # ========================================================
+                    logger.info(f"[{ticker}] Running Senior PM Ponytail Judge (Cross-Examining Report A vs Report B)...")
+                    judge_sys_prompt = (
+                        "You are the Chief Investment Officer & Senior Portfolio Manager operating under Ponytail Finance rules "
+                        "(Occam's Razor, minimal bloat, hard math, ruthless risk management).\n\n"
+                        "You have received two independent reports for this ticker:\n"
+                        "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
+                        "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
+                        "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
+                        "Output in this exact markdown format:\n\n"
+                        "# [TICKER] | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
+                        "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
+                        "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
+                        "## 🔴 THE CASE AGAINST (Bear Cross-Examination & Traps)\n"
+                        "[The strongest risk arguments, hidden traps, and friction points synthesized across both reports for why this trade should be avoided or hedged]\n\n"
+                        "## ⚖️ THE JUDGE'S FINAL RULING\n"
+                        "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
+                        "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
+                        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Credit) / CASH / SKIP]** (Conviction: X/10)\n\n"
+                        "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
+                        "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, R:R]\n"
+                        "* **Options (Derivatives):** [Exact Structure, Expiry, Strikes, Net Credit/Debit, Max Loss, Break-Even]\n"
+                        "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n"
+                    )
+
+                    judge_user_prompt = f"""
+                    TICKER: {ticker} | DATE: {date_str}
+                    
+                    --- REPORT A: PROPRIETARY QUANTITATIVE ENGINE ---
+                    {clean_response}
+                    
+                    --- REPORT B: INDEPENDENT MACRO & VOLUME PROFILE STUDY ---
+                    {clean_ind_response}
+                    """
+
+                    judge_response = query_local_llm(
+                        system_prompt=judge_sys_prompt,
+                        user_prompt=judge_user_prompt,
+                        json_mode=False,
+                        use_openrouter=False,
+                        use_tools=False,
+                        disable_thinking=True,
+                        max_tokens=3072,
+                    )
+
+                    if judge_response:
+                        clean_judge = judge_response.strip()
+                        match_judge = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_judge)
+                        if match_judge and match_judge.start() > 0:
+                            clean_judge = clean_judge[match_judge.start():].strip()
+
+                        arbitration_path = reports_dir / f"{ticker}_arbitration.md"
+                        with open(arbitration_path, "w", encoding="utf-8") as f:
+                            f.write(clean_judge)
+
+                        # Append arbitration ruling to the bottom of both reports for complete self-contained context
+                        with open(digest_path, "a", encoding="utf-8") as f:
+                            f.write(f"\n\n---\n\n{clean_judge}\n")
+
+                        with open(ind_report_path, "a", encoding="utf-8") as f:
+                            f.write(f"\n\n---\n\n{clean_judge}\n")
+
+                        logger.info(f"[{ticker}] Senior PM Ponytail Arbitration & Final Directive generated at {arbitration_path}!")
+                else:
+                    logger.error(f"[{ticker}] Independent LLM returned empty response.")
             else:
                 logger.error(f"[{ticker}] LLM returned empty response.")
         except Exception as e:
@@ -1372,7 +1712,7 @@ if __name__ == "__main__":
         "it is treated as --ticker using today's date.",
     )
     parser.add_argument("--ticker", type=str, help="Run only on a specific ticker")
-    parser.add_argument("--local", action="store_true", help="Force 100% local LLM inference (no OpenRouter/remote API calls)")
+    parser.add_argument("--local", action="store_true", help="Force 100 percent local LLM inference (no OpenRouter/remote API calls)")
 
     args = parser.parse_args()
 

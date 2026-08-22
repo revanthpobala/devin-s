@@ -104,7 +104,7 @@ def _next_earnings_days(ticker: str):
 
 
 def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days: int = 90,
-                         chrome_profile: str = None):
+                         chrome_profile: str = None, force: bool = False):
     ticker = survivor.get("Ticker") or survivor.get("Symbol") or survivor.get("ticker", "")
     if not ticker:
         logger.warning(f"[Scraper-{worker_id}] Survivor dict has no Ticker key: {survivor}")
@@ -117,7 +117,7 @@ def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days:
     json_path = (ticker_dir / f"{safe_ticker}_datawindow.json") if (ticker_dir / f"{safe_ticker}_datawindow.json").exists() else (out_dir / f"{safe_ticker}_datawindow.json")
     chart_path = (ticker_dir / f"{safe_ticker}_chart.png") if (ticker_dir / f"{safe_ticker}_chart.png").exists() else (out_dir / f"{safe_ticker}_chart.png")
 
-    if json_path.exists() and chart_path.exists():
+    if not force and json_path.exists() and chart_path.exists():
         logger.info(
             f"[Scraper-{worker_id}] Data Window and Screenshot already exist for {ticker}. Skipping scrape!"
         )

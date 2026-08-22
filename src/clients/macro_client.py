@@ -316,29 +316,86 @@ def get_opex_alert() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _format_vix_flag(price: float, chg: float) -> str:
+    """Classifies VIX level according to the institutional VIX Cheat Sheet matrix."""
+    if price > 40:
+        return "🔥 CRISIS MODE (>40) — Severe panic (2008/2020) | Strategy: Start buying cautiously for long-term | Signal: 🟢 STRONG BUY"
+    elif price >= 30:
+        return "🔴 EXTREME FEAR (30-40) — Panic selling, possible market bottom | Strategy: Look for reversal signals | Signal: 🟢 WATCH FOR BUY"
+    elif price >= 25:
+        return "🔴 HIGH VOLATILITY (25-30) — Fear rising, corrections likely | Strategy: Look for strong stocks at discounts | Signal: 🟢 BUY"
+    elif price >= 20:
+        return "🟠 CAUTION ZONE (20-25) — Volatility rising, uncertainty | Strategy: Watch for dip-buying setups | Signal: 🟠 BUY / HOLD"
+    elif price >= 15:
+        return "🟡 NORMAL MARKET (15-20) — Typical behavior, no extreme fear/greed | Strategy: Follow trend strategies | Signal: 🟡 HOLD"
+    elif price >= 12:
+        return "🟢 LOW VOLATILITY (12-15) — Stable market, reversals possible | Strategy: Stay invested, monitor weakness | Signal: 🟡 HOLD"
+    else:
+        return "🟢 TOO CALM (<12) — Market complacency, potential top forming | Strategy: Reduce risk, hedge, take profit | Signal: 🔴 SELL / HOLD"
+
+
 def get_vix() -> str:
+    # 1. Try FMP if available
     key = _fmp()
-    if not key:
-        return "VIX: N/A"
-    data = _cached_get(f"https://financialmodelingprep.com/stable/quote?symbol=^VIX&apikey={key}")
-    if data and isinstance(data, list) and data:
-        v = data[0]
-        price = float(v.get("price", 0))
-        chg = float(v.get("changePercentage", 0))
+    if key:
+        data = _cached_get(f"https://financialmodelingprep.com/stable/quote?symbol=^VIX&apikey={key}")
+        if data and isinstance(data, list) and data:
+            v = data[0]
+            price = float(v.get("price", 0))
+            chg = float(v.get("changePercentage", 0))
+            return f"VIX: {price:.2f} ({chg:+.2f}%) [{_format_vix_flag(price, chg)}]"
 
-        if price > 30:
-            flag = "🔴 SPIKE >30 — STAND ASIDE (gem rule §6)"
-        elif price > 25:
-            flag = "⚠️ ELEVATED >25 — HALF SIZE (gem rule §6)"
-        elif price > 20:
-            flag = "⚠️ ELEVATED >20 — reduce size, heightened risk"
-        elif chg > 10:
-            flag = "⚠️ SPIKING intraday — event possibly in progress"
-        else:
-            flag = "✅ normal range"
+    # 2. Resilient fallback via yfinance
+    try:
+        import yfinance as yf
+        vix = yf.Ticker("^VIX").history(period="2d")
+        if not vix.empty:
+            price = float(vix["Close"].iloc[-1])
+            prev = float(vix["Close"].iloc[-2]) if len(vix) > 1 else price
+            chg = ((price - prev) / prev * 100) if prev > 0 else 0.0
+            return f"VIX: {price:.2f} ({chg:+.2f}%) [{_format_vix_flag(price, chg)}]"
+    except Exception as e:
+        logger.debug(f"yfinance VIX fetch failed: {e}")
 
-        return f"VIX: {price:.2f} ({chg:+.2f}%)  [{flag}]"
     return "VIX: N/A"
+
+
+def get_fear_and_greed() -> str:
+    """Fetches real-time CNN Fear & Greed Index score and market sentiment rating."""
+    import urllib.request
+    import json
+
+    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.cnn.com/markets/fear-and-greed",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            fg = data.get("fear_and_greed", {})
+            score = fg.get("score")
+            rating = fg.get("rating", "neutral").upper()
+            if score is not None:
+                score_f = float(score)
+                flag = (
+                    "⚠️ EXTREME GREED (>75) — TOPPING / COMPLACENCY DANGER"
+                    if score_f >= 75
+                    else "🟢 GREED (55-75) — MOMENTUM EXPANSION"
+                    if score_f >= 55
+                    else "⚪ NEUTRAL (45-55) — BALANCED"
+                    if score_f >= 45
+                    else "🟢 FEAR (25-45) — VALUE ACCUMULATION ZONE"
+                    if score_f >= 25
+                    else "🟢 EXTREME FEAR (<25) — ASYMMETRIC REVERSAL BUYING OPPORTUNITY"
+                )
+                return f"Fear & Greed Index: {score_f:.1f}/100 ({rating}) [{flag}]"
+    except Exception as e:
+        logger.debug(f"Fear & Greed Index fetch failed: {e}")
+
+    return "Fear & Greed Index: N/A"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -602,6 +659,7 @@ def build_macro_context(ticker: str | None = None) -> str:
 
     # ── D) VIX with regime flag ───────────────────────────────────────────────
     sections.append(get_vix())
+    sections.append(get_fear_and_greed())
 
     # ── E) Live quote for the alerted ticker ─────────────────────────────────
     if ticker:
