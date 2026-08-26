@@ -8,6 +8,7 @@ import os
 import json
 import time
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -32,14 +33,24 @@ class ArtifactCache:
     def __init__(self, base_dir: Optional[Path] = None):
         self.base_dir = base_dir or (config.BASE_DIR / "data" / "artifacts")
 
+    def _sanitize_name(self, name: str) -> str:
+        # Replace characters not allowed in file paths (especially Windows: \ / : * ? " < > |)
+        sanitized = re.sub(r'[\<\>\:\"\/\\\|\?\*\x00-\x1f]', '_', str(name))
+        # Collapse multiple underscores and strip trailing dots/spaces/underscores
+        sanitized = re.sub(r'_+', '_', sanitized).strip('. _')
+        return sanitized or "unnamed"
+
     def _get_ticker_dir(self, date_str: str, ticker: str) -> Path:
-        tdir = self.base_dir / date_str / ticker.upper()
+        clean_date = self._sanitize_name(date_str)
+        clean_ticker = self._sanitize_name(ticker).upper()
+        tdir = self.base_dir / clean_date / clean_ticker
         tdir.mkdir(parents=True, exist_ok=True)
         return tdir
 
     def _get_file_path(self, date_str: str, ticker: str, artifact_type: str) -> Path:
         tdir = self._get_ticker_dir(date_str, ticker)
-        return tdir / f"{artifact_type}.json"
+        clean_artifact = self._sanitize_name(artifact_type)
+        return tdir / f"{clean_artifact}.json"
 
     def get(
         self,
@@ -113,9 +124,12 @@ class ArtifactCache:
             logger.debug(f"[{ticker}] Cached artifact '{artifact_type}' -> {file_path}")
 
             # Also mirror directly into data/raw/<date>/<ticker>/ for instant visibility
-            raw_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker.upper()
+            clean_date = self._sanitize_name(date_str)
+            clean_ticker = self._sanitize_name(ticker).upper()
+            clean_artifact = self._sanitize_name(artifact_type)
+            raw_dir = config.BASE_DIR / "data" / "raw" / clean_date / clean_ticker
             if raw_dir.exists():
-                raw_file = raw_dir / f"{ticker.upper()}_{artifact_type}.json"
+                raw_file = raw_dir / f"{clean_ticker}_{clean_artifact}.json"
                 with open(raw_file, "w", encoding="utf-8") as rf:
                     json.dump(payload, rf, indent=2, default=str)
             return file_path

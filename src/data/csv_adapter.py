@@ -71,8 +71,32 @@ def _format_datawindow_val(val: Any) -> Optional[str]:
         return s_val
 
 
-def decode_and_enrich_datawindow(snapshot: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
+def _extract_ticker_from_path(path: Optional[str]) -> Optional[str]:
+    """Extract ticker symbol from file path or folder name."""
+    if not path:
+        return None
+    clean_path = path.replace("\\", "/")
+    base = os.path.basename(clean_path)
+    base_no_ext = os.path.splitext(base)[0]
+    candidate = base_no_ext.split("_")[0].split(",")[0].strip()
+    if candidate and candidate.upper() not in ("DATAWINDOW", "CSV", "UNKNOWN", "SNAPSHOT", "HISTORY", "TEST"):
+        return candidate.upper()
+    parts = [p for p in clean_path.split("/") if p]
+    if len(parts) >= 2:
+        parent = parts[-2].strip()
+        if parent and parent.upper() not in ("FORCE", "RAW", "TRIAGE", "CONSOLIDATE", "SCRAPES", "DATA"):
+            return parent.upper()
+    return None
+
+
+def decode_and_enrich_datawindow(
+    snapshot: Dict[str, Any], df: pd.DataFrame, ticker: Optional[str] = None
+) -> Dict[str, Any]:
     """Decodes Pine Script bitpacks and derives MTF, Anchors, and Key Resistance/Support levels from history."""
+    # Ensure ticker is set if provided or available
+    ticker_name = ticker or snapshot.get("ticker") or snapshot.get("symbol")
+    if ticker_name and ticker_name.upper() not in ("UNKNOWN", "NONE", ""):
+        snapshot["ticker"] = ticker_name
     # 1. Premove Pack decoding (Line 6531-6553)
     try:
         p_val = int(float(snapshot.get("Premove Pack") or 0))
@@ -316,7 +340,7 @@ def decode_and_enrich_datawindow(snapshot: Dict[str, Any], df: pd.DataFrame) -> 
     # 10. Execute Decoupled Analytics Plugins
     try:
         from src.plugins.plugin_manager import enrich_datawindow_with_plugins
-        ticker_name = snapshot.get("ticker", "UNKNOWN")
+        ticker_name = ticker or snapshot.get("ticker") or snapshot.get("symbol") or "UNKNOWN"
         snapshot = enrich_datawindow_with_plugins(ticker_name, df, snapshot)
     except Exception:
         pass
@@ -325,13 +349,16 @@ def decode_and_enrich_datawindow(snapshot: Dict[str, Any], df: pd.DataFrame) -> 
 
 
 def csv_to_datawindow(
-    csv_path: str, json_out_path: Optional[str] = None
+    csv_path: str,
+    json_out_path: Optional[str] = None,
+    ticker: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], pd.DataFrame, Optional[float], Optional[float]]:
     """Parse a TradingView exported CSV into a Data Window snapshot dict & trailing metrics.
 
     Args:
         csv_path: Path to the downloaded CSV file.
         json_out_path: Optional output path to write <symbol>_datawindow.json.
+        ticker: Optional ticker symbol. If omitted, inferred from file paths.
 
     Returns:
         (snapshot_dict, history_df, realvol_10d, ret_10d)
@@ -349,6 +376,13 @@ def csv_to_datawindow(
     # Verify column depth, row depth, and bar interval (daily)
     verify_csv_integrity(df)
 
+    # Resolve ticker if not provided
+    resolved_ticker = (
+        ticker
+        or _extract_ticker_from_path(json_out_path)
+        or _extract_ticker_from_path(csv_path)
+    )
+
     # Extract last row as snapshot dict (keyed by CSV header names)
     last_row = df.iloc[-1]
     snapshot = {}
@@ -356,6 +390,9 @@ def csv_to_datawindow(
         val = last_row[col]
         formatted = _format_datawindow_val(val)
         snapshot[col] = formatted
+
+    if resolved_ticker:
+        snapshot["ticker"] = resolved_ticker
 
     # Extract & stamp last bar date onto snapshot
     time_col = next((c for c in df.columns if c.lower() in ("time", "date", "datetime")), None)
@@ -366,8 +403,8 @@ def csv_to_datawindow(
         except Exception:
             pass
 
-    # Enrich snapshot with decoded bitpacks, MTF, and anchors
-    snapshot = decode_and_enrich_datawindow(snapshot, df)
+    # Enrich snapshot with decoded bitpacks, MTF, anchors, and plugins
+    snapshot = decode_and_enrich_datawindow(snapshot, df, ticker=resolved_ticker)
 
     # Write snapshot to JSON if path provided
     if json_out_path:

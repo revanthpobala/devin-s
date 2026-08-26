@@ -78,14 +78,19 @@ def run_swing_pipeline(
             tracker = SheetsTracker()
             tracker.connect()
             date_tab = today_str
-            headers, rows = tracker.get_raw_alerts_from_trades_tracker(date_tab)
-            for idx, r in enumerate(rows):
-                if r.get("Ticker") == ticker:
-                    row_idx = idx + 2
+            worksheet = tracker.get_trades_worksheet_for_date(date_tab)
+            all_rows = tracker._get_all_rows(worksheet)
+            # Column C (index 2) holds the Symbol; row index is 1-based sheet row.
+            for idx, r in enumerate(all_rows[1:], start=2):
+                if len(r) >= 3 and str(r[2]).strip().upper() == ticker:
+                    row_idx = idx
                     logger.info(f"Found {ticker} on '{date_tab}' Trades tab at row {row_idx}")
                     break
             if row_idx is None:
-                logger.warning(f"{ticker} not found in today's Trades sheet; decision will be saved locally only.")
+                logger.warning(
+                    f"{ticker} not found in today's Trades sheet; it will be created "
+                    f"during the local-research phase and pushed to Sheets then."
+                )
         except Exception as e:
             logger.warning(f"Failed to check Trades sheet for {ticker}: {e}; continuing local-only.")
 
@@ -95,13 +100,13 @@ def run_swing_pipeline(
                 "Symbol": ticker,
                 "Ticker": ticker,
                 "source": "cli_override",
-                "row_index": row_idx,
+                "_row_index": row_idx,
                 "_sheet_type": sheet_type,
             }
         ]
     else:
         logger.info("\n--- PHASE 1: RUNNING DETERMINISTIC CASCADE ---")
-        cascade = DeterministicCascade(target_date=today_str)
+        cascade = DeterministicCascade(date_str=today_str)
         survivors = cascade.run()
 
     if not survivors:

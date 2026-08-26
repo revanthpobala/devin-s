@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +52,97 @@ def get_next_earnings_days(ticker: str) -> int | None:
     return None
 
 
-def format_earnings_fact_block(ticker: str) -> str:
+def format_earnings_fact_block(ticker: str, dw: Optional[Dict[str, Any]] = None) -> str:
+    """Formats deterministic earnings date, gate status, and historical reactions/PEAD table."""
     days = get_next_earnings_days(ticker)
+    lines = ["--- DETERMINISTIC EARNINGS DATE & CATALYST HISTORY (yfinance) ---"]
+
     if days is not None:
         est_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-        return (
-            "--- DETERMINISTIC EARNINGS DATE (yfinance, ground truth) ---\n"
-            f"Next earnings in {days} day(s) (~{est_date}).\n"
-            "Trust this over anything found via search/grounding for this ticker's earnings date.\n"
+        gate_status = "FAIL (<3d)" if days < 3 else "WARNING (<7d)" if days < 7 else "CLEAR (>=7d)"
+        lines.append(
+            f"Next earnings in {days} day(s) (~{est_date}). "
+            f"Earnings Gate: {gate_status}.\n"
+            f"Trust this over anything found via search/grounding for this ticker's earnings date."
         )
-    return (
-        "--- DETERMINISTIC EARNINGS DATE: UNAVAILABLE ---\n"
-        "No reliable yfinance earnings-date data for this ticker. You MUST verify the earnings\n"
-        "date yourself via search/grounding. If you cannot confirm it cleanly, explicitly state\n"
-        "'earnings date unverified' rather than asserting a specific date with confidence.\n"
-    )
+    else:
+        lines.append(
+            "Next earnings date: UNAVAILABLE via yfinance calendar (verify manually). "
+            "If unverified, state 'earnings date unverified'."
+        )
+
+    # 1. Pull historical quarterly reaction events from dw if enriched
+    events = (dw.get("_earnings_reaction_events") if isinstance(dw, dict) else None)
+    median_move = (dw.get("_historical_median_catalyst_move_pct") if isinstance(dw, dict) else None)
+    summary = (dw.get("_catalyst_move_summary") if isinstance(dw, dict) else None)
+
+    # 2. Fallback: query yfinance directly if events not present in dw
+    if not events and ticker and ticker.upper() not in ("UNKNOWN", "NONE", ""):
+        try:
+            import pandas as pd
+            import yfinance as yf
+
+            t = yf.Ticker(ticker)
+            ed = t.get_earnings_dates(limit=8)
+            if ed is not None and not ed.empty:
+                reported = ed.dropna(subset=["Reported EPS"]).head(4)
+                events = []
+                for dt_idx, row in reported.iterrows():
+                    ed_str = str(dt_idx)[:10]
+                    surp = round(float(row["Surprise(%)"]), 2) if pd.notna(row.get("Surprise(%)")) else None
+                    est = round(float(row["EPS Estimate"]), 2) if pd.notna(row.get("EPS Estimate")) else None
+                    act = round(float(row["Reported EPS"]), 2) if pd.notna(row.get("Reported EPS")) else None
+                    events.append({
+                        "date": ed_str,
+                        "eps_reported": act,
+                        "eps_estimate": est,
+                        "surprise_pct": surp,
+                    })
+        except Exception:
+            pass
+
+    # 3. Format historical reaction table
+    if events:
+        lines.append("\n📊 HISTORICAL EARNINGS REACTIONS & POST-EARNINGS DRIFT (Trailing Quarters):")
+        has_drift = any("fwd_5d_drift_pct" in e for e in events)
+        if has_drift:
+            lines.append("| Date | EPS Est | Reported EPS | Surprise (%) | 1-Day Reaction | 5-Day PEAD |")
+            lines.append("|---|---|---|---|---|---|")
+            # If events were ordered chronologically in plugin, show latest first
+            display_events = list(reversed(events)) if len(events) >= 2 and events[0].get("date", "") < events[-1].get("date", "") else events
+            for ev in display_events:
+                d_str = ev.get("date", "N/A")
+                est_str = f"${ev['eps_estimate']:.2f}" if ev.get("eps_estimate") is not None else "—"
+                act_str = f"${ev['eps_reported']:.2f}" if ev.get("eps_reported") is not None else "—"
+                surp = ev.get("surprise_pct")
+                surp_str = (
+                    f"{'+' if surp > 0 else ''}{surp:.1f}% {'🟢' if surp > 0 else '🔴'}"
+                    if surp is not None
+                    else "—"
+                )
+                day_ret = ev.get("day_ret_pct")
+                day_str = f"{'+' if day_ret > 0 else ''}{day_ret:.2f}%" if day_ret is not None else "—"
+                drift = ev.get("fwd_5d_drift_pct")
+                drift_str = f"{'+' if drift > 0 else ''}{drift:.2f}%" if drift is not None else "—"
+                lines.append(f"| {d_str} | {est_str} | {act_str} | {surp_str} | {day_str} | {drift_str} |")
+        else:
+            lines.append("| Date | EPS Est | Reported EPS | Surprise (%) |")
+            lines.append("|---|---|---|---|")
+            for ev in events:
+                d_str = ev.get("date", "N/A")
+                est_str = f"${ev['eps_estimate']:.2f}" if ev.get("eps_estimate") is not None else "—"
+                act_str = f"${ev['eps_reported']:.2f}" if ev.get("eps_reported") is not None else "—"
+                surp = ev.get("surprise_pct")
+                surp_str = (
+                    f"{'+' if surp > 0 else ''}{surp:.1f}% {'🟢' if surp > 0 else '🔴'}"
+                    if surp is not None
+                    else "—"
+                )
+                lines.append(f"| {d_str} | {est_str} | {act_str} | {surp_str} |")
+
+        if summary:
+            lines.append(f"\n{summary}")
+        elif median_move:
+            lines.append(f"\nHistorical median 1-day earnings reaction: ±{median_move}%")
+
+    return "\n".join(lines)

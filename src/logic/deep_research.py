@@ -885,7 +885,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         av_block = alphavantage_client.format_av_block(ticker)
         social_block = adanos_client.format_social_block(ticker)
-        earnings_fact_block = earnings_client.format_earnings_fact_block(ticker)
+        earnings_fact_block = earnings_client.format_earnings_fact_block(ticker, dw=dw_dict)
         institutional_block = finnhub_client.format_finnhub_institutional_block(ticker)
 
         grounded_question = (

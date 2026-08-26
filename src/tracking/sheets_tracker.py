@@ -964,16 +964,23 @@ class SheetsTracker:
                     worksheet.add_cols(24 - worksheet.col_count)
 
                 cells_to_update = []
+                max_row_needed = 0
 
                 for update in updates_list:
                     row_index = update.get("row_index")
-                    if not row_index:
+                    if not row_index or row_index < 0:
                         # Fallback: resolve the row via the sheet Trade ID so a
                         # record with trade_id but no row_index can still update.
                         tid = update.get("trade_id")
                         if tid:
                             row_index = self._find_row_by_trade_id(worksheet, tid)
-                    if not row_index:
+                    if not row_index or row_index < 0:
+                        # Last resort for --ticker override runs: create a new row
+                        # in the Trades tab so the decision is still pushed to Sheets.
+                        ticker = update.get("ticker", "")
+                        if ticker:
+                            row_index = self._ensure_trades_row(worksheet, update)
+                    if not row_index or row_index < 0:
                         continue
 
                     llm_data = update.get("llm_data", {})
@@ -1007,6 +1014,7 @@ class SheetsTracker:
                         surp = av_earnings.get("surprisePercentage", "")
                         av_text += f"Earnings: {edate} (Surprise: {surp}%)"
 
+                    max_row_needed = max(max_row_needed, row_index)
                     cells_to_update.extend(
                         [
                             gspread.Cell(row=row_index, col=21, value=triage),
@@ -1017,6 +1025,13 @@ class SheetsTracker:
                             ),
                         ]
                     )
+
+                # Guard: ensure the grid has enough rows before writing. Without
+                # this a stale/oversized row_index targets a range beyond the
+                # grid and Google rejects the entire batch (non-JSON body →
+                # gspread APIError repr "(-1, 21)").
+                if max_row_needed > worksheet.row_count:
+                    worksheet.add_rows(max_row_needed + 10 - worksheet.row_count)
 
                 if cells_to_update:
                     worksheet.update_cells(cells_to_update)
@@ -1060,6 +1075,71 @@ class SheetsTracker:
         except Exception as e:
             logger.warning(f"Failed to resolve sheet row by Trade ID {trade_id}: {e}")
         return -1
+
+    def _ensure_trades_row(self, worksheet, update: dict) -> int:
+        """Create a new row in the Trades tab for a ticker that has no existing row.
+
+        Used as a last-resort fallback for --ticker override runs where the
+        ticker was not pre-populated in the sheet. Returns the 1-indexed row
+        number of the newly created row, or -1 on failure."""
+        import json
+        try:
+            from zoneinfo import ZoneInfo
+            est_now = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            est_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        ticker = (update.get("ticker") or "").strip().upper()
+        trade_id = update.get("trade_id") or f"SWING-{est_now[:10]}-{ticker}"
+        symbol = ticker
+        raw_req = json.dumps({"source": "cli_override", "created_by": "_ensure_trades_row"})
+
+        # Find the next empty row (column A is Trade ID).
+        col_a = worksheet.col_values(1)
+        new_row = len(col_a) + 1
+        while new_row - 1 < len(col_a) and str(col_a[new_row - 1]).strip():
+            new_row += 1
+
+        live_price_formula = f'=GOOGLEFINANCE("NYSE:{symbol}")' if symbol != "SPX" else '=GOOGLEFINANCE("INDEXSP:.INX")'
+        # Match the 24-col Trades layout (A–X) from _initialize_trades_headers.
+        row_vals = [
+            trade_id,           # A: Trade ID
+            est_now,            # B: Entry Time (EST)
+            symbol,             # C: Symbol
+            "",                 # D: Type
+            "",                 # E: Setup
+            "",                 # F: Stage
+            "",                 # G: Entry Price (Alert)
+            "",                 # H: Targets (Buy/Sell)
+            "",                 # I: Dir Prob
+            "",                 # J: Context
+            "",                 # K: Research
+            "",                 # L: Verdict
+            "",                 # M: Conviction
+            "",                 # N: Action Plan
+            live_price_formula, # O: Live Price
+            "",                 # P: Live PnL %
+            "",                 # Q: 1D PnL %
+            "",                 # R: 5D PnL %
+            "",                 # S: 20D PnL %
+            raw_req,            # T: Raw Request
+            "",                 # U: LLM Triage (filled by batch update)
+            "",                 # V: LLM Reasoning
+            "",                 # W: AV Data
+            "",                 # X: LLM Trade Decision
+        ]
+
+        try:
+            worksheet.insert_row(row_vals, new_row)
+            logger.info(f"Created new Trades row {new_row} for {ticker} (Trade ID: {trade_id}).")
+            # Invalidate the all-rows cache so subsequent lookups see the new row.
+            cache_key = f"{worksheet.spreadsheet.title}:{worksheet.title}"
+            if cache_key in self.all_rows_cache:
+                del self.all_rows_cache[cache_key]
+            return new_row
+        except Exception as e:
+            logger.error(f"Failed to create Trades row for {ticker}: {e}")
+            return -1
 
     def update_deep_research(self, date_str: str, ticker: str, payload_dict: dict) -> bool:
         """

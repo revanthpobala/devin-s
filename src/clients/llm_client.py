@@ -667,22 +667,24 @@ def execute_tool_call(tool_call, date_str: str = None):
     # Check TTL Artifact Cache first
     cache_key = function_name
     if function_name in ("search_web", "fetch_prediction_market"):
-        query_slug = str(args.get("query", ""))[:30].replace(" ", "_").replace("/", "_")
-        cache_key = f"{function_name}_{query_slug}"
+        query_raw = str(args.get("query", ""))
+        query_slug = re.sub(r'[^\w\-]', '_', query_raw)[:40]
+        query_slug = re.sub(r'_+', '_', query_slug).strip('_')
+        cache_key = f"{function_name}_{query_slug}" if query_slug else function_name
     elif function_name == "scrape_tradingview_options_finder":
-        period_slug = str(args.get("prediction_period", "month")).replace(" ", "_")
-        move_slug = str(args.get("expected_move", "5to10")).replace("%", "").replace(" ", "").replace("+", "").replace("-", "down_")
+        period_slug = re.sub(r'[^\w\-]', '_', str(args.get("prediction_period", "month"))).strip('_')
+        move_slug = re.sub(r'[^\w\-]', '_', str(args.get("expected_move", "5to10")).replace("%", "").replace("+", "").replace("-", "down_")).strip('_')
         cache_key = f"tv_options_{period_slug}_{move_slug}"
     elif function_name == "fetch_options_chain":
-        direction_slug = str(args.get("direction", "CALL")).upper()
-        min_dte_slug = str(args.get("min_dte", 30))
-        max_dte_slug = str(args.get("max_dte", 120))
+        direction_slug = re.sub(r'[^\w\-]', '_', str(args.get("direction", "CALL")).upper()).strip('_')
+        min_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("min_dte", 30))).strip('_')
+        max_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("max_dte", 120))).strip('_')
         cache_key = f"options_chain_{direction_slug}_{min_dte_slug}_{max_dte_slug}"
     elif function_name == "run_quantitative_plugin":
-        plugin_slug = str(args.get("plugin_name", "all")).lower()
+        plugin_slug = re.sub(r'[^\w\-]', '_', str(args.get("plugin_name", "all")).lower()).strip('_')
         cache_key = f"quant_plugin_{plugin_slug}"
     elif function_name == "fetch_prior_research":
-        lookback_slug = str(args.get("lookback_days", 14))
+        lookback_slug = re.sub(r'[^\w\-]', '_', str(args.get("lookback_days", 14))).strip('_')
         cache_key = f"prior_research_{lookback_slug}"
     elif function_name == "execute_python_code":
         import hashlib

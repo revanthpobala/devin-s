@@ -404,7 +404,7 @@ class TVScraper:
 
             from src.data.csv_adapter import csv_to_datawindow
             data_dict, hist_df, realvol_10d, ret_10d = csv_to_datawindow(
-                str(csv_path), str(data_window_path)
+                str(csv_path), str(data_window_path), ticker=safe_symbol
             )
             logger.info(
                 f"Snapshot -> {data_window_path} "

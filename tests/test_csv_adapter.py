@@ -48,12 +48,14 @@ class TestCSVAdapter(unittest.TestCase):
             self.assertIn("close", snapshot)
             self.assertEqual(snapshot["close"], str(100.0 + 279 * 1.5))
             self.assertIn("bar_date", snapshot)
+            self.assertEqual(snapshot.get("ticker"), "NVDA")
             self.assertTrue(os.path.exists(json_path))
 
             # Verify JSON readable
             with open(json_path, "r", encoding="utf-8") as f:
                 saved_json = json.load(f)
             self.assertEqual(saved_json["close"], str(100.0 + 279 * 1.5))
+            self.assertEqual(saved_json.get("ticker"), "NVDA")
 
             # Verify ret_10d and realvol_10d calculated
             self.assertIsNotNone(ret_10d)
@@ -69,8 +71,20 @@ class TestCSVAdapter(unittest.TestCase):
             json_path = os.path.join(tmpdir, "AAPL.json")
             df.to_csv(csv_path, index=False)
             snapshot, hist_df, realvol_10d, ret_10d = csv_to_datawindow(csv_path, json_path)
+            self.assertEqual(snapshot.get("ticker"), "AAPL")
             self.assertIsNotNone(ret_10d)
             self.assertIsNotNone(realvol_10d)
+
+    def test_csv_to_datawindow_explicit_ticker(self):
+        df = _make_dummy_df(nrows=280)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "data.csv")
+            json_path = os.path.join(tmpdir, "data.json")
+            df.to_csv(csv_path, index=False)
+            snapshot, hist_df, realvol_10d, ret_10d = csv_to_datawindow(
+                csv_path, json_path, ticker="TSLA"
+            )
+            self.assertEqual(snapshot.get("ticker"), "TSLA")
 
 
 if __name__ == "__main__":

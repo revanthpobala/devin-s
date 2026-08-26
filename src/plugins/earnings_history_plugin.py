@@ -44,45 +44,46 @@ class EarningsHistoryPlugin(BaseAnalyticsPlugin):
         earnings_events: List[Dict[str, Any]] = []
 
         # 1. Try pulling confirmed quarterly earnings dates & EPS surprises from yfinance
-        try:
-            import yfinance as yf
-            t = yf.Ticker(ticker)
-            ed = t.get_earnings_dates(limit=8)
-            if ed is not None and not ed.empty:
-                # Filter for reported quarters (where Reported EPS is not NaN)
-                reported = ed.dropna(subset=["Reported EPS"]).sort_index()
-                for dt_idx, row in reported.iterrows():
-                    ed_str = str(dt_idx)[:10]
-                    # Find matching bar index in df
-                    match_indices = df_calc.index[df_calc["dt_str"] >= ed_str].tolist()
-                    if match_indices:
-                        bar_idx = match_indices[0]
-                        # If earnings reported after market close, reaction is on the following bar
-                        if bar_idx < len(df_calc) - 1 and dt_idx.hour >= 16:
-                            reaction_idx = bar_idx + 1 if bar_idx + 1 < len(df_calc) else bar_idx
-                        else:
-                            reaction_idx = bar_idx
+        if ticker and ticker.upper() not in ("UNKNOWN", "NONE", ""):
+            try:
+                import yfinance as yf
+                t = yf.Ticker(ticker)
+                ed = t.get_earnings_dates(limit=8)
+                if ed is not None and not ed.empty:
+                    # Filter for reported quarters (where Reported EPS is not NaN)
+                    reported = ed.dropna(subset=["Reported EPS"]).sort_index()
+                    for dt_idx, row in reported.iterrows():
+                        ed_str = str(dt_idx)[:10]
+                        # Find matching bar index in df
+                        match_indices = df_calc.index[df_calc["dt_str"] >= ed_str].tolist()
+                        if match_indices:
+                            bar_idx = match_indices[0]
+                            # If earnings reported after market close, reaction is on the following bar
+                            if bar_idx < len(df_calc) - 1 and dt_idx.hour >= 16:
+                                reaction_idx = bar_idx + 1 if bar_idx + 1 < len(df_calc) else bar_idx
+                            else:
+                                reaction_idx = bar_idx
 
-                        c_i = closes.iloc[reaction_idx]
-                        if pd.notna(c_i) and c_i > 0:
-                            fwd_idx = min(reaction_idx + 5, len(df_calc) - 1)
-                            fwd_5d = ((closes.iloc[fwd_idx] - c_i) / c_i) * 100.0 if fwd_idx > reaction_idx else 0.0
-                            
-                            eps_est = round(float(row["EPS Estimate"]), 2) if pd.notna(row.get("EPS Estimate")) else None
-                            eps_act = round(float(row["Reported EPS"]), 2) if pd.notna(row.get("Reported EPS")) else None
-                            surprise = round(float(row["Surprise(%)"]), 2) if pd.notna(row.get("Surprise(%)")) else None
+                            c_i = closes.iloc[reaction_idx]
+                            if pd.notna(c_i) and c_i > 0:
+                                fwd_idx = min(reaction_idx + 5, len(df_calc) - 1)
+                                fwd_5d = ((closes.iloc[fwd_idx] - c_i) / c_i) * 100.0 if fwd_idx > reaction_idx else 0.0
+                                
+                                eps_est = round(float(row["EPS Estimate"]), 2) if pd.notna(row.get("EPS Estimate")) else None
+                                eps_act = round(float(row["Reported EPS"]), 2) if pd.notna(row.get("Reported EPS")) else None
+                                surprise = round(float(row["Surprise(%)"]), 2) if pd.notna(row.get("Surprise(%)")) else None
 
-                            earnings_events.append({
-                                "date": ed_str,
-                                "eps_reported": eps_act,
-                                "eps_estimate": eps_est,
-                                "surprise_pct": surprise,
-                                "gap_pct": round(float(gaps.iloc[reaction_idx]), 2) if pd.notna(gaps.iloc[reaction_idx]) else 0.0,
-                                "day_ret_pct": round(float(day_rets.iloc[reaction_idx]), 2) if pd.notna(day_rets.iloc[reaction_idx]) else 0.0,
-                                "fwd_5d_drift_pct": round(float(fwd_5d), 2),
-                            })
-        except Exception:
-            pass
+                                earnings_events.append({
+                                    "date": ed_str,
+                                    "eps_reported": eps_act,
+                                    "eps_estimate": eps_est,
+                                    "surprise_pct": surprise,
+                                    "gap_pct": round(float(gaps.iloc[reaction_idx]), 2) if pd.notna(gaps.iloc[reaction_idx]) else 0.0,
+                                    "day_ret_pct": round(float(day_rets.iloc[reaction_idx]), 2) if pd.notna(day_rets.iloc[reaction_idx]) else 0.0,
+                                    "fwd_5d_drift_pct": round(float(fwd_5d), 2),
+                                })
+            except Exception:
+                pass
 
         # 2. Fallback: If no yfinance earnings, detect via volume shock and price gap
         if not earnings_events:

@@ -90,8 +90,13 @@ _FIELD_LABELS = {
     "ma50": ("ma 50 mid", "ma 50",),
     "ma200": ("ma 200 slow", "ma 200",),
     "weinstein": ("weinstein ma 150", "weinstein",),
-    "buy": ("buy score",),
-    "sell": ("sell score",),
+    # The Pine renamed these exports from "Buy Score"/"Sell Score" to
+    # "Long Setup Score"/"Short Pressure Score" (lines 5971-5972). The old
+    # labels are kept for pre-rename scrapes. CRITICAL: buy/sell are in
+    # _CORE_FIELDS, so without the new label EVERY current scrape parses
+    # buy/sell as None and the whole pipeline CUTs as bad_data.
+    "buy": ("long setup score", "buy score",),
+    "sell": ("short pressure score", "sell score",),
     "stage": ("stage 1 base 2 up 3 top 4 down", "stage (1=", "stage 1 base", "stage 1"),
     "stage_age_bars": ("stage age bars", "stage age",),
     "long_zbot": ("long entry zone bot",),
@@ -117,7 +122,19 @@ _FIELD_LABELS = {
     "ext_z_self": ("ext z self relative", "ext z self",),
     "exhaustion": ("exhaustion gradient",),
     "regime": ("regime 0 hlt 1 ext 2 clmx 3 dist 4 dn 5 ign 6 sqz", "regime (", "regime 0 hlt"),
-    "dir_prob": ("dir prob pct above 50 bull", "dir prob",),
+    # The Pine renamed this export from "Dir Prob Pct Above 50 Bull" to
+    # "Evidence Bias Pct Above 50 Bull" (stateEvidenceBias shrunk toward 50 by rrHaircut).
+    # The old label is kept for pre-rename scrapes. WITHOUT the new label, current
+    # scrapes parse dir_prob as None -> win_prob/ev_r abstain, dir_ok can never be
+    # True (TREND mode dies), and the RR-lane PASS can be mis-gated. The Pine's own
+    # comments (line ~5961) say Evidence Bias has NO discriminating power in
+    # path-accurate R:R — treat it as a single-name context input, never a ranker.
+    "dir_prob": (
+        "evidence bias pct above 50 bull",
+        "evidence bias",
+        "dir prob pct above 50 bull",
+        "dir prob",
+    ),
     "ignition_long": ("long ignition fresh breakout", "long ignition",),
     "bear_mask": ("bear warning mask",),
     "rev_mask": ("reversal pattern mask",),
@@ -877,67 +894,83 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
 # ---------------------------------------------------------------------------
 # 5. RANK — sort candidates for deep research selection
 # ---------------------------------------------------------------------------
-def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float]:
+def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float, float, float]:
     """THE single ranking key for deep-research selection.
 
-    Priority order:
-    1. PASS verdict (REVERSAL BUY lane) outranks WATCH/CUT.
-    2. REVERSAL BUY action code (action == "REVERSAL BUY").
-    3. Primary score: `ext_pct` (% above the MA200), highest first.
-    4. Conviction, as a pure tiebreak so the order stays deterministic.
+    Priority order (all derived from the gem/bible measured rules, NOT from
+    cross-sectional ranking fields the gem forbids):
+    1. PASS verdict outranks WATCH/CUT.
+    2. REVERSAL BUY action code (action == "REVERSAL BUY") — the one measured
+       counter-trend lane (code 20, era-robust +0.61/+0.72 across both eras).
+    3. `rr_at_market` (Long RR At Market) — the field the gem's ⚖️ R:R callout
+       gates on. Measured: +0.116R at >=2 (4/4 eras, 12/12 sectors), +0.252R at
+       >=5. This is the only continuous field with a measured, era-stable,
+       breadth-verified edge, so it orders candidates.
+    4. `ev_r` — expected-value ratio (win_prob * rr - (1-win_prob)), deterministic
+       and side-guarded. Ties the rr_at_market order.
+    5. `ext_pct` — DEMOTED to a tiebreak. The prior version ranked by this
+       highest-first, which contradicted the gem/bible directly:
+         - Gem rule 4 (Pillar 1): Ext Pct 25-60% -> 0% size, no fresh long.
+         - Bible §16.7: Ext 25-60% = -0.71% ex21 [−1.13, −0.32] SIG, monotone.
+       The old docstring's "+0.84 top-8" measurement was a MOMENTUM framing
+       (which name captures the movers), not the CONDITIONAL forward-excess
+       metric the gem/bible use (if you buy a name in 25-60%, you lose 0.71%).
+       Both can be "true" in their own framing, but the operational consequence
+       was inverted: the old key's top-N were exactly the names the gem's
+       calibration table sizes at 0%. The DEEP_RESEARCH_CAP budget was being
+       spent on names that would get a SKIP/STALK verdict anyway.
+       Now ext_pct only breaks ties after the measured fields agree.
+    6. `conviction` — final deterministic tiebreak.
 
-    Why extension and nothing else. Measured on the 492-name corpus over 2006-2026,
-    on the pre-signal pool the pipeline actually promotes from (~228 candidates/day,
-    Action Long Code 8/10), taking 8 names per day and bootstrapping DATES:
-
-        rank by            movers captured   precision   picks' 21d excess
-        Buy Score                    4.0%       11.7%      -0.27
-        Dir Prob                     3.7%       10.7%      -0.36
-        Rev Zone                     3.5%       10.1%      -0.29
-        random                       3.6%       10.3%      -0.25
-        ext_pct                      6.9%       20.1%      +0.84
-
-    Every indicator-derived rank was indistinguishable from random; only extension
-    separated. `revanth-bible.md` already said as much for Dir Prob ("not a
-    cross-sectional ranking score, never sort a watchlist by it") -- this key was
-    doing exactly that. 12-month momentum scored similarly (+0.68) but needs 253 bars
-    of history, while ext_pct is a single exported field, and blending the two
-    measured WORSE than extension alone (+0.87 vs +1.02 top-8).
-
-    Extension is deliberately NOT normalised per-stock here. `ext_z_self` asks "is this
-    name stretched for itself", which is the risk question; ranking asks "which name is
-    leading", and the absolute distance is what answers it. The edge is tail-only --
-    top-3 by ext +1.69, top-8 +1.02, top-30 +0.31 -- so it degrades if the cap grows.
+    News penalties are applied to `ev_r` (the R-scale), not to `ext_pct` (the
+    % scale), so a contradiction costs a meaningful amount of the EV gap between
+    adjacent candidates without distorting the extension tiebreak.
     """
     if not rec:
-        return (0, 0, -1e9, 0.0)
+        return (0, 0, -1e9, -1e9, 0.0, 0.0)
 
     # Unpack nested triage dict if outer record passed
     if isinstance(rec.get("triage"), dict):
         rec = rec["triage"]
 
-    # THIS KEY IS DIRECTIONAL-ONLY. 'ext_pct' was measured on "which name captures the movers"
-    # (+0.84 vs -0.25 random). For an income/premium-selling candidate the useful ordering is IV rank
-    # / Ext Z / ExpMove, which is close to the OPPOSITE ranking -- one key cannot order two different
-    # trade types. Income names are already excluded from the paid pass upstream
-    # (_deep_research_gate), so this is a belt-and-braces guard: if one ever reaches here, sort it
-    # last rather than letting it be ranked as if it were a directional setup.
+    # THIS KEY IS DIRECTIONAL-ONLY. For an income/premium-selling candidate the
+    # useful ordering is IV rank / Ext Z / ExpMove, which is close to the OPPOSITE
+    # ranking -- one key cannot order two different trade types. Income names are
+    # already excluded from the paid pass upstream (_deep_research_gate), so this
+    # is a belt-and-braces guard: if one ever reaches here, sort it last.
     if rec.get("no_fresh_long"):
-        return (0, 0, -1e9, 0.0)
+        return (0, 0, -1e9, -1e9, 0.0, 0.0)
 
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
-    conviction = float(rec.get("conviction") or 0.0)
-    primary = float(rec.get("ext_pct") or 0.0)
 
-    # News penalties on the extension scale: a contradiction should cost more than the
-    # gap between adjacent candidates (single-digit % of extension), not merely nudge.
+    # rr_at_market: the measured alpha field (gem ⚖️ R:R callout). 0 = invalid
+    # (4.5% of bars); treat as the lowest possible value so it sorts last.
+    rr_mkt_raw = rec.get("rr_at_market")
+    rr_mkt = float(rr_mkt_raw) if rr_mkt_raw is not None and float(rr_mkt_raw) > 0 else 0.0
+
+    # ev_r: expected-value ratio, side-guarded (None when the side doesn't match
+    # the dominant score direction). None -> 0 so it doesn't crash the sort.
+    ev_r_raw = rec.get("ev_r")
+    ev_r = float(ev_r_raw) if ev_r_raw is not None else 0.0
+
+    # News penalties on the R-scale: a contradiction should cost more than the
+    # gap between adjacent candidates (single-digit R), not merely nudge.
     if rec.get("news_contradiction"):
-        primary -= 20.0
+        ev_r -= 3.0
     elif rec.get("news_negative"):
-        primary -= 5.0
+        ev_r -= 0.75
 
-    return (is_pass, is_rev_buy, primary, conviction)
+    # ext_pct: DEMOTED to tiebreak. Hard-penalize the gem/bible exclusion band
+    # (25-60% = -0.71% ex21 SIG) so even on a tie the key never promotes a
+    # gem-0%-size name over a clean one.
+    ext_pct = float(rec.get("ext_pct") or 0.0)
+    if 25.0 <= ext_pct < 60.0:
+        ext_pct -= 100.0  # push the whole exclusion band below every clean name
+
+    conviction = float(rec.get("conviction") or 0.0)
+
+    return (is_pass, is_rev_buy, rr_mkt, ev_r, ext_pct, conviction)
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""

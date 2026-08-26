@@ -310,7 +310,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         try:
             from src.data.csv_adapter import csv_to_datawindow
             data_window, _, realvol_10d, ret_10d = csv_to_datawindow(
-                str(csv_path), str(json_path)
+                str(csv_path), str(json_path), ticker=ticker
             )
         except Exception as e:
             logger.warning(f"[Prefilter-{worker_id}] CSV parse failed for {ticker}: {e}")
@@ -497,7 +497,7 @@ def generate_thesis_task(
         try:
             from src.data.csv_adapter import csv_to_datawindow
             data_window, _, realvol_10d, ret_10d = csv_to_datawindow(
-                str(csv_path), str(json_path)
+                str(csv_path), str(json_path), ticker=ticker
             )
         except Exception as e:
             logger.warning(f"[ThesisWorker-{worker_id}] CSV parse failed for {ticker}: {e}")
@@ -734,6 +734,8 @@ def generate_thesis_task(
         "recency": triage.get("recency"),
         "earnings_days": earnings_days if earnings_days is not None else -1,
         "earnings_gate": earnings_gate,
+        "catalyst_move_summary": data_window.get("_catalyst_move_summary"),
+        "earnings_history": data_window.get("_earnings_reaction_events"),
         "news_sentiment": news_data.get("sentiment", "NEUTRAL"),
         "news_catalyst": news_data.get("catalyst", "none"),
         "today": today_str,
