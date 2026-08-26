@@ -255,7 +255,22 @@ class PositionManager:
                 logger.info(f"[manager] exit alert for {symbol} — position closed.")
             return
 
-        side = "SHORT" if "PUT" in str(alert.get("action", "")).upper() else "LONG"
+        # Determine directional side — NEVER open on NEUTRAL or non-directional signals
+        raw_side = str(alert.get("side") or "").upper().strip()
+        raw_action = str(alert.get("action") or "").upper().strip()
+
+        if raw_side == "NEUTRAL" or raw_action in ("NEUTRAL", "ALERT", "NONE", "UNKNOWN", "") or bool(alert.get("setup")):
+            logger.info(f"[manager] skipping non-directional alert for {symbol} (side={raw_side}, action={raw_action}, setup={alert.get('setup')}).")
+            return
+
+        if any(tok in raw_action for tok in ("PUT", "SHORT", "SELL", "BEAR")) or any(tok in raw_side for tok in ("PUT", "SHORT", "SELL", "BEAR")):
+            side = "SHORT"
+        elif any(tok in raw_action for tok in ("CALL", "LONG", "BUY", "BULL")) or any(tok in raw_side for tok in ("CALL", "LONG", "BUY", "BULL")):
+            side = "LONG"
+        else:
+            logger.info(f"[manager] skipping alert for {symbol} with unhandled side/action (action={raw_action}, side={raw_side}).")
+            return
+
         entry = alert.get("alert_price") or alert.get("market_price")
         try:
             entry = float(entry) if entry not in (None, "") else None

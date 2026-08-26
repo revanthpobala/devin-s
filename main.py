@@ -235,11 +235,26 @@ def process_alert(alert, sheets):
 
     # Route into the open-position state + monitor threads: entry alerts open a
     # position + spawn a monitor thread; exit alerts close it + stop the thread.
-    # Sheets remains a mirror below.
-    try:
-        _position_manager.route_alert(alert)
-    except Exception as e:
-        logger.warning(f"PositionManager routing failed for {symbol}: {e}")
+    # Only Intraday directional execution alerts or exits are routed (never Daily screener/research feeds or NEUTRAL entries).
+    from src.tracking.position_monitor import _is_exit_event
+
+    raw_action = str(alert.get("action", "")).upper().strip()
+    raw_side = str(alert.get("side", "")).upper().strip()
+    is_exit = _is_exit_event(alert)
+    is_non_trade = not is_exit and (
+        raw_side == "NEUTRAL"
+        or raw_action in ("NEUTRAL", "ALERT", "NONE", "UNKNOWN", "")
+        or bool(alert.get("setup"))
+    )
+    if strategy == "Intraday" and not is_non_trade:
+        try:
+            _position_manager.route_alert(alert)
+        except Exception as e:
+            logger.warning(f"PositionManager routing failed for {symbol}: {e}")
+    else:
+        logger.debug(
+            f"Skipping PositionManager routing for {symbol} (strategy={strategy}, side={raw_side}, action={raw_action}, setup={alert.get('setup')})"
+        )
 
     logger.info(
         f"New alert received -> Symbol: {symbol}, Strategy: {strategy}, Alert Price: {alert_price}"

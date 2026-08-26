@@ -85,6 +85,13 @@ Ignore intraday concerns.
     "weak_levels": [], "weak_levels_age": 0        // RESISTANCE_WEAKENED (bullish) / SUPPORT_WEAKENED (bearish)
   },
 
+  // --- income & structure context (Python/deterministic) ---
+  "screener_setup": "",                       // e.g. "Put-Sell Timing (Research)", "Stagnation", or null
+  "income_only": false,                       // true when no fresh long is constructible, but structure is valid
+  "structure": "",                            // "cash_secured_put_or_put_credit" | "call_credit_or_covered_call" | null
+  "structure_strikes": {"put_1_25x": 0, "put_1_50x": 0, "call_1_25x": 0, "call_1_50x": 0},
+  "iv_rank": 0,                               // IV rank percentile (0-100)
+
   // --- gates (Python) ---
   "earnings_days": 0,                          // -1 = unknown (NOT a caution)
   "earnings_gate": "PASS|CAUTION|FAIL|UNKNOWN",  // UNKNOWN = no date found (not a caution)
@@ -168,12 +175,15 @@ If `headlines` is empty → `catalyst="none"`, `confirm_contradict="NEUTRAL"`.
 ## STEP 2 — TRIAGE (default PASS; CUT only when nothing is firing)
 
 ### A. Classify `entry_mode` (first match, by priority)
-1. `REVERSION_LONG`  — `rev_zone_l >= 10` AND `stage in {3,4}`  (oversold vs a down/topping trend)
-2. `REVERSION_SHORT` — `rev_zone_s >= 10` AND `stage in {1,2}`  (overbought vs an up/basing trend)
-3. `BREAKOUT_LONG`   — `ignition_long == 1`  (low buy score is EXPECTED here)
-4. `TREND_SHORT`     — `dominant_side==short` AND `sell >= 65` AND `sell > opposite_score` AND `dir_prob < 50`
-5. `TREND_LONG`      — `dominant_side==long`  AND `buy  >= 65` AND `buy > opposite_score` AND `dir_prob >= 50`
-6. `NONE`            — none of the above
+1. `REVERSION_LONG`   — `rev_zone_l >= 10` AND `stage in {3,4}`  (oversold vs a down/topping trend)
+2. `REVERSION_SHORT`  — `rev_zone_s >= 10` AND `stage in {1,2}`  (overbought vs an up/basing trend)
+3. `BREAKOUT_LONG`    — `ignition_long == 1`  (low buy score is EXPECTED here)
+4. `TREND_SHORT`      — `dominant_side==short` AND `sell >= 65` AND `sell > opposite_score` AND `dir_prob < 50`
+5. `TREND_LONG`       — `dominant_side==long`  AND `buy  >= 65` AND `buy > opposite_score` AND `dir_prob >= 50`
+6. `INCOME_CSP`       — `structure == "cash_secured_put_or_put_credit"` OR (`screener_setup` contains "Put" AND `iv_rank >= 20` AND (`ext_z_self <= -1.5` OR `rev_zone_l >= 7` OR `stage in {1,2}`))
+7. `INCOME_CC`        — `structure == "call_credit_or_covered_call"` OR (`income_only` AND `iv_rank >= 80`)
+8. `INCOME_STRUCTURE` — `income_only == true` OR `structure` is not null
+9. `NONE`             — none of the above
 
 > A Zone-0 rev score that is WITH the trend (`rev_zone_l>=10` in Stage 1/2, or
 > `rev_zone_s>=10` in Stage 3/4) is a dip-buy / rally-sell — it flows into `TREND_*`
@@ -184,6 +194,14 @@ If `headlines` is empty → `catalyst="none"`, `confirm_contradict="NEUTRAL"`.
   - `rev_zone_l >= 7` OR `rev_zone_s >= 7`  -> WATCH "reversal forming"
   - `dominant_score >= 50`                  -> WATCH "moderate, no clean setup"
   - else                                    -> CUT   "no active edge"
+- `INCOME_CSP`:
+  - if `iv_rank >= 50` AND `earnings_gate != "FAIL"` -> PASS "CSP/Put Credit at support"
+  - else                                             -> WATCH "Put-side watch / moderate IV"
+- `INCOME_CC`:
+  - if `iv_rank >= 80`                               -> PASS "Call Credit / Covered Call"
+  - else                                             -> WATCH "Call-side structure"
+- `INCOME_STRUCTURE`:
+  - WATCH "structure-only setup"
 - `REVERSION_LONG` / `REVERSION_SHORT` -> PASS "mean-reversion" (counter-trend by definition)
   - always add flag `counter_trend_high_risk`
 - `BREAKOUT_LONG` -> PASS "ignition breakout"
@@ -196,9 +214,9 @@ If `headlines` is empty → `catalyst="none"`, `confirm_contradict="NEUTRAL"`.
 ### C. VETO overlay (caps any PASS at WATCH — never a hard CUT)
 - `confirm_contradict == "CONTRADICTS"`                          -> WATCH "news contradicts"
 - `earnings_gate == "FAIL"`                                      -> WATCH "earnings imminent"
-- long AND `zone_state == above_zone` AND `rr_from_current < 1.0`-> WATCH "chased, poor R:R"
-- `opposite_score >= dominant_score`                             -> WATCH "churn/conflicting momentum"
-- (dominant_side == "short" AND dir_prob >= 50) OR (dominant_side == "long" AND dir_prob < 50) -> WATCH "dir_prob contradicts bias"
+- long AND `entry_mode in {TREND_LONG, BREAKOUT_LONG}` AND `zone_state == above_zone` AND `rr_from_current < 1.0`-> WATCH "chased, poor R:R"
+- `opposite_score >= dominant_score` (directional modes)         -> WATCH "churn/conflicting momentum"
+- (dominant_side == "short" AND dir_prob >= 50) OR (dominant_side == "long" AND dir_prob < 50) (directional modes) -> WATCH "dir_prob contradicts bias"
 
 ### D. SOFT flags — add to `key_flags`, do NOT change triage
 - long  AND `ext_pct >= 25`                          -> "extreme_extension"  (the measured exclusion band; the Python filter CUTs on this — always flag it)
@@ -227,7 +245,7 @@ If `headlines` is empty → `catalyst="none"`, `confirm_contradict="NEUTRAL"`.
 ## CONVICTION (1-10) — compute AFTER key_flags
 
 Base from the firing signal:
-`REVERSION Zone 0 (>=10)` 6 · `BREAKOUT ignition` 6 · `TREND score >=85` 8 · `70-84` 6 · `50-69` 4 · else 2.
+`REVERSION Zone 0 (>=10)` 6 · `BREAKOUT ignition` 6 · `TREND score >=85` 8 · `70-84` 6 · `50-69` 4 · `INCOME_CSP (iv_rank>=50)` 6 · `INCOME_CC (iv_rank>=80)` 6 · else 2.
 Then: `+1` if `confirm_contradict==CONFIRMS` · `+1` if long AND `zone_state==in_zone` AND `rr_from_current>=2`
 · `+1` if `volume_confirmed` · `-1` per VETO cap · `-1` per CAUTION soft flag
 (`exhaustion`/`oversold`/`churn`/`chased`/`stage_lag`/`low_volume_breakout`/`into_supply`/`below_value`/`above_value`/`aggressive_target`/`extreme_extension`/`stage_5_recovery`/`unstaged_warmup`)
@@ -256,7 +274,7 @@ If the prompt includes block `2d-iv. STATE RESPONSE`, use it when generating you
 {
   "ticker": "",
   "dominant_side": "long|short",
-  "entry_mode": "TREND_LONG|TREND_SHORT|BREAKOUT_LONG|REVERSION_LONG|REVERSION_SHORT|NONE",
+  "entry_mode": "TREND_LONG|TREND_SHORT|BREAKOUT_LONG|REVERSION_LONG|REVERSION_SHORT|INCOME_CSP|INCOME_CC|INCOME_STRUCTURE|NONE",
   "rev_zone": "L:Z0|L:Z1|L:Z2|S:Z0|S:Z1|S:Z2|-",
   "confirm_contradict": "CONFIRMS|CONTRADICTS|NEUTRAL",
   "catalyst": "<=10 words or 'none'",
@@ -281,7 +299,8 @@ most material ones first). Write telegraphically: cite numbers, drop filler word
 provided — no outside knowledge, no assumptions):
 1. Name the firing `entry_mode` and the EXACT numbers that triggered it — cite the
    relevant ones of `buy` / `sell` / `dir_prob` / `rev_zone_l/s` / `stage` / `regime` /
-   `ext_pct` / `exhaustion` / `zone_state` / `rr_from_current`.
+   `ext_pct` / `exhaustion` / `zone_state` / `rr_from_current`, or for income modes cite
+   `structure` / `iv_rank` / `exp_move_pct` / `structure_strikes`.
 2. Evaluate the `triggers` block if present: which state is closest to opening, and 
    how likely is the missing catalyst/price gap to close? Name the specific missing gate.
 3. State the news read: `confirm_contradict` + the `catalyst`.

@@ -60,6 +60,9 @@ _TRIAGE_SCHEMA = {
                 "BREAKOUT_LONG",
                 "REVERSION_LONG",
                 "REVERSION_SHORT",
+                "INCOME_CSP",
+                "INCOME_CC",
+                "INCOME_STRUCTURE",
                 "NONE",
             ],
         },
@@ -374,6 +377,9 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         except Exception as e:
             logger.error(f"[{ticker}] Failed full news synthesis during prefilter: {e}")
 
+    screener_setup = survivor.get("screener_setup") or survivor.get("Setup")
+    income_only = bool(triage.get("no_fresh_long"))
+
     compact = {
         "triage": triage.get("triage"),
         "chosen_side": triage.get("chosen_side"),
@@ -392,6 +398,12 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         "enriched": False,
         "sentiment": sentiment.get("label", "neutral"),
         "sentiment_summary": sentiment.get("summary", ""),
+        "screener_setup": screener_setup,
+        "income_only": income_only,
+        "structure": triage.get("structure"),
+        "structure_strikes": triage.get("structure_strikes"),
+        "iv_rank": triage.get("iv_rank"),
+        "triggers": triage.get("triggers"),
     }
     if quality_pass and not send:
         compact["triage"] = "WATCH"
@@ -429,17 +441,18 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     # Income candidates are deliberately not sent to paid research (see _deep_research_gate), but log
     # what they DO support -- otherwise a name that is a perfectly good premium sale just drops
     # from the run with send=False and no explanation.
-    income_only = bool(triage.get("no_fresh_long"))
     if income_only:
         logger.info(
             f"[Prefilter-{worker_id}] {ticker}: INCOME-ONLY (no fresh long) "
             f"structure={triage.get('structure')} iv_rank={triage.get('iv_rank')} "
-            f"exp_move={triage.get('exp_move_pct')} strikes={triage.get('structure_strikes')}"
+            f"exp_move={triage.get('exp_move_pct')} strikes={triage.get('structure_strikes')} "
+            f"setup={screener_setup}"
         )
     else:
         logger.info(
             f"[Prefilter-{worker_id}] {ticker}: det={triage.get('triage')} "
-            f"rank={round(ev_score, 3)} send={send} news_neg={news_negative} contradicts={contradicts}"
+            f"rank={round(ev_score, 3)} send={send} news_neg={news_negative} contradicts={contradicts} "
+            f"setup={screener_setup}"
         )
     return {
         "ticker": safe_ticker,
@@ -452,6 +465,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         "triage": triage,
         "thesis_json_path": str(thesis_json_path),
         # Income lane: consumers read these instead of re-deriving a strike from the chart.
+        "screener_setup": screener_setup,
         "income_only": income_only,
         "structure": triage.get("structure"),
         "structure_strikes": triage.get("structure_strikes"),
@@ -532,6 +546,9 @@ def generate_thesis_task(
         f"pursue={triage['pursue']}"
     )
 
+    screener_setup = survivor.get("screener_setup") or survivor.get("Setup")
+    income_only = bool(triage.get("no_fresh_long"))
+
     if not triage["pursue"] and not enrich:
         # Not worth pursuing — record the deterministic verdict + sentiment and
         # skip the local-LLM triage, Alpha Vantage, and Gemini deep research.
@@ -553,6 +570,11 @@ def generate_thesis_task(
             "news_negative": triage.get("news_negative", False),
             "sentiment": sentiment.get("label", "neutral"),
             "sentiment_summary": sentiment.get("summary", ""),
+            "screener_setup": screener_setup,
+            "income_only": income_only,
+            "structure": triage.get("structure"),
+            "structure_strikes": triage.get("structure_strikes"),
+            "iv_rank": triage.get("iv_rank"),
             "triggers": triage.get("triggers"),
         }
         # NOTE: no _thesis.md is written (markdown generation removed); the
@@ -740,10 +762,11 @@ def generate_thesis_task(
         "news_catalyst": news_data.get("catalyst", "none"),
         "today": today_str,
         "headlines": headlines[:5],
-        # Buy-Trigger Gap Engine: deterministic gate distances for all actionable
-        # states. The agent sees exactly which gates are open/closed and at what
-        # distance, so it can predict the specific price-event or catalyst that
-        # would close each gap. None when TRIGGERS_ENABLED=0.
+        "screener_setup": screener_setup,
+        "income_only": income_only,
+        "structure": triage.get("structure"),
+        "structure_strikes": triage.get("structure_strikes"),
+        "iv_rank": triage.get("iv_rank"),
         "triggers": triage.get("triggers"),
     }
     # G. Query Local LLM (FREE — local Qwen 9B). This is the cheap, wide-net
@@ -760,7 +783,8 @@ def generate_thesis_task(
 
     # Add few-shot example for better JSON consistency
     few_shot_example = """
-Example Input:
+Example 1 (Directional):
+Input:
 {
   "ticker": "AAPL", "price": 178.5,
   "buy": 72, "sell": 45, "dir_prob": 61,
@@ -772,9 +796,25 @@ Example Input:
   "headlines": ["AAPL beats earnings expectations", "Analysts raise price targets"],
   "today": "2026-07-17"
 }
-
-Example Output:
+Output:
 {"ticker": "AAPL", "dominant_side": "long", "entry_mode": "TREND_LONG", "rev_zone": "L:Z2", "confirm_contradict": "CONFIRMS", "catalyst": "earnings beat", "news_sentiment": "bullish", "key_flags": ["extended"], "reasoning": "TREND_LONG fires with buy=72 > 65, dir_prob=61 >= 50, stage=1 healthy. News CONFIRMS with earnings beat + upgrades. extended flag from ext_pct=35 + regime=1. PASS triage.", "triage": "PASS", "conviction": 7, "send_for_deep_research": true}
+
+Example 2 (Income / Structure):
+Input:
+{
+  "ticker": "MSFT", "price": 410.0,
+  "buy": 40, "sell": 35, "dir_prob": 50,
+  "stage": 2, "regime": 0, "ext_pct": 8, "exhaustion": 0.1,
+  "income_only": false, "structure": "cash_secured_put_or_put_credit",
+  "structure_strikes": {"put_1_25x": 385.0, "put_1_50x": 380.0},
+  "iv_rank": 65, "screener_setup": "Put-Sell Timing (Research)",
+  "dominant_side": "long", "computed_flags": [],
+  "earnings_days": 28, "earnings_gate": "PASS",
+  "headlines": ["Tech sector consolidating in healthy range"],
+  "today": "2026-07-17"
+}
+Output:
+{"ticker": "MSFT", "dominant_side": "long", "entry_mode": "INCOME_CSP", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "none", "news_sentiment": "neutral", "key_flags": [], "reasoning": "INCOME_CSP fires on Put-Sell Timing screener setup. Structure supports CSP/put credit at support with IV rank 65. Target 1.25x/1.50x put strikes at 385/380. PASS triage.", "triage": "PASS", "conviction": 6, "send_for_deep_research": false}
 """
 
     # Build user prompt with few-shot example for better JSON consistency
@@ -1016,6 +1056,11 @@ Example Output:
     llm_json["rank_score"] = rank_score
     llm_json["enriched"] = True
     llm_json["send_for_deep_research"] = send
+    llm_json["screener_setup"] = screener_setup
+    llm_json["income_only"] = income_only
+    llm_json["structure"] = triage.get("structure")
+    llm_json["structure_strikes"] = triage.get("structure_strikes")
+    llm_json["iv_rank"] = triage.get("iv_rank")
     if quality_pass and not send:
         llm_json["triage"] = "WATCH"
         if earnings_gate == "FAIL":

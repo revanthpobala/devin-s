@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _format_triage_label(llm_data: Dict[str, Any]) -> str:
-    """Build the LLM Triage cell text (e.g. 'WATCH (6/10)' or 'CUT').
+    """Build the LLM Triage cell text (e.g. 'WATCH (6/10)' or 'CUT', or 'PASS [CSP] (7/10)').
 
     Real local-LLM verdicts carry a 1-10 `conviction`. Mechanical pre-filter
     verdicts (pursue=False) either have no conviction (None) or a 0-100 score
@@ -27,10 +27,23 @@ def _format_triage_label(llm_data: Dict[str, Any]) -> str:
     """
     triage = llm_data.get("triage", "UNKNOWN")
     conviction = llm_data.get("conviction")
+    entry_mode = str(llm_data.get("entry_mode", ""))
+    structure = str(llm_data.get("structure", ""))
+
+    label = triage
+    if entry_mode.startswith("INCOME_"):
+        tag = entry_mode.replace("INCOME_", "")
+        label = f"{triage} [{tag}]"
+    elif structure and structure not in ("None", ""):
+        if structure == "cash_secured_put_or_put_credit":
+            label = f"{triage} [CSP]"
+        elif structure == "call_credit_or_covered_call":
+            label = f"{triage} [CC]"
+
     is_llm_verdict = ("entry_mode" in llm_data) or ("reasoning" in llm_data)
     if is_llm_verdict and isinstance(conviction, (int, float)):
-        return f"{triage} ({int(conviction)}/10)"
-    return triage
+        return f"{label} ({int(conviction)}/10)"
+    return label
 
 
 def _format_llm_decision(llm_data: Dict[str, Any]) -> str:
@@ -867,6 +880,9 @@ class SheetsTracker:
                         or llm_data.get("pursue_reason")
                         or ""
                     )
+                    screener_setup = llm_data.get("screener_setup")
+                    if screener_setup and str(screener_setup) not in reasoning:
+                        reasoning = f"[{screener_setup}] {reasoning}".strip()
 
                     av_text = ""
                     if av_sentiment:
@@ -995,6 +1011,9 @@ class SheetsTracker:
                         or llm_data.get("pursue_reason")
                         or ""
                     )
+                    screener_setup = llm_data.get("screener_setup") or update.get("screener_setup")
+                    if screener_setup and str(screener_setup) not in reasoning:
+                        reasoning = f"[{screener_setup}] {reasoning}".strip()
 
                     av_text = ""
                     if av_sentiment:
