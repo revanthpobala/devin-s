@@ -59,8 +59,8 @@ def is_market_hours() -> bool:
         microsecond=0,
     )
     end_time = now_mt.replace(
-        hour=getattr(config, "MARKET_CLOSE_HOUR", 20),
-        minute=getattr(config, "MARKET_CLOSE_MINUTE", 0),
+        hour=getattr(config, "MARKET_CLOSE_HOUR", 14),
+        minute=getattr(config, "MARKET_CLOSE_MINUTE", 30),
         second=0,
         microsecond=0,
     )
@@ -232,7 +232,16 @@ def main():
                     logger.info(f"Email Alert Ingestor started (PID {tracker_process.pid}).")
 
             else:
-                # Outside market hours — shut down tracker to free resources
+                # Outside market hours — auto-flatten any lingering intraday/0DTE positions
+                try:
+                    from src.tracking.position_state import flatten_eod_intraday_positions
+                    closed_intraday = flatten_eod_intraday_positions()
+                    if closed_intraday:
+                        logger.info(f"EOD Auto-Flattened {len(closed_intraday)} intraday position(s).")
+                except Exception as e:
+                    logger.warning(f"Error during EOD intraday position flattening: {e}")
+
+                # Shut down tracker to free resources
                 if tracker_process is not None and tracker_process.poll() is None:
                     logger.info("Market is closed. Shutting down Email Alert Ingestor...")
                     tracker_process.terminate()

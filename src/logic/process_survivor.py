@@ -769,6 +769,8 @@ def generate_thesis_task(
         "iv_rank": triage.get("iv_rank"),
         "triggers": triage.get("triggers"),
     }
+
+
     # G. Query Local LLM (FREE — local Qwen 9B). This is the cheap, wide-net
     # first pass that decides whether a ticker is strong enough to justify the
     # paid Minimax deep-research pass downstream. No OpenRouter call here.
@@ -1101,6 +1103,7 @@ Output:
         "av_earnings": av_earnings,
         "social_sentiment": social_sentiment,
         "thesis_json": str(thesis_json_path),
+        "user_position": None,
     }
 
     try:

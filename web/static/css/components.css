@@ -1,0 +1,756 @@
+/* ==========================================================================
+   Component Styles: Cards, Pills, Buttons, Forms, Price Ladders, Tables
+   Theme: Institutional Clean Slate & White (with Dark Mode Support)
+   ========================================================================== */
+
+/* Station Cards */
+.station-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 22px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.1px;
+}
+
+/* Status Pills */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.pill.green {
+  border-color: #a7f3d0;
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.pill.red {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.pill.cyan {
+  border-color: #bae6fd;
+  color: #0369a1;
+  background: #f0f9ff;
+}
+
+.pill.amber {
+  border-color: #fde68a;
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Badges */
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge.in_zone {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.badge.stalking {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.badge.runaway {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.badge.target_hit {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.badge.danger, .badge.cut, .badge.avoid, .badge.invalid {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+/* Action Buttons */
+.btn {
+  background: #0f172a;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid #0f172a;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.btn:hover {
+  background: #1e293b;
+  border-color: #1e293b;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn.secondary {
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+}
+
+.btn.secondary:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-subtle);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.btn.danger {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.btn.danger:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.1);
+}
+
+/* Inputs and Selects */
+.input-ticker, .select-mode, .search-filter-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.input-ticker:focus, .select-mode:focus, .search-filter-input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+/* Quick Tickers Row */
+.quick-tickers-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ticker-pill-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ticker-pill-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-subtle);
+  color: var(--text-main);
+}
+
+.ticker-pill-btn.active {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+/* Visual Price Ladder Bar */
+.price-ladder-box {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 12px;
+}
+
+.price-ladder-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 6px;
+  color: var(--text-muted);
+}
+
+.price-ladder-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  position: relative;
+  overflow: hidden;
+}
+
+.price-ladder-progress {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, #dc2626 0%, #d97706 35%, #059669 75%, #2563eb 100%);
+}
+
+/* Target & Alert Cards */
+.targets-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.target-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.target-card:hover {
+  border-color: var(--border-subtle);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.target-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.target-sym {
+  font-size: 18px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.spot-badge {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text-main);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.levels-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  background: var(--bg-subtle);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 11.5px;
+  font-family: 'JetBrains Mono', monospace;
+  border: 1px solid var(--border);
+}
+
+.level-col label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.level-col span {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.options-snippet {
+  font-size: 12.5px;
+  color: var(--text-main);
+  background: var(--bg-subtle);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--blue);
+  line-height: 1.45;
+}
+
+/* Grouped Alerts Cards */
+.alert-group-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-card);
+}
+
+.alert-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.alert-sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+}
+
+.alert-trigger-type {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.alert-trigger-type.buy {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.alert-trigger-type.target {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+/* Console Boxes - Dark Developer Terminal Slate inside Card */
+.console-box {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-size: 12px;
+  color: #e2e8f0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Tables */
+table.cockpit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+table.cockpit-table th {
+  padding: 10px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 11px;
+}
+
+table.cockpit-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Date Group Accordion (FAQ-Style) for Watch Targets & Research */
+.date-accordion-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-card);
+  transition: all 0.2s ease;
+}
+
+.date-accordion-card:hover {
+  border-color: var(--border-subtle);
+}
+
+.date-accordion-head {
+  padding: 12px 16px;
+  background: var(--bg-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.date-accordion-head:hover {
+  background: var(--bg-card-hover);
+}
+
+.date-accordion-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.date-accordion-icon {
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+
+.date-accordion-card.collapsed .date-accordion-icon {
+  transform: rotate(-90deg);
+}
+
+.date-accordion-card.collapsed .date-accordion-body {
+  display: none;
+}
+
+.date-accordion-body {
+  padding: 14px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+/* Instant Search Input */
+.search-filter-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-filter-input {
+  width: 100%;
+  padding: 6px 12px 6px 32px;
+}
+
+.search-filter-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Full-Width Watchlist Data Table & Controls */
+.table-controls-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.filter-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tab-pill-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.tab-pill-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+  border-color: var(--border-subtle);
+}
+
+.tab-pill-btn.active {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  font-weight: 700;
+}
+
+.watchlist-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+}
+
+table.watchlist-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+table.watchlist-table thead th {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  user-select: none;
+  cursor: pointer;
+}
+
+table.watchlist-table thead th:hover {
+  color: var(--text-main);
+}
+
+/* Sticky First Column */
+table.watchlist-table thead th:first-child,
+table.watchlist-table tbody td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.03);
+}
+
+table.watchlist-table thead th:first-child {
+  z-index: 6;
+  background: var(--bg-subtle);
+}
+
+table.watchlist-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s ease;
+}
+
+table.watchlist-table tbody tr:hover {
+  background: var(--bg-card-hover);
+}
+
+table.watchlist-table tbody tr:hover td:first-child {
+  background: var(--bg-card-hover);
+}
+
+table.watchlist-table tbody td {
+  padding: 12px 14px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.ticker-cell-sym {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-main);
+  letter-spacing: 0.3px;
+}
+
+.dist-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dist-pill.near {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.dist-pill.moderate {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.dist-pill.far {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.dist-pill.invalid {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.status-badge-lg {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.status-badge-lg.in_zone {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.status-badge-lg.in_trade {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.status-badge-lg.stalking {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.status-badge-lg.invalidated {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.status-badge-lg.target_hit {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.status-badge-lg.missed_runaway {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.view-mode-toggle {
+  display: inline-flex;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  gap: 2px;
+}
+
+.view-mode-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.view-mode-btn.active {
+  background: var(--bg-surface);
+  color: var(--text-main);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Recent Finished Research Rows */
+.recent-job-row {
+  transition: all 0.15s ease;
+}
+
+.recent-job-row:hover {
+  background: var(--bg-hover, #f1f5f9) !important;
+  border-color: var(--blue) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}

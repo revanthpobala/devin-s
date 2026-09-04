@@ -28,12 +28,104 @@ def _create_completion(client, provider: str, **kwargs):
     or a strict block to prevent thread pool starvation during heavy local inference.
     """
     if provider == "local":
-        # Standard blocking approach (ensure your ThreadPool is large enough,
-        # e.g., max_workers=20+, so I/O tasks always have free threads)
+        if kwargs.get("stream"):
+            # Consume stream inside semaphore block so concurrency limit is strictly held for generation duration
+            with _local_llm_semaphore:
+                stream_response = client.chat.completions.create(**kwargs)
+                collected_chunks = []
+                finish_reason = None
+                for chunk in stream_response:
+                    if chunk.choices and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta
+                        if hasattr(delta, "content") and delta.content:
+                            collected_chunks.append(delta.content)
+                        if chunk.choices[0].finish_reason:
+                            finish_reason = chunk.choices[0].finish_reason
+                full_content = "".join(collected_chunks)
+
+                class _DummyMessage:
+                    def __init__(self, content):
+                        self.content = content
+                        self.tool_calls = None
+
+                class _DummyChoice:
+                    def __init__(self, content, finish_reason):
+                        self.message = _DummyMessage(content)
+                        self.finish_reason = finish_reason
+
+                class _DummyResponse:
+                    def __init__(self, content, finish_reason):
+                        self.choices = [_DummyChoice(content, finish_reason)]
+
+                return _DummyResponse(full_content, finish_reason)
+
         with _local_llm_semaphore:
             return client.chat.completions.create(**kwargs)
 
     return client.chat.completions.create(**kwargs)
+
+
+class _DummyFunction:
+    def __init__(self, name: str, arguments):
+        self.name = name
+        self.arguments = json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
+
+
+class _DummyToolCall:
+    def __init__(self, id_str: str, name: str, arguments):
+        self.id = id_str
+        self.function = _DummyFunction(name, arguments)
+
+
+def _parse_text_tool_calls(text: str) -> list:
+    """
+    Parse text-based tool calls emitted by local LLM models when raw text formatting is used.
+    Supports XML-style (<tool_call><function=...><parameter=...>...</parameter></function></tool_call>)
+    and JSON-style (<tool_call>{"name": "...", "arguments": {...}}</tool_call>).
+    """
+    if not text or ("<tool_call>" not in text and "<function=" not in text):
+        return []
+
+    parsed_calls = []
+
+    # 1. XML style: <tool_call><function=name><parameter=key>val</parameter></function></tool_call>
+    xml_matches = list(re.finditer(r"<tool_call>\s*<function=([^>]+)>([\s\S]*?)</function>\s*</tool_call>", text))
+    if not xml_matches:
+        xml_matches = list(re.finditer(r"<function=([^>]+)>([\s\S]*?)</function>", text))
+
+    for idx, match in enumerate(xml_matches):
+        fn_name = match.group(1).strip()
+        fn_body = match.group(2)
+        args = {}
+        for p_match in re.finditer(r"<parameter=([^>]+)>([\s\S]*?)</parameter>", fn_body):
+            p_name = p_match.group(1).strip()
+            p_val = p_match.group(2).strip()
+            args[p_name] = p_val
+
+        call_id = f"call_text_{int(time.time())}_{idx}"
+        dummy_tc = _DummyToolCall(call_id, fn_name, args)
+        parsed_calls.append(dummy_tc)
+
+    # 2. JSON style inside <tool_call> tags
+    if not parsed_calls:
+        json_matches = list(re.finditer(r"<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>", text))
+        for idx, match in enumerate(json_matches):
+            try:
+                j_data = json.loads(match.group(1))
+                fn_name = j_data.get("name") or j_data.get("function", {}).get("name")
+                fn_args = j_data.get("arguments") or j_data.get("function", {}).get("arguments") or {}
+                if isinstance(fn_args, str):
+                    try:
+                        fn_args = json.loads(fn_args)
+                    except Exception:
+                        pass
+                if fn_name:
+                    call_id = f"call_text_json_{int(time.time())}_{idx}"
+                    parsed_calls.append(_DummyToolCall(call_id, fn_name, fn_args if isinstance(fn_args, dict) else {}))
+            except Exception:
+                pass
+
+    return parsed_calls
 
 
 import io
@@ -247,18 +339,77 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_quantitative_plugin",
-            "description": "Runs a specialized quantitative market analytics plugin ('order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', or 'all') on the trailing 1-year data and Data Window.",
+            "description": "Runs a specialized quantitative market analytics plugin ('order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', 'candlestick_patterns', 'tastytrade_volatility', or 'all') on the trailing 1-year data and Data Window.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ticker": {
                         "type": "string",
-                        "description": "The stock ticker symbol (e.g. 'CRWD', 'AMD', 'CRWV')",
+                        "description": "The stock ticker symbol (e.g. 'CRWD', 'AMD', 'CRWV', 'AMZN')",
                     },
                     "plugin_name": {
                         "type": "string",
-                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence"],
-                        "description": "The specific analytics plugin to execute. Use 'order_flow' for volume accumulation ratios, Chaikin Money Flow, and Volume Profile liquidity nodes.",
+                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility"],
+                        "description": "The specific analytics plugin to execute. Use 'tastytrade_volatility' for institutional IV Rank, HV/IV spread, borrow rates, and options liquidity ratings.",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_tastytrade_volatility_and_options",
+            "description": "Queries Tastytrade for institutional volatility analytics: exact IV Rank, IV Percentile, 30d/60d/90d Historical Volatility (HV), IV-HV volatility spread, 1-5 Star Option Liquidity Rating, Short Borrow Rate / Lendability (Easy vs Hard to borrow), Beta, and SPY correlation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'AMZN', 'AAPL', 'NVDA')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_schwab_options_flow",
+            "description": "Queries Charles Schwab API for real-time unusual options volume spikes, institutional sweeps, and block trades across the next 90 days where Volume > 1.5x Open Interest. Reveals smart money call accumulation vs put hedging at key strikes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'META', 'AAPL', 'NVDA')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scrape_tradingview_chart",
+            "description": "Triggers a live TradingView Playwright scraper for a ticker to generate fresh naked + 90d zoom chart screenshots and a fresh 300-bar Data Window CSV with 85 quantitative indicator columns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'PYPL', 'NVDA', 'TSLA')",
+                    },
+                    "lookback_days": {
+                        "type": "integer",
+                        "description": "Chart lookback days (default: 90)",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Force a fresh re-scrape even if today's artifacts already exist (default: true)",
                     },
                 },
                 "required": ["ticker"],
@@ -285,7 +436,7 @@ TOOLS = [
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Executable Python code. Pre-loaded variables: df, dw, ticker, np, pd, math, json, datetime. Use print() to output results.",
+                        "description": "Executable Python code (concise, max 50 lines). Pre-loaded variables: df, dw, ticker, np, pd, math, json, datetime. Use print() to output results.",
                     },
                     "ticker": {
                         "type": "string",
@@ -335,6 +486,36 @@ TOOLS = [
                     "ticker": {
                         "type": "string",
                         "description": "The stock ticker symbol (e.g. 'AMZN', 'AAPL', 'NVDA')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_sec_filings",
+            "description": (
+                "Queries official U.S. SEC EDGAR records for a company:\n"
+                "1. Recent Filings: 10-K (Annual), 10-Q (Quarterly), 8-K (Material Events/Dilution), Form 4 (Insider Transactions) with direct SEC.gov URLs.\n"
+                "2. XBRL GAAP Financial Facts: Trailing 4 quarters of verified Revenue, Operating Income, Net Income, Cash & Equivalents, and Long-Term Debt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'AVGO', 'FLY', 'AAPL')",
+                    },
+                    "form_type": {
+                        "type": "string",
+                        "enum": ["ALL", "10-K", "10-Q", "8-K", "4"],
+                        "description": "Form filter preference (default: 'ALL')",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of recent filings to return (default: 5)",
                     },
                 },
                 "required": ["ticker"],
@@ -394,6 +575,8 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
         p_key = "htf_confluence"
     elif p_key in ("candlesticks", "candlestick", "patterns", "candles", "candle", "candlestick_patterns_plugin"):
         p_key = "candlestick_patterns"
+    elif p_key in ("tastytrade", "tasty", "iv", "volatility", "tastytrade_volatility", "tastytrade_plugin"):
+        p_key = "tastytrade_volatility"
 
     if p_key == "all":
         res = plugin_manager.run_all(ticker, df, dw)
@@ -472,12 +655,18 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         scipy = None
         stats = None
 
+    try:
+        import talib
+    except ImportError:
+        talib = None
+
     # Sandbox environment
     sandbox_globals = {
         "pd": pd,
         "np": np,
         "scipy": scipy,
         "stats": stats,
+        "talib": talib,
         "math": math,
         "json": json,
         "datetime": datetime,
@@ -686,6 +875,10 @@ def execute_tool_call(tool_call, date_str: str = None):
     elif function_name == "fetch_prior_research":
         lookback_slug = re.sub(r'[^\w\-]', '_', str(args.get("lookback_days", 14))).strip('_')
         cache_key = f"prior_research_{lookback_slug}"
+    elif function_name == "fetch_sec_filings":
+        form_slug = re.sub(r'[^\w\-]', '_', str(args.get("form_type", "ALL")).upper()).strip('_')
+        limit_slug = re.sub(r'[^\w\-]', '_', str(args.get("limit", 5))).strip('_')
+        cache_key = f"sec_filings_{form_slug}_{limit_slug}"
     elif function_name == "execute_python_code":
         import hashlib
         code_hash = hashlib.md5(str(args.get("code", "")).encode("utf-8")).hexdigest()[:8]
@@ -770,7 +963,17 @@ def execute_tool_call(tool_call, date_str: str = None):
         code_str = args.get("code", "")
         logger.info(f"LLM executed tool: execute_python_code(ticker='{ticker}', code_len={len(code_str)})")
         res_str = execute_python_code_tool(code=code_str, ticker=ticker, date_str=date_str)
-        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        artifact_cache.save(date_str, ticker, cache_key, {
+            "code": code_str,
+            "stdout": res_str,
+        })
+        try:
+            from src.data.artifact_cache import get_artifact_dir
+            t_dir = get_artifact_dir(date_str, ticker)
+            py_file = t_dir / f"{ticker}_{cache_key}.py"
+            py_file.write_text(f"# Quantitative Script for {ticker} ({date_str})\n# Generated by Deep Research Agent\n\n{code_str}\n", encoding="utf-8")
+        except Exception:
+            pass
         return res_str
     elif function_name == "run_quantitative_plugin":
         plugin_name = args.get("plugin_name", "all")
@@ -787,6 +990,52 @@ def execute_tool_call(tool_call, date_str: str = None):
     elif function_name == "detect_candlestick_patterns":
         logger.info(f"LLM executed tool: detect_candlestick_patterns(ticker='{ticker}')")
         res_str = run_quantitative_plugin_tool(ticker, plugin_name="candlestick_patterns", date_str=date_str)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "fetch_tastytrade_volatility_and_options":
+        logger.info(f"LLM executed tool: fetch_tastytrade_volatility_and_options(ticker='{ticker}')")
+        res_str = run_quantitative_plugin_tool(ticker, plugin_name="tastytrade_volatility", date_str=date_str)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "fetch_schwab_options_flow":
+        from src.clients.schwab_client import get_unusual_options_flow
+        logger.info(f"LLM executed tool: fetch_schwab_options_flow(ticker='{ticker}')")
+        res_str = get_unusual_options_flow(ticker)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "fetch_sec_filings":
+        from src.clients.sec_edgar_client import format_sec_report
+        form_type = args.get("form_type", "ALL")
+        limit = int(args.get("limit", 5))
+        logger.info(f"LLM executed tool: fetch_sec_filings(ticker='{ticker}', form_type='{form_type}', limit={limit})")
+        res_str = format_sec_report(ticker=ticker, form_type=form_type, limit=limit)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "scrape_tradingview_chart":
+        lookback = int(args.get("lookback_days", 90))
+        force_flag = bool(args.get("force", True))
+        logger.info(f"LLM executed tool: scrape_tradingview_chart(ticker='{ticker}', lookback_days={lookback}, force={force_flag})")
+        out_raw = config.BASE_DIR / "data" / "raw" / date_str
+        out_raw.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.data.tv_scraper import TVScraper
+            scraper = TVScraper(worker_id=1, target_date=date_str)
+            scraper.capture_ticker(ticker, lookback_days=lookback)
+            
+            json_p = out_raw / ticker / f"{ticker}_datawindow.json"
+            if not json_p.exists():
+                json_p = out_raw / f"{ticker}_datawindow.json"
+                
+            if json_p.exists():
+                dw = json.loads(json_p.read_text(encoding="utf-8"))
+                c = dw.get("close", "N/A")
+                score = dw.get("Long Buy Score", "N/A")
+                res_str = f"✅ TradingView chart & Data Window scrape complete for {ticker} (Date: {date_str}). Latest Close: ${c}, Long Buy Score: {score}. Artifacts updated in data/raw/{date_str}/{ticker}/."
+            else:
+                res_str = f"TradingView scrape complete for {ticker} (Date: {date_str})."
+        except Exception as e:
+            logger.error(f"TradingView chart scrape failed for {ticker}: {e}", exc_info=True)
+            res_str = f"TradingView scrape failed for {ticker}: {str(e)}"
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     else:
@@ -1010,16 +1259,17 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
 
 def query_local_llm(
     system_prompt: str,
-    user_prompt: str,
+    user_prompt: str = "",
     json_mode: bool = False,
     max_tokens: int = 4096,
     use_openrouter: bool = False,
     image_paths: list | None = None,
-    use_tools: bool = True,
+    use_tools: bool = False,
     disable_thinking: bool = False,
     model: str | None = None,
     json_schema: dict | None = None,
     summarize_tool_context: str | None = None,
+    messages: list | None = None,
 ) -> str:
     """
     Run inference via local FastAPI Unsloth server, Meta AI, NVIDIA NIM (free), or OpenRouter,
@@ -1032,30 +1282,36 @@ def query_local_llm(
     when None, META_LLM (or OPENROUTER_MODEL) env is used.
     """
     try:
-        user_content = []
-        if user_prompt and user_prompt.strip():
-            user_content.append({"type": "text", "text": user_prompt})
+        if messages and isinstance(messages, list):
+            # Use pre-constructed multi-turn chat messages
+            messages = list(messages)
+            if system_prompt and (not messages or messages[0].get("role") != "system"):
+                messages.insert(0, {"role": "system", "content": system_prompt})
         else:
-            # NVIDIA NIM rejects empty `content` with HTTP 400. Provide a
-            # minimal placeholder when the caller passes nothing (e.g. a
-            # vision-only request with no text prompt).
-            user_content.append({"type": "text", "text": "Analyze the provided chart and context."})
+            user_content = []
+            if user_prompt and user_prompt.strip():
+                user_content.append({"type": "text", "text": user_prompt})
+            else:
+                # NVIDIA NIM rejects empty `content` with HTTP 400. Provide a
+                # minimal placeholder when the caller passes nothing (e.g. a
+                # vision-only request with no text prompt).
+                user_content.append({"type": "text", "text": "Analyze the provided chart and context."})
 
-        if image_paths and isinstance(image_paths, list):
-            valid_paths = [p for p in image_paths if os.path.exists(p)]
-            for path in valid_paths:
-                base64_img = encode_image_to_base64(path)
-                user_content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{base64_img}"},
-                    }
-                )
+            if image_paths and isinstance(image_paths, list):
+                valid_paths = [p for p in image_paths if os.path.exists(p)]
+                for path in valid_paths:
+                    base64_img = encode_image_to_base64(path)
+                    user_content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{base64_img}"},
+                        }
+                    )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
 
         client, model, provider = _build_client_and_model(use_openrouter, model=model)
 
@@ -1095,6 +1351,26 @@ def query_local_llm(
         if attach_tools:
             kwargs["tools"] = TOOLS
             kwargs["tool_choice"] = "auto"
+            kwargs["parallel_tool_calls"] = True
+            
+            # Explicitly instruct the LLM on autonomous research and requesting everything it needs
+            tool_mandate = (
+                "\n\n[TOOL CALLING & AUTONOMOUS RESEARCH MANDATE]:\n"
+                "You have full access to real-time market data, quantitative execution, and analytical tools:\n"
+                "- `execute_python_code`: Run arbitrary Python on the 300-bar dataframe `df` (Monte Carlo, EV modeling, volatility spreads, VP levels).\n"
+                "- `fetch_options_chain`: Look up live bid/ask, Greeks, open interest, and strike geometry.\n"
+                "- `get_realtime_quote`: Live spot price, bid/ask, and intraday range.\n"
+                "- `run_quantitative_plugin`: Run institutional plugins (order flow, squeeze expansion, candlestick patterns, tastytrade volatility).\n"
+                "- `scrape_tradingview_options_finder`: Strategy Finder spread search.\n"
+                "- `fetch_sec_filings`: Official U.S. SEC EDGAR filings (10-K, 10-Q, 8-K, Form 4) and trailing 4-quarter GAAP financial facts (revenue, net income, cash, long-term debt).\n"
+                "- `scrape_tradingview_chart`: Fresh Playwright chart & Data Window scrape.\n"
+                "- `fetch_earnings_calendar`, `fetch_prior_research`, and `search_web`.\n\n"
+                "MANDATE: Request ALL data, calculations, and simulations you need. If you need multiple tools, emit them in parallel. "
+                "After receiving results, examine the data and continue calling any additional tools if you have open questions, need different strike ranges, or require deeper verification. "
+                "Only proceed to write the final Markdown report when you are fully satisfied with all empirical evidence."
+            )
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] = (messages[0].get("content") or "") + tool_mandate
 
         if provider == "local":
             # STRUCTURED OUTPUT (LOCAL). Now that thinking is OFF server-side
@@ -1122,61 +1398,52 @@ def query_local_llm(
             elif json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
 
-        # Tool execution loop
-        MAX_TOOL_CALLS = 25
+        # Tool execution loop with native parallel execution support
+        MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "50"))
         tool_call_count = 0
 
         while tool_call_count < MAX_TOOL_CALLS:
             try:
                 if not attach_tools and provider == "local":
                     kwargs["stream"] = True
-                    stream_response = _create_completion(client, provider, **kwargs)
-                    collected_chunks = []
-                    finish_reason = None
-                    for chunk in stream_response:
-                        if chunk.choices and len(chunk.choices) > 0:
-                            delta = chunk.choices[0].delta
-                            if hasattr(delta, "content") and delta.content:
-                                collected_chunks.append(delta.content)
-                            if chunk.choices[0].finish_reason:
-                                finish_reason = chunk.choices[0].finish_reason
-                    full_content = "".join(collected_chunks)
-
-                    class _DummyMessage:
-                        def __init__(self, content):
-                            self.content = content
-                            self.tool_calls = None
-
-                    class _DummyChoice:
-                        def __init__(self, content, finish_reason):
-                            self.message = _DummyMessage(content)
-                            self.finish_reason = finish_reason
-
-                    class _DummyResponse:
-                        def __init__(self, content, finish_reason):
-                            self.choices = [_DummyChoice(content, finish_reason)]
-
-                    response = _DummyResponse(full_content, finish_reason)
-                else:
-                    response = _create_completion(client, provider, **kwargs)
+                response = _create_completion(client, provider, **kwargs)
             except Exception as e:
-                # NVIDIA model doesn't support tools (HTTP 400) — retry without them.
-                if attach_tools and ("400" in str(e) or "tool" in str(e).lower()):
+                # If tool calling fails (HTTP 400 or HTTP 500 JSON parse errors) — retry cleanly without tools.
+                if attach_tools and ("400" in str(e) or "500" in str(e) or "tool" in str(e).lower()):
                     logger.warning(
                         f"Tool calling rejected by {provider} ({e}); retrying without tools."
                     )
                     kwargs.pop("tools", None)
                     kwargs.pop("tool_choice", None)
+                    kwargs.pop("parallel_tool_calls", None)
                     attach_tools = False
+                    kwargs["messages"] = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
                     response = _create_completion(client, provider, **kwargs)
                 else:
                     raise
             message = response.choices[0].message
+            content_text = _extract_text(message) or ""
+
+            # Check for native tool calls or text-based tool calls emitted directly into content
+            effective_tool_calls = message.tool_calls or []
+            if not effective_tool_calls and attach_tools and content_text:
+                parsed_tcs = _parse_text_tool_calls(content_text)
+                if parsed_tcs:
+                    effective_tool_calls = parsed_tcs
+                    logger.info(
+                        f"Intercepted {len(parsed_tcs)} text-formatted tool call(s) from LLM output: {[tc.function.name for tc in parsed_tcs]}"
+                    )
 
             # If the model wants to call tools
-            if message.tool_calls:
-                # Add the assistant's tool_calls message to the history
-                messages.append(message)
+            if effective_tool_calls:
+                # Add the assistant's message to the history
+                if message.tool_calls:
+                    messages.append(message)
+                else:
+                    messages.append({"role": "assistant", "content": content_text})
                 
                 # Extract simulated date if present in context
                 sim_date = None
@@ -1189,43 +1456,60 @@ def query_local_llm(
                 import concurrent.futures
                 
                 def _process_tool_call(tool_call):
-                    tool_result = execute_tool_call(tool_call, date_str=sim_date)
-                    tool_result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
+                    fn_name = getattr(getattr(tool_call, "function", None), "name", "unknown")
+                    try:
+                        tool_result = execute_tool_call(tool_call, date_str=sim_date)
+                        tool_result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
+                    except Exception as e_tool:
+                        logger.error(f"Error executing tool {fn_name}: {e_tool}")
+                        tool_result_str = f"Error executing tool {fn_name}: {e_tool}"
 
-                    if summarize_tool_context and tool_call.function.name in ("search_web", "fetch_finnhub_news", "fetch_alpaca_news") and len(tool_result_str) > 200:
-                        logger.info(f"Summarizing raw output of {tool_call.function.name} locally to filter hallucinations...")
-                        sys_prompt = "You are a strict data analyst. You are provided with raw news/web search data. Summarize the key catalysts, fundamental data, and sentiment concisely. " + summarize_tool_context
-                        usr_prompt = f"RAW TOOL OUTPUT:\n{tool_result_str}\n\nSummarize the core facts."
-                        
-                        summary = query_local_llm(
-                            system_prompt=sys_prompt,
-                            user_prompt=usr_prompt,
-                            use_openrouter=False, # Force local model
-                            use_tools=False,      # No recursive tools
-                            disable_thinking=True,
-                            max_tokens=1024,
+                    # Guardrail: Cap individual tool output string to avoid flooding the context
+                    max_tool_chars = int(os.getenv("MAX_TOOL_OUTPUT_CHARS", "3500"))
+                    if len(tool_result_str) > max_tool_chars:
+                        logger.info(
+                            f"Capping tool '{fn_name}' output from {len(tool_result_str):,} to {max_tool_chars:,} chars for context health."
                         )
-                        if summary:
-                            tool_result_str = f"[LOCAL LLM SYNTHESIS]:\n{summary}"
-                        else:
-                            logger.warning(f"Local summarization of {tool_call.function.name} failed, falling back to raw output.")
-                    
+                        tool_result_str = (
+                            tool_result_str[:max_tool_chars]
+                            + f"\n... [Output truncated to {max_tool_chars} chars to preserve LLM context budget]"
+                        )
+
                     return {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "name": tool_call.function.name,
+                        "name": fn_name,
                         "content": tool_result_str,
                     }
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(message.tool_calls))) as executor:
-                    futures = [executor.submit(_process_tool_call, tc) for tc in message.tool_calls]
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(effective_tool_calls))) as executor:
+                    futures = [executor.submit(_process_tool_call, tc) for tc in effective_tool_calls]
                     for future in futures:
                         messages.append(future.result())
 
                 tool_call_count += 1
                 logger.info(
-                    f"Tool execution loop {tool_call_count} complete. Requesting next action from LLM..."
+                    f"Parallel tool batch {tool_call_count} ({len(effective_tool_calls)} calls) complete. Requesting next action from LLM..."
                 )
+
+                MAX_ALLOWED_TOOL_BATCHES = int(os.getenv("MAX_TOOL_BATCHES", "8"))
+                
+                # Check accumulated message character length to prevent context explosion
+                total_msg_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+                if tool_call_count >= MAX_ALLOWED_TOOL_BATCHES or total_msg_chars > 45000:
+                    logger.info(
+                        f"Reached safety limit of tool batches ({tool_call_count}/{MAX_ALLOWED_TOOL_BATCHES}) "
+                        f"or msg volume ({total_msg_chars:,} chars). Directing model to output final markdown report."
+                    )
+                    kwargs.pop("tools", None)
+                    kwargs.pop("tool_choice", None)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You have completed your quantitative calculations and data collection passes. "
+                            "Now output your complete, exhaustive Markdown Deep Research Report starting with '# TICKER | ...'."
+                        )
+                    })
             else:
                 # Model returned a final string response
                 content = _extract_text(message)
@@ -1289,6 +1573,8 @@ def query_local_llm(
                 final_text = full_content.strip()
                 final_text = re.sub(r'<think>.*?</think>', '', final_text, flags=re.DOTALL).strip()
                 final_text = re.sub(r'<thinking>.*?</thinking>', '', final_text, flags=re.DOTALL).strip()
+                final_text = re.sub(r'<tool_call>.*?</tool_call>', '', final_text, flags=re.DOTALL).strip()
+                final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL).strip()
                 # If there's an unclosed <think> tag, strip everything after it
                 if "<think>" in final_text and "</think>" not in final_text:
                     final_text = final_text.split("<think>")[0].strip()
@@ -1306,6 +1592,8 @@ def query_local_llm(
         import re
         final_text = re.sub(r'<think>.*?</think>', '', final_text, flags=re.DOTALL).strip()
         final_text = re.sub(r'<thinking>.*?</thinking>', '', final_text, flags=re.DOTALL).strip()
+        final_text = re.sub(r'<tool_call>.*?</tool_call>', '', final_text, flags=re.DOTALL).strip()
+        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL).strip()
         if "<think>" in final_text and "</think>" not in final_text:
             final_text = final_text.split("<think>")[0].strip()
         if "<thinking>" in final_text and "</thinking>" not in final_text:

@@ -125,6 +125,7 @@ Do NOT write an essay. Output the JSON immediately.
             user_prompt=user_prompt,
             json_mode=True,
             use_openrouter=False,
+            use_tools=False,
             max_tokens=512,
             disable_thinking=True,
         )

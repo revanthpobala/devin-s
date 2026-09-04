@@ -32,13 +32,14 @@ class ThesisDriftChecker:
         """Most recent {ticker}_gemini_thesis.md across all triage/raw date folders,
         excluding today. Returns (date_str, text) or None."""
         patterns = [
-            str(self.base_dir / "data" / "triage" / "*" / "_DEEP_RESEARCH" / f"{ticker}_gemini_thesis.md"),
-            str(self.base_dir / "data" / "triage" / "*" / "force" / f"{ticker}_gemini_thesis.md"),
-            str(self.base_dir / "data" / "raw" / "*" / f"{ticker}_gemini_thesis.md"),
+            str(self.base_dir / "data" / "triage" / "*" / "_DEEP_RESEARCH" / "**" / f"{ticker}_gemini_thesis.md"),
+            str(self.base_dir / "data" / "triage" / "*" / "force" / "**" / f"{ticker}_gemini_thesis.md"),
+            str(self.base_dir / "data" / "raw" / "*" / "**" / f"{ticker}_gemini_thesis.md"),
+            str(self.base_dir / "reports" / "*" / f"{ticker}_summary.md"),
         ]
         candidates = []
         for p in patterns:
-            candidates.extend(glob.glob(p))
+            candidates.extend(glob.glob(p, recursive=True))
         candidates.sort(reverse=True)
 
         for path in candidates:

@@ -1,0 +1,390 @@
+"""
+Report Level Extractor
+Parses generated research reports (summary + arbitration) to extract structured
+tactical levels, options plays, and invalidation triggers.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from src import config
+
+logger = logging.getLogger(__name__)
+
+
+def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dict[str, Any]]:
+    """Extract structured watch levels for a ticker on a date.
+
+    Priority:
+    1. Direct embedded ```json:watch_levels code block in <ticker>_arbitration.md or <ticker>_summary.md
+    2. Deterministic regex extraction across the Arbitration Directive and Quantitative Plan
+    3. Fallback to Data Window JSON if available
+    """
+    safe_ticker = ticker.replace(":", "_").upper()
+    reports_dir = config.BASE_DIR / "reports" / date_str
+    raw_dir = config.BASE_DIR / "data" / "raw" / date_str / safe_ticker
+    triage_dir = config.BASE_DIR / "data" / "triage" / date_str
+
+    summary_file = reports_dir / f"{safe_ticker}_summary.md"
+    arbitration_file = reports_dir / f"{safe_ticker}_arbitration.md"
+    dw_file = raw_dir / f"{safe_ticker}_datawindow.json"
+
+    # Search triage directories if not in raw
+    if not dw_file.exists():
+        for sub in ("_DEEP_RESEARCH", "force"):
+            cand = triage_dir / sub / safe_ticker / f"{safe_ticker}_datawindow.json"
+            if cand.exists():
+                dw_file = cand
+                break
+
+    summary_text = summary_file.read_text(encoding="utf-8") if summary_file.exists() else ""
+    arbitration_text = arbitration_file.read_text(encoding="utf-8") if arbitration_file.exists() else ""
+    dw_data = json.loads(dw_file.read_text(encoding="utf-8")) if dw_file.exists() else {}
+
+    if not summary_text and not arbitration_text and not dw_data:
+        logger.warning(f"[{safe_ticker}] No reports or datawindow found for date {date_str}.")
+        return None
+
+    # ── 1. Embedded JSON Block Check ───────────────────────────────────────
+    for text_source in (arbitration_text, summary_text):
+        if not text_source:
+            continue
+        m_block = re.search(
+            r"```(?:json)?(?::watch_levels)?\s*(\{[\s\S]*?\"shares_plan\"[\s\S]*?\})\s*```",
+            text_source,
+        )
+        if m_block:
+            try:
+                data = json.loads(m_block.group(1))
+                data.setdefault("ticker", safe_ticker)
+                data.setdefault("date", date_str)
+                shares_p = data.setdefault("shares_plan", {})
+                
+                # Detect side
+                side_val = data.get("side") or shares_p.get("side")
+                if not side_val:
+                    if re.search(r"\b(SHORT|BEARISH PUT|BEAR CALL)\b", text_source):
+                        side_val = "SHORT"
+                    else:
+                        side_val = "LONG"
+                data["side"] = side_val
+                shares_p["side"] = side_val
+
+                # Extract breakout levels from report text if missing from embedded json
+                combined_txt = (arbitration_text + "\n" + summary_text)
+                clean_txt = re.sub(r"[*_`]+", "", combined_txt)
+                if "breakout_level" not in shares_p:
+                    m_bo = re.search(
+                        r"(?:Buy-Stop on daily close above|Buy-Stop above|Breakout Level:?|breakout above)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+                        clean_txt,
+                        re.IGNORECASE,
+                    )
+                    if not m_bo:
+                        m_bo = re.search(
+                            r"(?:Darvas Box Top[^\$]*\$)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+                            clean_txt,
+                            re.IGNORECASE,
+                        )
+                    if m_bo:
+                        try:
+                            shares_p["breakout_level"] = float(m_bo.group(1))
+                        except Exception:
+                            pass
+                if "breakout_stop" not in shares_p:
+                    m_bostop = re.search(
+                        r"(?:stop back to|breakout stop:?)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+                        clean_txt,
+                        re.IGNORECASE,
+                    )
+                    if m_bostop:
+                        try:
+                            shares_p["breakout_stop"] = float(m_bostop.group(1))
+                        except Exception:
+                            pass
+
+                if "proximity_buffer_pct" not in shares_p:
+                    shares_p["proximity_buffer_pct"] = 1.0
+                options_p = data.setdefault("options_plan", {})
+                if "actionable" not in options_p:
+                    options_p["actionable"] = bool(options_p.get("structure") not in ("NONE", "", None))
+                if "entry_trigger" not in options_p:
+                    options_p["entry_trigger"] = "AT_FLOOR_LIMIT" if options_p.get("actionable") else "NONE"
+
+                # Persist to raw folder
+                save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                save_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                return data
+            except Exception as e:
+                logger.debug(f"[{safe_ticker}] Failed to parse embedded json block: {e}")
+
+    # ── 2. Deterministic Regex Extraction Fallback ──────────────────────────
+    combined_text = (arbitration_text + "\n" + summary_text)
+
+    # Spot Price
+    spot_price = float(dw_data.get("close", 0) or 0)
+    if not spot_price:
+        m_spot = re.search(r"Bar close:\s*\$([0-9.]+)", summary_text)
+        if m_spot:
+            spot_price = float(m_spot.group(1))
+
+    # Side
+    side = "LONG"
+    if re.search(
+        r"(?:Verdict:\s*SHORT|###\s*Plan\s*[A-C]:\s*Short|Direction:\s*SHORT|Actionable Short|Bearish Play:\s*Put|Bear Put Spread)",
+        combined_text,
+        re.IGNORECASE,
+    ):
+        side = "SHORT"
+
+    # Verdict & Conviction
+    verdict = "STALK"
+    m_verdict = re.search(r"\*\*Verdict:\*\*\s*([A-Z /()_-]+)", arbitration_text) or re.search(
+        r"\*\*Verdict:\*\*\s*([A-Z /()_-]+)", summary_text
+    )
+    if m_verdict:
+        v_raw = m_verdict.group(1).upper()
+        if "ENTER" in v_raw or "BUY" in v_raw:
+            verdict = "ENTER"
+        elif "STALK" in v_raw:
+            verdict = "STALK"
+        elif "CASH" in v_raw or "SKIP" in v_raw:
+            verdict = "CASH_SKIP"
+        elif "WATCH" in v_raw:
+            verdict = "WATCH"
+        elif "CUT" in v_raw:
+            verdict = "CUT"
+
+    conviction = 5
+    m_conv = re.search(r"Conviction:\s*([0-9.]+)/10", arbitration_text) or re.search(
+        r"Conviction:\s*([0-9.]+)/10", summary_text
+    )
+    if m_conv:
+        try:
+            conviction = int(float(m_conv.group(1)))
+        except Exception:
+            conviction = 5
+
+    # Shares Plan (Entry Zone, Tactical Stop, Targets)
+    entry_low = 0.0
+    entry_high = 0.0
+    m_zone = re.search(
+        r"TACTICAL ENTRY ZONE:\s*\$([0-9.]+)\s*–\s*\$([0-9.]+)", summary_text
+    ) or re.search(r"Entry Zone:\s*\$([0-9.]+)\s*–\s*\$([0-9.]+)", summary_text)
+    if m_zone:
+        entry_low = float(m_zone.group(1))
+        entry_high = float(m_zone.group(2))
+    elif "Long Entry Zone Bot" in dw_data and "Long Entry Zone Top" in dw_data:
+        entry_low = float(dw_data.get("Long Entry Zone Bot") or 0)
+        entry_high = float(dw_data.get("Long Entry Zone Top") or 0)
+
+    tactical_stop = 0.0
+    m_stop = (
+        re.search(r"stop to\s*\*\*?\$([0-9.]+)\*\*?", arbitration_text)
+        or re.search(r"TACTICAL STOP:\s*\$([0-9.]+)", summary_text)
+        or re.search(r"Long Stop Loss:\s*\$([0-9.]+)", summary_text)
+    )
+    if m_stop:
+        tactical_stop = float(m_stop.group(1))
+    elif "Long Stop Loss" in dw_data:
+        tactical_stop = float(dw_data.get("Long Stop Loss") or 0)
+
+    target_1 = 0.0
+    target_2 = 0.0
+    m_t1 = re.search(r"TARGET 1:\s*\$([0-9.]+)", summary_text) or re.search(
+        r"Target 1 \(Trim\)\s*\|\s*\$([0-9.]+)", summary_text
+    )
+    if m_t1:
+        target_1 = float(m_t1.group(1))
+    elif "Long Target" in dw_data:
+        target_1 = float(dw_data.get("Long Target") or 0)
+
+    m_t2 = re.search(r"TARGET 2:\s*\$([0-9.]+)", summary_text) or re.search(
+        r"Target 2 \(Runner\)\s*\|\s*\$([0-9.]+)", summary_text
+    )
+    if m_t2:
+        target_2 = float(m_t2.group(1))
+
+    # Breakout levels
+    breakout_level = None
+    breakout_stop = None
+    clean_combined = re.sub(r"[*_`]+", "", combined_text)
+    m_bo = re.search(
+        r"(?:Buy-Stop on daily close above|Buy-Stop above|Breakout Level:?|breakout above)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+        clean_combined,
+        re.IGNORECASE,
+    )
+    if not m_bo:
+        m_bo = re.search(
+            r"(?:Darvas Box Top[^\$]*\$)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+            clean_combined,
+            re.IGNORECASE,
+        )
+    if m_bo:
+        try:
+            breakout_level = float(m_bo.group(1))
+        except Exception:
+            breakout_level = None
+    m_bostop = re.search(
+        r"(?:stop back to|breakout stop:?)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+        clean_combined,
+        re.IGNORECASE,
+    )
+    if m_bostop:
+        try:
+            breakout_stop = float(m_bostop.group(1))
+        except Exception:
+            breakout_stop = None
+
+    # Entry Type
+    entry_type = "LIMIT"
+    if "NO ENTRY AT MARKET" in arbitration_text or "NO ENTRY" in arbitration_text:
+        entry_type = "LIMIT"
+    elif verdict == "ENTER" and entry_low <= spot_price <= entry_high:
+        entry_type = "MARKET"
+
+    # Options Plan
+    options_struct = "NONE"
+    exp_date = ""
+    long_strike = 0.0
+    short_strike = 0.0
+    target_debit = 0.0
+    max_loss = 0.0
+    max_profit = 0.0
+    opt_summary = "None"
+
+    # 1. Bull Call Spread regex
+    m_opt = re.search(
+        r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)C?\s*(?:Call)?\s*/\s*\$?([0-9.]+)C?\s*(?:Call)?\s*Bull Call Spread",
+        clean_combined,
+        re.IGNORECASE,
+    ) or re.search(
+        r"Buy\s+([A-Za-z]+ \d+, \d{4})\s+\$?([0-9.]+)\s+Call\s*/\s*Sell\s+[A-Za-z]+ \d+, \d{4}\s+\$?([0-9.]+)\s+Call",
+        clean_combined,
+        re.IGNORECASE,
+    )
+    if m_opt:
+        options_struct = "BULL_CALL_SPREAD"
+        raw_exp = m_opt.group(1) or "Sep 18, 2026"
+        long_strike = float(m_opt.group(2))
+        short_strike = float(m_opt.group(3))
+        try:
+            from datetime import datetime
+
+            exp_dt = datetime.strptime(raw_exp.strip(), "%b %d, %Y")
+            exp_date = exp_dt.strftime("%Y-%m-%d")
+        except Exception:
+            exp_date = "2026-10-02"
+        opt_summary = f"{raw_exp} ${long_strike:.0f}/${short_strike:.0f} Bull Call Spread"
+    else:
+        # 2. Bull Put Spread regex (credit)
+        m_bps = re.search(
+            r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)P?\s*/\s*\$?([0-9.]+)P?\s*Bull Put Spread",
+            clean_combined,
+            re.IGNORECASE,
+        )
+        if m_bps:
+            options_struct = "BULL_PUT_SPREAD"
+            short_strike = float(m_bps.group(2))
+            long_strike = float(m_bps.group(3))
+            opt_summary = f"${short_strike:.0f}P/${long_strike:.0f}P Bull Put Spread"
+
+    m_debit = (
+        re.search(r"Net debit\s*[≈~]?\s*\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Target entry:\s*<\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Estimated Cost:\s*[≈~]?\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+    )
+    if m_debit:
+        try:
+            target_debit = float(m_debit.group(1).rstrip("."))
+        except Exception:
+            target_debit = 0.0
+
+    m_loss = re.search(r"Max Loss:?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
+    if m_loss:
+        try:
+            max_loss = float(m_loss.group(1).replace(",", "").rstrip("."))
+        except Exception:
+            pass
+
+    m_profit = re.search(r"Max Profit:?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
+    if m_profit:
+        try:
+            max_profit = float(m_profit.group(1).replace(",", "").rstrip("."))
+        except Exception:
+            pass
+
+    # Invalidation
+    invalidation_level = tactical_stop
+    invalidation_cond = "DAILY_CLOSE_BELOW" if side == "LONG" else "DAILY_CLOSE_ABOVE"
+    invalidation_rat = "Breaks key structural support" if side == "LONG" else "Breaks key structural resistance"
+
+    m_inv = re.search(r"Daily Close below\s*\*\*?\$([0-9.]+)\*\*?", arbitration_text)
+    if m_inv:
+        invalidation_level = float(m_inv.group(1))
+
+    m_inv_rat = re.search(r"Logic:\*\s*([^.\n]+)", arbitration_text)
+    if m_inv_rat:
+        invalidation_rat = m_inv_rat.group(1).strip()
+
+    # Initial State
+    initial_status = "STALKING"
+    if invalidation_level:
+        if side == "LONG" and spot_price < invalidation_level:
+            initial_status = "INVALIDATED"
+        elif side == "SHORT" and spot_price > invalidation_level:
+            initial_status = "INVALIDATED"
+    elif entry_low and entry_high and (entry_low <= spot_price <= entry_high):
+        initial_status = "IN_ZONE"
+
+    result = {
+        "ticker": safe_ticker,
+        "date": date_str,
+        "side": side,
+        "spot_price": spot_price,
+        "verdict": verdict,
+        "conviction": conviction,
+        "actionable": verdict in ("STALK", "ENTER", "PASS"),
+        "shares_plan": {
+            "entry_type": entry_type,
+            "side": side,
+            "entry_zone_low": entry_low,
+            "entry_zone_high": entry_high,
+            "proximity_buffer_pct": 1.0,
+            "breakout_level": breakout_level,
+            "breakout_stop": breakout_stop,
+            "tactical_stop": tactical_stop,
+            "target_1": target_1,
+            "target_2": target_2,
+            "rr_ratio": 2.0 if (target_1 and entry_high and tactical_stop) else 0.0,
+            "allocation_pct": 25.0,
+        },
+        "options_plan": {
+            "structure": options_struct,
+            "expiration": exp_date,
+            "long_strike": long_strike,
+            "short_strike": short_strike,
+            "target_debit": target_debit,
+            "max_loss": max_loss,
+            "max_profit": max_profit,
+            "summary": opt_summary,
+            "actionable": options_struct not in ("NONE", "", None),
+            "entry_trigger": "AT_FLOOR_LIMIT" if options_struct not in ("NONE", "", None) else "NONE",
+        },
+        "invalidation": {
+            "condition": invalidation_cond,
+            "price_level": invalidation_level,
+            "rationale": invalidation_rat,
+        },
+        "status": initial_status,
+    }
+
+    save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result

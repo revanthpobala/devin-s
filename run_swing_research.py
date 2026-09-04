@@ -117,6 +117,7 @@ def run_swing_pipeline(
     out_dir = config.BASE_DIR / "data" / "raw" / today_str
     out_dir.mkdir(parents=True, exist_ok=True)
 
+
     manifest_path = out_dir / "survivors.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(survivors, f, indent=4)

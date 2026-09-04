@@ -54,6 +54,10 @@ def _format_llm_decision(llm_data: Dict[str, Any]) -> str:
     return decision
 
 
+_CACHED_GSPREAD_CLIENT = None
+_ALREADY_SHARED_SHEETS = set()
+
+
 class SheetsTracker:
     def __init__(self):
         self.service_account_file = config.SERVICE_ACCOUNT_FILE
@@ -122,11 +126,9 @@ class SheetsTracker:
         return False
 
     def connect(self) -> bool:
-        """Authenticate with Google Sheets API and connect to Alerts and Trades sheets.
-
-        Retries on transient errors (429 quota, 5xx outages like 503) with
-        exponential backoff so a brief Google-side hiccup doesn't abort the run.
-        """
+        """Authenticate with Google Sheets API and open required spreadsheets."""
+        global _CACHED_GSPREAD_CLIENT, _ALREADY_SHARED_SHEETS
+        
         if not os.path.exists(self.service_account_file):
             logger.error(
                 f"Service account file not found at {self.service_account_file}. "
@@ -134,62 +136,54 @@ class SheetsTracker:
             )
             return False
 
-        max_retries = 5
+        max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info("Authenticating with Google API using Service Account...")
-                scopes = [
-                    "https://www.googleapis.com/auth/spreadsheets",
-                    "https://www.googleapis.com/auth/drive",
-                ]
-                credentials = Credentials.from_service_account_file(
-                    self.service_account_file, scopes=scopes
-                )
-                self.client = gspread.authorize(credentials)
+                if _CACHED_GSPREAD_CLIENT is None:
+                    logger.info("Authenticating with Google API using Service Account...")
+                    scopes = [
+                        "https://www.googleapis.com/auth/spreadsheets",
+                        "https://www.googleapis.com/auth/drive",
+                    ]
+                    credentials = Credentials.from_service_account_file(
+                        self.service_account_file, scopes=scopes
+                    )
+                    _CACHED_GSPREAD_CLIENT = gspread.authorize(credentials)
+                
+                self.client = _CACHED_GSPREAD_CLIENT
 
                 # 1. Connect to Alerts Sheet
-                if self.sheet_id:
-                    logger.info(f"Opening Google Sheet by ID: {self.sheet_id}")
-                    self.sheet = self.client.open_by_key(self.sheet_id)
-                else:
-                    logger.info(f"Opening Google Sheet by Name: {self.sheet_name}")
-                    self.sheet = self.client.open(self.sheet_name)
+                if not self.sheet:
+                    if self.sheet_id:
+                        self.sheet = self.client.open_by_key(self.sheet_id)
+                    else:
+                        self.sheet = self.client.open(self.sheet_name)
 
                 # 2. Connect or Create/Share Trades Sheet
-                try:
-                    logger.info(f"Opening Trades Google Sheet: {self.trades_sheet_name}")
-                    self.trades_sheet = self.client.open(self.trades_sheet_name)
-                except gspread.exceptions.SpreadsheetNotFound:
-                    logger.info(
-                        f"Trades Google Sheet '{self.trades_sheet_name}' not found. Creating it..."
-                    )
-                    self.trades_sheet = self.client.create(self.trades_sheet_name)
+                if not self.trades_sheet:
+                    try:
+                        self.trades_sheet = self.client.open(self.trades_sheet_name)
+                    except gspread.exceptions.SpreadsheetNotFound:
+                        self.trades_sheet = self.client.create(self.trades_sheet_name)
 
                 # 3. Connect or Create/Share SWING-SPX Sheet
-                try:
-                    logger.info(f"Opening SWING-SPX Google Sheet: {self.spx_sheet_name}")
-                    self.spx_sheet = self.client.open(self.spx_sheet_name)
-                except gspread.exceptions.SpreadsheetNotFound:
-                    logger.info(
-                        f"SWING-SPX Google Sheet '{self.spx_sheet_name}' not found. Creating it..."
-                    )
-                    self.spx_sheet = self.client.create(self.spx_sheet_name)
+                if not self.spx_sheet:
+                    try:
+                        self.spx_sheet = self.client.open(self.spx_sheet_name)
+                    except gspread.exceptions.SpreadsheetNotFound:
+                        self.spx_sheet = self.client.create(self.spx_sheet_name)
 
-                # Share with the user's Gmail
+                # Share with the user's Gmail (only once per session)
                 user_email = config.GMAIL_EMAIL
-                if user_email:
-                    logger.info(
-                        f"Automatically sharing Google Sheets with {user_email} as Editor..."
-                    )
+                if user_email and user_email not in _ALREADY_SHARED_SHEETS:
                     for sh_name, sh_obj in (("Trades", self.trades_sheet), ("SWING-SPX", self.spx_sheet)):
                         if sh_obj:
                             try:
                                 sh_obj.share(user_email, perm_type="user", role="writer")
-                                logger.info(f"Successfully shared {sh_name} sheet with user.")
-                            except Exception as se:
-                                logger.warning(f"Failed to share {sh_name} sheet with {user_email}: {se}")
+                            except Exception:
+                                pass
+                    _ALREADY_SHARED_SHEETS.add(user_email)
 
-                logger.info("Successfully connected to Google Sheets.")
                 return True
 
             except gspread.exceptions.SpreadsheetNotFound:
@@ -1217,3 +1211,122 @@ class SheetsTracker:
         except Exception as e:
             logger.error(f"Failed to update deep research in sheets for {ticker}: {e}")
             return False
+
+    def sync_watch_targets_to_sheet(self, targets: List[Dict[str, Any]]) -> bool:
+        """Mirror active watch targets to the WATCH-TRIGGERS tab in Google Sheets."""
+        try:
+            self.connect()
+            spreadsheet = self.trades_sheet or self.sheet
+            if not spreadsheet:
+                logger.warning("No Google Sheet connection available for watch targets sync.")
+                return False
+
+            tab_name = "WATCH-TRIGGERS"
+            try:
+                worksheet = spreadsheet.worksheet(tab_name)
+            except gspread.WorksheetNotFound:
+                worksheet = spreadsheet.add_worksheet(title=tab_name, rows=200, cols=16)
+                logger.info(f"Created new worksheet tab: '{tab_name}'")
+
+            headers = [
+                "Ticker",
+                "Date",
+                "Verdict",
+                "Status",
+                "Spot Price",
+                "Dist to Entry %",
+                "Entry Zone",
+                "Tactical Stop",
+                "Target 1",
+                "Target 2",
+                "Options Strategy",
+                "Invalidation Condition",
+                "Last Alert",
+                "Last Updated",
+            ]
+
+            rows_to_write = [headers]
+            for t in targets:
+                status_raw = str(t.get("status", "STALKING")).upper()
+                if status_raw == "IN_ZONE":
+                    status_badge = "🎯 IN ZONE"
+                elif status_raw == "STALKING":
+                    status_badge = "⏳ STALKING"
+                elif status_raw == "INVALIDATED":
+                    status_badge = "🛑 INVALIDATED"
+                elif status_raw == "IN_TRADE":
+                    status_badge = "📈 IN TRADE"
+                elif status_raw == "TARGET_HIT":
+                    status_badge = "🏁 TARGET HIT"
+                elif status_raw == "MISSED_RUNAWAY":
+                    status_badge = "🏃 MISSED RUNAWAY"
+                else:
+                    status_badge = status_raw
+
+                spot = t.get("last_price") or t.get("spot_price") or 0.0
+                spot_str = f"${spot:.2f}" if spot else "-"
+
+                dist = t.get("distance_to_entry_pct")
+                dist_str = f"{dist:+.2f}%" if dist is not None else "-"
+
+                e_low = t.get("entry_zone_low")
+                e_high = t.get("entry_zone_high")
+                zone_str = f"${e_low:.2f} – ${e_high:.2f}" if (e_low and e_high) else "-"
+
+                stop_val = t.get("tactical_stop") or t.get("invalidation_price")
+                stop_str = f"${stop_val:.2f}" if stop_val else "-"
+
+                t1_val = t.get("target_1")
+                t1_str = f"${t1_val:.2f}" if t1_val else "-"
+
+                t2_val = t.get("target_2")
+                t2_str = f"${t2_val:.2f}" if t2_val else "-"
+
+                opt_summary = t.get("options_summary") or t.get("options_structure") or "-"
+                inv_cond = t.get("invalidation_condition") or t.get("invalidation_rationale") or "-"
+
+                last_alert = t.get("last_alert_type") or "-"
+                updated = t.get("updated_at") or datetime.now().strftime("%H:%M:%S")
+
+                rows_to_write.append(
+                    [
+                        t.get("ticker", ""),
+                        t.get("date", ""),
+                        f"{t.get('verdict', '')} ({t.get('conviction', 5)}/10)",
+                        status_badge,
+                        spot_str,
+                        dist_str,
+                        zone_str,
+                        stop_str,
+                        t1_str,
+                        t2_str,
+                        opt_summary,
+                        inv_cond,
+                        last_alert,
+                        updated,
+                    ]
+                )
+
+            # Update worksheet in a single batch call
+            worksheet.clear()
+            worksheet.update(values=rows_to_write, range_name="A1")
+            
+            # Format header row
+            try:
+                worksheet.format(
+                    "A1:N1",
+                    {
+                        "backgroundColor": {"red": 0.15, "green": 0.20, "blue": 0.28},
+                        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                        "horizontalAlignment": "CENTER",
+                    },
+                )
+            except Exception:
+                pass
+
+            logger.info(f"Synchronized {len(targets)} watch target(s) to Google Sheets '{tab_name}'.")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to sync watch targets to Google Sheets: {e}")
+            return False
+

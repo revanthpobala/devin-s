@@ -76,21 +76,21 @@
 [
   {
     "horizon_days": 14,
-    "event": "[TICKER] closes above $[KeyTriggerLevel]",
-    "probability": 0.00,
-    "rationale": "..."
+    "event": "[TICKER] enters Pine Script Buy Zone [$EntryBot – $EntryTop]",
+    "probability": 0.55,
+    "rationale": "Evaluates probability price pulls back to test the Pine Script buyer defense zone."
   },
   {
     "horizon_days": 30,
-    "event": "[TICKER] reaches Profit Target 1 of $[Target1]",
-    "probability": 0.00,
-    "rationale": "..."
+    "event": "[TICKER] reaches Pine Script Profit Target 1 of $[Target1]",
+    "probability": 0.65,
+    "rationale": "Evaluates probability price reaches Pine Script Target 1 before hitting stop loss."
   },
   {
-    "horizon_days": 60,
-    "event": "[TICKER] closes below Tactical Stop Loss of $[TacticalStop]",
-    "probability": 0.00,
-    "rationale": "..."
+    "horizon_days": 45,
+    "event": "[TICKER] closes below Pine Script Tactical Stop Loss of $[TacticalStop]",
+    "probability": 0.20,
+    "rationale": "Evaluates probability of structural invalidation and stop breach."
   }
 ]
 ```

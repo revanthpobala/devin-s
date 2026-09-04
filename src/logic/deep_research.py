@@ -28,6 +28,42 @@ import subprocess
 from datetime import datetime
 
 
+def prefetch_deep_research_context(ticker: str, date_str: str) -> dict:
+    """Pre-fetch deterministic technical analytics and quantitative plugins in parallel to front-load context.
+    Options chains are NOT pre-fetched blindly; the LLM explicitly requests specific expiration chains on-demand."""
+    import concurrent.futures
+    from src.clients.llm_client import (
+        run_quantitative_plugin_tool,
+        fetch_prior_research_tool,
+        fetch_historical_zone_and_regime_analytics_tool,
+    )
+    
+    results = {}
+    
+    def _fetch_task(key, fn, *args, **kwargs):
+        try:
+            return key, fn(*args, **kwargs)
+        except Exception as e:
+            return key, f"Unavailable ({e})"
+
+    tasks = [
+        ("quant_plugins", run_quantitative_plugin_tool, ticker, "all", date_str),
+        ("candlestick_patterns", run_quantitative_plugin_tool, ticker, "candlestick_patterns", date_str),
+        ("tastytrade_volatility", run_quantitative_plugin_tool, ticker, "tastytrade_volatility", date_str),
+        ("prior_research", fetch_prior_research_tool, ticker, 14, date_str),
+        ("historical_analytics", fetch_historical_zone_and_regime_analytics_tool, ticker, 60, date_str),
+    ]
+
+    logger.info(f"[{ticker}] ⚡ Parallel front-loading deterministic quant, TA-Lib, and volatility plugins...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_fetch_task, t[0], t[1], *t[2:]) for t in tasks]
+        for f in concurrent.futures.as_completed(futures):
+            k, v = f.result()
+            results[k] = v
+
+    return results
+
+
 def _load_triage_record(raw_dir: Path, deep_dir: Path, ticker: str, tdir: Optional[Path] = None) -> dict:
     """Load the deterministic triage dict (chosen_side/in_zone/regime/dir_prob/rr)
     persisted in the thesis JSON or triage JSON. If not found on disk but datawindow.json exists,
@@ -643,6 +679,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
     bible_path = config.BASE_DIR / "gems" / "revanth-bible.md"
     ponytail_path = config.BASE_DIR / "gems" / "ponytail_finance.md"
     independent_gem_path = config.BASE_DIR / "gems" / "independent_gem.md"
+    independent_response_path = config.BASE_DIR / "gems" / "independent_response.md"
 
     if not original_gem_path.exists() or not response_path.exists() or not bible_path.exists():
         logger.error("Cannot find Deep Research Gem files.")
@@ -656,6 +693,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         bible_text = f.read()
     ponytail_text = ponytail_path.read_text(encoding="utf-8") if ponytail_path.exists() else ""
     independent_gem_text = independent_gem_path.read_text(encoding="utf-8") if independent_gem_path.exists() else ""
+    independent_response_text = independent_response_path.read_text(encoding="utf-8") if independent_response_path.exists() else ""
 
     few_shot_example = ""
     example_path = config.BASE_DIR / "gems" / "few_shot_template.md"
@@ -665,7 +703,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
     # Move invariant prompt blocks into system_prompt for prefix caching across all tickers in the run
     system_prompt = f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n{gem_text}\n\n--- REVANTH BIBLE (Rules & Framework) ---\n{bible_text}\n\n--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}\n\n{response_text}"
-    system_prompt_independent = f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n{independent_gem_text}\n\n{response_text}"
+    system_prompt_independent = f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n{independent_gem_text}\n\n{independent_response_text}"
 
     logger.info(f"Starting Agentic Deep Research Phase for {len(chart_files)} tickers (Dual Report Mode: Proprietary + Independent)...")
 
@@ -865,13 +903,12 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         zoom_p = _get_image_path(f"{ticker}_chart_zoom.png")
         wide_p = _get_image_path(f"{ticker}_chart.png")
 
-        # Multimodal image pair: Plain (clean naked price action) + Zoom (indicator & structural overlay)
-        if plain_p and zoom_p:
-            image_paths = [plain_p, zoom_p]
-        elif zoom_p:
-            image_paths = [zoom_p]
-        else:
-            image_paths = [p for p in (wide_p, zoom_p) if p and os.path.exists(p)]
+        # Multimodal image pairs:
+        # Model A (Proprietary Thesis): Plain naked chart + 90-day technical indicator overlay
+        # Model B (Independent Thesis): Plain naked Japanese candlestick chart ONLY (pure price action)
+        image_paths_model_a = [p for p in (plain_p, zoom_p) if p and os.path.exists(p)] or ([wide_p] if wide_p and os.path.exists(wide_p) else [])
+        image_paths_model_b = [p for p in [plain_p] if p and os.path.exists(p)] or ([wide_p] if wide_p and os.path.exists(wide_p) else [])
+        image_paths = image_paths_model_a
 
         # ── FRESH, DATED NEWS (live pull so the paid pass never sees stale macro) ──
         fresh_news = _pull_fresh_news(ticker, date_str)
@@ -896,6 +933,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         macro_grounded_question = f"US Macroeconomic news today {date_str}, including any CPI, NFP, or FOMC data released"
         macro_grounded_block = google_grounding_client.format_grounded_block("MACRO", macro_grounded_question)
 
+        active_pos = None
+        active_pos_block = ""
 
         stale = _dossier_stale(dossier_path, date_str)
         if stale:
@@ -1091,11 +1130,38 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         except Exception as e:
             logger.debug(f"[{ticker}] Failed to write deep_context.json: {e}")
 
+        # Parallel Front-Load Context (Quant Plugins, TA-Lib Candlestick Patterns, Volatility Ranks, Historical Analytics, Prior Research)
+        pre_ctx = prefetch_deep_research_context(ticker, date_str)
+        
+        preloaded_block = f"""
+        --- 2g. PRE-LOADED DETERMINISTIC QUANT, TA-LIB & VOLATILITY ANALYTICS ---
+        The following deterministic datasets have already been computed and pre-loaded for you:
+
+        [QUANTITATIVE PLUGINS (Order Flow, Squeeze, HTF Confluence, VP Nodes)]:
+        {pre_ctx.get('quant_plugins')}
+
+        [TA-LIB MULTI-TIMEFRAME CANDLESTICK & PATTERN SIGNALS]:
+        {pre_ctx.get('candlestick_patterns')}
+
+        [TASTYTRADE VOLATILITY & IV RANK / HV SPREAD]:
+        {pre_ctx.get('tastytrade_volatility')}
+
+        [HISTORICAL REGIME & STATE ANALYTICS (60 BARS)]:
+        {pre_ctx.get('historical_analytics')}
+
+        [PRIOR 14-DAY RESEARCH DOSSIER]:
+        {pre_ctx.get('prior_research')}
+
+        ⚡ OPTIONS DIRECTIVE: Formulate your directional thesis and target expiration window first. Then emit tool calls (`fetch_options_chain` or `scrape_tradingview_options_finder`) to retrieve the exact strikes and expirations tailored to your trade plan.
+        """
+
         # ========================================================
         # MULTI-AGENT BULL VS BEAR DEBATE (Local LLM)
         # ========================================================
         debate_payload = f"""
         RESEARCH DATE: {date_str}
+
+        {active_pos_block}
 
         --- 1. DATA WINDOW (Exact Math State from TradingView) ---
         {data_window_str}
@@ -1130,6 +1196,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         --- 2e. EARNINGS DATE ---
         {earnings_fact_block}
+
+        {preloaded_block}
         """
 
         bull_sys = (
@@ -1173,7 +1241,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 debate_cache_file = None
 
         if not debate_cache_file or not debate_cache_file.exists():
-            debate_workers = 1 if force_local else 2
+            debate_workers = 2
             logger.info(f"[{ticker}] Running Bull and Bear Agents (workers={debate_workers})...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=debate_workers) as executor:
                 f_bull = executor.submit(_run_debate_agent, bull_sys, f"TICKER: {ticker}\n\nDATA PAYLOAD:\n{debate_payload}", 4096)
@@ -1222,6 +1290,65 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             "You are the Portfolio Manager (Judge). You MUST settle these disagreements in your final thesis and formulate the trade plan."
         )
 
+        # Query recent daily alerts & triggers for this ticker (to ground thesis in alert history)
+        alerts_list = []
+        try:
+            import sqlite3
+            watch_db = config.BASE_DIR / "data" / "research_watch.db"
+            if watch_db.exists():
+                with sqlite3.connect(str(watch_db)) as wconn:
+                    wcur = wconn.cursor()
+                    wrows = wcur.execute(
+                        "SELECT date, trigger_type, message, spot_price, triggered_at FROM watch_alerts WHERE ticker = ? ORDER BY id DESC LIMIT 5",
+                        (ticker.upper(),),
+                    ).fetchall()
+                    for wr in wrows:
+                        alerts_list.append(f"- [{wr[0]} | {wr[1]}] Spot: ${wr[3]:.2f} — {wr[2]}")
+        except Exception as e_al:
+            logger.debug(f"Could not load watch_alerts for {ticker}: {e_al}")
+
+        try:
+            surv_file = raw_dir / "survivors.json"
+            if surv_file.exists():
+                s_data = json.loads(surv_file.read_text(encoding="utf-8"))
+                for s_item in s_data:
+                    if (s_item.get("Ticker") or s_item.get("ticker") or "").upper() == ticker.upper():
+                        alerts_list.append(f"- Daily Screener Setup Flag: {s_item.get('screener_setup', 'Active Candidate')} (Source: {s_item.get('source', 'screener')})")
+        except Exception:
+            pass
+
+        if alerts_list:
+            daily_alerts_block = "--- 2f-i. RECENT DAILY TRADINGVIEW & TRIGGER ALERTS ---\n" + "\n".join(alerts_list) + "\n"
+        else:
+            daily_alerts_block = f"--- 2f-i. RECENT DAILY TRADINGVIEW & TRIGGER ALERTS ---\nNo prior trigger alerts recorded for {ticker}.\n"
+
+        # Extract deterministic Pine Script trade geometry from dw_dict
+        pine_entry_bot = float(dw_dict.get("Long Entry Zone Bot") or 0.0)
+        pine_entry_top = float(dw_dict.get("Long Entry Zone Top") or 0.0)
+        pine_stop = float(dw_dict.get("Long Stop Loss") or 0.0)
+        pine_target1 = float(dw_dict.get("Long Target") or dw_dict.get("Long Target T1 Waypoint") or 0.0)
+        pine_score = dw_dict.get("Long Setup Score", "N/A")
+        pine_code = dw_dict.get("Action Long Code", "N/A")
+        pine_rr = dw_dict.get("RR To Target", "N/A")
+
+        if pine_entry_bot > 0 and pine_entry_top > 0 and pine_stop > 0:
+            pine_setup_benchmark_block = f"""--- 🎯 PINE SCRIPT TRADE BENCHMARK (GROUND TRUTH SETUP) ---
+The TradingView Pine Script quantitative engine has mathematically computed the following structural setup:
+- Pine Script Buy Zone: [${pine_entry_bot:.2f} – ${pine_entry_top:.2f}]
+- Pine Script Tactical Stop Loss: ${pine_stop:.2f}
+- Pine Script Profit Target 1 (T1): ${pine_target1:.2f}
+- Pine Script Setup Score: {pine_score} | Action Code: {pine_code} | Reward-to-Risk: {pine_rr}
+
+⚠️ CRITICAL SUPERFORECASTING EVALUATION DIRECTIVE:
+You MUST anchor your `## 🔮 SUPERFORECASTING PREDICTIONS` directly to this Pine Script trade setup!
+Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematical probability that:
+1. {ticker} enters/tests the Pine Script Buy Zone [${pine_entry_bot:.2f} – ${pine_entry_top:.2f}] within 14 days.
+2. {ticker} reaches Pine Script Profit Target 1 of ${pine_target1:.2f} before Stop Loss within 30 days.
+3. {ticker} closes below Pine Script Tactical Stop Loss of ${pine_stop:.2f} before Target within 45 days.
+"""
+        else:
+            pine_setup_benchmark_block = ""
+
         use_remote = not force_local
         user_prompt = f"""
         RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
@@ -1230,8 +1357,12 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
 
         I am requesting a Deep Research Validation for the ticker: {ticker}.
 
+        {active_pos_block}
+
         --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
         {data_window_str}
+
+        {pine_setup_benchmark_block}
 
         --- 1a. LIVE QUOTE (pre-fetched at run time — where the market is NOW) ---
         {live_quote_block}
@@ -1284,7 +1415,11 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         --- 2e. EARNINGS DATE (deterministic where available) ---
         {earnings_fact_block}
 
+        {preloaded_block}
+
         {debate_block}
+
+        {daily_alerts_block}
 
         ## 2B. MULTIMODAL CHART STATE (2 High-Resolution Vision Images Provided)
         - Image 1 (Plain Chart: `{ticker}_chart_plain.png`): Clean naked Japanese candlesticks & raw volume sub-pane. Use this to visually identify swing pivot highs/lows, rejection tails (pin bars), and gap boundaries without indicator clutter.
@@ -1371,6 +1506,92 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         CRITICAL: At the very end of your response, you MUST append a strict JSON array of falsifiable predictions with exact probabilities (the "SUPERFORECASTING PREDICTIONS" block) exactly as shown in the example.
         """
 
+        # Prepare Sanitized Data Window for Model B (Completely isolated from proprietary Pine Script signals, Action Codes, and trade geometry)
+        def _sanitize_datawindow_for_independent(dw: dict) -> str:
+            if not dw:
+                return "{}"
+            blacklist = [
+                "action", "pine", "entry", "stop loss", "long stop", "short stop",
+                "long target", "short target", "setup score", "pressure score",
+                "long rr", "rr to target", "rev zone", "long ignition", "long anchor",
+                "long_zone", "long zone", "short zone", "sigma", "evidence",
+                "overextension", "exhaustion gradient", "ext z", "ext pct",
+                "pattern mask", "pattern age", "warning mask", "warning age",
+                "level mask", "level age", "signal pack", "premove pack",
+                "zone rr flags", "fade gate", "ignition fresh", "revanth",
+                "bible", "pillar", "entry at market", "mtf long", "mtf short",
+                "zone 0 long", "zone 0 short", "_premove", "_long_zone",
+                "_consecutive_bars_in_long_zone", "_long_anchor_name"
+            ]
+            def is_proprietary(key: str) -> bool:
+                k = key.lower()
+                if any(b in k for b in blacklist):
+                    return True
+                if "stage" in k and any(x in k for x in ["1=", "1 base", "age"]):
+                    return True
+                if "regime" in k and any(x in k for x in ["0hlt", "0 hlt", "0="]):
+                    return True
+                return False
+
+            cleaned = {k: v for k, v in dw.items() if not is_proprietary(k)}
+            return json.dumps(cleaned, indent=2)
+
+        independent_dw_str = _sanitize_datawindow_for_independent(dw_dict)
+
+        # Prepare Prompt for PASS 2-IND: INDEPENDENT MACRO & TECHNICAL THESIS
+        independent_user_prompt = f"""
+        RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
+        VERIFY every macro, CPI, Fed, and earnings reference against this date.
+
+        I am requesting an INDEPENDENT Macro & Technical Analysis for the ticker: {ticker}.
+
+        --- 1. OBJECTIVE MARKET DATA & VOLUME PROFILE (TradingView Closed Bar Snapshot) ---
+        {independent_dw_str}
+
+        --- 1a. LIVE QUOTE (pre-fetched at run time) ---
+        {live_quote_block}
+
+        --- 2. NEWS RESEARCH DOSSIER ---
+        {news_dossier}
+
+        --- 2a. FRESH NEWS (LIVE) ---
+        {fresh_news}
+
+        --- 2b. MACRO NEWS (LIVE) ---
+        {macro_news}
+
+        {market_sentiment_block}
+
+        --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL ---
+        {av_block}
+        {social_block}
+        {institutional_block}
+        {grounded_block}
+
+        --- 2c-ii. MACRO GROUNDING ---
+        {macro_grounded_block}
+
+        --- 2e. EARNINGS DATE ---
+        {earnings_fact_block}
+
+        ## MULTIMODAL CHART STATE (Vision Image Provided)
+        - Image 1: Naked Japanese candlesticks & raw volume (pure price action, support/resistance structure).
+
+        --- QUANTITATIVE SANDBOX & 1-YEAR HISTORICAL DATAFRAME (`df`) ---
+        The quantitative sandbox (`execute_python_code`) pre-loads:
+        - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`)
+        - `dw`: Latest closed bar dictionary (JSON File: `{dw_path}`)
+        - `np`, `pd`, `scipy`, `stats`, `talib` (all 161 TA-Lib indicator & candlestick C-routines), `math`, `json`, `datetime`
+        - Live tools: `fetch_options_chain`, `detect_candlestick_patterns`, `run_quantitative_plugin`.
+
+        MANDATORY QUANTITATIVE WORKFLOW (EXECUTE BEFORE WRITING REPORT):
+        1. Act as Lead Quantitative Trader & Macro Strategist operating independently.
+        2. STEP 1 (MANDATORY TOOL EXECUTION): You MUST call `execute_python_code` and `fetch_options_chain` FIRST before writing any text:
+           - In `execute_python_code`, analyze `df` to calculate exact 52W high/low, gap boundaries, 50/200 SMA levels, Volume Profile Value Area (VAH/VAL/POC), and Monte Carlo probabilities for P(Target First) vs P(Stop First).
+           - In `fetch_options_chain`, retrieve the live options chain to price actionable calls, puts, and spreads.
+        3. STEP 2: Only after receiving and verifying the quantitative tool calculations, synthesize the macro backdrop vs micro company catalysts and output your final structured Markdown thesis following the independent format.
+        """
+
         use_remote = not force_local
         if use_remote:
             meta_key = os.getenv("META_AI_API_KEY")
@@ -1382,239 +1603,185 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             provider_model = "local-gpu (llama-cpp-server)"
             
         logger.info(
-            f"[{ticker}] Pass 2 — Transmitting full payload + {len(image_paths)} images to {provider_model}..."
+            f"[{ticker}] Pass 2 — Launching Model A (Pine Gem / Summary) and Model B (Independent Gem) CONCURRENTLY in parallel to {provider_model}..."
         )
-        try:
-            response = None
+
+        import concurrent.futures
+
+        def _run_model_a():
+            resp = None
             if use_remote:
                 try:
-                    response = query_local_llm(
+                    resp = query_local_llm(
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         json_mode=False,
                         use_openrouter=True,
-                        image_paths=image_paths,
-                        use_tools=True,  # let remote LLM pull live quotes / chains / news
+                        image_paths=image_paths_model_a,
+                        use_tools=True,
                         max_tokens=8192,
-                        summarize_tool_context=f"The simulated date is {date_str}. CRITICAL: Filter out any news from 2024 or other years that contradicts this date. Treat {date_str} as the present day."
+                        summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
                     )
                 except Exception as e_remote:
-                    logger.warning(f"[{ticker}] Remote API inference failed ({e_remote}) — falling back to Local GPU LLM!")
-                    response = None
+                    logger.warning(f"[{ticker}] Remote API inference for Model A failed ({e_remote}) — falling back to Local GPU LLM!")
+                    resp = None
 
-            if not response:
-                logger.info(f"[{ticker}] Executing Pass 2 with Local GPU LLM Server (Qwen3.8-27B Vision & Reasoning)...")
-                response = query_local_llm(
+            if not resp:
+                logger.info(f"[{ticker}] Executing Model A with Local GPU LLM Server (Qwen3.8-27B Vision & Reasoning)...")
+                resp = query_local_llm(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     json_mode=False,
                     use_openrouter=False,
-                    image_paths=image_paths,  # Local multimodal vision enabled with mmproj
+                    image_paths=image_paths_model_a,
                     use_tools=True,
                     disable_thinking=True,
                     max_tokens=8192,
-                    summarize_tool_context=f"The simulated date is {date_str}. CRITICAL: Filter out any news from 2024 or other years that contradicts this date. Treat {date_str} as the present day."
+                    summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
                 )
+            return resp
+
+        def _run_model_b():
+            resp = None
+            if use_remote:
+                try:
+                    resp = query_local_llm(
+                        system_prompt=system_prompt_independent,
+                        user_prompt=independent_user_prompt,
+                        json_mode=False,
+                        use_openrouter=True,
+                        image_paths=image_paths_model_b,
+                        use_tools=True,
+                        max_tokens=8192,
+                        summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
+                    )
+                except Exception as e_ind_remote:
+                    logger.warning(f"[{ticker}] Remote API inference for Model B failed ({e_ind_remote}) — falling back to Local GPU LLM!")
+                    resp = None
+
+            if not resp:
+                logger.info(f"[{ticker}] Executing Model B (Independent Pass) with Local GPU LLM Server...")
+                resp = query_local_llm(
+                    system_prompt=system_prompt_independent,
+                    user_prompt=independent_user_prompt,
+                    json_mode=False,
+                    use_openrouter=False,
+                    image_paths=image_paths_model_b,
+                    use_tools=True,
+                    disable_thinking=True,
+                    max_tokens=8192,
+                    summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
+                )
+            return resp
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                fut_a = executor.submit(_run_model_a)
+                fut_b = executor.submit(_run_model_b)
+                response = fut_a.result()
+                ind_response = fut_b.result()
+
+            # Handle Model A (Proprietary / Pine Summary)
+            clean_response = ""
+            reports_dir = config.BASE_DIR / "reports" / date_str
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            digest_path = reports_dir / f"{ticker}_summary.md"
 
             if response:
                 out_dir.mkdir(parents=True, exist_ok=True)
-
-                # Clean leading tool-call chatter / pre-synthesis thoughts if present
                 clean_response = response.strip()
+                clean_response = re.sub(r'<tool_call>.*?</tool_call>', '', clean_response, flags=re.DOTALL).strip()
+                clean_response = re.sub(r'<function=.*?</function>', '', clean_response, flags=re.DOTALL).strip()
                 match_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_response)
                 if match_header and match_header.start() > 0:
                     clean_response = clean_response[match_header.start():].strip()
 
-                # Emit final clean report directly in 1-pass Senior PM quality
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(clean_response)
-
-                try:
-                    _drift_checker.check_and_write(ticker, date_str, clean_response, out_dir)
-                except Exception as e:
-                    logger.warning(f"[{ticker}] Thesis drift check failed: {e}")
-
-                response_for_parse = clean_response
-
-                # Parse metrics via regex for Google Sheets tracker
-                # Parse metrics via regex for Google Sheets tracker
-                verdict_match = re.search(
-                    r"\*\*Verdict:\*\*\s*(.*?)(?=\s*·|\s*\*\*Conviction|$)", response_for_parse, re.IGNORECASE
-                )
-                if not verdict_match:
-                    verdict_match = re.search(
-                        r"\|\s*[*]*Equity[^\*|]*[*]*\s*\|\s*[*]*([A-Z\s\(\)]+?)[*]*\s*\|", response_for_parse, re.IGNORECASE
-                    )
-                if not verdict_match:
-                    verdict_match = re.search(
-                        r"\|\s*[*]*Options[^\*|]*[*]*\s*\|\s*[*]*([A-Z\s\(\)]+?)[*]*\s*\|", response_for_parse, re.IGNORECASE
-                    )
-
-                conviction_match = re.search(
-                    r"\*\*Conviction[^\*]*:\*\*\s*([\d\.]+)(?:\s*/\s*10)?", response_for_parse, re.IGNORECASE
-                )
-                if not conviction_match:
-                    conviction_match = re.search(
-                        r"\|\s*([\d\.]+)\s*/\s*10\s*\|", response_for_parse, re.IGNORECASE
-                    )
-
-                thesis_match = re.search(
-                    r"\*\*The Thesis in 2 Sentences:\*\*\s*(.+)", response_for_parse, re.IGNORECASE
-                )
-
-                entry_match = re.search(
-                    r"(?:\|\s*[*]*(?:Pullback\s+)?(?:Limit\s+)?Entry[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*(?:Pullback\s+)?(?:Limit\s+)?Entry[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
-                    response_for_parse, re.IGNORECASE
-                )
-                stop_match = re.search(
-                    r"(?:\|\s*[*]*(?:Tactical\s+)?Stop(?:\s*Loss)?[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*(?:Tactical\s+)?Stop(?:\s*Loss)?[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
-                    response_for_parse, re.IGNORECASE
-                )
-                target_match = re.search(
-                    r"(?:\|\s*[*]*Target(?:\s*1(?:\s*\([^)]*\))?)?[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*Target(?:\s*1(?:\s*\([^)]*\))?)?[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
-                    response_for_parse, re.IGNORECASE
-                )
-
-                if not verdict_match:
-                    logger.error(f"[{ticker}] FORMAT DRIFT: Failed to parse '**Verdict:**' from report!")
-                if not conviction_match:
-                    logger.error(f"[{ticker}] FORMAT DRIFT: Failed to parse '**Conviction:**' from report!")
-                if not entry_match:
-                    logger.warning(f"[{ticker}] FORMAT DRIFT: Failed to parse Entry price from action plan.")
-
-                entry_val = (entry_match.group(1) or entry_match.group(2)) if entry_match else ""
-                stop_val = (stop_match.group(1) or stop_match.group(2)) if stop_match else ""
-                target_val = (target_match.group(1) or target_match.group(2)) if target_match else ""
-
-                payload_dict = {
-                    "verdict": verdict_match.group(1).strip() if verdict_match else "N/A",
-                    "conviction": conviction_match.group(1).strip() if conviction_match else "N/A",
-                    "thesis": thesis_match.group(1).strip() if thesis_match else "",
-                    "action_plan": {
-                        "entry": entry_val,
-                        "stop": stop_val,
-                        "target": target_val,
-                        "rationale": "See markdown for full rationale.",
-                    },
-                }
-
-                # Update Google Sheets with the Deep Research Verdict
-                tracker = SheetsTracker()
-                sheet_updated = tracker.update_deep_research(date_str, ticker, payload_dict)
-
-                # Save identical copy to reports folder
-                reports_dir = config.BASE_DIR / "reports" / date_str
-                reports_dir.mkdir(parents=True, exist_ok=True)
-                digest_path = reports_dir / f"{ticker}_summary.md"
-                with open(digest_path, "w", encoding="utf-8") as f:
-                    f.write(clean_response)
-
-                if sheet_updated:
-                    logger.info(
-                        f"[{ticker}] Deep Research completed, Google Sheet updated, and Summary generated successfully!"
-                    )
+                if not match_header or len(clean_response) < 200:
+                    logger.warning(f"[{ticker}] Model A response did not contain a valid report structure (len={len(clean_response)}). Rejecting.")
+                    clean_response = ""
                 else:
-                    logger.info(
-                        f"[{ticker}] Deep Research completed and Summary generated successfully (Sheet update skipped: ticker not found in today's sheet)."
-                    )
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(clean_response)
 
-                # ========================================================
-                # PASS 2-IND: INDEPENDENT MACRO & TECHNICAL THESIS
-                # ========================================================
-                logger.info(f"[{ticker}] Generating Independent Macro & Technical Summary Report...")
-                independent_user_prompt = f"""
-                RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
-                VERIFY every macro, CPI, Fed, and earnings reference against this date.
-
-                I am requesting an INDEPENDENT Macro & Technical Analysis for the ticker: {ticker}.
-
-                --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
-                {data_window_str}
-
-                --- 1a. LIVE QUOTE (pre-fetched at run time) ---
-                {live_quote_block}
-
-                --- 2. NEWS RESEARCH DOSSIER ---
-                {news_dossier}
-
-                --- 2a. FRESH NEWS (LIVE) ---
-                {fresh_news}
-
-                --- 2b. MACRO NEWS (LIVE) ---
-                {macro_news}
-
-                {market_sentiment_block}
-
-                --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL ---
-                {av_block}
-                {social_block}
-                {institutional_block}
-                {grounded_block}
-
-                --- 2c-ii. MACRO GROUNDING ---
-                {macro_grounded_block}
-
-                --- 2e. EARNINGS DATE ---
-                {earnings_fact_block}
-
-                ## MULTIMODAL CHART STATE (Vision Images Provided)
-                - Image 1: Naked Japanese candlesticks & raw volume.
-                - Image 2: 90-day technical view displaying Darvas compression boxes, Volume Profile POC/VAH/VAL, and Anchored VWAPs.
-
-                --- QUANTITATIVE SANDBOX & 1-YEAR HISTORICAL DATAFRAME (`df`) ---
-                The quantitative sandbox (`execute_python_code`) pre-loads:
-                - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`)
-                - `dw`: Latest closed bar dictionary (JSON File: `{dw_path}`)
-                - `np`, `pd`, `scipy`, `stats`, `math`, `json`, `datetime`
-                - Live tools: `fetch_options_chain`, `detect_candlestick_patterns`, `run_quantitative_plugin`.
-
-                MANDATORY QUANTITATIVE WORKFLOW:
-                1. Act as Lead Quantitative Trader & Macro Strategist.
-                2. You MUST use your python sandbox (`execute_python_code`) for MATHEMATICAL VERIFICATION:
-                   - Verify exact historical levels in `df` (52W high/low, MA 50/200 baselines, gap boundaries, and volume profile nodes). Do not invent prices.
-                   - Run Monte Carlo simulations using `HV20` and `IV30` to model P(Target First) vs P(Stop First) across 21d, 30d, 45d, and 90d horizons.
-                   - Test live options contracts from `fetch_options_chain` to calculate exact mathematical Greeks, Net Credit/Debit, and risk-to-reward.
-                3. Synthesize the macro backdrop (Treasury yields, DXY, SPY/QQQ regime) vs micro company news, evaluate the auction liquidity (VP POC, VAH/VAL, RVOL), compute your independent Technical Rating, and emit your comprehensive thesis and trade plan into the exact markdown structure defined in your rules card.
-                """
-
-                ind_response = None
-                if use_remote:
                     try:
-                        ind_response = query_local_llm(
-                            system_prompt=system_prompt_independent,
-                            user_prompt=independent_user_prompt,
-                            json_mode=False,
-                            use_openrouter=True,
-                            image_paths=image_paths,
-                            use_tools=True,
-                            max_tokens=8192,
-                            summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day."
-                        )
-                    except Exception as e_ind_remote:
-                        logger.warning(f"[{ticker}] Remote Independent API inference failed ({e_ind_remote}) — falling back to Local GPU LLM!")
-                        ind_response = None
+                        _drift_checker.check_and_write(ticker, date_str, clean_response, out_dir)
+                    except Exception as e:
+                        logger.warning(f"[{ticker}] Thesis drift check failed: {e}")
 
-                if not ind_response:
-                    logger.info(f"[{ticker}] Executing Independent Pass with Local GPU LLM Server...")
-                    ind_response = query_local_llm(
-                        system_prompt=system_prompt_independent,
-                        user_prompt=independent_user_prompt,
-                        json_mode=False,
-                        use_openrouter=False,
-                        image_paths=image_paths,
-                        use_tools=True,
-                        disable_thinking=True,
-                        max_tokens=8192,
-                        summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day."
+                    with open(digest_path, "w", encoding="utf-8") as f:
+                        f.write(clean_response)
+
+                    # Parse provisional metrics for Google Sheets tracker
+                    verdict_match = re.search(
+                        r"\*\*Verdict:\*\*\s*(.*?)(?=\s*·|\s*\*\*Conviction|$)", clean_response, re.IGNORECASE
+                    )
+                    if not verdict_match:
+                        verdict_match = re.search(
+                            r"\|\s*[*]*Equity[^\*|]*[*]*\s*\|\s*[*]*([A-Z\s\(\)]+?)[*]*\s*\|", clean_response, re.IGNORECASE
+                        )
+                    if not verdict_match:
+                        verdict_match = re.search(
+                            r"\|\s*[*]*Options[^\*|]*[*]*\s*\|\s*[*]*([A-Z\s\(\)]+?)[*]*\s*\|", clean_response, re.IGNORECASE
+                        )
+
+                    conviction_match = re.search(
+                        r"\*\*Conviction[^\*]*:\*\*\s*([\d\.]+)(?:\s*/\s*10)?", clean_response, re.IGNORECASE
+                    )
+                    if not conviction_match:
+                        conviction_match = re.search(
+                            r"\|\s*([\d\.]+)\s*/\s*10\s*\|", clean_response, re.IGNORECASE
+                        )
+
+                    thesis_match = re.search(
+                        r"\*\*The Thesis in 2 Sentences:\*\*\s*(.+)", clean_response, re.IGNORECASE
                     )
 
-                if ind_response:
-                    clean_ind_response = ind_response.strip()
-                    match_ind_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_ind_response)
-                    if match_ind_header and match_ind_header.start() > 0:
-                        clean_ind_response = clean_ind_response[match_ind_header.start():].strip()
+                    entry_match = re.search(
+                        r"(?:\|\s*[*]*(?:Pullback\s+)?(?:Limit\s+)?Entry[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*(?:Pullback\s+)?(?:Limit\s+)?Entry[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                        clean_response, re.IGNORECASE
+                    )
+                    stop_match = re.search(
+                        r"(?:\|\s*[*]*(?:Tactical\s+)?Stop(?:\s*Loss)?[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*(?:Tactical\s+)?Stop(?:\s*Loss)?[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                        clean_response, re.IGNORECASE
+                    )
+                    target_match = re.search(
+                        r"(?:\|\s*[*]*Target(?:\s*1(?:\s*\([^)]*\))?)?[*]*\s*\|\s*[$]?\s*(\d+(?:\.\d+)?)|-\s*[*]*Target(?:\s*1(?:\s*\([^)]*\))?)?[*]*:\s*[$]?\s*(\d+(?:\.\d+)?))",
+                        clean_response, re.IGNORECASE
+                    )
 
-                    ind_report_path = reports_dir / f"{ticker}_independent.md"
+                    payload_dict = {
+                        "verdict": verdict_match.group(1).strip() if verdict_match else "N/A",
+                        "conviction": conviction_match.group(1).strip() if conviction_match else "N/A",
+                        "thesis": thesis_match.group(1).strip() if thesis_match else "",
+                        "action_plan": {
+                            "entry": (entry_match.group(1) or entry_match.group(2)) if entry_match else "",
+                            "stop": (stop_match.group(1) or stop_match.group(2)) if stop_match else "",
+                            "target": (target_match.group(1) or target_match.group(2)) if target_match else "",
+                            "rationale": "See markdown for full rationale.",
+                        },
+                    }
+
+                    tracker = SheetsTracker()
+                    tracker.update_deep_research(date_str, ticker, payload_dict)
+                    logger.info(f"[{ticker}] Model A Summary generated successfully.")
+            else:
+                logger.error(f"[{ticker}] Model A (Summary) returned empty response.")
+
+            # Handle Model B (Independent Quantitative & Macro Thesis)
+            clean_ind_response = ""
+            ind_report_path = reports_dir / f"{ticker}_independent.md"
+            if ind_response:
+                clean_ind_response = ind_response.strip()
+                clean_ind_response = re.sub(r'<tool_call>.*?</tool_call>', '', clean_ind_response, flags=re.DOTALL).strip()
+                clean_ind_response = re.sub(r'<function=.*?</function>', '', clean_ind_response, flags=re.DOTALL).strip()
+                match_ind_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_ind_response)
+                if match_ind_header and match_ind_header.start() > 0:
+                    clean_ind_response = clean_ind_response[match_ind_header.start():].strip()
+
+                if not match_ind_header or len(clean_ind_response) < 200:
+                    logger.warning(f"[{ticker}] Model B response did not contain a valid report structure (len={len(clean_ind_response)}). Rejecting.")
+                    clean_ind_response = ""
+                else:
                     with open(ind_report_path, "w", encoding="utf-8") as f:
                         f.write(clean_ind_response)
 
@@ -1623,76 +1790,178 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                         f.write(clean_ind_response)
 
                     logger.info(f"[{ticker}] Independent Macro & Technical Summary generated at {ind_report_path}!")
-
-                    # ========================================================
-                    # PASS 2-JUDGE: PONYTAIL PM ARBITRATION & CROSS-EXAMINATION
-                    # ========================================================
-                    logger.info(f"[{ticker}] Running Senior PM Ponytail Judge (Cross-Examining Report A vs Report B)...")
-                    judge_sys_prompt = (
-                        "You are the Chief Investment Officer & Senior Portfolio Manager operating under Ponytail Finance rules "
-                        "(Occam's Razor, minimal bloat, hard math, ruthless risk management).\n\n"
-                        "You have received two independent reports for this ticker:\n"
-                        "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
-                        "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
-                        "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
-                        "Output in this exact markdown format:\n\n"
-                        "# [TICKER] | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
-                        "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
-                        "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
-                        "## 🔴 THE CASE AGAINST (Bear Cross-Examination & Traps)\n"
-                        "[The strongest risk arguments, hidden traps, and friction points synthesized across both reports for why this trade should be avoided or hedged]\n\n"
-                        "## ⚖️ THE JUDGE'S FINAL RULING\n"
-                        "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
-                        "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
-                        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Credit) / CASH / SKIP]** (Conviction: X/10)\n\n"
-                        "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
-                        "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, R:R]\n"
-                        "* **Options (Derivatives):** [Exact Structure, Expiry, Strikes, Net Credit/Debit, Max Loss, Break-Even]\n"
-                        "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n"
-                    )
-
-                    judge_user_prompt = f"""
-                    TICKER: {ticker} | DATE: {date_str}
-                    
-                    --- REPORT A: PROPRIETARY QUANTITATIVE ENGINE ---
-                    {clean_response}
-                    
-                    --- REPORT B: INDEPENDENT MACRO & VOLUME PROFILE STUDY ---
-                    {clean_ind_response}
-                    """
-
-                    judge_response = query_local_llm(
-                        system_prompt=judge_sys_prompt,
-                        user_prompt=judge_user_prompt,
-                        json_mode=False,
-                        use_openrouter=False,
-                        use_tools=False,
-                        disable_thinking=True,
-                        max_tokens=3072,
-                    )
-
-                    if judge_response:
-                        clean_judge = judge_response.strip()
-                        match_judge = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_judge)
-                        if match_judge and match_judge.start() > 0:
-                            clean_judge = clean_judge[match_judge.start():].strip()
-
-                        arbitration_path = reports_dir / f"{ticker}_arbitration.md"
-                        with open(arbitration_path, "w", encoding="utf-8") as f:
-                            f.write(clean_judge)
-
-                        # Append arbitration ruling to the bottom of both reports for complete self-contained context
-                        with open(digest_path, "a", encoding="utf-8") as f:
-                            f.write(f"\n\n---\n\n{clean_judge}\n")
-
-                        with open(ind_report_path, "a", encoding="utf-8") as f:
-                            f.write(f"\n\n---\n\n{clean_judge}\n")
-
-                        logger.info(f"[{ticker}] Senior PM Ponytail Arbitration & Final Directive generated at {arbitration_path}!")
-                else:
-                    logger.error(f"[{ticker}] Independent LLM returned empty response.")
             else:
-                logger.error(f"[{ticker}] LLM returned empty response.")
+                logger.error(f"[{ticker}] Model B (Independent) returned empty response.")
+
+            # ========================================================
+            # PASS 2-JUDGE: PONYTAIL PM ARBITRATION & CROSS-EXAMINATION
+            # ========================================================
+            if clean_response and clean_ind_response:
+                logger.info(f"[{ticker}] Running Senior PM Ponytail Judge (Cross-Examining Report A vs Report B)...")
+                judge_sys_prompt = (
+                    "You are the Chief Investment Officer & Senior Portfolio Manager operating under Ponytail Finance rules "
+                    "(Occam's Razor, minimal bloat, hard math, ruthless risk management).\n\n"
+                    "You have received two independent reports for this ticker:\n"
+                    "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
+                    "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
+                    "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
+                    "Output in this exact markdown format:\n\n"
+                    "# [TICKER] | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
+                    "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
+                    "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
+                    "## 🔴 THE CASE AGAINST (Bear Cross-Examination & Traps)\n"
+                    "[The strongest risk arguments, hidden traps, and friction points synthesized across both reports for why this trade should be avoided or hedged]\n\n"
+                    "## ⚖️ THE JUDGE'S FINAL RULING\n"
+                    "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
+                    "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
+                    "* **Floor Defense & Proximity Rule:** [If defending an indisputable structural Put Wall, VP POC, or gap floor, DO NOT demand an exact tick fill. Expand entry_zone_high by +1.0% to catch institutional front-running (e.g. $300 Put Wall -> $300.00–$303.00 entry zone), and use a local tactical stop just below the floor to yield >4:1 R:R].\n"
+                    "* **Decoupled Options Directives:** [If direct equity requires waiting for a breakout or deeper pullback, but Plan B identifies an asymmetric defined-risk options structure (e.g. Bull Call Spread with R:R ≥ 2.5:1, or Bull Put Spread at the floor), mark options_plan.actionable = true so options can be traded immediately while shares stalk].\n"
+                    "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / STALK / CASH_SKIP]** (Conviction: X/10)\n\n"
+                    "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
+                    "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, Breakout Trigger Level & Stop, R:R]\n"
+                    "* **Options (Derivatives):** [Actionable: YES/NO, Exact Structure, Expiry, Strikes, Net Credit/Debit, Max Loss, Break-Even]\n"
+                    "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n\n"
+                    "```json:watch_levels\n"
+                    "{\n"
+                    f'  "ticker": "{ticker}",\n'
+                    '  "verdict": "ENTER|STALK|CASH_SKIP|WATCH|CUT",\n'
+                    '  "conviction": 5,\n'
+                    '  "shares_plan": {\n'
+                    '    "entry_type": "LIMIT|MARKET|NO_ENTRY",\n'
+                    '    "entry_zone_low": 0.0,\n'
+                    '    "entry_zone_high": 0.0,\n'
+                    '    "breakout_level": 0.0,\n'
+                    '    "breakout_stop": 0.0,\n'
+                    '    "tactical_stop": 0.0,\n'
+                    '    "target_1": 0.0,\n'
+                    '    "target_2": 0.0\n'
+                    '  },\n'
+                    '  "options_plan": {\n'
+                    '    "actionable": true,\n'
+                    '    "entry_trigger": "AT_MARKET|AT_FLOOR_LIMIT|BREAKOUT",\n'
+                    '    "structure": "BULL_CALL_SPREAD|BEAR_PUT_SPREAD|LONG_CALL|CASH_SECURED_PUT|NONE",\n'
+                    '    "expiration": "YYYY-MM-DD",\n'
+                    '    "long_strike": 0.0,\n'
+                    '    "short_strike": 0.0,\n'
+                    '    "target_debit": 0.0,\n'
+                    '    "max_loss": 0.0,\n'
+                    '    "max_profit": 0.0,\n'
+                    '    "summary": "Short description"\n'
+                    '  },\n'
+                    '  "invalidation": {\n'
+                    '    "condition": "DAILY_CLOSE_BELOW|DAILY_CLOSE_ABOVE|INTRADAY_TOUCH",\n'
+                    '    "price_level": 0.0,\n'
+                    '    "rationale": "Short explanation"\n'
+                    '  },\n'
+                    '  "status": "STALKING|IN_ZONE|IN_TRADE|INVALIDATED"\n'
+                    "}\n"
+                    "```\n"
+                )
+
+                # Ground Truth Market Facts context block for accurate Senior PM Judge arbitration
+                judge_ground_truth_block = f"""--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---
+- Ticker: {ticker} | Date: {date_str}
+{active_pos_block}
+- Live Quote: {live_quote_block.strip() if live_quote_block else "N/A"}
+- Earnings Date & Event Risk: {earnings_fact_block.strip() if earnings_fact_block else "N/A"}
+- Recent Daily Alerts / Triggers: {"; ".join(alerts_list) if alerts_list else "None recorded"}
+- Macro News & Fed/Yields: {macro_news.strip() if macro_news else "N/A"}
+- Macro Grounding: {macro_grounded_block.strip() if macro_grounded_block else "N/A"}
+- Key Technical & Volatility Ground Truths:
+  * Moving Averages: MA20={f_parsed.get('ma20', 'N/A')}, MA50={f_parsed.get('ma50', 'N/A')}, MA200={f_parsed.get('ma200', 'N/A')}
+  * Volume Profile: POC={f_parsed.get('vp_poc', 'N/A')}, VAL={f_parsed.get('vp_val', 'N/A')}, VAH={f_parsed.get('vp_vah', 'N/A')}
+  * Volatility: HV20={f_parsed.get('hv20', 'N/A')}%, IV30={f_parsed.get('iv30', 'N/A')}%, IV Rank={f_parsed.get('iv_rank', 'N/A')}%
+  * 52W Milestones: 52W High={dw_dict.get('52 Week High', 'N/A')}, 52W Low={dw_dict.get('52 Week Low', 'N/A')}"""
+
+                judge_user_prompt = f"""
+                TICKER: {ticker} | DATE: {date_str}
+
+                {judge_ground_truth_block}
+
+                --- REPORT A: PROPRIETARY QUANTITATIVE ENGINE ---
+                {clean_response}
+
+                --- REPORT B: INDEPENDENT MACRO & VOLUME PROFILE STUDY ---
+                {clean_ind_response}
+
+                MANDATE FOR THE SENIOR PM JUDGE:
+                1. Cross-examine Report A and Report B directly against the GROUND TRUTH MARKET FACTS.
+                2. Settle any discrepancies in price levels, earnings risk, or volatility regime between the two models.
+                3. Issue the final binding directive and output the exact json:watch_levels block.
+                4. If USER ACTIVE BROKER POSITION is present, issue an explicit 'Active Holding Playbook' covering profit scale-out at Target 1, advancing stop to breakeven, and covered call yield tactics.
+                """
+
+                judge_response = query_local_llm(
+                    system_prompt=judge_sys_prompt,
+                    user_prompt=judge_user_prompt,
+                    json_mode=False,
+                    use_openrouter=False,
+                    use_tools=False,
+                    disable_thinking=True,
+                    max_tokens=3072,
+                )
+
+                if judge_response:
+                    clean_judge = judge_response.strip()
+                    match_judge = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_judge)
+                    if match_judge and match_judge.start() > 0:
+                        clean_judge = clean_judge[match_judge.start():].strip()
+
+                    arbitration_path = reports_dir / f"{ticker}_arbitration.md"
+                    with open(arbitration_path, "w", encoding="utf-8") as f:
+                        f.write(clean_judge)
+
+                    logger.info(f"[{ticker}] Senior PM Ponytail Arbitration & Final Directive generated at {arbitration_path}!")
+
+                    # Extract structured watch levels directly from the arbitration json block
+                    watch_json_match = re.search(r"```(?:json)?(?::watch_levels)?\s*(\{.*?\})\s*```", clean_judge, re.DOTALL)
+                    if watch_json_match:
+                        try:
+                            watch_data = json.loads(watch_json_match.group(1))
+                            watch_data.setdefault("ticker", ticker)
+                            watch_data.setdefault("date", date_str)
+
+                            # Save to triage/output directory
+                            watch_path = tdir / f"{ticker}_watch_levels.json"
+                            with open(watch_path, "w", encoding="utf-8") as f:
+                                json.dump(watch_data, f, indent=2)
+
+                            # Also persist to raw ticker directory for complete index coverage
+                            raw_watch_path = raw_dir / ticker / f"{ticker}_watch_levels.json"
+                            if raw_watch_path != watch_path:
+                                raw_watch_path.parent.mkdir(parents=True, exist_ok=True)
+                                with open(raw_watch_path, "w", encoding="utf-8") as f:
+                                    json.dump(watch_data, f, indent=2)
+
+                            logger.info(f"[{ticker}] Extracted structured watch levels -> {watch_path}")
+
+                            # Automatically upsert into SQLite Watch database
+                            from src.tracking.watch_manager import upsert_watch_target
+                            upsert_watch_target(watch_data)
+
+                            # Update Google Sheets with Judge's binding decision
+                            judge_verdict = watch_data.get("verdict", "")
+                            judge_conv = watch_data.get("conviction", "")
+                            shares_p = watch_data.get("shares_plan", {})
+                            options_p = watch_data.get("options_plan", {})
+                            if judge_verdict:
+                                judge_payload = {
+                                    "verdict": judge_verdict,
+                                    "conviction": str(judge_conv),
+                                    "thesis": f"Arbitration: {watch_data.get('invalidation', {}).get('rationale', '')}",
+                                    "action_plan": {
+                                        "entry": f"${shares_p.get('entry_zone_low', '')} - ${shares_p.get('entry_zone_high', '')}" if shares_p.get("entry_zone_low") else "N/A",
+                                        "stop": f"${shares_p.get('tactical_stop', '')}" if shares_p.get("tactical_stop") else "N/A",
+                                        "target": f"${shares_p.get('target_1', '')}" if shares_p.get("target_1") else "N/A",
+                                        "rationale": f"Options: {options_p.get('structure', '')} ({options_p.get('summary', '')})" if options_p.get("structure") else "See arbitration.",
+                                    },
+                                }
+                                tracker = SheetsTracker()
+                                tracker.update_deep_research(date_str, ticker, judge_payload)
+                        except Exception as e_w:
+                            logger.warning(f"[{ticker}] Failed to parse embedded watch levels JSON: {e_w}")
+            else:
+                logger.warning(f"[{ticker}] Pass 2-JUDGE skipped because one or both reports failed.")
         except Exception as e:
             logger.error(f"[{ticker}] Deep Research failed: {e}", exc_info=True)
 

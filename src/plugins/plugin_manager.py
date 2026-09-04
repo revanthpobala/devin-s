@@ -14,6 +14,9 @@ from src.plugins.squeeze_expansion_plugin import SqueezeExpansionPlugin
 from src.plugins.htf_confluence_plugin import HTFConfluencePlugin
 from src.plugins.order_flow_plugin import OrderFlowPlugin
 from src.plugins.candlestick_patterns_plugin import CandlestickPatternsPlugin
+from src.plugins.tastytrade_plugin import TastytradeVolatilityPlugin
+from src.plugins.options_skew_gex_plugin import OptionsSkewGEXPlugin
+from src.plugins.conformal_prediction_plugin import ConformalPredictionPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,9 @@ class PluginManager:
         self.register_plugin(HTFConfluencePlugin())
         self.register_plugin(OrderFlowPlugin())
         self.register_plugin(CandlestickPatternsPlugin())
+        self.register_plugin(TastytradeVolatilityPlugin())
+        self.register_plugin(OptionsSkewGEXPlugin())
+        self.register_plugin(ConformalPredictionPlugin())
 
     def register_plugin(self, plugin: BaseAnalyticsPlugin):
         self._plugins[plugin.name] = plugin

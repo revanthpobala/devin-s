@@ -436,8 +436,8 @@ def is_market_hours() -> bool:
         microsecond=0,
     )
     end_time = now_mt.replace(
-        hour=getattr(config, "MARKET_CLOSE_HOUR", 20),
-        minute=getattr(config, "MARKET_CLOSE_MINUTE", 0),
+        hour=getattr(config, "MARKET_CLOSE_HOUR", 14),
+        minute=getattr(config, "MARKET_CLOSE_MINUTE", 30),
         second=0,
         microsecond=0,
     )

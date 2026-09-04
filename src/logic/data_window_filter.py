@@ -493,6 +493,17 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
         if exported_rr_mkt is not None and exported_rr_mkt > 0:
             rr = exported_rr_mkt
 
+    # For strong momentum / stage-2 names above the entry zone, calculate momentum R:R with a tight structural stop
+    tight_stop = None
+    momentum_rr = None
+    if side == "long" and tgt is not None and price is not None and tgt > price:
+        tight_stop = max(zbot or 0.0, f.get("ma20") or 0.0, price * 0.96)
+        if 0 < tight_stop < price:
+            m_risk = price - tight_stop
+            m_reward = tgt - price
+            if m_risk > 0:
+                momentum_rr = round(m_reward / m_risk, 3)
+
     # Dominant side attribution.
     # THE `side == ev_side` GUARD IS LOAD-BEARING -- do not flatten it. ev_r may only be computed for
     # the side the scores actually favour. Without it, a bar with Sell 90 > Buy 70 still produces
@@ -538,6 +549,8 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
         "score": score,
         "rev": rev,
         "rr": rr,
+        "momentum_rr": momentum_rr,
+        "tight_stop": tight_stop,
         "ev_r": ev_r,
         "win_prob": win_prob,
         "in_zone": in_zone,
@@ -865,6 +878,8 @@ def run_data_window_filter(
         "iv_rank": iv_rank,
         "exp_move_pct": exp_move,
         "rr_at_market": f.get("long_rr_at_market"),
+        "momentum_rr": W.get("momentum_rr"),
+        "tight_stop": W.get("tight_stop"),
     }
 
     # Buy-Trigger Gap Engine: compute how far the current bar is from each

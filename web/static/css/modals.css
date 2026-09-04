@@ -1,0 +1,288 @@
+/* ==========================================================================
+   Modals CSS: 3-Model Dossier Viewer, Alert Editor, Lightbox
+   Theme: Institutional Clean Slate & White (with Dark Mode Support)
+   ========================================================================== */
+
+/* Fullscreen Modal Backdrop */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+/* Minimized Modal: Floating Bottom-Right Chat Window */
+.modal-overlay.minimized {
+  background: transparent !important;
+  pointer-events: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: flex-end !important;
+  justify-content: flex-end !important;
+  z-index: 99999 !important;
+}
+
+.modal-overlay.minimized .modal-content {
+  pointer-events: auto !important;
+  position: fixed !important;
+  bottom: 20px !important;
+  right: 24px !important;
+  width: 440px !important;
+  max-width: calc(100vw - 32px) !important;
+  height: 580px !important;
+  min-height: 380px !important;
+  max-height: calc(100vh - 40px) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-lg) !important;
+  overflow: hidden !important;
+  z-index: 99999 !important;
+  background: var(--bg-surface) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.modal-overlay.minimized #modal-report-pane,
+.modal-overlay.minimized #modal-chat-resizer {
+  display: none !important;
+}
+
+.modal-overlay.minimized #modal-copilot-drawer {
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 !important;
+  display: flex !important;
+}
+
+.modal-overlay.minimized .modal-header {
+  padding: 10px 14px !important;
+  background: var(--bg-surface) !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+
+/* Collapsed to bottom bar state */
+.modal-overlay.minimized.collapsed .modal-content {
+  height: 50px !important;
+  min-height: 50px !important;
+  max-height: 50px !important;
+  cursor: pointer !important;
+}
+
+.modal-overlay.minimized.collapsed #modal-split-container {
+  display: none !important;
+}
+
+.modal-content {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  width: 100%;
+  max-width: 1100px;
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-modal);
+  color: var(--text-main);
+}
+
+.modal-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-surface);
+}
+
+.tab-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.tab-btn:hover {
+  color: var(--text-main);
+  background: var(--bg-card-hover);
+}
+
+.tab-btn.active {
+  background: var(--bg-surface);
+  border-color: var(--border);
+  color: var(--text-main);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+  line-height: 1.65;
+  font-size: 14px;
+  color: var(--text-main);
+}
+
+/* Markdown Typography within Modal */
+.modal-body h1, .modal-body h2, .modal-body h3, .modal-body h4 {
+  font-family: 'Outfit', sans-serif;
+  margin: 18px 0 10px 0;
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+.modal-body h1 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.modal-body h2 { font-size: 17px; color: var(--blue); }
+.modal-body h3 { font-size: 14.5px; }
+
+.modal-body p {
+  margin-bottom: 12px;
+}
+
+.modal-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.modal-body th, .modal-body td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.modal-body th {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.modal-body pre {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid #1e293b;
+  overflow-x: auto;
+  margin: 12px 0;
+  font-size: 12px;
+}
+
+.modal-body code {
+  background: var(--bg-subtle);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--blue);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.modal-body ul, .modal-body ol {
+  margin-left: 20px;
+  margin-bottom: 12px;
+}
+
+.modal-body li {
+  margin-bottom: 4px;
+}
+
+.modal-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 20px 0;
+}
+
+.chart-img {
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  margin-bottom: 20px;
+  display: block;
+}
+
+/* Modal Window Header Actions */
+.modal-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-action-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.modal-action-btn:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+  border-color: var(--border-subtle);
+}
+
+.modal-action-btn.close:hover {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+/* Modal Draggable Chat Resizer */
+.modal-chat-resizer {
+  width: 8px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+
+.modal-chat-resizer:hover, .modal-chat-resizer.active {
+  background: var(--blue);
+}
+
+.modal-chat-resizer::after {
+  content: '';
+  width: 2px;
+  height: 48px;
+  background: var(--border-subtle);
+  border-radius: var(--radius-full);
+}

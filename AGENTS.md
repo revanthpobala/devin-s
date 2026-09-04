@@ -44,7 +44,7 @@ python main.py --once
 **Entry Point**: `run_market_orchestrator.py`
 
 **Capabilities**:
-- Monitors market hours (7:15 AM - 8:00 PM MT Mon-Fri)
+- Monitors market hours (7:15 AM - 2:30 PM MT / 9:15 AM - 4:30 PM ET Mon-Fri, covering NYSE/NASDAQ RTH plus pre-market warm-up & settlement)
 - Starts/stops `llama-cpp-server` on port 8000 (Qwen3.5-9B-Q8_0.gguf, `-c 32768`, `--parallel 3`, `--reasoning off`)
 - Starts/stops Email Alert Ingestor (`main.py --loop`)
 - Watchdog: restarts wedged LLM server if `/health` becomes unresponsive
@@ -153,7 +153,32 @@ python run_deep_research.py --force META,AMD
 python src/logic/deep_research.py 2026-08-22 --local
 ```
 
-**Gem Files** (`gems/`): `revanth-original-gem.md` (engine rules), `revanth-bible.md` (framework), `response.md` (output format), `ponytail_finance.md` (PM discipline), `independent_gem.md` (independent report), `few_shot_template.md`.
+---
+
+## Watchlist & Trigger Alert Engine
+
+**Purpose**: Keep track of generated research reports, extract structured tactical levels (Entry Zone, Stop Loss, Targets, Options structures, Invalidation rules), poll live prices, and dispatch real-time trigger alerts to console, SQLite, and Google Sheets.
+
+**Entry Point**: `run_watch_alerts.py`
+
+**Capabilities**:
+- **Report Level Extractor** (`src/logic/report_level_extractor.py`): Ingests markdown reports (`_summary.md` + `_arbitration.md`) and extracts structured levels via embedded `json:watch_levels` block or deterministic regex fallback to `<ticker>_watch_levels.json`.
+- **SQLite Watch Database** (`src/tracking/watch_manager.py` -> `data/research_watch.db`): Stores active watch targets, live price tracking, distance to entry %, and alert audit logs.
+- **Tastytrade Cloud Alerts Integration** (`src/clients/tastytrade_client.py`): Automatically registers 24/7 cloud quote alerts (`POST /quote-alerts`) on Tastytrade's cloud servers (Entry Zone, Stop Loss, Targets 1 & 2), triggering instant mobile push notifications and SMS to the **Tastytrade Mobile App** on your phone with zero local machine runtime.
+- **Google Sheets Mirror**: Synchronizes live watch targets, distance %, and status badges (`🎯 IN ZONE`, `⏳ STALKING`, `🛑 INVALIDATED`, `🏁 TARGET HIT`) to the dedicated **`WATCH-TRIGGERS`** tab in the Trades spreadsheet.
+- **Trigger Alert Daemon**: Polls real-time prices (Alpaca / Yahoo) every interval and dispatches deduplicated alerts on state transitions (`STALKING` -> `IN_ZONE` -> `TARGET_HIT` / `STOP_BREACHED`).
+
+**Usage**:
+```bash
+# Sync/index reports into SQLite, Google Sheets & register Tastytrade cloud alerts
+python run_watch_alerts.py --sync --once
+
+# Continuous live price polling & alert loop during market hours
+python run_watch_alerts.py --loop --interval 60
+
+# Re-index reports for a specific date
+python run_watch_alerts.py --sync --date 2026-08-29
+```
 
 ---
 
@@ -187,7 +212,7 @@ python src/logic/deep_research.py 2026-08-22 --local
 **Profiles** (all in `scripts/launchers/`):
 - `start_llm_server.bat` — Qwen3.5-9B-Q8_0, `-c 32768`, `--parallel 3` (~10923 ctx/slot). The tracker/triage default.
 - `start_llm_server_markewt_orch.bat` — Qwen3.5-9B, `-c 130000`, `--parallel 1` (single 130k slot; for very large deep-research payloads; serializes concurrency)
-- `start_llm_server_qwen38_27b_q4.bat` / `_q6.bat` — Qwen3.8-27B UD-Q4/Q6_K_XL + `--mmproj` vision projector, `-c 262144`, `--parallel 2` (131k/slot; needs ~28-32GB VRAM). Used for local vision deep research.
+- `start_llm_server_qwen38_27b_q4.bat` / `_q6.bat` — Qwen3.8-27B UD-Q4/Q6_K + `--mmproj` vision projector, full `-c 262144` (256k slot), `-b 2048 -ub 2048`, `--split-mode row`, `-ctk q4_0 -ctv q4_0` (fits inside 32GB dual GPU VRAM with ~8.5GB headroom; high-throughput 30k+ token prompt ingestion). Used for local vision deep research.
 
 **Common flags**: `--host 127.0.0.1 --port 8000 -fa on -ctk q8_0 -ctv q8_0 -ngl 999 --reasoning off --jinja`. `--reasoning off` is required so clean JSON + GBNF `json_schema` response formats work (no thinking trace to conflict).
 
@@ -208,7 +233,7 @@ python src/logic/deep_research.py 2026-08-22 --local
 - Vision: `image_paths` (base64 PNG, resized to 640px) for multimodal chart analysis
 - Structured output: `json_schema` (GBNF-compiled on the local server) and `json_mode`
 - Local concurrency throttled by `LLM_LOCAL_CONCURRENCY` semaphore
-- **Tool-calling loop** (`use_tools=True`) with these tools: `fetch_earnings_calendar`, `search_web` (Brave+DDG+Parallel), `fetch_finnhub_news`, `fetch_alpaca_news`, `get_realtime_quote`, `fetch_options_chain` (Alpaca), `scrape_tradingview_options_finder` (TV Strategy Finder + volume charts), `fetch_historical_zone_and_regime_analytics`, `run_quantitative_plugin`, `execute_python_code` (sandboxed: pre-loaded `df` 300 bars × 85 indicators, `dw`, numpy/pandas/scipy), `fetch_prior_research`, `detect_candlestick_patterns`
+- **Tool-calling loop** (`use_tools=True`) with these tools: `fetch_earnings_calendar`, `search_web` (Brave+DDG+Parallel), `fetch_finnhub_news`, `fetch_alpaca_news`, `get_realtime_quote`, `fetch_options_chain`, `scrape_tradingview_options_finder` (TV Strategy Finder + volume charts), `fetch_historical_zone_and_regime_analytics`, `fetch_tastytrade_volatility_and_options` (IV Rank, HV/IV spread, option liquidity rating, short borrow rate), `run_quantitative_plugin`, `execute_python_code` (sandboxed: pre-loaded `df` 300 bars × 85 indicators, `dw`, numpy/pandas/scipy), `fetch_prior_research`, `detect_candlestick_patterns`
 - `query_qwen()` (`src/clients/qwen_client.py`) — DashScope Qwen API (cloud, optional vision)
 
 ---
@@ -226,6 +251,7 @@ python src/logic/deep_research.py 2026-08-22 --local
 | Squeeze Expansion | `squeeze_expansion_plugin.py` |
 | HTF Confluence | `htf_confluence_plugin.py` |
 | Candlestick Patterns (pin bars, shooting stars, gap fill retests, inside days, engulfing) | `candlestick_patterns_plugin.py` |
+| Tastytrade Volatility (IV Rank, IV Percentile, 30d/60d/90d HV, IV-HV spread, liquidity stars, borrow rate) | `tastytrade_plugin.py` |
 
 **Registry**: `plugin_manager.py` — `PluginManager.run_all(ticker, df, dw)` / `enrich_datawindow_with_plugins()`.
 

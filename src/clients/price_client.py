@@ -32,7 +32,19 @@ def get_current_price(symbol: str) -> Optional[float]:
     INDEX_SYMBOLS = {"VIX", "SPX", "NDX", "RUT", "DJI"}
     yahoo_symbol = f"^{symbol}" if symbol in INDEX_SYMBOLS else symbol
 
-    # 1. Try Alpaca API first if credentials are configured in environment (excludes indices like SPX/VIX)
+    # 0. Try Schwab API FIRST (official live NBBO quotes, real-time from user's authenticated Schwab connection)
+    try:
+        from src.clients.schwab_client import get_realtime_quote
+        if symbol not in INDEX_SYMBOLS and not symbol.startswith("^"):
+            sq = get_realtime_quote(symbol)
+            if sq and sq.get("last_price") and sq["last_price"] > 0:
+                p = sq["last_price"]
+                logger.info(f"Schwab real-time price for {symbol}: {p:.2f} (Net: {sq.get('net_change', 0):+.2f} / {sq.get('net_percent_change', 0):+.2f}%)")
+                return float(p)
+    except Exception as e_schwab:
+        logger.debug(f"Schwab price lookup skipped for {symbol}: {e_schwab}")
+
+    # 1. Try Alpaca API second if credentials are configured in environment (excludes indices like SPX/VIX)
     alpaca_key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY_ID")
     alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
 
@@ -64,18 +76,29 @@ def get_current_price(symbol: str) -> Optional[float]:
                 response = requests.get(url, headers=headers, timeout=5)
                 if response.status_code == 200:
                     data = response.json()
-                    price = data.get("trade", {}).get("p", None)
+                    trade = data.get("trade") or {}
+                    price = trade.get("p")
                     if price is not None and price > 0:
                         logger.info(f"Alpaca real-time price for {symbol}: {price:.2f}")
                         return float(price)
-                else:
-                    logger.warning(
-                        f"Alpaca API returned status code {response.status_code}: {response.text}"
-                    )
         except Exception as e:
-            logger.warning(f"Alpaca API failed for {symbol}: {e}")
+            logger.warning(f"Alpaca price fetch failed for {symbol}: {e}")
 
-    # 2. Try yfinance if available (use ^SYMBOL for indices)
+    # 2. Try Tastytrade API next (DXLink real-time streaming feed)
+    try:
+        from src.clients.tastytrade_client import TastytradeClient
+
+        tt_client = TastytradeClient()
+        if os.path.exists(tt_client.token_path) and symbol not in ["SPX", "VIX", "COMP"]:
+            tt_quote = tt_client.get_realtime_quote(symbol)
+            if tt_quote and tt_quote.get("price"):
+                p = tt_quote["price"]
+                logger.info(f"Tastytrade real-time price for {symbol}: {p:.2f} (Bid: {tt_quote.get('bid')}, Ask: {tt_quote.get('ask')})")
+                return float(p)
+    except Exception as e_tt:
+        logger.debug(f"Tastytrade price lookup skipped: {e_tt}")
+
+    # 3. Try yfinance if available (use ^SYMBOL for indices)
     if YFINANCE_AVAILABLE:
         try:
             logger.info(f"Fetching current price for {symbol} using yfinance...")
@@ -115,3 +138,37 @@ def get_current_price(symbol: str) -> Optional[float]:
 
     logger.error(f"Could not fetch price for {symbol} using any available method.")
     return None
+
+
+def get_current_prices_batch(symbols: list[str]) -> dict[str, float]:
+    """
+    Fetch live current prices for multiple symbols in batch.
+    Uses Schwab get_realtime_quotes_batch as high-speed primary source,
+    falling back to individual get_current_price for any missing.
+    """
+    prices: dict[str, float] = {}
+    if not symbols:
+        return prices
+
+    # 1. Primary: Batch fetch from Schwab
+    try:
+        from src.clients.schwab_client import get_realtime_quotes_batch
+
+        sq_batch = get_realtime_quotes_batch(symbols)
+        for s, q in sq_batch.items():
+            if q and q.get("last_price") and q["last_price"] > 0:
+                prices[s] = float(q["last_price"])
+    except Exception as e:
+        logger.debug(f"Schwab batch price fetch error: {e}")
+
+    # 2. Fallback for any symbols not returned by Schwab
+    missing = [s for s in symbols if s.upper().strip() not in prices]
+    for s in missing:
+        try:
+            p = get_current_price(s)
+            if p is not None and p > 0:
+                prices[s.upper().strip()] = float(p)
+        except Exception:
+            pass
+
+    return prices

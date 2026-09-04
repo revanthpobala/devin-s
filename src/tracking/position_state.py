@@ -71,7 +71,15 @@ def _save_state(state: dict) -> None:
     tmp = POSITIONS_FILE.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, default=str)
-    tmp.replace(POSITIONS_FILE)  # atomic on Windows + POSIX
+    try:
+        tmp.replace(POSITIONS_FILE)  # atomic on Windows + POSIX
+    except Exception:
+        import shutil
+        shutil.copyfile(tmp, POSITIONS_FILE)
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
 
 
 def open_position(
@@ -149,6 +157,32 @@ def update_position(ticker: str, **fields) -> dict | None:
 
 def get_position(ticker: str) -> dict | None:
     return load_state().get(ticker.strip().upper())
+
+
+def flatten_eod_intraday_positions(force: bool = False) -> list[dict]:
+    """Close all intraday positions for EOD flattening (or older than today if force=False)."""
+    closed_list = []
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    with _state_lock:
+        state = load_state()
+        tickers_to_close = []
+        for t, p in state.items():
+            if not isinstance(p, dict):
+                continue
+            strat = (p.get("strategy") or "").lower()
+            opened_at = p.get("opened_at") or ""
+            is_old = opened_at and not opened_at.startswith(today_str)
+            if strat == "intraday" and (force or is_old):
+                tickers_to_close.append(t)
+
+        for t in tickers_to_close:
+            rec = state.pop(t, None)
+            if rec:
+                closed_list.append(rec)
+        if tickers_to_close:
+            _save_state(state)
+            logger.info(f"[state] EOD Flattened {len(closed_list)} intraday position(s): {tickers_to_close}")
+    return closed_list
 
 
 def list_open() -> dict:

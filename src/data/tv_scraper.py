@@ -151,7 +151,8 @@ class TVScraper:
             )
 
             page = context.new_page()
-            url = f"{self.chart_url}?symbol={symbol}"
+            sep = "&" if "?" in self.chart_url else "?"
+            url = f"{self.chart_url}{sep}symbol={symbol}&interval=D"
             logger.info(f"Navigating to {url}")
             page.goto(url, wait_until="domcontentloaded")
 
@@ -326,13 +327,18 @@ class TVScraper:
             try:
                 # Reset chart zoom so candles aren't tiny from the wide-view pan/zoom
                 try:
+                    page.keyboard.press("Escape")
+                    time.sleep(0.5)
                     page.keyboard.press("Alt+r")
                     time.sleep(1.0)
                 except Exception:
                     pass
 
-                page.wait_for_selector(GOTO_BTN, state="visible", timeout=5000)
-                page.click(GOTO_BTN, timeout=5000)
+                try:
+                    page.wait_for_selector(GOTO_BTN, state="visible", timeout=5000)
+                    page.locator(GOTO_BTN).click(force=True, timeout=5000)
+                except Exception:
+                    page.keyboard.press("Alt+g")
                 
                 # Switch to Custom Range tab so the start/end inputs become visible
                 try:
@@ -364,7 +370,10 @@ class TVScraper:
                 try:
                     start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
                     logger.info(f"Setting range for CSV download (range: {start_date} -> today)...")
-                    page.click(GOTO_BTN, timeout=5000)
+                    try:
+                        page.locator(GOTO_BTN).click(force=True, timeout=5000)
+                    except Exception:
+                        page.keyboard.press("Alt+g")
                     
                     try:
                         page.click('button:has-text("Custom range")', timeout=2000)
@@ -413,7 +422,8 @@ class TVScraper:
             )
 
             # ── 3. Plain Chart Screenshot (Clean Naked Price Action) ─────────────
-            plain_url = f"{self.plain_chart_url}?symbol={symbol}"
+            sep_plain = "&" if "?" in self.plain_chart_url else "?"
+            plain_url = f"{self.plain_chart_url}{sep_plain}symbol={symbol}&interval=D"
             logger.info(f"Navigating to Plain Chart layout: {plain_url}")
             try:
                 page.goto(plain_url, wait_until="domcontentloaded", timeout=30000)

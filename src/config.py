@@ -114,10 +114,12 @@ ADANOS_API_KEY = os.getenv("ADANOS_SOCIAL_SENTIMENT_API_KEY", "")
 ADANOS_BASE_URL = os.getenv("ADANOS_BASE_URL", "https://api.adanos.org")
 
 # Market Hours Settings (Mountain Time)
+# Regular Trading Hours: 7:30 AM MT - 2:00 PM MT (9:30 AM ET - 4:00 PM ET)
+# Orchestrator warm-up begins at 7:15 AM MT (9:15 AM ET) and settles at 2:30 PM MT (4:30 PM ET)
 MARKET_OPEN_HOUR = int(os.getenv("MARKET_OPEN_HOUR", "7"))
 MARKET_OPEN_MINUTE = int(os.getenv("MARKET_OPEN_MINUTE", "15"))
-MARKET_CLOSE_HOUR = int(os.getenv("MARKET_CLOSE_HOUR", "20"))  # 8 PM MT
-MARKET_CLOSE_MINUTE = int(os.getenv("MARKET_CLOSE_MINUTE", "0"))
+MARKET_CLOSE_HOUR = int(os.getenv("MARKET_CLOSE_HOUR", "14"))  # 2:30 PM MT (4:30 PM ET)
+MARKET_CLOSE_MINUTE = int(os.getenv("MARKET_CLOSE_MINUTE", "30"))
 
 
 def validate_config():

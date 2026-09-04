@@ -1,0 +1,195 @@
+/* ==========================================================================
+   Layout Styles: Navigation Header, Multi-Column Container, Resizable Sidebar
+   Clean Slate & White Institutional Theme
+   ========================================================================== */
+
+/* Top Navigation Ribbon */
+header {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-icon {
+  font-size: 22px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+}
+
+.brand-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  color: var(--text-main);
+}
+
+.status-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  flex-wrap: wrap;
+}
+
+/* Main Two-Column Resizable Container Grid */
+.container {
+  max-width: 100%;
+  margin: 0;
+  padding: 14px 18px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 12px var(--chat-w, 420px);
+  gap: 8px;
+  align-items: start;
+  min-height: calc(100vh - var(--header-height));
+  box-sizing: border-box;
+}
+
+/* Left Column: Main Trading Desks */
+.main-desks-column {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* Desk Switcher Bar */
+.desk-switcher-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.desk-nav-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.desk-nav-btn:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-main);
+  background: var(--bg-card-hover);
+}
+
+.desk-nav-btn.active {
+  background: var(--text-main);
+  border-color: var(--text-main);
+  color: var(--bg-surface);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* Vertical Drag Resizer */
+.chat-resizer {
+  width: 12px;
+  height: calc(100vh - 84px);
+  position: sticky;
+  top: 74px;
+  cursor: col-resize;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+  background: transparent;
+}
+
+.chat-resizer:hover, .chat-resizer.active {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.chat-resizer::after {
+  content: '';
+  width: 4px;
+  height: 48px;
+  background: var(--border-subtle);
+  border-radius: var(--radius-full);
+  transition: all 0.15s ease;
+}
+
+.chat-resizer:hover::after, .chat-resizer.active::after {
+  height: 64px;
+  width: 4px;
+  background: var(--blue);
+}
+
+/* Right-Side Permanent REV CHAT Sidebar */
+.sidebar-rev-chat {
+  position: sticky;
+  top: 74px;
+  height: calc(100vh - 92px);
+  max-height: calc(100vh - 92px);
+  min-height: 440px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  box-sizing: border-box;
+  z-index: 30;
+}
+
+body.chat-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* 2-Column Responsive Grid on Main Pane */
+.two-col-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 20px;
+}
+
+/* Responsive Media Queries */
+@media (max-width: 1100px) {
+  .two-col-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .container {
+    grid-template-columns: 1fr;
+  }
+  .chat-resizer {
+    display: none;
+  }
+  .sidebar-rev-chat {
+    position: relative;
+    top: 0;
+    height: 600px;
+    max-height: 600px;
+  }
+}

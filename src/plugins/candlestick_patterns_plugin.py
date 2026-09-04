@@ -1,52 +1,149 @@
 """
 src/plugins/candlestick_patterns_plugin.py
 
-Industry-standard, vetted TA-Lib candlestick and price-action pattern recognition.
-Executes official TA-Lib C-routines for 61 classical Japanese candlestick patterns
-combined with gap-fill retest analysis directly on OHLCV data.
+Multi-Timeframe Candlestick & Pattern Analytics.
+100% powered by the official C-based TA-Lib (Technical Analysis Library).
+Executes all 61 standardized TA-Lib Pattern Recognition algorithms plus
+official TA-Lib trend and volatility indicators across Daily, Weekly, and Monthly series.
 """
 
 from typing import Any, Dict, List
 import pandas as pd
 import numpy as np
+import logging
 import talib
 
 from src.plugins.base_plugin import BaseAnalyticsPlugin
 
+logger = logging.getLogger(__name__)
 
-# Human-friendly descriptions for standard TA-Lib pattern codes
-TALIB_PATTERN_METADATA = {
-    "CDLHAMMER": {"name": "Hammer (Bullish Pin Bar)", "type": "BULLISH", "desc": "Rejection of lower price levels with long lower shadow."},
-    "CDLSHOOTINGSTAR": {"name": "Shooting Star (Bearish Pin Bar)", "type": "BEARISH", "desc": "Rejection of higher price levels with long upper shadow."},
-    "CDLMORNINGSTAR": {"name": "Morning Star", "type": "BULLISH", "desc": "3-bar bottom reversal cluster."},
-    "CDLEVENINGSTAR": {"name": "Evening Star", "type": "BEARISH", "desc": "3-bar top reversal cluster."},
-    "CDLMORNINGDOJISTAR": {"name": "Morning Doji Star", "type": "BULLISH", "desc": "3-bar bottom reversal with Doji star."},
-    "CDLEVENINGDOJISTAR": {"name": "Evening Doji Star", "type": "BEARISH", "desc": "3-bar top reversal with Doji star."},
-    "CDLENGULFING": {"name": "Engulfing", "type": "DYNAMIC", "desc": "Candle body completely swallows prior body."},
-    "CDLDRAGONFLYDOJI": {"name": "Dragonfly Doji", "type": "BULLISH", "desc": "Capitulation reversal with long lower shadow and open=close=high."},
-    "CDLGRAVESTONEDOJI": {"name": "Gravestone Doji", "type": "BEARISH", "desc": "Overhead exhaustion with long upper shadow and open=close=low."},
-    "CDLLONGLEGGEDDOJI": {"name": "Long-Legged Doji", "type": "NEUTRAL", "desc": "Extreme market indecision with long upper and lower wicks."},
-    "CDLDOJI": {"name": "Doji", "type": "NEUTRAL", "desc": "Tight open/close compression signaling potential turning point."},
-    "CDL3WHITESOLDIERS": {"name": "Three White Soldiers", "type": "BULLISH", "desc": "3 consecutive strong green bars with rising closes (institutional ignition)."},
-    "CDL3BLACKCROWS": {"name": "Three Black Crows", "type": "BEARISH", "desc": "3 consecutive heavy red bars with falling closes (distribution breakdown)."},
-    "CDLPIERCING": {"name": "Piercing Line", "type": "BULLISH", "desc": "Bullish thrust closing >50% into prior red candle body."},
-    "CDLDARKCLOUDCOVER": {"name": "Dark Cloud Cover", "type": "BEARISH", "desc": "Bearish thrust closing >50% into prior green candle body."},
-    "CDLHARAMI": {"name": "Harami (Inside Bar)", "type": "DYNAMIC", "desc": "Price coiled entirely inside prior range (compression)."},
-    "CDLHARAMICROSS": {"name": "Harami Cross", "type": "DYNAMIC", "desc": "Doji coiled inside prior range (high-volatility squeeze)."},
-    "CDLMARUBOZU": {"name": "Marubozu", "type": "DYNAMIC", "desc": "Full solid trend bar with negligible wicks (pure momentum)."},
-    "CDLINVERTEDHAMMER": {"name": "Inverted Hammer", "type": "BULLISH", "desc": "Bottom reversal attempt with upper wick."},
-    "CDLHIKKAKE": {"name": "Hikkake Pattern", "type": "DYNAMIC", "desc": "Trap/false breakout reversal pattern."},
-    "CDLMATCHINGLOW": {"name": "Matching Low (Tweezer Bottom)", "type": "BULLISH", "desc": "Two consecutive candles sharing exact support low."},
-    "CDLSTICKSANDWICH": {"name": "Stick Sandwich", "type": "BULLISH", "desc": "Support floor defense sandwich."},
-    "CDLTAKURI": {"name": "Takuri (Dragonfly with very long lower shadow)", "type": "BULLISH", "desc": "Severe lower shadow rejection at support floor."},
-    "CDLBELTHOLD": {"name": "Belt-Hold", "type": "DYNAMIC", "desc": "Strong opening thrust holding price extreme throughout session."},
-    "CDLBREAKAWAY": {"name": "Breakaway", "type": "DYNAMIC", "desc": "5-bar acceleration away from consolidation."},
-    "CDLSPINNINGTOP": {"name": "Spinning Top", "type": "NEUTRAL", "desc": "Small real body with balanced upper/lower shadows."},
-}
+
+def _run_talib_pattern_recognition(
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    times: List[str],
+    timeframe_label: str = "Daily",
+    lookback_bars: int = 5,
+) -> Dict[str, Any]:
+    """Execute all 61 official TA-Lib Pattern Recognition routines on OHLCV arrays."""
+    n_bars = len(closes)
+    if n_bars < 3:
+        return {"active_patterns": [], "pattern_history": []}
+
+    pattern_funcs = talib.get_function_groups().get("Pattern Recognition", [])
+    raw_results = {}
+
+    for func_name in pattern_funcs:
+        fn = getattr(talib, func_name, None)
+        if fn:
+            try:
+                res = fn(opens, highs, lows, closes)
+                if np.any(res != 0):
+                    raw_results[func_name] = res
+            except Exception:
+                pass
+
+    # Active patterns on the latest closed bar
+    active_patterns = []
+    for func_name, res_arr in raw_results.items():
+        score = int(res_arr[-1])
+        if score != 0:
+            name = func_name.replace("CDL", "").title()
+            bias = "🟢 Bullish" if score > 0 else "🔴 Bearish"
+            active_patterns.append(
+                f"{bias} {timeframe_label} {name} (TA-Lib Score: {score:+d}) on {times[-1]}"
+            )
+
+    # Trailing pattern history
+    pattern_history = []
+    lb = min(lookback_bars, n_bars)
+    for i in range(n_bars - lb, n_bars):
+        bar_date = times[i]
+        c = float(closes[i])
+        bar_signals = []
+        for func_name, res_arr in raw_results.items():
+            score = int(res_arr[i])
+            if score != 0:
+                name = func_name.replace("CDL", "").title()
+                bias = "🟢 Bullish" if score > 0 else "🔴 Bearish"
+                bar_signals.append({
+                    "pattern": func_name,
+                    "name": f"{bias} {name}",
+                    "talib_score": score,
+                })
+        if bar_signals:
+            pattern_history.append({
+                "date": bar_date,
+                "close": round(c, 2),
+                "patterns": bar_signals,
+            })
+
+    return {
+        "active_patterns": active_patterns,
+        "pattern_history": pattern_history,
+    }
+
+
+def _run_talib_htf_indicators(
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    timeframe_label: str = "Weekly",
+) -> Dict[str, Any]:
+    """Execute standardized TA-Lib moving averages and volatility bands on HTF arrays."""
+    n_bars = len(closes)
+    if n_bars < 3:
+        return {}
+
+    indicators = {}
+    if timeframe_label == "Weekly":
+        if n_bars >= 10:
+            w_ema10 = talib.EMA(closes, timeperiod=10)
+            if not np.isnan(w_ema10[-1]):
+                indicators["Weekly EMA 10"] = round(float(w_ema10[-1]), 2)
+        if n_bars >= 20:
+            w_ema20 = talib.EMA(closes, timeperiod=20)
+            if not np.isnan(w_ema20[-1]):
+                indicators["Weekly EMA 20"] = round(float(w_ema20[-1]), 2)
+        if n_bars >= 50:
+            w_sma50 = talib.SMA(closes, timeperiod=50)
+            if not np.isnan(w_sma50[-1]):
+                indicators["Weekly SMA 50"] = round(float(w_sma50[-1]), 2)
+        if n_bars >= 15:
+            w_atr14 = talib.ATR(highs, lows, closes, timeperiod=14)
+            if not np.isnan(w_atr14[-1]):
+                indicators["Weekly ATR 14"] = round(float(w_atr14[-1]), 2)
+            w_rsi14 = talib.RSI(closes, timeperiod=14)
+            if not np.isnan(w_rsi14[-1]):
+                indicators["Weekly RSI 14"] = round(float(w_rsi14[-1]), 2)
+    elif timeframe_label == "Monthly":
+        if n_bars >= 3:
+            m_ema3 = talib.EMA(closes, timeperiod=3)
+            if not np.isnan(m_ema3[-1]):
+                indicators["Monthly EMA 3"] = round(float(m_ema3[-1]), 2)
+        if n_bars >= 6:
+            m_ema6 = talib.EMA(closes, timeperiod=6)
+            if not np.isnan(m_ema6[-1]):
+                indicators["Monthly EMA 6"] = round(float(m_ema6[-1]), 2)
+        if n_bars >= 10:
+            m_ema10 = talib.EMA(closes, timeperiod=10)
+            if not np.isnan(m_ema10[-1]):
+                indicators["Monthly EMA 10"] = round(float(m_ema10[-1]), 2)
+        if n_bars >= 6:
+            m_atr6 = talib.ATR(highs, lows, closes, timeperiod=6)
+            if not np.isnan(m_atr6[-1]):
+                indicators["Monthly ATR 6"] = round(float(m_atr6[-1]), 2)
+            m_rsi6 = talib.RSI(closes, timeperiod=6)
+            if not np.isnan(m_rsi6[-1]):
+                indicators["Monthly RSI 6"] = round(float(m_rsi6[-1]), 2)
+
+    return indicators
 
 
 class CandlestickPatternsPlugin(BaseAnalyticsPlugin):
-    """Detects industry-standard candlestick patterns using official TA-Lib C-routines."""
+    """Detects multi-timeframe candlestick and price patterns using 100% official TA-Lib routines."""
 
     @property
     def name(self) -> str:
@@ -55,8 +152,8 @@ class CandlestickPatternsPlugin(BaseAnalyticsPlugin):
     @property
     def description(self) -> str:
         return (
-            "Detects validated, industry-standard TA-Lib candlestick patterns: "
-            "Hammers, Pin Bars, Engulfing, Morning/Evening Stars, Dojis, Crows/Soldiers, and Gap Retests."
+            "Multi-timeframe candlestick pattern recognition powered strictly by the official TA-Lib library: "
+            "Evaluates all 61 standard TA-Lib pattern routines across Daily, Weekly, and Monthly resampled series."
         )
 
     def run(self, ticker: str, df: pd.DataFrame, dw: Dict[str, Any]) -> Dict[str, Any]:
@@ -71,138 +168,89 @@ class CandlestickPatternsPlugin(BaseAnalyticsPlugin):
         h_col = cols.get("high", "high")
         l_col = cols.get("low", "low")
         c_col = cols.get("close", "close")
-        t_col = cols.get("time", "time")
+        v_col = cols.get("volume", "volume")
+        t_col = cols.get("time", cols.get("date", "time"))
 
-        df_sorted = df.copy().reset_index(drop=True)
-        n_bars = len(df_sorted)
+        df_sorted = df.copy()
+        if t_col in df_sorted:
+            df_sorted["dt"] = pd.to_datetime(df_sorted[t_col])
+            df_sorted = df_sorted.sort_values("dt").set_index("dt")
 
-        opens = df_sorted[o_col].values.astype(float)
-        highs = df_sorted[h_col].values.astype(float)
-        lows = df_sorted[l_col].values.astype(float)
-        closes = df_sorted[c_col].values.astype(float)
-        times = df_sorted[t_col].values if t_col in df_sorted else [f"Bar-{i}" for i in range(n_bars)]
+        # 1. Daily TA-Lib Pattern Recognition
+        d_opens = df_sorted[o_col].values.astype(float)
+        d_highs = df_sorted[h_col].values.astype(float)
+        d_lows = df_sorted[l_col].values.astype(float)
+        d_closes = df_sorted[c_col].values.astype(float)
+        d_times = [str(x)[:10] for x in df_sorted.index] if isinstance(df_sorted.index, pd.DatetimeIndex) else [f"D-{i}" for i in range(len(d_closes))]
 
-        # Run all official TA-Lib Pattern Recognition Functions
-        talib_funcs = talib.get_function_groups().get("Pattern Recognition", [])
-        raw_talib_results = {}
+        daily_res = _run_talib_pattern_recognition(d_opens, d_highs, d_lows, d_closes, d_times, "Daily")
 
-        for func_name in talib_funcs:
-            fn = getattr(talib, func_name, None)
-            if fn:
-                try:
-                    res = fn(opens, highs, lows, closes)
-                    if np.any(res != 0):
-                        raw_talib_results[func_name] = res
-                except Exception:
-                    pass
+        # 2. Resample to Weekly ('W-FRI') & Run TA-Lib
+        agg_dict = {c_col: "last", o_col: "first", h_col: "max", l_col: "min"}
+        if v_col in df_sorted:
+            agg_dict[v_col] = "sum"
 
-        # Build trailing 10-bar pattern timeline
-        lookback = min(10, n_bars)
-        pattern_history: List[Dict[str, Any]] = []
+        weekly_res = {"active_patterns": [], "pattern_history": []}
+        weekly_indicators = {}
+        try:
+            w_df = df_sorted.resample("W-FRI").agg(agg_dict).dropna()
+            w_opens = w_df[o_col].values.astype(float)
+            w_highs = w_df[h_col].values.astype(float)
+            w_lows = w_df[l_col].values.astype(float)
+            w_closes = w_df[c_col].values.astype(float)
+            w_times = [str(x)[:10] for x in w_df.index]
 
-        for i in range(n_bars - lookback, n_bars):
-            bar_date = str(times[i])
-            c = float(closes[i])
-            l = float(lows[i])
-            h = float(highs[i])
-            o = float(opens[i])
-            total_range = max(h - l, 0.0001)
-            lower_wick_pct = round(((min(o, c) - l) / total_range) * 100, 1)
-            upper_wick_pct = round(((h - max(o, c)) / total_range) * 100, 1)
+            weekly_res = _run_talib_pattern_recognition(w_opens, w_highs, w_lows, w_closes, w_times, "Weekly")
+            weekly_indicators = _run_talib_htf_indicators(w_highs, w_lows, w_closes, "Weekly")
+        except Exception as e_w:
+            logger.debug(f"[{ticker}] Weekly TA-Lib error: {e_w}")
 
-            bar_patterns = []
+        # 3. Resample to Monthly ('ME' / 'M') & Run TA-Lib
+        monthly_res = {"active_patterns": [], "pattern_history": []}
+        monthly_indicators = {}
+        try:
+            try:
+                m_df = df_sorted.resample("ME").agg(agg_dict).dropna()
+            except ValueError:
+                m_df = df_sorted.resample("M").agg(agg_dict).dropna()
+            m_opens = m_df[o_col].values.astype(float)
+            m_highs = m_df[h_col].values.astype(float)
+            m_lows = m_df[l_col].values.astype(float)
+            m_closes = m_df[c_col].values.astype(float)
+            m_times = [str(x)[:10] for x in m_df.index]
 
-            for fn_name, res_arr in raw_talib_results.items():
-                val = int(res_arr[i])
-                if val != 0:
-                    meta = TALIB_PATTERN_METADATA.get(fn_name, {
-                        "name": fn_name.replace("CDL", "").title(),
-                        "type": "BULLISH" if val > 0 else "BEARISH",
-                        "desc": "Standard TA-Lib pattern signal.",
-                    })
-                    
-                    is_bull = val > 0 or (val == 0 and meta["type"] == "BULLISH")
-                    icon = "🟢" if is_bull else ("🔴" if val < 0 else "🟡")
-                    sig_label = f"{icon} {meta['name']}"
-                    
-                    desc = meta["desc"]
-                    if "Hammer" in meta["name"] or "Takuri" in meta["name"]:
-                        desc = f"Rejected low of ${l:.2f} with {lower_wick_pct}% lower wick (TA-Lib: {val:+d})."
-                    elif "Shooting Star" in meta["name"]:
-                        desc = f"Rejected high of ${h:.2f} with {upper_wick_pct}% upper wick (TA-Lib: {val:+d})."
+            monthly_res = _run_talib_pattern_recognition(m_opens, m_highs, m_lows, m_closes, m_times, "Monthly")
+            monthly_indicators = _run_talib_htf_indicators(m_highs, m_lows, m_closes, "Monthly")
+        except Exception as e_m:
+            logger.debug(f"[{ticker}] Monthly TA-Lib error: {e_m}")
 
-                    bar_patterns.append({
-                        "pattern": fn_name,
-                        "talib_score": val,
-                        "signal": sig_label,
-                        "description": desc,
-                        "rejected_level": round(l if is_bull else h, 2),
-                    })
+        # Consolidate standard TA-Lib signals
+        all_signals = []
+        if daily_res["active_patterns"]:
+            all_signals.extend(daily_res["active_patterns"])
+        if weekly_res["active_patterns"]:
+            all_signals.extend(weekly_res["active_patterns"])
+        if monthly_res["active_patterns"]:
+            all_signals.extend(monthly_res["active_patterns"])
 
-            # Also check Inside Day / Compression if not already covered
-            if i > 0 and float(highs[i]) < float(highs[i-1]) and float(lows[i]) > float(lows[i-1]):
-                if not any(p["pattern"] in ("CDLHARAMI", "CDLHARAMICROSS") for p in bar_patterns):
-                    bar_patterns.append({
-                        "pattern": "INSIDE_DAY",
-                        "talib_score": 50,
-                        "signal": "🟡 Inside Day Compression",
-                        "description": f"Price coiled entirely inside prior range (${lows[i-1]:.2f} - ${highs[i-1]:.2f}).",
-                        "rejected_level": round(l, 2),
-                    })
-
-            if bar_patterns:
-                pattern_history.append({
-                    "date": bar_date,
-                    "close": round(c, 2),
-                    "patterns": bar_patterns,
-                })
-
-        # Gap-Fill & Retest Opportunities (Trailing 25 bars)
-        gap_retest_info = None
-        curr_l = float(lows[-1])
-        curr_h = float(highs[-1])
-
-        for g_idx in range(max(0, n_bars - 25), n_bars - 1):
-            prior_close = float(closes[g_idx])
-            next_open = float(opens[g_idx + 1])
-            gap_pct = ((next_open - prior_close) / prior_close) * 100.0
-
-            if gap_pct >= 2.5:
-                gap_top = max(prior_close, next_open, float(lows[g_idx + 1]))
-                gap_bottom = min(prior_close, float(highs[g_idx]))
-                gap_date = str(times[g_idx + 1])
-
-                if curr_l <= gap_top * 1.01 and curr_h >= gap_bottom * 0.99:
-                    gap_retest_info = {
-                        "gap_type": "BULLISH_EARNINGS_OR_CATALYST_GAP",
-                        "gap_date": gap_date,
-                        "gap_window": f"${gap_bottom:.2f} - ${gap_top:.2f}",
-                        "status": "🎯 ACTIVE_GAP_RETEST_IN_PROGRESS",
-                        "description": (
-                            f"Price is currently retesting the {gap_date} gap floor (${gap_bottom:.2f} - ${gap_top:.2f}) "
-                            f"after an earlier expansion to ${np.max(highs[g_idx+1:]):.2f}."
-                        ),
-                    }
-                    break
-
-        active_patterns_list = []
-        if pattern_history and pattern_history[-1]["date"] == str(times[-1]):
-            for p in pattern_history[-1]["patterns"]:
-                active_patterns_list.append(f"{p['signal']}: {p['description']}")
-
-        if gap_retest_info:
-            active_patterns_list.append(f"🎯 Gap Retest: {gap_retest_info['description']}")
+        htf_ind_str = " | ".join(f"{k}: ${v}" for k, v in {**weekly_indicators, **monthly_indicators}.items())
 
         summary_text = (
-            " | ".join(active_patterns_list)
-            if active_patterns_list
-            else "No prominent reversal or compression candlestick pattern active on current bar."
+            " | ".join(all_signals)
+            if all_signals
+            else "No active TA-Lib reversal pattern triggered on current bar."
         )
 
         return {
-            "active_candlestick_patterns": active_patterns_list,
+            "active_candlestick_patterns": all_signals,
             "candlestick_summary": summary_text,
-            "gap_retest_analysis": gap_retest_info,
-            "recent_pattern_history": pattern_history[-4:] if pattern_history else [],
-            "talib_engine": "TA-Lib C-Library v0.7.1",
+            "daily_patterns": daily_res["active_patterns"],
+            "weekly_patterns": weekly_res["active_patterns"],
+            "monthly_patterns": monthly_res["active_patterns"],
+            "htf_indicators": {**weekly_indicators, **monthly_indicators},
+            "htf_indicator_summary": htf_ind_str,
+            "recent_daily_pattern_history": daily_res["pattern_history"],
+            "recent_weekly_pattern_history": weekly_res["pattern_history"],
+            "recent_monthly_pattern_history": monthly_res["pattern_history"],
+            "talib_engine": f"Official TA-Lib C-Library v{talib.__version__} (61 Pattern Functions)",
         }

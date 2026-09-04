@@ -293,6 +293,7 @@ Identify which pillar carries the conviction:
 *   **Why this Strike & Expiry:** [Cite GEX Put/Call Walls, Volume Heatmap clusters, delta/gamma, and catalyst clearance]
 *   **Touch Probability:** [Measured breach odds at selected strike from 21b Expected Move framework]
 *   **Strategy Finder Selection:** [Quote the exact formula and metrics from the `scrape_tradingview_options_finder` tool output]
+*   **Schwab Institutional Flow Confirmation:** [Quote unusual block sweeps, Vol/OI spikes (>1.5× OI & Vol ≥ 500), and Call/Put flow bias from `fetch_schwab_options_flow`]
 
 ### Plan C: Conditional Stalking Trigger (If Waiting for Confirmation)
 *   **Trigger Level:** [e.g. "Buy Stop order on daily close above $X (MA20/50 reclaim or Darvas breakout)"]

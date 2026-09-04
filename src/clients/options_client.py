@@ -429,6 +429,30 @@ def _alpaca_quote(ticker: str) -> Optional[str]:
         return None
 
 
+def _tastytrade_quote(ticker: str) -> Optional[str]:
+    """Real-time quote via Tastytrade DXLink stream (fallback)."""
+    try:
+        from src.clients.tastytrade_client import TastytradeClient
+        tt_client = TastytradeClient()
+        if os.path.exists(tt_client.token_path) and ticker not in ["SPX", "VIX", "COMP"]:
+            tt_quote = tt_client.get_realtime_quote(ticker)
+            if tt_quote and tt_quote.get("price"):
+                p = tt_quote["price"]
+                bp = tt_quote.get("bid")
+                ap = tt_quote.get("ask")
+                lines = [
+                    f"REAL-TIME QUOTE for {ticker} (source: Tastytrade DXLink):",
+                    f"- Last: {p:.2f}",
+                    f"- Bid/Ask: {bp} / {ap}",
+                    f"- Day Range: {tt_quote.get('day_low', 'n/a')} - {tt_quote.get('day_high', 'n/a')}",
+                    f"- Volume: {tt_quote.get('volume', 'n/a')}",
+                ]
+                return "\n".join(lines)
+    except Exception as e:
+        logger.debug(f"[{ticker}] _tastytrade_quote skipped or failed: {e}")
+    return None
+
+
 def _yfinance_quote(ticker: str) -> Optional[str]:
     """Real-time quote via yfinance (fallback)."""
     try:
@@ -463,17 +487,25 @@ def _yfinance_quote(ticker: str) -> Optional[str]:
 
 
 def get_realtime_quote(ticker: str) -> Optional[str]:
-    """Return a concise REAL-TIME quote + range block. Primary source: Alpaca;
-    falls back to yfinance. Used by the get_realtime_quote LLM tool so Minimax
-    can pull live prices. Falls back to the pipeline's active ticker when the
-    model omits the arg."""
+    """Return a concise REAL-TIME quote + range block.
+    Cascades across Alpaca -> Tastytrade DXLink -> yfinance.
+    Used by LLM tools and deep research pipeline for live pricing."""
     ticker = ticker or _ACTIVE_TICKER
     if not ticker:
         logger.warning("get_realtime_quote called without a ticker and no active ticker set.")
         return None
+    
+    # 1. Try Alpaca Realtime Quote
     result = _alpaca_quote(ticker)
     if result:
         return result
+        
+    # 2. Try Tastytrade Realtime Quote
+    tt_result = _tastytrade_quote(ticker)
+    if tt_result:
+        return tt_result
+
+    # 3. Fallback to yfinance
     logger.info(f"[{ticker}] Falling back to yfinance for realtime quote.")
     return _yfinance_quote(ticker)
 
@@ -483,11 +515,11 @@ def fetch_options_chain_tool(
     direction: str = "CALL",
     strike_low: float = None,
     strike_high: float = None,
-    min_dte: int = 30,
-    max_dte: int = 365,
+    min_dte: int = 14,
+    max_dte: int = 1200,
 ) -> Optional[str]:
     """LLM-facing wrapper around fetch_targeted_chain. Derives a strike range from
-    the live underlying spot (via Alpaca) when the model does not supply one.
+    the live underlying spot (via Alpaca, Tastytrade, or yfinance) when the model does not supply one.
     Falls back to the pipeline's active ticker when the model omits the arg."""
     ticker = ticker or _ACTIVE_TICKER
     if not ticker:
@@ -495,11 +527,18 @@ def fetch_options_chain_tool(
         return None
     if strike_low is None or strike_high is None:
         spot = _alpaca_underlying_last(ticker)
+        if not spot:
+            try:
+                import yfinance as yf
+                t = yf.Ticker(ticker)
+                spot = t.fast_info.get("lastPrice")
+            except Exception:
+                spot = None
         if spot:
             if strike_low is None:
-                strike_low = round(spot * 0.90, 2)
+                strike_low = round(spot * 0.70, 2)
             if strike_high is None:
-                strike_high = round(spot * 1.15, 2)
+                strike_high = round(spot * 1.35, 2)
     intent = {
         "direction": direction,
         "strike_low": strike_low if strike_low is not None else 0.0,
