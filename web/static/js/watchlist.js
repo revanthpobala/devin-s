@@ -3,12 +3,19 @@
  */
 window.AppWatchlist = {
   _allTargets: [],
-  _activeFilter: 'ALL',
+  _activeFilter: 'ACTIONABLE',
+  _auditData: null,
+  _activeAuditTab: 'ALL',
+  _auditSearchQuery: '',
   _searchQuery: '',
   _radarSearchQuery: '',
   _sortCol: 'date',
   _sortAsc: false,
   _viewMode: 'table', // 'table' | 'cards'
+  _groupBy: 'none',   // 'none' | 'date' | 'ticker' | 'status'
+  _pageSize: 10,      // 10 | 25 | 50 | 'all'
+  _currentPage: 1,
+  _collapsedGroups: new Set(),
   _isPolling: false,
   _activeOpenCharts: new Set(),
   _activeSnapshotToggles: new Set(),
@@ -35,6 +42,10 @@ window.AppWatchlist = {
       const isUnchanged = (newJson === this._lastTargetsJson);
       this._lastTargetsJson = newJson;
       this._allTargets = newTargets;
+      this._perfData = data ? data.performance : null;
+
+      // Sync audit summary badge in toolbar
+      this.loadAuditSummaryOnly();
 
       // If data has not changed at all, skip full DOM rebuilds entirely
       if (isUnchanged) return;
@@ -137,6 +148,7 @@ window.AppWatchlist = {
 
   setFilterTab(tab) {
     this._activeFilter = tab;
+    this._currentPage = 1;
     document.querySelectorAll('.tab-pill-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.tab === tab);
     });
@@ -145,6 +157,7 @@ window.AppWatchlist = {
 
   setSearchQuery(query) {
     this._searchQuery = (query || '').trim().toLowerCase();
+    this._currentPage = 1;
     this.render();
   },
 
@@ -155,6 +168,7 @@ window.AppWatchlist = {
       this._sortCol = col;
       this._sortAsc = true;
     }
+    this._currentPage = 1;
     this.render();
   },
 
@@ -167,12 +181,108 @@ window.AppWatchlist = {
     this.render();
   },
 
+  setGroupBy(mode) {
+    this._groupBy = mode || 'none';
+    ['none', 'date', 'ticker', 'status'].forEach(m => {
+      const btn = document.getElementById(`grp-btn-${m}`);
+      if (btn) btn.classList.toggle('active', m === this._groupBy);
+    });
+
+    const toggleBtn = document.getElementById('btn-toggle-all-groups');
+    if (toggleBtn) {
+      toggleBtn.style.display = (this._groupBy === 'none') ? 'none' : 'inline-flex';
+      toggleBtn.innerHTML = '▼ Collapse All';
+    }
+
+    this._collapsedGroups.clear();
+    this._currentPage = 1;
+    this.render();
+  },
+
+  setPageSize(size) {
+    this._pageSize = (size === 'all') ? 'all' : (parseInt(size, 10) || 10);
+    this._currentPage = 1;
+    const select = document.getElementById('select-watchlist-pagesize');
+    if (select && select.value !== String(size)) {
+      select.value = String(size);
+    }
+    this.render();
+  },
+
+  setPage(page) {
+    this._currentPage = page;
+    this.render();
+    const c = document.getElementById('watchlist-content-container');
+    if (c) c.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  },
+
+  toggleGroup(groupId) {
+    if (this._collapsedGroups.has(groupId)) {
+      this._collapsedGroups.delete(groupId);
+    } else {
+      this._collapsedGroups.add(groupId);
+    }
+    this.render();
+  },
+
+  toggleAllGroups() {
+    const groupIds = this._getCurrentGroupIds();
+    const btn = document.getElementById('btn-toggle-all-groups');
+    const allCollapsed = groupIds.length > 0 && groupIds.every(id => this._collapsedGroups.has(id));
+    if (allCollapsed) {
+      this._collapsedGroups.clear();
+      if (btn) btn.innerHTML = '▼ Collapse All';
+    } else {
+      groupIds.forEach(id => this._collapsedGroups.add(id));
+      if (btn) btn.innerHTML = '▶ Expand All';
+    }
+    this.render();
+  },
+
+  _getCurrentGroupIds() {
+    const targets = this.getFilteredTargets();
+    const ids = [];
+    if (this._groupBy === 'date') {
+      const seen = new Set();
+      targets.forEach(t => {
+        const dt = t.date || 'Undated';
+        if (!seen.has(dt)) { seen.add(dt); ids.push(`date-${dt}`); }
+      });
+    } else if (this._groupBy === 'ticker') {
+      const seen = new Set();
+      targets.forEach(t => {
+        const sym = (t.ticker || '').toUpperCase();
+        if (sym && !seen.has(sym)) { seen.add(sym); ids.push(`ticker-${sym}`); }
+      });
+    } else if (this._groupBy === 'status') {
+      const seen = new Set();
+      targets.forEach(t => {
+        const st = (t.status || 'STALKING').toUpperCase();
+        if (!seen.has(st)) { seen.add(st); ids.push(`status-${st}`); }
+      });
+    }
+    return ids;
+  },
+
   getFilteredTargets() {
     let list = this._allTargets || [];
 
     // 1. Status Filter Tab
-    if (this._activeFilter === 'IN_TRADE') {
+    if (this._activeFilter === 'ACTIONABLE') {
+      list = list.filter(t => {
+        const st = (t.status || '').toUpperCase();
+        // Exclude resolved, stopped, or runaway setups from Actionable/Near Zone
+        if (['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY'].includes(st)) {
+          return false;
+        }
+        const dist = t.distance_to_entry_pct;
+        const isNear = dist !== null && dist !== undefined && Math.abs(dist) <= 1.5;
+        return st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable);
+      });
+    } else if (this._activeFilter === 'IN_TRADE') {
       list = list.filter(t => (t.status || '').toUpperCase() === 'IN_TRADE');
+    } else if (this._activeFilter === 'TARGET_HIT') {
+      list = list.filter(t => ['TARGET_HIT', 'COMPLETED'].includes((t.status || '').toUpperCase()));
     } else if (this._activeFilter !== 'ALL') {
       list = list.filter(t => (t.status || '').toUpperCase() === this._activeFilter);
     }
@@ -210,10 +320,20 @@ window.AppWatchlist = {
   updateFilterCounts() {
     const all = this._allTargets || [];
     const countAll = all.length;
+    const countActionable = all.filter(t => {
+      const st = (t.status || '').toUpperCase();
+      if (['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY'].includes(st)) {
+        return false;
+      }
+      const dist = t.distance_to_entry_pct;
+      const isNear = dist !== null && dist !== undefined && Math.abs(dist) <= 1.5;
+      return st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable);
+    }).length;
     const countInZone = all.filter(t => (t.status || '').toUpperCase() === 'IN_ZONE').length;
     const countStalking = all.filter(t => (t.status || '').toUpperCase() === 'STALKING').length;
     const countInTrade = all.filter(t => (t.status || '').toUpperCase() === 'IN_TRADE').length;
-    const countInvalid = all.filter(t => (t.status || '').toUpperCase() === 'INVALIDATED').length;
+    const countTargetHit = all.filter(t => ['TARGET_HIT', 'COMPLETED'].includes((t.status || '').toUpperCase())).length;
+    const countInvalid = all.filter(t => ['INVALIDATED', 'STOP_BREACHED'].includes((t.status || '').toUpperCase())).length;
 
     const setBadge = (id, count) => {
       const el = document.getElementById(id);
@@ -221,9 +341,11 @@ window.AppWatchlist = {
     };
 
     setBadge('count-tab-all', countAll);
+    setBadge('count-tab-actionable', countActionable);
     setBadge('count-tab-in-zone', countInZone);
     setBadge('count-tab-stalking', countStalking);
     setBadge('count-tab-in-trade', countInTrade);
+    setBadge('count-tab-target-hit', countTargetHit);
     setBadge('count-tab-invalidated', countInvalid);
     setBadge('rf-count-intrade', countInTrade);
 
@@ -231,6 +353,117 @@ window.AppWatchlist = {
     if (mainCount) {
       mainCount.innerText = `${countAll} Targets`;
     }
+
+    this.renderPerformanceStrip(all);
+
+    const filtered = this.getFilteredTargets();
+    const subBadge = document.getElementById('watchlist-pagination-badge');
+    if (subBadge) {
+      if (filtered.length === 0) {
+        subBadge.innerText = '0 Targets';
+      } else if (this._groupBy === 'none') {
+        if (this._pageSize === 'all' || filtered.length <= this._pageSize) {
+          subBadge.innerText = `Showing ${filtered.length} Targets`;
+        } else {
+          const startIdx = (this._currentPage - 1) * this._pageSize + 1;
+          const endIdx = Math.min(this._currentPage * this._pageSize, filtered.length);
+          subBadge.innerText = `Showing ${startIdx}–${endIdx} of ${filtered.length}`;
+        }
+      } else if (this._groupBy === 'date') {
+        const uniqueDates = new Set(filtered.map(t => t.date || 'Undated')).size;
+        subBadge.innerText = `${filtered.length} Targets in ${uniqueDates} Dates`;
+      } else if (this._groupBy === 'ticker') {
+        const uniqueTickers = new Set(filtered.map(t => (t.ticker || '').toUpperCase())).size;
+        subBadge.innerText = `${filtered.length} Targets in ${uniqueTickers} Tickers`;
+      } else if (this._groupBy === 'status') {
+        const uniqueStatuses = new Set(filtered.map(t => (t.status || 'STALKING').toUpperCase())).size;
+        subBadge.innerText = `${filtered.length} Targets in ${uniqueStatuses} Categories`;
+      }
+    }
+  },
+
+  renderPerformanceStrip(all) {
+    const strip = document.getElementById('watchlist-performance-strip');
+    if (!strip) return;
+
+    let wonDollars = 0;
+    let lostDollars = 0;
+    let activeDollars = 0;
+    let wonCount = 0;
+    let lostCount = 0;
+    let actCount = 0;
+
+    all.forEach(t => {
+      const st = (t.status || 'STALKING').toUpperCase();
+      const dist = t.distance_to_entry_pct;
+      const isNear = dist !== null && dist !== undefined && Math.abs(dist) <= 1.0;
+      if (t.is_actionable || st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || t.options_actionable) {
+        actCount++;
+      }
+
+      const pnl$ = Number(t.trade_dollar_pnl || 0);
+
+      if (st === 'TARGET_HIT' || st === 'COMPLETED') {
+        wonCount++;
+        wonDollars += pnl$;
+      } else if (st === 'INVALIDATED' || st === 'STOP_BREACHED' || st === 'STOPPED') {
+        lostCount++;
+        lostDollars += pnl$;
+      } else if (st === 'IN_TRADE' || st === 'IN_ZONE') {
+        activeDollars += pnl$;
+      }
+    });
+
+    const totalResolved = wonCount + lostCount;
+    const winRate = totalResolved > 0 ? ((wonCount / totalResolved) * 100).toFixed(1) : '0.0';
+    const avgWin$ = wonCount > 0 ? (wonDollars / wonCount).toFixed(2) : '0.00';
+    const avgLoss$ = lostCount > 0 ? (lostDollars / lostCount).toFixed(2) : '0.00';
+    const netDollars = (wonDollars + lostDollars + activeDollars).toFixed(2);
+    const netSign = Number(netDollars) >= 0 ? '+' : '';
+    const netColor = Number(netDollars) >= 0 ? 'var(--emerald-light, #10b981)' : 'var(--rose-light, #f43f5e)';
+    const profitFactor = Math.abs(lostDollars) > 0 ? (Math.abs(wonDollars) / Math.abs(lostDollars)).toFixed(2) : '99.9';
+
+    strip.innerHTML = `
+      <div class="perf-kpi-card win-rate" style="cursor:pointer;" onclick="AppWatchlist.setFilterTab('TARGET_HIT')" title="Click to view all winning trades">
+        <span class="perf-kpi-title">🏆 Resolved Win Rate</span>
+        <div class="perf-kpi-val" style="color:#10b981;">
+          ${winRate}%
+          <span class="perf-kpi-sub">(${wonCount} Won / ${lostCount} Stopped)</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card avg-win">
+        <span class="perf-kpi-title">📈 Avg Win (Suggested Trades)</span>
+        <div class="perf-kpi-val" style="color:#34d399;">
+          +$${Number(avgWin$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          <span class="perf-kpi-sub">${wonCount} Spreads Hit</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card avg-loss" style="cursor:pointer;" onclick="AppWatchlist.setFilterTab('INVALIDATED')" title="Click to view all stopped trades">
+        <span class="perf-kpi-title">📉 Avg Loss (Defined Risk)</span>
+        <div class="perf-kpi-val" style="color:#f87171;">
+          -$${Math.abs(Number(avgLoss$)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          <span class="perf-kpi-sub">${lostCount} Stopped</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card net-alpha">
+        <span class="perf-kpi-title">💰 Net Profit (Suggested Trades)</span>
+        <div class="perf-kpi-val" style="color:${netColor};">
+          ${netSign}$${Math.abs(Number(netDollars)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          <span class="perf-kpi-sub">(${profitFactor} Profit Factor)</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card actionable" style="cursor:pointer;" onclick="AppWatchlist.setFilterTab('ACTIONABLE')" title="Click to filter to immediately Actionable Now setups">
+        <span class="perf-kpi-title">⚡ Actionable Now</span>
+        <div class="perf-kpi-val" style="color:#f59e0b;">
+          ${actCount} Setups
+          <span class="perf-kpi-sub">In Zone / In Trade</span>
+        </div>
+      </div>
+    `;
   },
 
   render() {
@@ -256,30 +489,398 @@ window.AppWatchlist = {
     }
   },
 
-  renderTable(container, targets) {
+  renderTableHeader() {
     const sortIndicator = (col) => {
       if (this._sortCol !== col) return '<span style="opacity:0.3; font-size:10px;"> ⇅</span>';
       return this._sortAsc ? ' ▲' : ' ▼';
     };
 
-    const rowsHtml = targets.map(t => {
+    return `
+      <thead>
+        <tr>
+          <th onclick="AppWatchlist.setSort('ticker')">TICKER ${sortIndicator('ticker')}</th>
+          <th onclick="AppWatchlist.setSort('date')">DATE ${sortIndicator('date')}</th>
+          <th onclick="AppWatchlist.setSort('last_price')">LIVE SPOT ${sortIndicator('last_price')}</th>
+          <th onclick="AppWatchlist.setSort('trade_dollar_pnl')">SUGGESTED TRADE / P&L ($$) ${sortIndicator('trade_dollar_pnl')}</th>
+          <th>ENTRY ZONE</th>
+          <th onclick="AppWatchlist.setSort('distance_to_entry_pct')">DIST % ${sortIndicator('distance_to_entry_pct')}</th>
+          <th onclick="AppWatchlist.setSort('tactical_stop')">TACTICAL STOP ${sortIndicator('tactical_stop')}</th>
+          <th>TARGET 1 / 2</th>
+          <th onclick="AppWatchlist.setSort('status')">STATUS ${sortIndicator('status')}</th>
+          <th>OPTIONS STRUCTURE</th>
+          <th>ACTIONS</th>
+        </tr>
+      </thead>
+    `;
+  },
+
+  renderTargetRow(t) {
+    const sym = (t.ticker || '').toUpperCase();
+    const spot = Number(t.last_price || 0);
+    const stop = Number(t.tactical_stop || 0);
+    const entryLow = Number(t.entry_zone_low || 0);
+    const entryHigh = Number(t.entry_zone_high || 0);
+    const entryMid = Number(t.entry_midpoint || ((entryLow + entryHigh) / 2) || spot);
+    const t1 = Number(t.target_1 || 0);
+    const t2 = Number(t.target_2 || 0);
+
+    const isIdeasOpen = Boolean(this._activeTradeIdeasToggles && this._activeTradeIdeasToggles.has(sym));
+    const isOpenPos = false;
+    const posQty = 1;
+    const posAvg = Number(t.entry_price || spot);
+
+    const dist = t.distance_to_entry_pct;
+    let distBadgeClass = 'far';
+    let distText = 'N/A';
+    if (dist !== null && dist !== undefined) {
+      const absDist = Math.abs(dist);
+      if (absDist <= 1.0) distBadgeClass = 'near';
+      else if (absDist <= 3.0) distBadgeClass = 'moderate';
+      else distBadgeClass = 'far';
+      distText = `${dist >= 0 ? '+' : ''}${Number(dist).toFixed(2)}%`;
+    }
+    if ((t.status || '').toUpperCase() === 'INVALIDATED' || (t.status || '').toUpperCase() === 'STOP_BREACHED') {
+      distBadgeClass = 'invalid';
+    }
+
+    const statusUpper = (t.status || 'STALKING').toUpperCase();
+    let statusBadgeClass = 'stalking';
+    let statusIcon = '⏳';
+    if (statusUpper === 'IN_ZONE') { statusBadgeClass = 'in_zone'; statusIcon = '🎯'; }
+    else if (statusUpper === 'IN_TRADE') { statusBadgeClass = 'in_trade'; statusIcon = '🎯'; }
+    else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED') { statusBadgeClass = 'invalidated'; statusIcon = '⚠️'; }
+    else if (statusUpper === 'TARGET_HIT' || statusUpper === 'COMPLETED') { statusBadgeClass = 'target_hit'; statusIcon = '🏁'; }
+    else if (statusUpper === 'MISSED_RUNAWAY') { statusBadgeClass = 'missed_runaway'; statusIcon = '🏃'; }
+
+    // Dynamic Outcome / Profit & Loss Badge by Suggested Trades
+    let pnlHtml = '-';
+    const trade$ = Number(t.trade_dollar_pnl || 0);
+    const rocVal = Number(t.trade_roc_pct || 0);
+    const tradeLabel = t.trade_label || (t.trade_type === 'OPTIONS' ? 'Options Spread' : 'Shares');
+
+    if (statusUpper === 'TARGET_HIT' || statusUpper === 'COMPLETED') {
+      const win$Str = Math.abs(trade$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      pnlHtml = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <span class="pill" style="color:#10b981; background:rgba(16,185,129,0.18); border:1px solid #10b981; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Realized win on suggested trade ${tradeLabel}">
+            +$${win$Str} WIN 🏆
+          </span>
+          <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+            ${tradeLabel} (+${rocVal.toFixed(0)}% ROC)
+          </span>
+        </div>
+      `;
+    } else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED' || statusUpper === 'STOPPED') {
+      const loss$Str = Math.abs(trade$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      pnlHtml = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <span class="pill" style="color:#f43f5e; background:rgba(244,63,94,0.18); border:1px solid #f43f5e; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Defined stop loss on suggested trade ${tradeLabel}">
+            -$${loss$Str} STOP 🛑
+          </span>
+          <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+            ${tradeLabel} (-100% Risk)
+          </span>
+        </div>
+      `;
+    } else if ((statusUpper === 'IN_TRADE' || statusUpper === 'IN_ZONE') && spot > 0) {
+      const pnlSign = trade$ >= 0 ? '+' : '-';
+      const pnlColor = trade$ >= 0 ? '#10b981' : '#f43f5e';
+      const pnlBg = trade$ >= 0 ? 'rgba(16,185,129,0.14)' : 'rgba(244,63,94,0.14)';
+      const pnlBorder = trade$ >= 0 ? 'rgba(16,185,129,0.45)' : 'rgba(244,63,94,0.45)';
+      const live$Str = Math.abs(trade$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      pnlHtml = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <span class="pill" style="color:${pnlColor}; background:${pnlBg}; border:1px solid ${pnlBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Live theoretical value on suggested trade ${tradeLabel}">
+            ${pnlSign}$${live$Str} LIVE ⚡
+          </span>
+          <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+            ${tradeLabel} (${pnlSign}${Math.abs(rocVal).toFixed(0)}% ROC)
+          </span>
+        </div>
+      `;
+    } else if (statusUpper === 'MISSED_RUNAWAY') {
+      pnlHtml = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <span class="pill" style="color:#c084fc; background:rgba(168,85,247,0.18); border:1px solid #a855f7; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11px;" title="Price escaped before filling entry">
+            MISSED RUNAWAY 🏃
+          </span>
+          <span style="font-size:10px; color:var(--text-muted); font-weight:600;">
+            ${tradeLabel}
+          </span>
+        </div>
+      `;
+    } else {
+      pnlHtml = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; color:var(--cyan-glow);" title="Max profit potential on suggested trade">
+            ${t.trade_max_profit ? `+$${Number(t.trade_max_profit).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} pot.` : '--'}
+          </span>
+          <span style="font-size:10px; color:var(--text-muted); font-weight:600;">
+            ${tradeLabel} ${t.rr_ratio ? `(${t.rr_ratio}:1 R:R)` : ''}
+          </span>
+        </div>
+      `;
+    }
+
+    const optionsText = t.options_summary || 'No options plan defined';
+    const isOptionsActionable = Boolean(t.options_actionable && optionsText !== 'No options plan defined' && !optionsText.includes('None'));
+    const optionsBadgeHtml = isOptionsActionable
+      ? `<span class="pill" style="font-size:9.5px; padding:1px 5px; background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:var(--emerald-light); font-weight:700; margin-right:5px;">⚡ ACTIONABLE</span>`
+      : '';
+
+    const ideasCount = (t.trade_ideas || []).length;
+    const ideasBtnBg = isIdeasOpen ? 'background:rgba(6,182,212,0.3); border-color:var(--cyan-glow);' : 'background:rgba(6,182,212,0.12); border-color:rgba(6,182,212,0.4);';
+
+    const drawerHtml = isIdeasOpen ? `
+      <tr class="trade-ideas-row">
+        <td colspan="11" style="padding:14px 18px; background:rgba(8,13,22,0.6); border-top:1px dashed rgba(6,182,212,0.35); border-bottom:1px solid var(--border);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:15px;">💡</span>
+              <span style="font-size:13px; font-weight:800; color:var(--text-main);">Tactical Trade Ideas & Action Gameplan for ${sym}</span>
+              ${isOpenPos ? `<span class="pill cyan" style="font-size:9.5px; padding:1px 6px;">💼 Active Position (${posQty} shs @ $${posAvg.toFixed(2)})</span>` : `<span class="pill green" style="font-size:9.5px; padding:1px 6px;">🎯 Stalking Setup</span>`}
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn secondary" onclick="AppSwing.openPlanExecution('${sym}', '${t.date}')" style="padding:2px 8px; font-size:11px; color:var(--blue); cursor:pointer;">💬 Consult Copilot</button>
+              <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:2px 8px; font-size:11px; font-weight:700;">✕ Close</button>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px;">
+            ${(t.trade_ideas || []).map(idea => `
+              <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:10px; display:flex; flex-direction:column; gap:5px;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <span style="font-weight:700; font-size:11.5px; color:var(--text-main);">${idea.title}</span>
+                  <span class="pill ${idea.color || 'cyan'}" style="font-size:9px; padding:1px 5px; font-weight:800;">${idea.badge}</span>
+                </div>
+                <p style="font-size:11px; color:var(--text-muted); line-height:1.45; margin:0;">${idea.action}</p>
+                ${idea.metrics ? `<div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--cyan-glow); margin-top:2px;">${idea.metrics}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </td>
+      </tr>
+    ` : '';
+
+    const compW = window.AppUtils ? AppUtils.getCompanyName(t.ticker) : t.ticker;
+    const compTitle = (compW || t.ticker).replace(/"/g, '&quot;');
+
+    return `
+      <tr ${isOpenPos ? 'style="background:rgba(6,182,212,0.03);"' : ''}>
+        <td>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="ticker-cell-sym" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="cursor:pointer; color:#38bdf8;" title="${compTitle} ($${t.ticker}) - Click to open Dossier" data-ticker="${t.ticker}">${t.ticker}</span>
+            ${(t.side === 'SHORT' || (stop > 0 && entryHigh > 0 && stop > entryHigh)) ? `<span class="pill" style="font-size:9px; padding:1px 5px; font-weight:800; background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.5); color:#f87171;">🔴 SHORT</span>` : ''}
+            ${isOpenPos ? `<span class="pill cyan" style="font-size:9px; padding:1px 5px; font-weight:800;" title="You hold an active position in ${t.ticker}">💼 ${posQty} SHS</span>` : ''}
+            ${t.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${t.conviction}/10</span>` : ''}
+            <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="padding:2px 8px; font-size:11px; font-weight:700; background:rgba(6,182,212,0.15); border:1px solid rgba(6,182,212,0.4); color:var(--cyan-glow); cursor:pointer; border-radius:4px; display:inline-flex; align-items:center; gap:4px;" title="Open ${t.ticker} Research Dossier">
+              📑 Dossier
+            </button>
+            <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${t.ticker}', 'D')" style="padding:2px 7px; font-size:11px; font-weight:700; cursor:pointer;" title="Open Real-Time Interactive TradingView Chart">
+              📈 Chart
+            </button>
+          </div>
+        </td>
+        <td>
+          <span class="pill" style="font-size:11px;">${t.date || 'N/A'}</span>
+        </td>
+        <td>
+          <span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--cyan-glow); font-size:13.5px;">
+            $${spot > 0 ? spot.toFixed(2) : '--.--'}
+          </span>
+        </td>
+        <td>
+          ${pnlHtml}
+        </td>
+        <td>
+          <span style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--amber-light);">
+            $${entryLow > 0 ? entryLow.toFixed(2) : '--'} - $${entryHigh > 0 ? entryHigh.toFixed(2) : '--'}
+          </span>
+        </td>
+        <td>
+          <span class="dist-pill ${distBadgeClass}">${distText}</span>
+        </td>
+        <td>
+          <span style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--rose-light);">
+            $${stop > 0 ? stop.toFixed(2) : '--'}
+          </span>
+        </td>
+        <td>
+          <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px;">
+            <span style="color:var(--emerald-light); font-weight:700;">$${t1 > 0 ? t1.toFixed(2) : '--'}</span>
+            <span style="color:var(--text-muted);"> / </span>
+            <span style="color:var(--cyan-glow); font-weight:700;">$${t2 > 0 ? t2.toFixed(2) : '--'}</span>
+          </span>
+        </td>
+        <td>
+          <span class="status-badge-lg ${statusBadgeClass}">${statusIcon} ${statusUpper}</span>
+        </td>
+        <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${optionsText}">
+          ${optionsBadgeHtml}<span style="font-size:11.5px; color:var(--text-muted);">${optionsText}</span>
+        </td>
+        <td>
+          <div style="display:flex; align-items:center; gap:5px;">
+            <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${t.ticker}')" style="padding:3px 8px; font-size:11px; font-weight:700; color:var(--cyan-glow); ${ideasBtnBg}" title="View Actionable Trade Ideas for ${t.ticker}">
+              💡 Ideas (${ideasCount})
+            </button>
+            <button class="btn secondary" onclick="AppWatchlist.deleteTarget('${t.ticker}', '${t.date}')" style="padding:3px 7px; font-size:11px; background:rgba(244,63,94,0.15); border-color:rgba(244,63,94,0.4); color:var(--rose-light);" title="Untrack ${t.ticker}">
+              🗑️
+            </button>
+          </div>
+        </td>
+      </tr>
+      ${drawerHtml}
+    `;
+  },
+
+  renderTable(container, targets) {
+    if (this._groupBy === 'date') {
+      this.renderGroupedByDate(container, targets);
+    } else if (this._groupBy === 'ticker') {
+      this.renderGroupedByTicker(container, targets);
+    } else if (this._groupBy === 'status') {
+      this.renderGroupedByStatus(container, targets);
+    } else {
+      this.renderFlatTable(container, targets);
+    }
+  },
+
+  renderFlatTable(container, targets) {
+    const totalItems = targets.length;
+    const pageSize = this._pageSize === 'all' ? totalItems : this._pageSize;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    if (this._currentPage > totalPages) this._currentPage = 1;
+
+    const startIdx = (this._currentPage - 1) * pageSize;
+    const pagedTargets = this._pageSize === 'all' ? targets : targets.slice(startIdx, startIdx + pageSize);
+
+    const rowsHtml = pagedTargets.map(t => this.renderTargetRow(t)).join('');
+
+    container.innerHTML = `
+      <div class="watchlist-table-wrap">
+        <table class="watchlist-table">
+          ${this.renderTableHeader()}
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+      ${this.renderPagination(totalItems, 'targets')}
+    `;
+  },
+
+  renderGroupedByDate(container, targets) {
+    const grouped = {};
+    const dateOrder = [];
+    targets.forEach(t => {
+      const dt = t.date || 'Undated';
+      if (!grouped[dt]) {
+        grouped[dt] = [];
+        dateOrder.push(dt);
+      }
+      grouped[dt].push(t);
+    });
+
+    dateOrder.sort((a, b) => b.localeCompare(a));
+
+    const totalGroups = dateOrder.length;
+    const pageSize = this._pageSize === 'all' ? totalGroups : this._pageSize;
+    const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));
+    if (this._currentPage > totalPages) this._currentPage = 1;
+
+    const startIdx = (this._currentPage - 1) * pageSize;
+    const pagedDates = this._pageSize === 'all' ? dateOrder : dateOrder.slice(startIdx, startIdx + pageSize);
+
+    const groupsHtml = pagedDates.map(dateStr => {
+      const groupTargets = grouped[dateStr];
+      const inZoneCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'IN_ZONE').length;
+      const inTradeCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'IN_TRADE').length;
+      const stalkingCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'STALKING').length;
+      const invalidCount = groupTargets.filter(t => ['INVALIDATED', 'STOP_BREACHED'].includes((t.status || '').toUpperCase())).length;
+      const targetHitCount = groupTargets.filter(t => ['TARGET_HIT', 'COMPLETED'].includes((t.status || '').toUpperCase())).length;
+
+      const dateNetDollars = groupTargets.reduce((acc, t) => acc + Number(t.trade_dollar_pnl || 0), 0);
+      const datePnlSign = dateNetDollars >= 0 ? '+' : '-';
+      const datePnlColor = dateNetDollars >= 0 ? '#10b981' : '#f43f5e';
+
+      const groupId = `date-${dateStr}`;
+      const isCollapsed = this._collapsedGroups.has(groupId);
+      const rowsHtml = groupTargets.map(t => this.renderTargetRow(t)).join('');
+
+      return `
+        <div class="watch-group-section" id="group-date-${dateStr}">
+          <div class="watch-group-header" onclick="AppWatchlist.toggleGroup('${groupId}')" title="Click to collapse or expand this date group">
+            <div class="watch-group-title">
+              <span class="watch-group-chevron">${isCollapsed ? '▶' : '▼'}</span>
+              <span class="watch-group-icon">📅</span>
+              <span class="watch-group-name">Research Date: <strong>${dateStr}</strong></span>
+              <span class="pill cyan" style="font-size:10.5px; padding:2px 8px; font-weight:700;">${groupTargets.length} ${groupTargets.length === 1 ? 'Target' : 'Targets'}</span>
+              ${dateNetDollars !== 0 ? `<span class="pill" style="font-size:10px; padding:2px 7px; font-weight:800; color:${datePnlColor}; background:rgba(${dateNetDollars >= 0 ? '16,185,129' : '244,63,94'},0.12); border:1px solid ${datePnlColor}; font-family:'JetBrains Mono',monospace;">${datePnlSign}$${Math.abs(dateNetDollars).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} P&L</span>` : ''}
+              ${targetHitCount > 0 ? `<span class="badge target_hit" style="font-size:10px; padding:2px 7px;">🏁 ${targetHitCount} Hit</span>` : ''}
+              ${inZoneCount > 0 ? `<span class="badge in_zone" style="font-size:10px; padding:2px 7px;">🎯 ${inZoneCount} In Zone</span>` : ''}
+              ${inTradeCount > 0 ? `<span class="badge in_trade" style="font-size:10px; padding:2px 7px;">💼 ${inTradeCount} In Trade</span>` : ''}
+              ${stalkingCount > 0 ? `<span class="badge stalking" style="font-size:10px; padding:2px 7px;">⏳ ${stalkingCount} Stalking</span>` : ''}
+              ${invalidCount > 0 ? `<span class="badge invalidated" style="font-size:10px; padding:2px 7px;">⚠️ ${invalidCount} Invalid</span>` : ''}
+            </div>
+            <div class="watch-group-actions">
+              <span style="font-size:11px; color:var(--text-muted); font-weight:600;">
+                ${isCollapsed ? '▶ Expand' : '▼ Collapse'}
+              </span>
+            </div>
+          </div>
+          ${!isCollapsed ? `
+            <div class="watchlist-table-wrap">
+              <table class="watchlist-table">
+                ${this.renderTableHeader()}
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        ${groupsHtml}
+      </div>
+      ${this.renderPagination(totalGroups, 'date groups')}
+    `;
+  },
+
+  renderGroupedByTicker(container, targets) {
+    const grouped = {};
+    const tickerOrder = [];
+    targets.forEach(t => {
       const sym = (t.ticker || '').toUpperCase();
-      const spot = Number(t.last_price || 0);
-      const stop = Number(t.tactical_stop || 0);
-      const entryLow = Number(t.entry_zone_low || 0);
-      const entryHigh = Number(t.entry_zone_high || 0);
-      const t1 = Number(t.target_1 || 0);
-      const t2 = Number(t.target_2 || 0);
+      if (!grouped[sym]) {
+        grouped[sym] = [];
+        tickerOrder.push(sym);
+      }
+      grouped[sym].push(t);
+    });
 
-      const isIdeasOpen = Boolean(this._activeTradeIdeasToggles && this._activeTradeIdeasToggles.has(sym));
-      const isOpenPos = false;
-      const pos = {};
-      const posQty = 1;
-      const posAvg = Number(t.entry_price || spot);
-      const posPnl = null;
-      const posPnlPct = null;
+    tickerOrder.sort((a, b) => a.localeCompare(b));
 
-      const dist = t.distance_to_entry_pct;
+    const totalGroups = tickerOrder.length;
+    const pageSize = this._pageSize === 'all' ? totalGroups : this._pageSize;
+    const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));
+    if (this._currentPage > totalPages) this._currentPage = 1;
+
+    const startIdx = (this._currentPage - 1) * pageSize;
+    const pagedTickers = this._pageSize === 'all' ? tickerOrder : tickerOrder.slice(startIdx, startIdx + pageSize);
+
+    const groupsHtml = pagedTickers.map(sym => {
+      const groupTargets = grouped[sym];
+      const primary = groupTargets[0];
+      const spot = Number(primary.last_price || 0);
+      const isShort = (primary.side === 'SHORT' || (primary.tactical_stop > 0 && primary.entry_zone_high > 0 && primary.tactical_stop > primary.entry_zone_high));
+
+      const compName = window.AppUtils ? AppUtils.getCompanyName(sym) : sym;
+      const compTitle = (compName || sym).replace(/"/g, '&quot;');
+
+      const dist = primary.distance_to_entry_pct;
       let distBadgeClass = 'far';
       let distText = 'N/A';
       if (dist !== null && dist !== undefined) {
@@ -289,143 +890,217 @@ window.AppWatchlist = {
         else distBadgeClass = 'far';
         distText = `${dist >= 0 ? '+' : ''}${Number(dist).toFixed(2)}%`;
       }
-      if ((t.status || '').toUpperCase() === 'INVALIDATED') {
-        distBadgeClass = 'invalid';
-      }
 
-      const statusUpper = (t.status || 'STALKING').toUpperCase();
+      const statusUpper = (primary.status || 'STALKING').toUpperCase();
       let statusBadgeClass = 'stalking';
       let statusIcon = '⏳';
       if (statusUpper === 'IN_ZONE') { statusBadgeClass = 'in_zone'; statusIcon = '🎯'; }
       else if (statusUpper === 'IN_TRADE') { statusBadgeClass = 'in_trade'; statusIcon = '🎯'; }
-      else if (statusUpper === 'INVALIDATED') { statusBadgeClass = 'invalidated'; statusIcon = '⚠️'; }
-      else if (statusUpper === 'TARGET_HIT') { statusBadgeClass = 'target_hit'; statusIcon = '🏁'; }
+      else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED') { statusBadgeClass = 'invalidated'; statusIcon = '⚠️'; }
+      else if (statusUpper === 'TARGET_HIT' || statusUpper === 'COMPLETED') { statusBadgeClass = 'target_hit'; statusIcon = '🏁'; }
       else if (statusUpper === 'MISSED_RUNAWAY') { statusBadgeClass = 'missed_runaway'; statusIcon = '🏃'; }
 
-      const optionsText = t.options_summary || 'No options plan defined';
-      const isOptionsActionable = Boolean(t.options_actionable && optionsText !== 'No options plan defined' && !optionsText.includes('None'));
-      const optionsBadgeHtml = isOptionsActionable
-        ? `<span class="pill" style="font-size:9.5px; padding:1px 5px; background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:var(--emerald-light); font-weight:700; margin-right:5px;">⚡ ACTIONABLE</span>`
-        : '';
+      let tickerPnlBadge = '';
+      const pDollar = Number(primary.trade_dollar_pnl || 0);
+      if (pDollar !== 0) {
+        const rSign = pDollar >= 0 ? '+' : '-';
+        const rColor = pDollar >= 0 ? '#10b981' : '#f43f5e';
+        tickerPnlBadge = `<span class="pill" style="font-size:10px; padding:2px 7px; font-weight:800; color:${rColor}; background:rgba(${pDollar >= 0 ? '16,185,129' : '244,63,94'},0.12); border:1px solid ${rColor}; font-family:'JetBrains Mono',monospace;">${rSign}$${Math.abs(pDollar).toFixed(0)} (${primary.trade_label || ''})</span>`;
+      }
 
-      const pnlHtml = '';
-
-      const ideasCount = (t.trade_ideas || []).length;
+      const ideasCount = (primary.trade_ideas || []).length;
+      const isIdeasOpen = Boolean(this._activeTradeIdeasToggles && this._activeTradeIdeasToggles.has(sym));
       const ideasBtnBg = isIdeasOpen ? 'background:rgba(6,182,212,0.3); border-color:var(--cyan-glow);' : 'background:rgba(6,182,212,0.12); border-color:rgba(6,182,212,0.4);';
 
-      const drawerHtml = isIdeasOpen ? `
-        <tr class="trade-ideas-row">
-          <td colspan="10" style="padding:14px 18px; background:rgba(8,13,22,0.6); border-top:1px dashed rgba(6,182,212,0.35); border-bottom:1px solid var(--border);">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:15px;">💡</span>
-                <span style="font-size:13px; font-weight:800; color:var(--text-main);">Tactical Trade Ideas & Action Gameplan for ${sym}</span>
-                ${isOpenPos ? `<span class="pill cyan" style="font-size:9.5px; padding:1px 6px;">💼 Active Position (${posQty} shs @ $${posAvg.toFixed(2)})</span>` : `<span class="pill green" style="font-size:9.5px; padding:1px 6px;">🎯 Stalking Setup</span>`}
-              </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <button class="btn secondary" onclick="AppSwing.openPlanExecution('${sym}', '${t.date}')" style="padding:2px 8px; font-size:11px; color:var(--blue); cursor:pointer;">💬 Consult Copilot</button>
-                <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:2px 8px; font-size:11px; font-weight:700;">✕ Close</button>
-              </div>
-            </div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px;">
-              ${(t.trade_ideas || []).map(idea => `
-                <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:10px; display:flex; flex-direction:column; gap:5px;">
-                  <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <span style="font-weight:700; font-size:11.5px; color:var(--text-main);">${idea.title}</span>
-                    <span class="pill ${idea.color || 'cyan'}" style="font-size:9px; padding:1px 5px; font-weight:800;">${idea.badge}</span>
-                  </div>
-                  <p style="font-size:11px; color:var(--text-muted); line-height:1.45; margin:0;">${idea.action}</p>
-                  ${idea.metrics ? `<div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--cyan-glow); margin-top:2px;">${idea.metrics}</div>` : ''}
-                </div>
-              `).join('')}
-            </div>
-          </td>
-        </tr>
-      ` : '';
+      const groupId = `ticker-${sym}`;
+      const isCollapsed = this._collapsedGroups.has(groupId);
+      const rowsHtml = groupTargets.map(t => this.renderTargetRow(t)).join('');
 
       return `
-        <tr ${isOpenPos ? 'style="background:rgba(6,182,212,0.03);"' : ''}>
-          <td>
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <span class="ticker-cell-sym" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="cursor:pointer; color:#38bdf8;" title="Click to open ${t.ticker} Dossier">${t.ticker}</span>
-              ${isOpenPos ? `<span class="pill cyan" style="font-size:9px; padding:1px 5px; font-weight:800;" title="You hold an active position in ${t.ticker}">💼 ${posQty} SHS</span>` : ''}
-              ${t.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${t.conviction}/10</span>` : ''}
-              <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="padding:2px 8px; font-size:11px; font-weight:700; background:rgba(6,182,212,0.15); border:1px solid rgba(6,182,212,0.4); color:var(--cyan-glow); cursor:pointer; border-radius:4px; display:inline-flex; align-items:center; gap:4px;" title="Open ${t.ticker} Research Dossier">
+        <div class="watch-group-section" id="group-ticker-${sym}">
+          <div class="watch-group-header" onclick="AppWatchlist.toggleGroup('${groupId}')" title="Click to collapse or expand ${sym}">
+            <div class="watch-group-title">
+              <span class="watch-group-chevron">${isCollapsed ? '▶' : '▼'}</span>
+              <span class="watch-group-icon">🏷️</span>
+              <span class="watch-group-name" style="color:#38bdf8; font-size:15px; letter-spacing:0.5px;">${sym}</span>
+              <span style="font-size:12px; color:var(--text-muted); font-weight:600; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${compTitle}">${compName}</span>
+              ${isShort ? `<span class="pill" style="font-size:9px; padding:1px 5px; font-weight:800; background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.5); color:#f87171;">🔴 SHORT</span>` : ''}
+              ${spot > 0 ? `<span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--cyan-glow); font-size:13.5px; margin-left:4px;">$${spot.toFixed(2)}</span>` : ''}
+              ${tickerPnlBadge}
+              <span class="dist-pill ${distBadgeClass}" style="font-size:10px; padding:2px 6px;">${distText}</span>
+              <span class="status-badge-lg ${statusBadgeClass}" style="font-size:10.5px; padding:2px 7px;">${statusIcon} ${statusUpper}</span>
+              ${primary.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${primary.conviction}/10</span>` : ''}
+            </div>
+            <div class="watch-group-actions" onclick="event.stopPropagation();">
+              <button class="btn secondary" onclick="AppSwing.openReportModal('${primary.date}', '${sym}')" style="padding:2px 8px; font-size:11px; font-weight:700; color:var(--cyan-glow); background:rgba(6,182,212,0.12); border-color:rgba(6,182,212,0.4); cursor:pointer;" title="Open ${sym} Research Dossier">
                 📑 Dossier
               </button>
-            </div>
-          </td>
-          <td>
-            <span class="pill" style="font-size:11px;">${t.date || 'N/A'}</span>
-          </td>
-          <td>
-            <span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--cyan-glow); font-size:13.5px;">
-              $${spot > 0 ? spot.toFixed(2) : '--.--'}
-            </span>
-            ${pnlHtml}
-          </td>
-          <td>
-            <span style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--amber-light);">
-              $${entryLow > 0 ? entryLow.toFixed(2) : '--'} - $${entryHigh > 0 ? entryHigh.toFixed(2) : '--'}
-            </span>
-          </td>
-          <td>
-            <span class="dist-pill ${distBadgeClass}">${distText}</span>
-          </td>
-          <td>
-            <span style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--rose-light);">
-              $${stop > 0 ? stop.toFixed(2) : '--'}
-            </span>
-          </td>
-          <td>
-            <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px;">
-              <span style="color:var(--emerald-light); font-weight:700;">$${t1 > 0 ? t1.toFixed(2) : '--'}</span>
-              <span style="color:var(--text-muted);"> / </span>
-              <span style="color:var(--cyan-glow); font-weight:700;">$${t2 > 0 ? t2.toFixed(2) : '--'}</span>
-            </span>
-          </td>
-          <td>
-            <span class="status-badge-lg ${statusBadgeClass}">${statusIcon} ${statusUpper}</span>
-          </td>
-          <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${optionsText}">
-            ${optionsBadgeHtml}<span style="font-size:11.5px; color:var(--text-muted);">${optionsText}</span>
-          </td>
-          <td>
-            <div style="display:flex; align-items:center; gap:5px;">
-              <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${t.ticker}')" style="padding:3px 8px; font-size:11px; font-weight:700; color:var(--cyan-glow); ${ideasBtnBg}" title="View Actionable Trade Ideas for ${t.ticker}">
+              <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="padding:2px 7px; font-size:11px; font-weight:700; cursor:pointer;" title="Open Interactive Chart">
+                📈 Chart
+              </button>
+              <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:2px 8px; font-size:11px; font-weight:700; color:var(--cyan-glow); ${ideasBtnBg} cursor:pointer;" title="Trade Ideas">
                 💡 Ideas (${ideasCount})
               </button>
-              <button class="btn secondary" onclick="AppWatchlist.deleteTarget('${t.ticker}', '${t.date}')" style="padding:3px 7px; font-size:11px; background:rgba(244,63,94,0.15); border-color:rgba(244,63,94,0.4); color:var(--rose-light);" title="Untrack ${t.ticker}">
-                🗑️
-              </button>
+              <span class="pill cyan" style="font-size:10px; padding:2px 6px; font-weight:700;">${groupTargets.length} ${groupTargets.length === 1 ? 'Record' : 'Records'}</span>
             </div>
-          </td>
-        </tr>
-        ${drawerHtml}
+          </div>
+          ${!isCollapsed ? `
+            <div class="watchlist-table-wrap">
+              <table class="watchlist-table">
+                ${this.renderTableHeader()}
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            </div>
+          ` : ''}
+        </div>
       `;
     }).join('');
 
     container.innerHTML = `
-      <div class="watchlist-table-wrap">
-        <table class="watchlist-table">
-          <thead>
-            <tr>
-              <th onclick="AppWatchlist.setSort('ticker')">TICKER ${sortIndicator('ticker')}</th>
-              <th onclick="AppWatchlist.setSort('date')">DATE ${sortIndicator('date')}</th>
-              <th onclick="AppWatchlist.setSort('last_price')">LIVE SPOT ${sortIndicator('last_price')}</th>
-              <th>ENTRY ZONE</th>
-              <th onclick="AppWatchlist.setSort('distance_to_entry_pct')">DIST % ${sortIndicator('distance_to_entry_pct')}</th>
-              <th onclick="AppWatchlist.setSort('tactical_stop')">TACTICAL STOP ${sortIndicator('tactical_stop')}</th>
-              <th>TARGET 1 / 2</th>
-              <th onclick="AppWatchlist.setSort('status')">STATUS ${sortIndicator('status')}</th>
-              <th>OPTIONS STRUCTURE</th>
-              <th>ACTIONS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rowsHtml}
-          </tbody>
-        </table>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        ${groupsHtml}
+      </div>
+      ${this.renderPagination(totalGroups, 'tickers')}
+    `;
+  },
+
+  renderGroupedByStatus(container, targets) {
+    const statusDefs = [
+      { key: 'IN_ZONE', name: 'IN ZONE — Entry Trigger Active', icon: '🎯', badgeClass: 'in_zone', borderColor: '#10b981' },
+      { key: 'IN_TRADE', name: 'IN TRADE — Active Portfolio Positions', icon: '💼', badgeClass: 'in_trade', borderColor: '#06b6d4' },
+      { key: 'STALKING', name: 'STALKING — Monitoring Price Action', icon: '⏳', badgeClass: 'stalking', borderColor: '#f59e0b' },
+      { key: 'TARGET_HIT', name: 'TARGET HIT — Tactical Targets Reached', icon: '🏁', badgeClass: 'target_hit', borderColor: '#3b82f6' },
+      { key: 'MISSED_RUNAWAY', name: 'MISSED RUNAWAY — Price Escaped Entry Zone', icon: '🏃', badgeClass: 'missed_runaway', borderColor: '#a855f7' },
+      { key: 'INVALIDATED', name: 'INVALIDATED — Stop Breached / Thesis Void', icon: '⚠️', badgeClass: 'invalidated', borderColor: '#ef4444' }
+    ];
+
+    const grouped = {};
+    targets.forEach(t => {
+      const st = (t.status || 'STALKING').toUpperCase();
+      if (!grouped[st]) grouped[st] = [];
+      grouped[st].push(t);
+    });
+
+    const activeStatuses = statusDefs.filter(def => grouped[def.key] && grouped[def.key].length > 0);
+    Object.keys(grouped).forEach(k => {
+      if (!statusDefs.find(d => d.key === k)) {
+        activeStatuses.push({ key: k, name: k, icon: '📌', badgeClass: 'stalking', borderColor: '#64748b' });
+      }
+    });
+
+    const groupsHtml = activeStatuses.map(def => {
+      const groupTargets = grouped[def.key];
+      const groupId = `status-${def.key}`;
+      const isCollapsed = this._collapsedGroups.has(groupId);
+      const rowsHtml = groupTargets.map(t => this.renderTargetRow(t)).join('');
+
+      return `
+        <div class="watch-group-section" id="group-status-${def.key}">
+          <div class="watch-group-header" onclick="AppWatchlist.toggleGroup('${groupId}')" style="border-left-color:${def.borderColor};" title="Click to collapse or expand ${def.name}">
+            <div class="watch-group-title">
+              <span class="watch-group-chevron">${isCollapsed ? '▶' : '▼'}</span>
+              <span class="watch-group-icon">${def.icon}</span>
+              <span class="watch-group-name">${def.name}</span>
+              <span class="badge ${def.badgeClass}" style="font-size:10.5px; padding:2px 8px; font-weight:800;">
+                ${groupTargets.length} ${groupTargets.length === 1 ? 'Target' : 'Targets'}
+              </span>
+            </div>
+            <div class="watch-group-actions">
+              <span style="font-size:11px; color:var(--text-muted); font-weight:600;">
+                ${isCollapsed ? '▶ Expand' : '▼ Collapse'}
+              </span>
+            </div>
+          </div>
+          ${!isCollapsed ? `
+            <div class="watchlist-table-wrap">
+              <table class="watchlist-table">
+                ${this.renderTableHeader()}
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        ${groupsHtml}
+      </div>
+      <div class="watchlist-pagination-bar">
+        <div style="font-size:12px; color:var(--text-muted); font-weight:600;">
+          Showing all <strong>${activeStatuses.length}</strong> status groups (<strong>${targets.length}</strong> total targets)
+        </div>
+        <div class="pagination-nav">
+          <span class="pill cyan" style="font-size:11px; padding:3px 9px;">All Categories Active</span>
+        </div>
+      </div>
+    `;
+  },
+
+  renderPagination(totalCount, unitLabel = 'targets') {
+    if (totalCount <= 0) return '';
+    const pageSize = this._pageSize === 'all' ? totalCount : this._pageSize;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const currentPage = Math.min(this._currentPage, totalPages);
+
+    if (this._pageSize === 'all' || totalPages <= 1) {
+      return `
+        <div class="watchlist-pagination-bar">
+          <div style="font-size:12px; color:var(--text-muted); font-weight:600;">
+            Showing all <strong>${totalCount}</strong> ${unitLabel}
+          </div>
+          <div class="pagination-nav">
+            <span class="pill cyan" style="font-size:11px; padding:3px 9px;">Page 1 of 1</span>
+          </div>
+        </div>
+      `;
+    }
+
+    const startIdx = (currentPage - 1) * pageSize + 1;
+    const endIdx = Math.min(currentPage * pageSize, totalCount);
+
+    let pages = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (currentPage > 3) pages.push('...');
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (currentPage < totalPages - 2) pages.push('...');
+      pages.push(totalPages);
+    }
+
+    const pageButtonsHtml = pages.map(p => {
+      if (p === '...') return `<span style="padding:0 4px; color:var(--text-muted); font-size:12px;">...</span>`;
+      const isActive = p === currentPage;
+      return `
+        <button class="btn secondary pagination-btn ${isActive ? 'active' : ''}" 
+                onclick="AppWatchlist.setPage(${p})" 
+                ${isActive ? 'disabled' : ''}>
+          ${p}
+        </button>
+      `;
+    }).join('');
+
+    return `
+      <div class="watchlist-pagination-bar">
+        <div style="font-size:12px; color:var(--text-muted); font-weight:600;">
+          Showing <strong>${startIdx}–${endIdx}</strong> of <strong>${totalCount}</strong> ${unitLabel}
+        </div>
+        <div class="pagination-nav">
+          <button class="btn secondary pagination-btn" onclick="AppWatchlist.setPage(1)" ${currentPage === 1 ? 'disabled' : ''} title="First Page">⏮</button>
+          <button class="btn secondary pagination-btn" onclick="AppWatchlist.setPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''} title="Previous Page">◀ Prev</button>
+          ${pageButtonsHtml}
+          <button class="btn secondary pagination-btn" onclick="AppWatchlist.setPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''} title="Next Page">Next ▶</button>
+          <button class="btn secondary pagination-btn" onclick="AppWatchlist.setPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''} title="Last Page">⏭</button>
+        </div>
       </div>
     `;
   },
@@ -460,11 +1135,14 @@ window.AppWatchlist = {
         const t1 = Number(t.target_1 || (spot * 1.05));
         const t2 = Number(t.target_2 || (spot * 1.10));
 
+        const compR = window.AppUtils ? AppUtils.getCompanyName(t.ticker) : t.ticker;
+        const compTitle = (compR || t.ticker).replace(/"/g, '&quot;');
+
         return `
           <div class="target-card">
             <div class="target-header">
               <div class="target-sym">
-                <span>${t.ticker}</span>
+                <span class="radar-ticker-sym" title="${compTitle} ($${t.ticker})" data-ticker="${t.ticker}" style="cursor:help;">${t.ticker}</span>
                 <span class="spot-badge">$${spot.toFixed(2)}</span>
                 <span class="badge ${statusClass}">${t.status} (${distDisplay})</span>
               </div>
@@ -696,7 +1374,8 @@ window.AppWatchlist = {
         const tVal = t.target_1 ? `$${Number(t.target_1).toFixed(2)}` : '';
         statusBadge = `<span class="badge target_hit">🏁 TARGET 1 HIT ${tVal}</span>`;
       } else if (st === 'MISSED_RUNAWAY') {
-        statusBadge = `<span class="badge runaway">🚀 MISSED RUNAWAY (${distStr})</span>`;
+        const runawaySuffix = distStr ? ` (${distStr})` : ' (Past Target)';
+        statusBadge = `<span class="badge runaway">🚀 MISSED RUNAWAY${runawaySuffix}</span>`;
       } else if (st === 'INVALIDATED' || st === 'STOP_BREACHED') {
         statusBadge = `<span class="badge invalid">🛑 STOP BREACHED</span>`;
       } else {
@@ -1085,8 +1764,409 @@ window.AppWatchlist = {
     } catch (e) {
       alert(`Failed to untrack ${ticker}: ${e.message}`);
     }
+  },
+
+  // =========================================================================
+  // ON-DEMAND SUGGESTED TRADES AUDIT & PERFORMANCE TRAIL MODAL
+  // =========================================================================
+  _auditPage: 1,
+  _auditPageSize: 10,
+  _auditWindow: 100,
+  _activeAuditTab: 'ALL',
+  _auditSearchQuery: '',
+  _auditSearchTimer: null,
+
+  async openAuditModal() {
+    const modal = document.getElementById('modal-watchlist-audit');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    await this.loadAuditData();
+  },
+
+  closeAuditModal() {
+    const modal = document.getElementById('modal-watchlist-audit');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+  },
+
+  async loadAuditSummaryOnly() {
+    try {
+      if (!this._auditData) {
+        this._auditData = await window.AppApi.getTradesAudit({ window: 100, page: 1, page_size: 1 });
+      }
+      this.updateAuditToolbarBadge();
+    } catch (e) {
+      // Quiet fail on background sync
+    }
+  },
+
+  async loadAuditData(forceEvaluate = false) {
+    try {
+      const params = {
+        tab: this._activeAuditTab || 'ALL',
+        search: this._auditSearchQuery || '',
+        page: this._auditPage || 1,
+        page_size: this._auditPageSize || 10,
+        window: (this._auditWindow !== undefined) ? this._auditWindow : 100,
+      };
+
+      let res;
+      if (forceEvaluate) {
+        await window.AppApi.evaluateTradesAudit(params.window);
+        res = await window.AppApi.getTradesAudit(params);
+      } else {
+        res = await window.AppApi.getTradesAudit(params);
+      }
+      this._auditData = res;
+      this.renderAuditModal();
+      this.updateAuditToolbarBadge();
+    } catch (err) {
+      console.error('Failed to load trades audit data:', err);
+    }
+  },
+
+  updateAuditToolbarBadge() {
+    const badge = document.getElementById('audit-pill-badge');
+    if (!badge || !this._auditData || !this._auditData.summary) return;
+    const s = this._auditData.summary;
+    const net = Number(s.net_profit || 0);
+    const sign = net >= 0 ? '+' : '';
+    const wr = s.resolved_win_rate !== undefined ? `${s.resolved_win_rate}% WR` : '';
+    const winLabel = (s.window && s.window > 0) ? `Last ${s.window}` : 'All';
+    badge.innerText = `${sign}$${Math.abs(net).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} (${wr}) • ${winLabel}`;
+    badge.className = net >= 0 ? 'pill green' : 'pill red';
+  },
+
+  async triggerAuditEvaluation() {
+    const spinner = document.getElementById('re-evaluate-spinner');
+    const icon = document.getElementById('re-evaluate-icon');
+    const btn = document.getElementById('btn-re-evaluate-audit');
+    if (spinner) spinner.style.display = 'inline-block';
+    if (icon) icon.style.display = 'none';
+    if (btn) btn.disabled = true;
+
+    try {
+      await this.loadAuditData(true);
+      if (window.AppStatus && window.AppStatus.showToast) {
+        window.AppStatus.showToast('✅ Evaluated realtime quotes for active setups on demand without API overload.');
+      }
+    } catch (e) {
+      console.error(e);
+      if (window.AppStatus && window.AppStatus.showToast) {
+        window.AppStatus.showToast('❌ Error evaluating suggested trades: ' + e.message);
+      }
+    } finally {
+      if (spinner) spinner.style.display = 'none';
+      if (icon) icon.style.display = 'inline-block';
+      if (btn) btn.disabled = false;
+    }
+  },
+
+  setAuditTab(tab) {
+    this._activeAuditTab = tab;
+    this._auditPage = 1;
+    const container = document.getElementById('audit-modal-filter-tabs');
+    if (container) {
+      container.querySelectorAll('button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.auditTab === tab);
+      });
+    }
+    this.loadAuditData();
+  },
+
+  setAuditSearch(q) {
+    if (this._auditSearchTimer) clearTimeout(this._auditSearchTimer);
+    this._auditSearchTimer = setTimeout(() => {
+      this._auditSearchQuery = (q || '').trim();
+      this._auditPage = 1;
+      this.loadAuditData();
+    }, 250);
+  },
+
+  setAuditPage(page) {
+    if (!this._auditData || !this._auditData.pagination) return;
+    const p = this._auditData.pagination;
+    if (page === 'last') {
+      this._auditPage = p.total_pages || 1;
+    } else {
+      this._auditPage = Math.max(1, Math.min(p.total_pages || 1, parseInt(page, 10) || 1));
+    }
+    this.loadAuditData();
+  },
+
+  prevAuditPage() {
+    if (this._auditPage > 1) {
+      this._auditPage--;
+      this.loadAuditData();
+    }
+  },
+
+  nextAuditPage() {
+    const totalPages = this._auditData?.pagination?.total_pages || 1;
+    if (this._auditPage < totalPages) {
+      this._auditPage++;
+      this.loadAuditData();
+    }
+  },
+
+  setAuditPageSize(size) {
+    this._auditPageSize = parseInt(size, 10) || 10;
+    this._auditPage = 1;
+    this.loadAuditData();
+  },
+
+  setAuditWindow(win) {
+    this._auditWindow = parseInt(win, 10);
+    this._auditPage = 1;
+    this.loadAuditData();
+  },
+
+  renderAuditModal() {
+    if (!this._auditData) return;
+    const s = this._auditData.summary || {};
+    const tc = this._auditData.tab_counts || {};
+    const p = this._auditData.pagination || {};
+    const trades = this._auditData.trades || [];
+
+    // 1. Update Evaluation Timestamp
+    const timeEl = document.getElementById('modal-audit-evaluated-time');
+    if (timeEl && s.last_evaluated_at) {
+      const dt = new Date(s.last_evaluated_at);
+      timeEl.innerText = isNaN(dt.getTime()) ? s.last_evaluated_at : dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' ' + dt.toLocaleDateString();
+    }
+
+    // 2. Render 5 KPI Cards in Modal (Calculated on the Last 100 Trades Window by default)
+    this.renderAuditKpis(s);
+
+    // 3. Update Audit Tab Badges
+    const setAuditBadge = (id, count) => {
+      const el = document.getElementById(id);
+      if (el) el.innerText = (count !== undefined) ? count : 0;
+    };
+    setAuditBadge('audit-tab-count-all', tc.all);
+    setAuditBadge('audit-tab-count-options', tc.options);
+    setAuditBadge('audit-tab-count-shares', tc.shares);
+    setAuditBadge('audit-tab-count-won', tc.won);
+    setAuditBadge('audit-tab-count-stopped', tc.stopped);
+    setAuditBadge('audit-tab-count-active', tc.active);
+    setAuditBadge('audit-tab-count-stalking', tc.stalking);
+
+    // 4. Update Pagination Bar
+    this.renderAuditPagination(p);
+
+    // 5. Render Table Rows (Only current page rows)
+    this.renderAuditTableOnly(trades);
+  },
+
+  renderAuditPagination(p) {
+    const rangeEl = document.getElementById('audit-pagination-range');
+    const curEl = document.getElementById('audit-current-page');
+    const totEl = document.getElementById('audit-total-pages');
+    const btnFirst = document.getElementById('btn-audit-page-first');
+    const btnPrev = document.getElementById('btn-audit-page-prev');
+    const btnNext = document.getElementById('btn-audit-page-next');
+    const btnLast = document.getElementById('btn-audit-page-last');
+
+    if (rangeEl) {
+      if (!p || p.total_items === 0) {
+        rangeEl.innerText = 'No trades found';
+      } else {
+        const winTxt = (p.window && p.window > 0) ? ` (in last ${p.window} trades)` : '';
+        rangeEl.innerText = `Showing ${p.start_index}–${p.end_index} of ${p.total_items} Trades${winTxt}`;
+      }
+    }
+
+    if (curEl) curEl.innerText = p.page || 1;
+    if (totEl) totEl.innerText = p.total_pages || 1;
+
+    if (btnFirst) btnFirst.disabled = !p.has_prev;
+    if (btnPrev) btnPrev.disabled = !p.has_prev;
+    if (btnNext) btnNext.disabled = !p.has_next;
+    if (btnLast) btnLast.disabled = !p.has_next;
+
+    const selectSize = document.getElementById('select-audit-pagesize');
+    if (selectSize && String(p.page_size) !== selectSize.value) {
+      selectSize.value = String(p.page_size || 10);
+    }
+  },
+
+  renderAuditKpis(s) {
+    const container = document.getElementById('modal-audit-kpi-strip');
+    if (!container) return;
+
+    const winRate = s.resolved_win_rate !== undefined ? Number(s.resolved_win_rate).toFixed(1) : '0.0';
+    const wonCount = s.won_count || 0;
+    const lostCount = s.lost_count || 0;
+    const avgWin = Number(s.avg_win || 0);
+    const avgLoss = Number(s.avg_loss || 0);
+    const net = Number(s.net_profit || 0);
+    const netSign = net >= 0 ? '+' : '';
+    const netColor = net >= 0 ? '#10b981' : '#f43f5e';
+    const pf = s.profit_factor !== undefined ? Number(s.profit_factor).toFixed(2) : '0.00';
+    const actCount = s.actionable_count || 0;
+    const winNote = (s.window && s.window > 0) ? `Last ${s.window}` : 'All Time';
+
+    container.innerHTML = `
+      <div class="perf-kpi-card win-rate" style="cursor:pointer;" onclick="AppWatchlist.setAuditTab('WON')" title="Click to filter to won trades">
+        <span class="perf-kpi-title">🏆 Win Rate (${winNote})</span>
+        <div class="perf-kpi-val" style="color:#10b981;">
+          ${winRate}%
+          <span class="perf-kpi-sub">(${wonCount} Won / ${lostCount} Stopped)</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card avg-win">
+        <span class="perf-kpi-title">📈 Avg Win (${winNote})</span>
+        <div class="perf-kpi-val" style="color:#34d399;">
+          +$${avgWin.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          <span class="perf-kpi-sub">${wonCount} Trades Hit</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card avg-loss" style="cursor:pointer;" onclick="AppWatchlist.setAuditTab('STOPPED')" title="Click to filter to stopped trades">
+        <span class="perf-kpi-title">📉 Avg Loss (Defined Risk)</span>
+        <div class="perf-kpi-val" style="color:#f87171;">
+          -$${Math.abs(avgLoss).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          <span class="perf-kpi-sub">${lostCount} Stopped</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card net-alpha">
+        <span class="perf-kpi-title">💰 Net Profit (${winNote})</span>
+        <div class="perf-kpi-val" style="color:${netColor};">
+          ${netSign}$${Math.abs(net).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          <span class="perf-kpi-sub">(${pf} Profit Factor)</span>
+        </div>
+      </div>
+
+      <div class="perf-kpi-card actionable" style="cursor:pointer;" onclick="AppWatchlist.setAuditTab('ACTIVE')" title="Click to filter to active setups">
+        <span class="perf-kpi-title">⚡ Actionable Now</span>
+        <div class="perf-kpi-val" style="color:#f59e0b;">
+          ${actCount} Setups
+          <span class="perf-kpi-sub">In Zone / In Trade</span>
+        </div>
+      </div>
+    `;
+  },
+
+  renderAuditTableOnly(trades) {
+    const tbody = document.getElementById('audit-table-tbody');
+    if (!tbody) return;
+
+    if (!trades || trades.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:40px; color:var(--text-muted);">No suggested trades match this filter on this page.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = trades.map(t => {
+      const isOptions = t.trade_type === 'OPTIONS';
+      const typeBadge = isOptions
+        ? `<span class="pill cyan" style="font-size:10px; padding:1px 6px; font-weight:700;">OPTIONS</span>`
+        : `<span class="pill blue" style="font-size:10px; padding:1px 6px; font-weight:700;">SHARES</span>`;
+
+      let statusBadge = '';
+      const st = (t.status || 'STALKING').toUpperCase();
+      if (st === 'TARGET_HIT' || st === 'COMPLETED') {
+        statusBadge = `<span class="pill green" style="font-size:10.5px; padding:2px 7px; font-weight:800;">🏁 TARGET HIT</span>`;
+      } else if (st === 'STOP_BREACHED' || st === 'INVALIDATED' || st === 'STOPPED') {
+        statusBadge = `<span class="pill red" style="font-size:10.5px; padding:2px 7px; font-weight:800;">🛑 STOPPED</span>`;
+      } else if (st === 'IN_TRADE') {
+        statusBadge = `<span class="pill cyan" style="font-size:10.5px; padding:2px 7px; font-weight:800;"><span class="dot pulse"></span>💼 IN TRADE</span>`;
+      } else if (st === 'IN_ZONE') {
+        statusBadge = `<span class="pill green" style="font-size:10.5px; padding:2px 7px; font-weight:800;">🎯 IN ZONE</span>`;
+      } else if (st === 'MISSED_RUNAWAY') {
+        statusBadge = `<span class="pill" style="font-size:10px; padding:2px 6px; opacity:0.7;">RUNAWAY</span>`;
+      } else {
+        statusBadge = `<span class="pill amber" style="font-size:10.5px; padding:2px 7px; font-weight:700;">⏳ STALKING</span>`;
+      }
+
+      // Key levels text
+      let levelsHtml = '';
+      if (isOptions) {
+        const strikes = (t.long_strike && t.short_strike) ? `$${t.long_strike}/$${t.short_strike}` : '';
+        const exp = (t.options_expiration && t.options_expiration !== 'N/A') ? t.options_expiration : '';
+        const debit = t.target_debit > 0 ? `$${Number(t.target_debit).toFixed(2)} Debit` : 'Credit';
+        const maxP = Number(t.max_profit || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:2});
+        const maxL = Number(t.max_loss || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:2});
+        levelsHtml = `<div style="font-size:11.5px; font-weight:600;">${strikes} ${exp} (${debit})</div>
+                      <div style="font-size:10.5px; color:var(--text-muted);">Max: +$${maxP} / -$${maxL}</div>`;
+      } else {
+        const entryStr = t.entry_price ? `$${Number(t.entry_price).toFixed(2)}` : '--';
+        const stopStr = t.tactical_stop ? `$${Number(t.tactical_stop).toFixed(2)}` : '--';
+        const t1Str = t.target_1 ? `$${Number(t.target_1).toFixed(2)}` : '--';
+        levelsHtml = `<div style="font-size:11.5px; font-weight:600;">Entry: ${entryStr} • Stop: ${stopStr}</div>
+                      <div style="font-size:10.5px; color:var(--text-muted);">Target: ${t1Str}</div>`;
+      }
+
+      // Spot and distance
+      const spot = Number(t.last_price || 0);
+      const spotStr = spot > 0 ? `$${spot.toFixed(2)}` : '--';
+      const dist = t.distance_to_entry_pct;
+      let distStr = '--';
+      let distColor = 'var(--text-muted)';
+      if (dist !== null && dist !== undefined) {
+        distStr = dist === 0 ? '0.0% (In Zone)' : `${dist > 0 ? '+' : ''}${dist.toFixed(1)}%`;
+        distColor = Math.abs(dist) <= 1.5 ? '#10b981' : (dist > 0 ? '#f59e0b' : '#94a3b8');
+      }
+
+      // PnL & ROC
+      const pnl = Number(t.dollar_pnl || 0);
+      const roc = Number(t.roc_pct || 0);
+      const pnlSign = pnl > 0 ? '+' : (pnl < 0 ? '-' : '');
+      const rocSign = roc > 0 ? '+' : (roc < 0 ? '-' : '');
+      const isZero = (pnl === 0 && (st === 'STALKING' || st === 'MISSED_RUNAWAY'));
+      const pnlColor = isZero ? 'var(--text-muted)' : (pnl >= 0 ? '#10b981' : '#f87171');
+      const pnlDisplay = isZero ? '--' : `${pnlSign}$${Math.abs(pnl).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+      const rocDisplay = isZero ? '--' : `${rocSign}${Math.abs(roc).toFixed(1)}%`;
+
+      return `
+        <tr style="border-bottom:1px solid var(--border); transition:background 0.15s;" onmouseover="this.style.background='var(--bg-subtle)'" onmouseout="this.style.background='transparent'">
+          <td style="padding:10px 14px;">
+            <div style="font-family:'Outfit',sans-serif; font-size:14px; font-weight:800; color:var(--text-main);">${t.ticker}</div>
+            <div style="font-size:11px; color:var(--text-muted);">${t.date}</div>
+          </td>
+          <td style="padding:10px 14px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              ${typeBadge}
+              <span style="font-size:10px; font-weight:700; color:var(--text-muted);">${t.side}</span>
+            </div>
+            <div style="font-size:12px; font-weight:600; color:var(--text-main); margin-top:2px;">${t.trade_label || t.trade_structure}</div>
+          </td>
+          <td style="padding:10px 14px;">
+            ${levelsHtml}
+          </td>
+          <td style="padding:10px 14px;">
+            ${statusBadge}
+          </td>
+          <td style="padding:10px 14px; text-align:right;">
+            <div style="font-family:'JetBrains Mono',monospace; font-size:12.5px; font-weight:700;">${spotStr}</div>
+            <div style="font-size:10.5px; font-weight:600; color:${distColor};">${distStr}</div>
+          </td>
+          <td style="padding:10px 14px; text-align:right;">
+            <span style="font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:800; color:${pnlColor};">${pnlDisplay}</span>
+          </td>
+          <td style="padding:10px 14px; text-align:right;">
+            <span style="font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:${pnlColor};">${rocDisplay}</span>
+          </td>
+          <td style="padding:10px 14px; max-width:240px;">
+            <div style="font-size:11.5px; color:var(--text-muted); line-height:1.35;">${t.outcome_notes || '--'}</div>
+          </td>
+        </tr>
+      `;
+    }).join('');
   }
 };
+
+// Global escape listener for audit modal
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const auditModal = document.getElementById('modal-watchlist-audit');
+    if (auditModal && auditModal.style.display !== 'none') {
+      window.AppWatchlist.closeAuditModal();
+    }
+  }
+});
 
 // Self-initialize on DOM ready
 if (document.readyState === 'loading') {

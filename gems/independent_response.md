@@ -23,12 +23,12 @@
    - Clarify whether a pullback is broad multiple compression or fundamental company deterioration.
 
 6. **Multi-Horizon Options Architecture (Tactical vs Multi-Quarter)**:
-   - **Plan B-1: Tactical Defined-Risk Credit Spread (Primary when IV Rank > 50% or IV/HV > 0)**: Sell premium below structural support (e.g. Bull Put Spread) to harvest elevated implied volatility without needing an aggressive rally.
+   - **Plan B-1: Tactical Defined-Risk Credit Spread (Primary when IV Rank ≥ 50% or IV/HV > 0; strictly mandatory if IV Rank > 70%)**: Sell premium below structural support (e.g. Bull Put Spread) to harvest elevated implied volatility without needing an aggressive rally.
    - **Plan B-2: Multi-Quarter / LEAPS (90–365+ DTE)**: Evaluate Deep ITM Calls (Delta 0.70–0.85) for secular compounding ONLY when IV is cheap/moderate. If IV is rich or the stock is in heavy distribution, state why buying long-dated extrinsic premium is deferred.
 
 7. **Actionable Structural Execution & ASCII Diagram**:
    - Calculate mathematical R:R as `(Target 1 - Entry) / (Entry - Tactical Stop)`.
-   - **DRAW THE ASCII ART**: Explicitly include the ASCII diagram in THE SETUP section showing Target 2, Target 1, Overhead Resistance, Live Spot, Local Base Floor, and Tactical Stop.
+   - **DRAW THE ASCII ART**: Explicitly include the ASCII diagram in the **ACTIONABLE MULTI-REGIME EXECUTION PLAN (Plan A)** section showing Target 2, Target 1, Overhead Resistance, Live Spot, Local Base Floor, and Tactical Stop.
    - Define a single, falsifiable **Binary Invalidation Condition** ("The ONE Thing") where a daily close proves the thesis wrong immediately.
 
 8. **Institutional Output Discipline**:

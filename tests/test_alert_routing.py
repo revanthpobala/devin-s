@@ -132,3 +132,51 @@ def test_position_manager_handles_exit_events_even_with_neutral_side(tmp_path):
         mgr._handle_alert(exit_alert)
         assert "META" not in position_state.load_state()
         mgr._stop_monitor.assert_called_with("META")
+
+
+def test_intraday_trade_execution_alerts_parsed_and_routed(tmp_path):
+    from src.logic.alert_parser import parse_alert
+
+    fake_positions = tmp_path / "positions.json"
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions):
+        mgr = PositionManager(poll_interval=10)
+        mgr._ensure_monitor = MagicMock()
+        mgr._stop_monitor = MagicMock()
+
+        # 1. Intraday entry payload
+        body_entry = '{"event":"ENTRY", "action":"ENTER_PUTS", "ticker":"CAT", "verdict":"BUY PUTS", "plan":"Held 822.74 · Stop 825.26 · T1 817.73", "act_now":"YES — entered PUTS"}'
+        parsed_entry = parse_alert("Alert: Intraday", body_entry)
+        assert parsed_entry["symbol"] == "CAT"
+        assert parsed_entry["action"] == "ENTER_PUTS"
+        assert parsed_entry["strategy"] == "Intraday"
+
+        # Provide today's timestamp so the prior-day guard passes
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        parsed_entry["timestamp"] = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+
+        mgr._handle_alert(parsed_entry)
+        state = position_state.load_state()
+        assert "CAT" in state
+        assert state["CAT"]["side"] == "SHORT"
+        assert state["CAT"]["entry_price"] == 822.74
+        assert state["CAT"]["stop"] == 825.26
+        assert state["CAT"]["target"] == 817.73
+        mgr._ensure_monitor.assert_called_with("CAT")
+
+        # 2. Intraday exit payload
+        body_exit = '{"event":"EXIT", "action":"EXIT", "ticker":"CAT", "verdict":"STAND ASIDE", "exit_px":827.15, "act_now":"EXIT — catastrophe stop"}'
+        parsed_exit = parse_alert("Alert: Intraday", body_exit)
+        assert parsed_exit["symbol"] == "CAT"
+        assert parsed_exit["action"] == "EXIT"
+        assert parsed_exit["strategy"] == "Intraday"
+
+        mgr._handle_alert(parsed_exit)
+        assert "CAT" not in position_state.load_state()
+        mgr._stop_monitor.assert_called_with("CAT")
+
+        # 3. Screener alert must be Daily and never open positions
+        parsed_screener = parse_alert("Alert: Screener", body_entry)
+        assert parsed_screener["strategy"] == "Daily"
+        mgr._handle_alert(parsed_screener)
+        assert "CAT" not in position_state.load_state()

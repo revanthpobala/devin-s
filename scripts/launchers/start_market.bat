@@ -6,7 +6,7 @@ echo =======================================================================
 echo              MARKET HOURS PIPELINE ORCHESTRATOR
 echo =======================================================================
 echo.
-echo Enforcing control window: 7:15 AM - 3:00 PM Mountain Time (Mon-Fri)
+echo Enforcing control window: 7:15 AM - 8:00 PM Mountain Time (Mon-Fri)
 echo LLM: In-process GGUF (Qwen3.5-9B) via llama-cpp-python
 echo Macro context: Finnhub news + FMP VIX/movers (injected into every alert)
 echo Releases services automatically when market is closed.

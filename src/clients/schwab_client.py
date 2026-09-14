@@ -19,11 +19,15 @@ SCHWAB_CALLBACK_URL = os.getenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
 TOKEN_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "schwab_token.json")
 
 _SCHWAB_CLIENT = None
+_SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
 
 def get_schwab_client(force_new: bool = False):
-    global _SCHWAB_CLIENT
+    global _SCHWAB_CLIENT, _SCHWAB_AUTH_COOLDOWN_UNTIL
     if not force_new and _SCHWAB_CLIENT is not None:
         return _SCHWAB_CLIENT
+
+    if time.time() < _SCHWAB_AUTH_COOLDOWN_UNTIL:
+        raise Exception("Schwab refresh token is expired or revoked. In cooldown. Run 'python setup_schwab.py' to re-authenticate.")
 
     if not SCHWAB_API_CLIENT_ID or not SCHWAB_API_CLIENT_SECRET:
         raise ValueError("SCHWAB_API_CLIENT_ID or SCHWAB_API_CLIENT_SECRET is missing in .env")
@@ -34,9 +38,85 @@ def get_schwab_client(force_new: bool = False):
             SCHWAB_API_CLIENT_ID, 
             SCHWAB_API_CLIENT_SECRET
         )
+        _SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
         return _SCHWAB_CLIENT
     except FileNotFoundError:
         raise Exception("schwab_token.json not found. Please run python setup_schwab.py first.")
+    except Exception as e:
+        err_msg = str(e)
+        if any(k in err_msg for k in ("invalid_grant", "Refresh token is invalid", "400 Bad Request", "unsupported_token_type")):
+            _SCHWAB_AUTH_COOLDOWN_UNTIL = time.time() + 300.0
+            logger.warning("⚠️ Schwab refresh token is expired or revoked (invalid_grant). Run 'python setup_schwab.py' to re-authenticate. Schwab calls paused for 5m.")
+        raise
+
+
+def get_schwab_token_status() -> dict:
+    """
+    Returns live metadata on Schwab OAuth refresh token validity and expiration.
+    Schwab refresh tokens have a strict 7-day (604,800 sec) lifespan.
+    """
+    if not os.path.exists(TOKEN_PATH):
+        return {
+            "configured": bool(SCHWAB_API_CLIENT_ID and SCHWAB_API_CLIENT_SECRET),
+            "valid": False,
+            "status": "NOT_CONFIGURED",
+            "message": "schwab_token.json not found",
+            "days_remaining": 0.0,
+            "hours_remaining": 0.0,
+            "seconds_remaining": 0,
+            "created_at": None,
+            "expires_at": None,
+        }
+
+    try:
+        with open(TOKEN_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        created_ts = data.get("creation_timestamp")
+        if not created_ts:
+            created_ts = int(os.path.getmtime(TOKEN_PATH))
+
+        # Schwab refresh token expires in 7 days (7 * 86400 = 604800s)
+        expires_ts = created_ts + 604800
+        now_ts = int(time.time())
+        seconds_remaining = expires_ts - now_ts
+        days_remaining = max(0.0, round(seconds_remaining / 86400.0, 1))
+        hours_remaining = max(0.0, round(seconds_remaining / 3600.0, 1))
+
+        is_valid = seconds_remaining > 0
+        if not is_valid:
+            status = "EXPIRED"
+        elif days_remaining <= 1.0:
+            status = "EXPIRING_SOON"
+        else:
+            status = "VALID"
+
+        created_dt = datetime.fromtimestamp(created_ts)
+        expires_dt = datetime.fromtimestamp(expires_ts)
+
+        return {
+            "configured": bool(SCHWAB_API_CLIENT_ID and SCHWAB_API_CLIENT_SECRET),
+            "valid": is_valid,
+            "status": status,
+            "seconds_remaining": max(0, seconds_remaining),
+            "days_remaining": days_remaining,
+            "hours_remaining": hours_remaining,
+            "created_at": created_dt.strftime("%a %b %d, %I:%M %p"),
+            "expires_at": expires_dt.strftime("%a %b %d, %I:%M %p"),
+        }
+    except Exception as e:
+        return {
+            "configured": bool(SCHWAB_API_CLIENT_ID and SCHWAB_API_CLIENT_SECRET),
+            "valid": False,
+            "status": "ERROR",
+            "message": str(e),
+            "days_remaining": 0.0,
+            "hours_remaining": 0.0,
+            "seconds_remaining": 0,
+            "created_at": None,
+            "expires_at": None,
+        }
+
 
 
 _QUOTE_CACHE = {}
@@ -77,6 +157,9 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
                 resp = client.get_quotes(chunk)
             except Exception as ex_call:
                 logger.debug(f"Schwab client.get_quotes call failed, re-authenticating: {ex_call}")
+                if any(k in str(ex_call) for k in ("invalid_grant", "Refresh token is invalid", "400 Bad Request")):
+                    _SCHWAB_AUTH_COOLDOWN_UNTIL = time.time() + 300.0
+                    break
                 client = get_schwab_client(force_new=True)
                 resp = client.get_quotes(chunk)
 

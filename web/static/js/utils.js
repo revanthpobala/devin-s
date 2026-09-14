@@ -21,8 +21,14 @@ window.AppUtils = {
   renderMarkdown(text) {
     if (!text) return '';
     try {
-      if (window.marked && typeof window.marked.parse === 'function') {
-        let html = window.marked.parse(text);
+      if (window.marked) {
+        if (typeof window.marked.setOptions === 'function' && !window.marked._breaksConfigured) {
+          window.marked.setOptions({ breaks: true, gfm: true });
+          window.marked._breaksConfigured = true;
+        }
+        let html = typeof window.marked.parse === 'function'
+          ? window.marked.parse(text, { breaks: true, gfm: true })
+          : window.marked(text, { breaks: true, gfm: true });
         // Transform interactive action links into clickable button pills
         html = html.replace(/<a\s+href=["']action:ask\?prompt=([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, promptEnc, label) => {
           const prompt = decodeURIComponent(promptEnc.replace(/\+/g, '%20'));
@@ -37,6 +43,9 @@ window.AppUtils = {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\n/g, '<br/>');
   },
 
@@ -78,5 +87,166 @@ window.AppUtils = {
       return 'danger';
     }
     return 'stalking';
+  },
+
+  /**
+   * Initialize and cache full company names mapping
+   */
+  async initCompanyNames() {
+    if (window.COMPANY_NAMES && Object.keys(window.COMPANY_NAMES).length > 500) {
+      return window.COMPANY_NAMES;
+    }
+    window.COMPANY_NAMES = window.COMPANY_NAMES || {};
+
+    // 1. Try local storage cache
+    try {
+      const cached = localStorage.getItem('rev_company_names_v1');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 1000) {
+          window.COMPANY_NAMES = parsed;
+          this.decorateTickerTooltips();
+        }
+      }
+    } catch (e) {}
+
+    // 2. Fetch from static json (fastest loopback static asset) or API
+    try {
+      let res = await fetch('/static/data/company_names.json');
+      if (!res.ok) {
+        res = await fetch('/api/company-names');
+      }
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data === 'object') {
+          window.COMPANY_NAMES = data;
+          try {
+            localStorage.setItem('rev_company_names_v1', JSON.stringify(data));
+          } catch (err) {}
+          this.decorateTickerTooltips();
+        }
+      }
+    } catch (e) {
+      console.warn('Unable to load company names mapping:', e);
+    }
+    return window.COMPANY_NAMES;
+  },
+
+  /**
+   * Get full company name for any ticker symbol
+   */
+  getCompanyName(ticker) {
+    if (!ticker) return '';
+    const sym = String(ticker).toUpperCase().replace(/^\$/, '').trim();
+    if (window.COMPANY_NAMES && window.COMPANY_NAMES[sym]) {
+      return window.COMPANY_NAMES[sym];
+    }
+    // Common fallbacks if not yet loaded
+    const quickMap = {
+      'AMZN': 'Amazon.com Inc',
+      'GOOGL': 'Alphabet Inc A',
+      'GOOG': 'Alphabet Inc C',
+      'AAPL': 'Apple Inc.',
+      'NVDA': 'Nvidia Corp',
+      'MSFT': 'Microsoft Corp',
+      'META': 'Meta Platforms Inc.',
+      'TSLA': 'Tesla, Inc.',
+      'SLB': 'SLB Limited (Schlumberger)',
+      'DELL': 'Dell Technologies Inc.',
+      'YETI': 'YETI Holdings, Inc.',
+      'AMD': 'Advanced Micro Devices',
+      'SPY': 'SPDR S&P 500 ETF Trust',
+      'QQQ': 'Invesco QQQ Trust',
+      'IWM': 'iShares Russell 2000 ETF',
+      'PLTR': 'Palantir Technologies',
+      'VLTO': 'Veralto Corporation',
+      'CAVA': 'CAVA Group, Inc.',
+      'WMT': 'Walmart Inc.',
+      'GM': 'General Motors Company',
+      'PCG': 'PG&E Corporation',
+      'ARES': 'Ares Management Corp'
+    };
+    return quickMap[sym] || sym;
+  },
+
+  /**
+   * Render a ticker symbol with company name tooltip
+   */
+  renderTicker(ticker, options = {}) {
+    if (!ticker) return '';
+    const sym = String(ticker).toUpperCase().replace(/^\$/, '').trim();
+    const name = this.getCompanyName(sym);
+    const prefix = options.prefix !== undefined ? options.prefix : '$';
+    const cls = options.className || 'ticker-with-tooltip';
+    const style = options.style || '';
+    const escapedName = this.escapeHtml(name);
+    return `<span class="${cls}" title="${escapedName}" data-ticker="${sym}" style="cursor:help; ${style}">${prefix}${sym}</span>`;
+  },
+
+  /**
+   * Retroactively decorate all tickers in DOM container with company name tooltips
+   */
+  decorateTickerTooltips(root = document) {
+    try {
+      const candidates = root.querySelectorAll('.ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .recent-job-row strong, [data-ticker]');
+      candidates.forEach(el => {
+        let sym = el.getAttribute('data-ticker');
+        if (!sym) {
+          const txt = (el.textContent || '').trim().replace(/^\$/, '');
+          if (/^[A-Z]{1,6}$/.test(txt)) {
+            sym = txt;
+          }
+        }
+        if (sym) {
+          const comp = this.getCompanyName(sym);
+          if (comp && (!el.title || el.title.startsWith('Click to open') || el.title.length < comp.length)) {
+            el.title = `${sym}: ${comp}`;
+          }
+          if (!el.getAttribute('data-ticker')) {
+            el.setAttribute('data-ticker', sym);
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('decorateTickerTooltips error:', e);
+    }
+  },
+
+  showToast(msg, type = 'info') {
+    let container = document.getElementById('cockpit-toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'cockpit-toast-container';
+      container.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:999999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+      document.body.appendChild(container);
+    }
+    const t = document.createElement('div');
+    const bg = type === 'error' ? '#ef4444' : (type === 'success' ? '#10b981' : '#0ea5e9');
+    t.style.cssText = `background:${bg};color:#fff;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.3);transition:all 0.3s ease;opacity:0;transform:translateY(10px);`;
+    t.innerText = msg;
+    container.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateY(0)'; });
+    setTimeout(() => {
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(-8px)';
+      setTimeout(() => t.remove(), 300);
+    }, 3000);
   }
 };
+
+// Ensure AppStatus.showToast aliases to AppUtils.showToast
+if (typeof window !== 'undefined') {
+  window.AppStatus = window.AppStatus || {};
+  window.AppStatus.showToast = function(msg, type = 'info') {
+    if (window.AppUtils && window.AppUtils.showToast) {
+      window.AppUtils.showToast(msg, type);
+    }
+  };
+
+  window.addEventListener('DOMContentLoaded', () => {
+    if (window.AppUtils && window.AppUtils.initCompanyNames) {
+      window.AppUtils.initCompanyNames();
+    }
+  });
+}
+

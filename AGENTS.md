@@ -3,6 +3,7 @@
 ## Always-On Rules
 
 - **Never delete files or folders without explicit permission first.** Always ask for confirmation before any destructive operation, including deletions, overwrites, or irreversible file changes.
+- **Playwright is already available locally.** Never attempt to download, install, or fetch Playwright binaries or driver archives from external CDNs (e.g. Azure, Akamai, or Verizon CDN 404s). Use the local Playwright installation (`playwright 1.61.0`) and local Chrome/Chromium binaries directly via Python scripts.
 
 ---
 
@@ -88,6 +89,39 @@ python run_swing_research.py --ticker AAPL
 
 # All S&P 500 constituents (1-year history -> SWING-SPX sheet)
 python run_swing_research.py --spx
+```
+
+---
+
+## Schwab 1000 Autonomous Screener Engine
+
+**Purpose**: Live two-stage constituent screening across 983 Schwab 1000 (SCHK) stocks for coiled ground-floor bases (long) and ceiling exhaustion (short), scoring via Pine script `rev-screener` indicators, and autonomous dispatch into deep research.
+
+**Entry Point**: `src/screener/schwab_pre_move_scan.py`
+
+**Capabilities**:
+- **Stage 1 Fast Filter**: Batch-fetches 983 quotes via Schwab API, filters for liquidity ($15+, 500k+ vol), ATR volatility, distance from 52w high, and earnings blackout exclusions.
+- **Stage 2 Technical Coiling & Rejection**:
+  - Computes 20 EMA, 50 SMA, 200 SMA, 20d excess return vs SPY, Bollinger %b, Connors RSI-3, and NR7 volatility compression.
+  - Classifies **Stan Weinstein Market Stages**: Stage 1 (Base), Stage 2 (Advancing), Stage 3 (Distribution), Stage 4 (Declining), Stage 5 (Recovery).
+  - Calculates **Connors Extreme Reversal Zones** (Z0-Z3) with historical 86-91% win-rate edge.
+  - Scores setups into **Priority Tiers**: `HIGH_PRIORITY` (score >= 75), `MEDIUM_PRIORITY` (score >= 55), `MONITOR`.
+- **Autonomous Dispatch Pipeline** (`--autonomous`):
+  - Automatically picks top high-priority setups (capped at `--auto-max 3`).
+  - Sequentially runs parallel chart scraping (`run_swing_research.py --ticker <SYM>`), local triage (`run_local_research.py --ticker <SYM>`), deep research (`run_deep_research.py --ticker <SYM>`), and watch alerts synchronization (`run_watch_alerts.py --sync --once`).
+  - Registers 24/7 cloud quote alerts with Tastytrade mobile push.
+- **Web UI Integration**: 1-Click "🤖 Autonomous Scan & Research" in Cockpit with live Stage, Rev Zone, and Priority badges.
+
+**Usage**:
+```bash
+# Live scan for 10 long basing setups
+python src/screener/schwab_pre_move_scan.py --side long --top 10
+
+# Live scan for 10 prime short exhaustion setups
+python src/screener/schwab_pre_move_scan.py --side short --top 10
+
+# Autonomous end-to-end execution: scan and deep-research top 3 setups
+python src/screener/schwab_pre_move_scan.py --autonomous --auto-max 3
 ```
 
 ---

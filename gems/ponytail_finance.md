@@ -67,7 +67,7 @@ Before recommending any trade, stop at the first rung that holds:
     "options_plan": {
       "actionable": true,
       "entry_trigger": "AT_MARKET|AT_FLOOR_LIMIT|BREAKOUT",
-      "structure": "BULL_CALL_SPREAD|BEAR_PUT_SPREAD|LONG_CALL|CASH_SECURED_PUT|NONE",
+      "structure": "BULL_CALL_SPREAD|BULL_PUT_SPREAD|BEAR_PUT_SPREAD|BEAR_CALL_SPREAD|LONG_CALL|LONG_PUT|CASH_SECURED_PUT|NONE",
       "expiration": "YYYY-MM-DD",
       "long_strike": 0.0,
       "short_strike": 0.0,

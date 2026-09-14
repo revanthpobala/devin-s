@@ -14,7 +14,7 @@
 | **Options (Derivatives)** | **[ENTER NOW (Credit Spread) / ENTER (LEAPS) / CASH]** | [Specific structure, e.g. Sep 18 $240P/$250P Bull Put @ $1.80 credit] | [X/10] |
 
 **EARNINGS GATE:** PASS ([XX] Days Remaining | Next Earnings Date: ~YYYY-MM-DD)
-**PRIMARY VEHICLE:** [If IV Rank >70%, OPTIONS CREDIT SPREAD is Primary; If IV Rank <40%, EQUITY LIMIT or DEBIT is Primary]
+**PRIMARY VEHICLE:** [If IV Rank ≥ 50% (mandatory >70%), OPTIONS CREDIT SPREAD is Primary; If IV Rank < 30%, EQUITY LIMIT or DEBIT SPREAD is Primary]
 **(If User Owns Shares):** [HOLD — no CC (Stage 2 Advancing, IV Rank elevated) / SELL COVERED CALL (Stage 4 / Climax)]
 
 ---
@@ -22,7 +22,7 @@
 ## 🛠️ THE 4-PILLAR DATA AUDIT & FORENSICS
 
 ### Pillar 1: Quantitative Engine State & Calibration
-* **Engine Codes & Stage:** Long Action Code [X], Short Action Code [X], Weinstein Stage [1-4], Stage Age [X] bars.
+* **Engine Codes & Stage:** Long Action Code [X], Short Action Code [X], Weinstein Stage [0-5] (0=UNSTAGED, 5=RECOVERY, pine:2231/6009-6024), Stage Age [X] bars.
 * **Scores & Evidence:** Buy Score [XX.XX] / Sell Score [XX.XX], Buy Evidence [±X.XX]σ.
 * **R:R & Floor Geometry:** 
   * *Zone Baseline:* $[ZoneBot] - $[ZoneTop] (At-Market Zone R:R: [X.XX]:1).
@@ -40,7 +40,7 @@
 ### Pillar 4: Volatility & Macro Profile
 * **Macro Benchmarks:** 10Y Yields [X.XX]%, DXY [XXX.X], SPY/QQQ Regime, Upcoming CPI ([Days]d) & FOMC ([Days]d).
 * **Derivatives Forensics:** `HV20` [XX.X]%, `IV30` [XX.X]%, `IV/HV Spread` [±XX.X]%, `Energy State` [0-3], `IV Rank` [XX.X]%.
-* **Options Regime:** [High IV Rank (>70%) / Positive IV-HV spread mandates defined-risk credit spreads as Primary; deep ITM LEAPS preferred over expensive OTM debit].
+* **Options Regime:** [Elevated IV Rank (≥50%, mandatory >70%) or positive IV-HV spread mandates defined-risk credit spreads as Primary; cheap IV (<30%) favors debit/equity; deep ITM LEAPS (Delta 0.70-0.85) preferred over OTM lotto calls].
 
 ---
 

@@ -5,7 +5,7 @@ echo =======================================================================
 echo              TRADINGVIEW ALERTS TRACKER LOOP SERVICE
 echo =======================================================================
 echo.
-echo Active Market Hours: 7:15 AM - 3:00 PM Mountain Time (Monday-Friday)
+echo Active Market Hours: 7:15 AM - 8:00 PM Mountain Time (Monday-Friday)
 echo Polling Interval  : 60 seconds
 echo logs path         : D:\My-Projects\Stock\logs\tracker.log
 echo.

@@ -91,6 +91,13 @@ def get_historical_price_history(ticker: str, start_date: str, end_date: str) ->
                 df = pd.read_csv(cand)
                 col_map = {c.lower(): c for c in df.columns}
                 if "close" in col_map:
+                    time_col = col_map.get("time") or col_map.get("date")
+                    if time_col:
+                        time_s = df[time_col].astype(str).str.slice(0, 10)
+                        mask = (time_s >= start_date) & (time_s <= end_date)
+                        filtered = df[mask]
+                        if not filtered.empty:
+                            return filtered
                     return df
             except Exception:
                 pass

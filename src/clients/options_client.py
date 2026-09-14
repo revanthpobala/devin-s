@@ -517,6 +517,8 @@ def fetch_options_chain_tool(
     strike_high: float = None,
     min_dte: int = 14,
     max_dte: int = 1200,
+    expiration: Optional[str] = None,
+    **kwargs,
 ) -> Optional[str]:
     """LLM-facing wrapper around fetch_targeted_chain. Derives a strike range from
     the live underlying spot (via Alpaca, Tastytrade, or yfinance) when the model does not supply one.
@@ -525,6 +527,17 @@ def fetch_options_chain_tool(
     if not ticker:
         logger.warning("fetch_options_chain_tool called without a ticker and no active ticker set.")
         return None
+    if expiration:
+        try:
+            from datetime import datetime, date as dt_date
+            exp_clean = str(expiration).strip()[:10]
+            exp_d = datetime.strptime(exp_clean, "%Y-%m-%d").date()
+            dte = (exp_d - dt_date.today()).days
+            if dte >= 0:
+                min_dte = max(1, dte - 5)
+                max_dte = dte + 5
+        except Exception as e_exp:
+            logger.debug(f"Could not parse expiration '{expiration}': {e_exp}")
     if strike_low is None or strike_high is None:
         spot = _alpaca_underlying_last(ticker)
         if not spot:

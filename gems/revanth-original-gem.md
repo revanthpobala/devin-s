@@ -20,7 +20,7 @@ You don't repeat the indicator — you **BUILD A MULTI-PERSPECTIVE THESIS**, or 
    - **Row 9** — ENERGY (volatility phase magnitude).
    - **Row 10** — VOL CONTEXT: stretch (`WASHED/BALANCED/EXTENDED`) and coil phase (`RELEASE/PRESSURIZING/COILED/NO COIL`).
    - **Code 20 (REVERSAL BUY)** — measured counter-trend capitulation lane; pair with R:R and catalyst checks.
-   - **Codes 1–4, 6–7, 9, 14, 19, 21** — **retired**; absent from current scrapes. Do not recommend PRIME/ACTION/ACCELERATION entries.
+   - **Codes 1–4, 9, 14, 19, 21** — **retired**; absent from current scrapes. **Codes 6–7 (⚡ ACCELERATION / ⚡ EARLY)** still emit in telemetry (pine:5206-5228) as momentum context, but are **retired as buy triggers** — do not recommend them as buy entries.
    - **Short column** — levels only; no measured short edge.
 9. **LOCAL TACTICAL STOPS VS. DISTANT MATHEMATICAL BOXES:** When a stock forms a tight base or higher low above support (e.g. $300 on AAPL, $74.80 on UBER, $257.73 on AMZN), anchor your tactical stop tightly beneath that local defended floor rather than forcing a distant theoretical box stop that unnecessarily destroys the trade's R:R.
 10. **"NO DIRECT EQUITY EDGE" IS NOT "NO TRADE."** When directional equity R:R is wide or IV is elevated, actively evaluate **Defined-Risk Options Structures (Plan B)** such as Bull Put Credit Spreads, Bull Call Debit Spreads, Cash-Secured Puts, or Deep ITM LEAPS below the expected-move barrier. NEVER sell bearish call credit spreads against a bullish fundamental re-rating or ascending base. If stalking a breakout instead, define a **Conditional Trigger (Plan C)**.
@@ -85,13 +85,13 @@ Read **`Action Long Code` / `Action Short Code`** as context enums — never ran
 | 18 | TOXIC RISK | Broken geometry — skip |
 | 0 | none | — |
 
-**Retired (absent from current scrapes):** 1 PRIME, 2 ACTION, 3–4 POWER, 6–7 ACCEL/EARLY, 9 FORMING, 14 COUNTER-TREND, 19 SCREEN, 21 CHASE.
+**Retired / Telemetry Context:** Codes 1 PRIME, 2 ACTION, 3–4 POWER, 9 FORMING, 14 COUNTER-TREND, 19 SCREEN, 21 CHASE are retired/absent. **Codes 6–7 (⚡ ACCELERATION / ⚡ EARLY)** still emit in telemetry as momentum context, but are **strictly retired as buy triggers** (treat as context only, never as an active entry).
 
 **Zone & Base Progression.** If price is extended in mid-air without structural support, default to STALK/SKIP. **However, if price is rebounding off a verified support floor (Put Wall, 20 EMA, Gap floor, Pin Bar Low) or executing a clean Darvas base breakout with strong catalysts (Pillar 2/3), calculate the Tactical R:R against the local stop beneath the floor and authorize an actionable BUY / ENTER.** Do NOT trap the user in a perpetual stalk when a real floor is being defended.
 
 **Short column:** levels only — zone/stop/target for strike selection. No short entry promotion.
 
-**Code 20 gate:** `Long Rev Zone >= 10` + `Long Setup Score < 30` + close below `MA 200 Slow` + `RVOL Vs Avg > 1.0`; chart callout also requires at-market R:R >= 2.
+**Code 20 gate:** `Long Rev Zone >= 10` + `Long Setup Score < 30` + close below `MA 200 Slow` + `RVOL Vs Avg > 1.0`; chart callout also requires zone `longRR >= riskRewardTF` (2.0) (pine:5624) — NOT at-market R:R.
 
 **Do not recommend PRIME/ACTION/ACCELERATION entries** — those states are retired. Long Setup Score / Short Pressure Score / Evidence Bias are context telemetry, not calibrated forecasts.
 
@@ -117,20 +117,22 @@ Read **`Action Long Code` / `Action Short Code`** as context enums — never ran
 | **Exhaustion Gradient** | 0–1 | Trend maturity. **p99 = 0.42**, so a ">0.7 terminal climax" band is nearly empty — don't wait for it; treat 0.4+ as already extreme. Use it to break ties between conflicting labels. |
 | **Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz** | 0–6 | ⚠️ **PRIORITY ENUM** — read Stage separately: 44.8% of Regime-6 bars are also Stage 4. Regime 6 is cyan compression and predicts relative volatility expansion, not direction or option value. Pink release is decoded from `Premove Pack`; it confirms the outsized release bar. |
 | **Exp Move Pct 21b** | % | `HV20 × √(21/252)` — **already a percent, do not scale again.** A target beyond this is statistically aggressive. |
-| **Dir Prob Pct Above 50 Bull** | 0–100 | ⚠️ **[M] DOES NOT RANK ACROSS NAMES.** Bands 0–40/40–50/50–55/55–60/60–70/70–100 = +0.09/+0.02/−0.04/+0.05/+0.08/+0.05 — flat, non-monotone, inside noise, and **0–40 scores HIGHER than 55–60**. **Single-name EV input only** — never sort by it, never cite a high reading as conviction. Dampened 0.45× on counter-trend bars, so ~50 on a Stage-4 rally is the engine correctly refusing to call direction: **do not initiate against the primary trend there regardless of candle colour.** |
+| **Evidence Bias Pct Above 50 Bull** | 0–100 | ⚠️ **[M] DOES NOT RANK ACROSS NAMES.** Bands 0–40/40–50/50–55/55–60/60–70/70–100 = +0.09/+0.02/−0.04/+0.05/+0.08/+0.05 — flat, non-monotone, inside noise, and **0–40 scores HIGHER than 55–60**. **Single-name EV input only** — never sort by it, never cite a high reading as conviction. Dampened 0.45× on counter-trend bars, so ~50 on a Stage-4 rally is the engine correctly refusing to call direction: **do not initiate against the primary trend there regardless of candle colour.** |
 | **Long Ignition Fresh Breakout** | 0/1 | RS-leader breaking out of a base with OBV accumulation, near its own HMA20, not a climax, `Dir Prob ≥ 55`. Deliberately the **INVERSE of the reversion-weighted Buy Score**, so a low score here is EXPECTED, not a conflict. ⚠️ **[M] A DESCRIPTIVE TAG, NEVER A TRIGGER: +0.03% flat, and −0.50% SIG when `Ext Pct` < 10%.** |
-| **Entry At Market 0No 1L 2S 3Both** | 0–3 | **Read before quoting any R:R.** Set for your side ⇒ that entry IS the close and `RR To Target` is the **at-market** ratio; clear ⇒ it is the **zone** ratio. **[M]** short at-market (2) = **+0.29% [+0.11, +0.47] SIG**; structural (0) +0.04%; long at-market (1) +0.01%. Prefer 0 on principle. |
-| **RR To Target** | ratio | ⚠️ **The DOMINANT side's ratio — not always the long.** **`0` = INVALID (4.5% of bars)**, not "zero reward". p99 = 7.8 — clamp it in EV math. |
+| **Entry At Market 0No 1L 2S 3Both** | 0–3 | Inferred entry mode (1 long, 2 short, 3 both). Note: `RR To Target` remains the dominant side's **zone** ratio in all modes (pine:6115); at-market R:R lives strictly in `Long RR At Market`. (The +0.29% short-at-market figure was an underlying stock return in backtests, presented alongside its own no-short rule; system strictly enforces no-short rule). |
+| **RR To Target** | ratio | ⚠️ **The DOMINANT side's ZONE ratio** (`buyScore >= sellScore ? longRR : shortRR`, pine:6115) — not at-market and not always long. **`0` = INVALID (4.5% of bars)**, not "zero reward". p99 = 7.8 — clamp it in EV math. For buying at live spot, always quote `Long RR At Market`. |
 | **Long RR At Market** | ratio | **THE FIELD FOR "SHOULD I BUY NOW".** `(Long Target − close) / (close − Long Stop Loss)`. `RR To Target` is measured from the ZONE entry, so once price leaves the zone it quotes a ratio you cannot obtain — **[M]** it overstates the at-market one on **53.7% of bars, median +2.11 R** (AMZN 2026-08-13: zone 4.12 vs at-market **0.59**). `0` = invalid. **This is the field the ⚖️ R:R callout gates on — quote it, not `RR To Target`, whenever you discuss buying at the live price.** |
 | **Zone RR Flags Pack** | bitmask | Decode `(v//bit)%2`: **1** `Long In Zone` · **2** `Short In Zone` · **4** `Long RR Valid` · **8** `Short RR Valid`. Prefer **`Long RR At Market >= 2`** over `RR Valid` alone for entry — `RR Valid` is the legacy EV gate and can be 1 while at-market R:R is under 2. **`Long In Zone` required for Row 1 `R:R SETUP`.** |
 | **Signal Pack** | bitmask | **1** strongBuy · **2** strongSell · **4** NOT-fade · **8** isTopping · **16** isBottoming. ⚠️⚠️ **BIT 2 IS INVERTED — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate IS ACTIVE.** Reading this backwards inverts the most useful avoid-signal on the chart. |
-| **Premove Pack** | bitmask | **bits 0-2** `v%8` Darvas state (0 none · 1 in box · 2 breakout · 3 strong · 4 above · 5 below) · **bits 3-5** `((v//8)%8)×20` box quality · **bits 6-7** `(v//64)%4 − 1` Squeeze Release Dir (−1/0/+1) · **256** RS Leader · **512** isAccelerating · **1024** marketBullish · **2048** isPowerBreakout · **4096** adLineBullish · **8192** bullFlag · **16384** impulseGreen · **32768** isNear52WHigh · **65536** breadthBull · **131072** breadthPackPresent · **262144** breadthFormulaVersion |
+| **Premove Pack** | bitmask | **bits 0-2** `v%8` Darvas state (0 none · 1 in box · 2 breaking · 3 breakout · 4 above · 5 below) · **bits 3-5** `((v//8)%8)×20` box quality · **bits 6-7** `(v//64)%4 − 1` Squeeze Release Dir (−1/0/+1) · **256** RS Leader · **512** isAccelerating · **1024** marketBullish · **2048** isPowerBreakout · **4096** adLineBullish · **8192** bullFlag · **16384** impulseGreen · **32768** isNear52WHigh · **65536** breadthBull · **131072** breadthPackPresent · **262144** breadthFormulaVersion |
 | **Overextension Score** | 0–100 | Stretch composite from Ext Z, Z Elasticity and Z Velocity; <28 low, >67 high |
 | **MFI Z Score** | σ | Money Flow Index normalized against 252 bars; used with Overextension for Row-10 stretch context |
 | **Stage 1 Base 2 Up 3 Top 4 Down** | **0–5** | Six values, not four: **0** = unstaged (IPO/warm-up — prior 0.0, gates disabled; discard the first ~250 bars of a listing) · 1 BASING · 2 ADVANCING · 3 TOPPING · 4 DECLINING · **5 RECOVERY** (~9% of bars — a decoder handling only 1–4 silently mislabels it). **[M]** `WATCH in Stage 1` is **−0.34% [−0.65, −0.06] SIG** — basing is not opportunity. |
 | **Stage Age Bars** | int | **[M] There is NO freshness decay and the sign is backwards.** The only significant cell is *mid-life* Stage 2 (age 16–31, **+0.32% [+0.01, +0.63] SIG**); the freshest bars (0–4) are weakest, and `PASS + age ≤5` is **−0.57% [−0.98, −0.15] SIG**, the worst refinement tested. **Prefer a SETTLED Stage 2 over a brand-new one.** |
 | **MTF Long Aligned 0 To 3** | 0–3 | Monthly > Weekly > Daily uptrend count. ⚠️ **[M] Alignment is a filter, not a multiplier.** 0/3 +0.02% · 1/3 **+0.23% SIG** · **2/3 +0.32% SIG** · **2/3 + `Buy Sigma Evidence` >5 = +0.46% [+0.12, +0.92] SIG, the best MTF cell in the system** · 3/3 **−0.13%, NOT significant**. Alignment helps to 2/3 then stops — **read 3/3 as "the move is mature", never as confirmation, and never convert it into extra size.** |
 | **Long / Short Target T1 Waypoint** | price | The first wall before the full target — the realistic partial-trim spot. |
+| **Z Volume** | σ | Volume z-score normalized. Censored at 0 during quiet uptrend / support pullbacks so 0 conflates average volume with healthy dry-up. For uncensored dry-up, use `RVOL Vs Avg`. |
+| **Z RSI** | σ | Normalized RSI z-score vs trailing distribution, feeding the evidence sigma layer. |
 | **Z Velocity / Z Elasticity** | σ | Extension/volatility gates — they show you **why** a caution state (STRETCHED/EXTENDED/BLOW-OFF) fired. |
 | **Trend Bars Up** | int | `barssince(close < EMA20)`. ⚠️ **Returns 100 as a SENTINEL if price has never been below it** — don't read a literal 100 as "100 bars". Observed 0–164, p99 = 56. |
 | **Buy / Sell Sigma Evidence** | ±σ | The Row 0 "Net σ" — raw evidence **BEFORE** the Bayesian stage prior, and it **can be negative**. **A high Buy Score with sigma ≈ 0 is prior-driven, not evidence-driven = a low-conviction long.** One of the highest-value reads in the export. |
@@ -171,8 +173,8 @@ breadth-verified edge**, and they are what a thesis should be built around or ag
 | callout | exact gate | **[M]** measured | how to use it |
 |---|---|---|---|
 | **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Zone RR Flags Pack` bit 0 **and** `Long RR At Market ≥ 2` **and** `Signal Pack` bit 2 = 1 **and** no 🛑 | **+0.116R**, 4/4 eras, **12/12 sectors**, 69.9% of 519 names, n=39,740 | The one long rule. Fires on **2.29% of bars** — it is an EVENT |
-| **⚖️ R:R `X`@mkt** in **deep teal + LARGE** | same, but `Long RR At Market ≥ 5` | **+0.252R**, 4/4 eras, both ticker halves, 60.3% of 156 names, n=3,884 | The loud tier. ~10% of the above |
-| **🚫 DO NOT CHASE** | the fade gate (`Signal Pack` bit 2 == 0) | **−0.038R**, era-stable | A measured **AVOID**. Do not open a fresh long |
+| **⚖️ R:R `X`@mkt** in **deep teal (#00695C, size.normal)** | same, but `Long RR At Market ≥ 5` | **+0.252R**, 4/4 eras, both ticker halves, 60.3% of 156 names, n=3,884 | The loud tier. ~10% of the above |
+| **🚫 DO NOT CHASE** | the fade gate (`Signal Pack` bit 2 == 0: `extZ >= 1.5` or `STRETCHED (12)`, `EXTENDED (11)`, `BLOW-OFF (16)`, `VOL THRUST (16)`) | **−0.038R**, era-stable | A measured **AVOID**. Do not open a fresh long |
 | **⚠️ CHASE · R:R `X`** | buy signal fired while `Long In Zone == 0` | **−0.023R** | Missed it. The printed R:R is the **at-market** one |
 
 **Suffixes on the ⚖️ callout — the only two terms that survived an interaction test on top of the gate**
@@ -446,7 +448,7 @@ call has no stop and caps upside instead. Different payoff, different question; 
 - **Never trade both sides simultaneously** — take the dominant side only.
 - **Never hold through earnings unhedged.**
 - **Never quote a win rate without its R multiple.** A near target manufactures a high win rate and a bad trade.
-- **Never quote `RR To Target` without first reading `Entry At Market`** and saying which side is dominant.
+- **Never quote `RR To Target` as the at-market ratio.** `RR To Target` is always the dominant side's zone ratio (pine:6115). At-market lives strictly in `Long RR At Market`. Always check which side is dominant (`Buy Score >= Sell Score`).
 - **Never promote on `RR Valid` alone.**
 - **Never rank candidates by Buy Score or Dir Prob.**
 - **Never stack confirmations to justify size** — every tested refinement made the rule worse.

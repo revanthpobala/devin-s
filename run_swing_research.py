@@ -9,7 +9,6 @@ import pandas as pd
 
 from src import config
 from src.logic.deterministic_cascade import DeterministicCascade
-from src.tracking.sheets_tracker import SheetsTracker
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -23,6 +22,7 @@ def run_swing_pipeline(
     spx_mode: bool = False,
     spx_csv: str | None = None,
     force: bool = False,
+    headless: bool = False,
 ):
     logger.info("=" * 60)
     logger.info("STARTING SWING RESEARCH PIPELINE (Scrape Phase)")
@@ -62,37 +62,12 @@ def run_swing_pipeline(
                 }
             )
 
-        # Batch upload to SWING-SPX Google Sheet tab
-        sheets = SheetsTracker()
-        logger.info(f"Uploading {len(survivors)} SPX constituents to SWING-SPX sheet for tab '{today_str}'...")
-        sheets.batch_upload_spx_survivors(today_str, survivors)
+        logger.info(f"Loaded {len(survivors)} SPX constituents (Sheets upload disabled, using local SQLite).")
 
     elif target_ticker:
         logger.info("\n--- PHASE 1: TARGET TICKER OVERRIDE ---")
         ticker = target_ticker.strip().upper()
-        logger.info(f"Resolving existing Trades-sheet row for: {ticker}")
-
-        row_idx = None
-        sheet_type = "trades"
-        try:
-            tracker = SheetsTracker()
-            tracker.connect()
-            date_tab = today_str
-            worksheet = tracker.get_trades_worksheet_for_date(date_tab)
-            all_rows = tracker._get_all_rows(worksheet)
-            # Column C (index 2) holds the Symbol; row index is 1-based sheet row.
-            for idx, r in enumerate(all_rows[1:], start=2):
-                if len(r) >= 3 and str(r[2]).strip().upper() == ticker:
-                    row_idx = idx
-                    logger.info(f"Found {ticker} on '{date_tab}' Trades tab at row {row_idx}")
-                    break
-            if row_idx is None:
-                logger.warning(
-                    f"{ticker} not found in today's Trades sheet; it will be created "
-                    f"during the local-research phase and pushed to Sheets then."
-                )
-        except Exception as e:
-            logger.warning(f"Failed to check Trades sheet for {ticker}: {e}; continuing local-only.")
+        logger.info(f"Single-ticker override: {ticker} (scrape starts immediately)")
 
         survivors = [
             {
@@ -100,8 +75,7 @@ def run_swing_pipeline(
                 "Symbol": ticker,
                 "Ticker": ticker,
                 "source": "cli_override",
-                "_row_index": row_idx,
-                "_sheet_type": sheet_type,
+                "_sheet_type": "trades",
             }
         ]
     else:
@@ -119,9 +93,12 @@ def run_swing_pipeline(
 
 
     manifest_path = out_dir / "survivors.json"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(survivors, f, indent=4)
-    logger.info("Wrote survivor manifest -> %s", manifest_path)
+    if not (target_ticker and manifest_path.exists()):
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(survivors, f, indent=4)
+        logger.info("Wrote survivor manifest -> %s", manifest_path)
+    else:
+        logger.info("Preserving existing survivor manifest at %s (single ticker override: %s)", manifest_path, target_ticker)
 
     # 2. Assign Chrome profiles across survivors
     CHROME_PROFILES = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
@@ -131,16 +108,30 @@ def run_swing_pipeline(
 
     num_workers = min(len(survivors), len(CHROME_PROFILES), 4)
 
-    # Remove stale singleton lock files before launching parallel workers
+    import psutil
+
+    def _is_profile_locked(p_name: str) -> bool:
+        for proc in psutil.process_iter(['name', 'cmdline']):
+            try:
+                if 'chrome' in (proc.name() or '').lower():
+                    cmd = ' '.join(proc.cmdline() or [])
+                    if p_name in cmd:
+                        return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return False
+
+    # Remove stale singleton lock files ONLY on idle profiles (never touch active browser profiles)
     for profile_name in CHROME_PROFILES:
-        target_profile = config.BASE_DIR / profile_name
-        if target_profile.exists():
-            for item in target_profile.rglob("*"):
-                if item.is_file() and item.name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
-                    try:
-                        item.unlink()
-                    except Exception:
-                        pass
+        if not _is_profile_locked(profile_name):
+            target_profile = config.BASE_DIR / profile_name
+            if target_profile.exists():
+                for item in target_profile.rglob("*"):
+                    if item.is_file() and item.name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+                        try:
+                            item.unlink()
+                        except Exception:
+                            pass
 
     # 3. Process survivors in parallel (Phase 2A: Scraping)
     logger.info(
@@ -150,11 +141,17 @@ def run_swing_pipeline(
 
     is_force = force or bool(target_ticker)
 
+    import random
     scrape_futures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         for index, survivor in enumerate(survivors):
             worker_id = (index % num_workers) + 1
-            profile = CHROME_PROFILES[index % num_workers]
+            if target_ticker:
+                free_profs = [p for p in CHROME_PROFILES if not _is_profile_locked(p)]
+                profile = random.choice(free_profs) if free_profs else random.choice(CHROME_PROFILES)
+            else:
+                profile = CHROME_PROFILES[index % len(CHROME_PROFILES)]
+            logger.info(f"Assigning {profile} to worker {worker_id} for survivor {survivor.get('Ticker', 'UNKNOWN')}...")
             scrape_futures.append(
                 executor.submit(
                     scrape_survivor_task,
@@ -165,17 +162,23 @@ def run_swing_pipeline(
                     lookback_days=lookback_days,
                     chrome_profile=profile,
                     force=is_force,
+                    headless=headless,
                 )
             )
 
         try:
+            has_error = False
             for future in concurrent.futures.as_completed(scrape_futures):
                 try:
                     future.result()
                 except Exception as e:
                     logger.error(f"Scrape worker thread failed: {e}")
+                    has_error = True
+            if has_error and target_ticker:
+                raise RuntimeError(f"Scrape failed for {target_ticker}")
         except Exception as e:
             logger.error(f"Scrape phase exception: {e}")
+            raise e
 
     logger.info("=" * 60)
     logger.info("SCRAPE PHASE COMPLETE.")
@@ -211,6 +214,11 @@ if __name__ == "__main__":
         default=None,
         help="Custom path to SPX constituents CSV (default: EveryDay/SPX-constituents.csv)",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Playwright browser in headless mode",
+    )
 
     args = parser.parse_args()
 
@@ -230,4 +238,5 @@ if __name__ == "__main__":
         spx_mode=args.spx,
         spx_csv=args.spx_csv,
         force=args.force,
+        headless=args.headless,
     )

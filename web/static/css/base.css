@@ -13,6 +13,11 @@
   --bg-subtle: #f1f5f9;
   --bg-input: #ffffff;
 
+  /* Typography & Fonts */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-heading: 'Outfit', sans-serif;
+
   /* Borders & Shadows */
   --border: #e2e8f0;
   --border-subtle: #cbd5e1;

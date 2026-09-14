@@ -54,6 +54,9 @@ def _format_llm_decision(llm_data: Dict[str, Any]) -> str:
     return decision
 
 
+# System-wide flag: Google Sheets integration is disabled in favor of local SQLite databases and Web UI.
+SHEETS_ENABLED = os.getenv("ENABLE_GOOGLE_SHEETS", "false").lower() in ("true", "1", "yes")
+
 _CACHED_GSPREAD_CLIENT = None
 _ALREADY_SHARED_SHEETS = set()
 
@@ -80,6 +83,8 @@ class SheetsTracker:
 
     def _get_all_rows(self, worksheet) -> List[List[str]]:
         """Fetch all rows from a specific worksheet, using cache if available and retrying on rate limits."""
+        if not SHEETS_ENABLED:
+            return []
         sheet_title = worksheet.spreadsheet.title
         title = worksheet.title
         cache_key = f"{sheet_title}:{title}"
@@ -127,6 +132,10 @@ class SheetsTracker:
 
     def connect(self) -> bool:
         """Authenticate with Google Sheets API and open required spreadsheets."""
+        if not SHEETS_ENABLED:
+            logger.debug("Google Sheets integration disabled (using local SQLite database).")
+            return True
+
         global _CACHED_GSPREAD_CLIENT, _ALREADY_SHARED_SHEETS
         
         if not os.path.exists(self.service_account_file):
@@ -149,8 +158,16 @@ class SheetsTracker:
                         self.service_account_file, scopes=scopes
                     )
                     _CACHED_GSPREAD_CLIENT = gspread.authorize(credentials)
+                    try:
+                        _CACHED_GSPREAD_CLIENT.set_timeout(20)
+                    except Exception:
+                        pass
                 
                 self.client = _CACHED_GSPREAD_CLIENT
+                try:
+                    self.client.set_timeout(20)
+                except Exception:
+                    pass
 
                 # 1. Connect to Alerts Sheet
                 if not self.sheet:
@@ -513,6 +530,9 @@ class SheetsTracker:
         Automatically inserts formulas for Slippage, Google Finance Live Price, and Performance.
         Includes automatic retry logic if Google Sheets API rate limits are hit.
         """
+        if not SHEETS_ENABLED:
+            return True
+
         if strategy != "Intraday":
             # Skip daily screener setups in the Alerts Tracker
             return True
@@ -629,6 +649,8 @@ class SheetsTracker:
         self, date_str: str, row_num: int, llm_decision: str, llm_playbook: str
     ) -> bool:
         """Update the LLM Trade Decision and LLM Playbook columns for an existing row."""
+        if not SHEETS_ENABLED:
+            return True
         try:
             worksheet = self.get_worksheet_for_date(date_str)
             # Column F is LLM Trade Decision (6th column)
@@ -734,6 +756,9 @@ class SheetsTracker:
         """
         Logs simplified trade actions to the TradingView Trades Tracker sheet.
         """
+        if not SHEETS_ENABLED:
+            return True
+
         if strategy != "Daily":
             # Only track Daily setups (individual stocks) in the Trades Tracker
             return True
@@ -851,6 +876,9 @@ class SheetsTracker:
         Updates the specific row in the Trades Tracker with the LLM triage results and AlphaVantage data.
         Assumes the row_index is 1-indexed as returned by Google Sheets (e.g., row 2).
         """
+        if not SHEETS_ENABLED:
+            return True
+
         if not self.trades_sheet:
             if not self.connect():
                 return False
@@ -950,7 +978,7 @@ class SheetsTracker:
         Batch updates multiple rows in the Trades or SWING-SPX Tracker with LLM triage results and AlphaVantage data.
         This completely avoids rate limits by submitting a single API request for all updates.
         """
-        if not updates_list:
+        if not SHEETS_ENABLED or not updates_list:
             return True
 
         if not self.trades_sheet or not self.spx_sheet:
@@ -1158,6 +1186,9 @@ class SheetsTracker:
         """
         Updates the specific row in the Trades Tracker with the Minimax JSON results.
         """
+        if not SHEETS_ENABLED:
+            return True
+
         if not self.trades_sheet:
             if not self.connect():
                 return False
@@ -1214,6 +1245,8 @@ class SheetsTracker:
 
     def sync_watch_targets_to_sheet(self, targets: List[Dict[str, Any]]) -> bool:
         """Mirror active watch targets to the WATCH-TRIGGERS tab in Google Sheets."""
+        if not SHEETS_ENABLED:
+            return True
         try:
             self.connect()
             spreadsheet = self.trades_sheet or self.sheet

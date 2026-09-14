@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
 import logging
 import os
@@ -577,6 +578,8 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
         p_key = "candlestick_patterns"
     elif p_key in ("tastytrade", "tasty", "iv", "volatility", "tastytrade_volatility", "tastytrade_plugin"):
         p_key = "tastytrade_volatility"
+    elif p_key in ("monte_carlo", "montecarlo", "mc", "sim", "simulation", "monte_carlo_plugin"):
+        p_key = "monte_carlo"
 
     if p_key == "all":
         res = plugin_manager.run_all(ticker, df, dw)
@@ -585,6 +588,9 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
         if not plugin:
             return f"Error: Unknown plugin '{plugin_name}'. Available: {list(plugin_manager._plugins.keys())}"
         res = plugin.run(ticker, df, dw)
+
+    if "_monte_carlo_markdown" in res:
+        return res["_monte_carlo_markdown"]
 
     lines = [f"### Quantitative Plugin Results for {ticker} [Plugin: {p_key}]"]
     for k, v in res.items():
@@ -621,18 +627,19 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     ticker = ticker.upper()
     date_str = date_str or time.strftime("%Y-%m-%d")
 
-    # Locate datawindow.csv and datawindow.json
+    # Locate datawindow.csv and datawindow.json strictly for date_str
     chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
     csv_path = chart_dir / f"{ticker}_datawindow.csv"
     dw_path = chart_dir / f"{ticker}_datawindow.json"
 
     if not csv_path.exists():
-        raw_root = config.BASE_DIR / "data" / "raw"
-        for d in sorted(raw_root.glob("*/"), reverse=True):
-            cand = d / ticker / f"{ticker}_datawindow.csv"
+        # Check date_str's triage folder before checking anywhere else
+        triage_date_dir = config.BASE_DIR / "data" / "triage" / date_str
+        for sub in ["_DEEP_RESEARCH", "force", ""]:
+            cand = triage_date_dir / sub / ticker / f"{ticker}_datawindow.csv" if sub else triage_date_dir / ticker / f"{ticker}_datawindow.csv"
             if cand.exists():
                 csv_path = cand
-                dw_path = d / ticker / f"{ticker}_datawindow.json"
+                dw_path = cand.parent / f"{ticker}_datawindow.json"
                 break
 
     if not csv_path.exists():
@@ -1194,11 +1201,18 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     # generous client timeout — a request that's merely queued behind
     # other workers should not be aborted mid-generation.
     if not use_openrouter:
+        import httpx
         logger.info("Using Local LLM Server (local-first for local research)...")
+        _local_timeout = int(os.getenv("LOCAL_LLM_TIMEOUT", "1800"))
         client = OpenAI(
             base_url=API_URL,
             api_key="sk-no-key-required",
-            timeout=int(os.getenv("LOCAL_LLM_TIMEOUT", "1800")),
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=_local_timeout,   # allow full generation time (default was 600s → too short for 100k+ prompts)
+                write=30.0,
+                pool=10.0,
+            ),
         )
         try:
             models = client.models.list()
@@ -1353,50 +1367,45 @@ def query_local_llm(
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
             
-            # Explicitly instruct the LLM on autonomous research and requesting everything it needs
+            # Explicitly instruct the LLM on autonomous research and parallel tool execution
             tool_mandate = (
-                "\n\n[TOOL CALLING & AUTONOMOUS RESEARCH MANDATE]:\n"
+                "\n\n[QUANTITATIVE EXECUTION & AUTONOMOUS RESEARCH MANDATE]:\n"
                 "You have full access to real-time market data, quantitative execution, and analytical tools:\n"
-                "- `execute_python_code`: Run arbitrary Python on the 300-bar dataframe `df` (Monte Carlo, EV modeling, volatility spreads, VP levels).\n"
+                "- `execute_python_code`: Run arbitrary Python on the 300-bar dataframe `df` (Monte Carlo simulations, EV modeling, volatility spreads, VP levels).\n"
                 "- `fetch_options_chain`: Look up live bid/ask, Greeks, open interest, and strike geometry.\n"
                 "- `get_realtime_quote`: Live spot price, bid/ask, and intraday range.\n"
                 "- `run_quantitative_plugin`: Run institutional plugins (order flow, squeeze expansion, candlestick patterns, tastytrade volatility).\n"
                 "- `scrape_tradingview_options_finder`: Strategy Finder spread search.\n"
-                "- `fetch_sec_filings`: Official U.S. SEC EDGAR filings (10-K, 10-Q, 8-K, Form 4) and trailing 4-quarter GAAP financial facts (revenue, net income, cash, long-term debt).\n"
+                "- `fetch_sec_filings`: Official U.S. SEC EDGAR filings (10-K, 10-Q, 8-K, Form 4) and financial facts.\n"
                 "- `scrape_tradingview_chart`: Fresh Playwright chart & Data Window scrape.\n"
                 "- `fetch_earnings_calendar`, `fetch_prior_research`, and `search_web`.\n\n"
-                "MANDATE: Request ALL data, calculations, and simulations you need. If you need multiple tools, emit them in parallel. "
-                "After receiving results, examine the data and continue calling any additional tools if you have open questions, need different strike ranges, or require deeper verification. "
-                "Only proceed to write the final Markdown report when you are fully satisfied with all empirical evidence."
+                "MANDATE:\n"
+                "1. If you require calculations, options chains, quotes, or plugins, emit ALL tool calls immediately in PARALLEL in your first response.\n"
+                "2. CRITICAL: Do NOT output conversational planning text, thoughts, or preambles before calling tools. Emit pure tool calls directly.\n"
+                "3. After receiving the tool calculation results, synthesize all empirical evidence and output your complete, exhaustive Markdown Deep Research Report."
             )
             if messages and messages[0].get("role") == "system":
                 messages[0]["content"] = (messages[0].get("content") or "") + tool_mandate
 
-        if provider == "local":
-            # STRUCTURED OUTPUT (LOCAL). Now that thinking is OFF server-side
-            # (--reasoning off, enforced by enable_thinking:False), the model never
-            # emits a leading <think> trace, so the local GBNF grammar is SAFE.
-            # Enforcing a strict json_schema is the single strongest reliability
-            # tool: the model structurally cannot emit invalid/unparseable JSON.
-            # We pass it via the native response_format json_schema; llama-server
-            # compiles it to GBNF. Fall back to loose json_object if no schema.
-            if json_schema:
-                kwargs["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {"name": "triage", "schema": json_schema},
-                }
-            elif json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-        else:
-            # REMOTE providers (NVIDIA NIM / OpenRouter) support strict json_schema
-            # without the local GBNF/<think:6124c78e> conflict, so prefer it for guaranteed JSON.
-            if json_schema:
-                kwargs["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {"name": "triage", "schema": json_schema},
-                }
-            elif json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
+        if not attach_tools:
+            if provider == "local":
+                # STRUCTURED OUTPUT (LOCAL).
+                if json_schema:
+                    kwargs["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {"name": "triage", "schema": json_schema},
+                    }
+                elif json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+            else:
+                # REMOTE providers (NVIDIA NIM / OpenRouter)
+                if json_schema:
+                    kwargs["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {"name": "triage", "schema": json_schema},
+                    }
+                elif json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
 
         # Tool execution loop with native parallel execution support
         MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "50"))
@@ -1448,12 +1457,9 @@ def query_local_llm(
                 # Extract simulated date if present in context
                 sim_date = None
                 if summarize_tool_context:
-                    import re
                     m_date = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", summarize_tool_context)
                     if m_date:
                         sim_date = m_date.group(1)
-
-                import concurrent.futures
                 
                 def _process_tool_call(tool_call):
                     fn_name = getattr(getattr(tool_call, "function", None), "name", "unknown")
@@ -1493,13 +1499,14 @@ def query_local_llm(
                 )
 
                 MAX_ALLOWED_TOOL_BATCHES = int(os.getenv("MAX_TOOL_BATCHES", "8"))
+                MAX_TOTAL_MSG_CHARS = int(os.getenv("MAX_TOTAL_MSG_CHARS", "450000"))
                 
                 # Check accumulated message character length to prevent context explosion
                 total_msg_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
-                if tool_call_count >= MAX_ALLOWED_TOOL_BATCHES or total_msg_chars > 45000:
+                if tool_call_count >= MAX_ALLOWED_TOOL_BATCHES or total_msg_chars > MAX_TOTAL_MSG_CHARS:
                     logger.info(
                         f"Reached safety limit of tool batches ({tool_call_count}/{MAX_ALLOWED_TOOL_BATCHES}) "
-                        f"or msg volume ({total_msg_chars:,} chars). Directing model to output final markdown report."
+                        f"or msg volume ({total_msg_chars:,}/{MAX_TOTAL_MSG_CHARS:,} chars). Directing model to output final markdown report."
                     )
                     kwargs.pop("tools", None)
                     kwargs.pop("tool_choice", None)
@@ -1519,8 +1526,9 @@ def query_local_llm(
                 full_content = content or ""
                 cont_attempts = 0
 
-                MAX_CONT_ATTEMPTS = int(os.getenv("MAX_CONT_ATTEMPTS", "10"))
-                while finish_reason == "length":
+                is_report_like = bool(re.search(r"(?m)^#+\s+", full_content)) or len(full_content) > 2000
+                MAX_CONT_ATTEMPTS = int(os.getenv("MAX_CONT_ATTEMPTS", "3"))
+                while finish_reason == "length" and (is_report_like or cont_attempts == 0):
                     cont_attempts += 1
                     if cont_attempts > MAX_CONT_ATTEMPTS:
                         logger.warning(f"Max auto-continuation passes ({MAX_CONT_ATTEMPTS}) reached. Aborting continuation.")
@@ -1569,7 +1577,6 @@ def query_local_llm(
                 if not full_content:
                     logger.error(f"API returned empty content. Full response: {response}")
                     
-                import re
                 final_text = full_content.strip()
                 final_text = re.sub(r'<think>.*?</think>', '', final_text, flags=re.DOTALL).strip()
                 final_text = re.sub(r'<thinking>.*?</thinking>', '', final_text, flags=re.DOTALL).strip()
@@ -1589,7 +1596,6 @@ def query_local_llm(
         kwargs.pop("tool_choice", None)
         final_response = _create_completion(client, provider, **kwargs)
         final_text = _extract_text(final_response.choices[0].message).strip()
-        import re
         final_text = re.sub(r'<think>.*?</think>', '', final_text, flags=re.DOTALL).strip()
         final_text = re.sub(r'<thinking>.*?</thinking>', '', final_text, flags=re.DOTALL).strip()
         final_text = re.sub(r'<tool_call>.*?</tool_call>', '', final_text, flags=re.DOTALL).strip()

@@ -99,9 +99,11 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
 
             # Extract symbol
             for key in ["ticker", "symbol", "stock", "asset"]:
-                if key in json_data:
-                    result["symbol"] = str(json_data[key]).upper().strip()
-                    break
+                if key in json_data and json_data[key]:
+                    sym_val = str(json_data[key]).upper().strip()
+                    if sym_val and sym_val != "NONE":
+                        result["symbol"] = sym_val
+                        break
 
             # Extract strategy (Swing/Daily)
             for key in ["strategy", "type", "interval", "timeframe"]:
@@ -117,17 +119,17 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
 
             # Extract price
             for key in ["price", "close", "last", "value", "exit_px", "entry_px", "px"]:
-                if key in json_data:
+                if key in json_data and json_data[key] is not None:
                     try:
                         result["alert_price"] = float(json_data[key])
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
                     break
 
             # Fallback: Check if price is 0 or None, and try to extract from 'plan' key (e.g. "In 745.32")
             if (
                 result["alert_price"] is None or result["alert_price"] == 0.0
-            ) and "plan" in json_data:
+            ) and "plan" in json_data and json_data["plan"]:
                 plan_str = str(json_data["plan"])
                 in_match = re.search(
                     r"\b(?:In|Held)\s+([0-9]+(?:\.[0-9]+)?)\b", plan_str, re.IGNORECASE
@@ -135,7 +137,7 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
                 if in_match:
                     try:
                         result["alert_price"] = float(in_match.group(1))
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
 
             # Extract action
@@ -147,6 +149,23 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
             # Store all raw keys from the webhook JSON in the parsed result
             for k, v in json_data.items():
                 result[k] = v
+
+            # Strict strategy classification:
+            # Screener alerts ('Alert: Screener') are Daily swing candidates, NEVER Intraday.
+            # Intraday trades MUST have 'intraday' in subject, 'intraday' in strategy, or '0DTE' in premium/body.
+            if "screener" in subject_lower:
+                result["strategy"] = "Daily"
+            elif (
+                "intraday" in subject_lower
+                or "0dte" in subject_lower
+                or str(json_data.get("strategy", "")).lower() == "intraday"
+                or "0dte" in str(json_data.get("premium", "")).lower()
+                or "0dte" in body_lower
+                or ("intraday" in body_lower and not json_data.get("setup"))
+            ):
+                result["strategy"] = "Intraday"
+            else:
+                result["strategy"] = "Daily"
 
             # Standard fallback lookups
             result["score"] = str(json_data.get("score", ""))
@@ -192,6 +211,8 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
         action_match = re.search(r"\b(buy|sell|entry|exit|long|short|bullish|bearish)\b", full_text)
         if action_match:
             result["action"] = action_match.group(1).upper()
+            if result["strategy"] == "Daily" and not result.get("setup"):
+                result["strategy"] = "Intraday"
 
     # 5. Extract price fallback (if price is not found yet)
     if result["alert_price"] is None:
@@ -205,7 +226,7 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
                 try:
                     result["alert_price"] = float(match.group(1))
                     break
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
 
     # 6. Final heuristics if symbol is still missing
@@ -221,7 +242,7 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
             result["symbol"] = filtered_words[0]
 
     # Clean symbol (remove exchange prefix if present, e.g. NASDAQ:AAPL -> AAPL)
-    if ":" in result["symbol"]:
+    if result["symbol"] and ":" in result["symbol"]:
         result["symbol"] = result["symbol"].split(":")[-1]
 
     return result

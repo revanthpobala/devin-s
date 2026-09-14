@@ -15,10 +15,10 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
   <!-- Modular Stylesheets -->
-  <link rel="stylesheet" href="/static/css/base.css?v=41">
-  <link rel="stylesheet" href="/static/css/layout.css?v=41">
-  <link rel="stylesheet" href="/static/css/components.css?v=41">
-  <link rel="stylesheet" href="/static/css/modals.css?v=41">
+  <link rel="stylesheet" href="/static/css/base.css?v=42">
+  <link rel="stylesheet" href="/static/css/layout.css?v=42">
+  <link rel="stylesheet" href="/static/css/components.css?v=42">
+  <link rel="stylesheet" href="/static/css/modals.css?v=43">
 </head>
 <body>
 
@@ -32,6 +32,7 @@
       <div class="pill" id="pill-market"><span class="dot pulse"></span><span id="txt-market">Checking Market...</span></div>
       <div class="pill" id="pill-llm"><span class="dot"></span><span id="txt-llm">LLM Port 8000</span></div>
       <div class="pill cyan" id="pill-tasty"><span class="dot"></span><span id="txt-tasty">Tastytrade Cloud</span></div>
+      <div class="pill" id="pill-schwab" onclick="AppStatus.showSchwabInfo()" style="cursor:pointer;" title="Click for Schwab OAuth status & renewal instructions"><span class="dot"></span><span id="txt-schwab">Schwab API</span></div>
       <div class="pill" id="pill-tracker"><span class="dot"></span><span id="txt-tracker">Gmail Ingestor</span></div>
       <button class="btn secondary" id="btn-theme-toggle" onclick="App.toggleTheme()" style="padding: 5px 12px; font-size: 12px;" title="Switch between Clean Light and Dark Theme">☀️ Light</button>
       <button class="btn" id="btn-toggle-tracker" onclick="AppStatus.toggleTracker()" style="padding: 5px 12px; font-size: 12px;">▶ Start Market Ingestor</button>
@@ -48,10 +49,19 @@
       <!-- Desk Switcher Bar -->
       <div class="desk-switcher-bar">
         <button class="desk-nav-btn active" id="btn-desk-swing" onclick="App.switchDesk('swing')">
-          <span>🎯</span> Swing Stalking Desk
+          <span>🎯</span> Stalking & Execution Radar
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-alerts" onclick="App.switchDesk('alerts')">
+          <span>🚨</span> Alerts & Screeners
         </button>
         <button class="desk-nav-btn" id="btn-desk-watchlist" onclick="App.switchDesk('watchlist')">
           <span>📡</span> Stalking & Triggers Table
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-trades" onclick="App.switchDesk('trades')">
+          <span>💡</span> Suggested Trades & Audit
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-portfolio" onclick="App.switchDesk('portfolio')">
+          <span>💼</span> Schwab Positions
         </button>
         <button class="desk-nav-btn" id="btn-desk-intraday" onclick="App.switchDesk('intraday')">
           <span>⚡</span> Intraday 0DTE Desk
@@ -66,77 +76,55 @@
       <!-- ================================================================= -->
       <div id="desk-pane-swing" style="display:flex; flex-direction:column; gap:20px;">
 
-        <!-- GPU VRAM & Active Background Operations Station -->
-        <div class="station-card">
-          <div class="card-head">
-            <span class="card-title">🎮 HARDWARE VRAM LOAD & ACTIVE AI PROCESSES</span>
-            <span class="pill" id="vram-summary-pill">Scanning GPUs...</span>
-          </div>
-          <div style="display:grid; grid-template-columns: 1.1fr 1fr; gap: 20px;">
-            
-            <!-- GPU VRAM Bars -->
-            <div id="gpu-cards-container" style="display:flex; flex-direction:column; gap:10px;">
-              <div style="color:var(--text-muted); font-size:12px;">Querying NVIDIA SMI...</div>
-            </div>
-
-            <!-- Active Processes / Tasks -->
-            <div>
-              <div style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">Active AI & Scraping Processes</div>
-              <div id="active-procs-container" style="display:flex; flex-direction:column; gap:8px;">
-                <div style="color:var(--text-muted); font-size:12px;">Scanning active processes...</div>
+        <!-- 1-Click Research Station (Sleek Compact Bar) -->
+        <div class="station-card" style="padding:10px 16px; margin-bottom:2px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <span class="card-title" style="font-size:13px; font-weight:800; letter-spacing:0.5px;">🚀 1-CLICK RESEARCH</span>
+              <span id="research-indicator" class="pill amber" style="display:none;"><span class="dot pulse"></span><span id="research-stage-txt">RUNNING</span></span>
+              
+              <!-- Quick Tickers Pills -->
+              <div class="quick-tickers-row" style="margin-left:6px; display:inline-flex; align-items:center; gap:5px;">
+                <span style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Quick:</span>
+                <button class="ticker-pill-btn active" onclick="AppSwing.setTicker('WMT')">WMT</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('UBER')">UBER</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('AMZN')">AMZN</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('NVDA')">NVDA</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('META')">META</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('TSLA')">TSLA</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('AAPL')">AAPL</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.setTicker('MSFT')">MSFT</button>
               </div>
             </div>
 
-          </div>
-        </div>
-
-        <!-- 1-Click Research Station -->
-        <div class="station-card">
-          <div class="card-head">
-            <span class="card-title">🚀 1-CLICK RESEARCH LAUNCHER</span>
-            <span id="research-indicator" class="pill amber" style="display:none;"><span class="dot pulse"></span><span id="research-stage-txt">RUNNING</span></span>
-          </div>
-          
-          <!-- Quick Tickers Pills -->
-          <div class="quick-tickers-row">
-            <span style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Quick Tickers:</span>
-            <button class="ticker-pill-btn active" onclick="AppSwing.setTicker('WMT')">WMT</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('UBER')">UBER</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('AMZN')">AMZN</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('NVDA')">NVDA</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('META')">META</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('TSLA')">TSLA</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('AAPL')">AAPL</button>
-            <button class="ticker-pill-btn" onclick="AppSwing.setTicker('MSFT')">MSFT</button>
-          </div>
-
-          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-            <input type="text" id="ticker-input" class="input-ticker" placeholder="TICKER" maxlength="6" value="WMT" style="width:160px; text-transform:uppercase;">
-            <select id="mode-select" class="select-mode">
-              <option value="full">Full Pipeline (Scrape + Deep + Cloud Alerts)</option>
-              <option value="scrape_deep">Scrape + Deep Research</option>
-              <option value="deep_only">Deep Research Only (Existing Scrape)</option>
-              <option value="scrape_only">Scrape Only (TradingView Chart + DW)</option>
-            </select>
-            <button class="btn" onclick="AppSwing.launchResearch()">▶ Launch Research</button>
-          </div>
-        </div>
-
-        <!-- Superforecasting Model Calibration Scoreboard (Model A vs Model B) -->
-        <div class="station-card" style="margin-bottom: 18px;">
-          <div class="card-head" style="flex-wrap:wrap; gap:12px;">
-            <div style="display:flex; align-items:center; gap:10px;">
-              <span class="card-title">🏆 SUPERFORECASTING CALIBRATION SCOREBOARD</span>
-              <span class="pill cyan" id="calibration-status-pill">Brier Scored</span>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <input type="text" id="ticker-input" class="input-ticker" placeholder="TICKER" maxlength="6" value="WMT" style="width:110px; height:32px; font-size:13px; text-transform:uppercase;">
+              <select id="mode-select" class="select-mode" style="height:32px; font-size:12px; padding:0 8px;">
+                <option value="full">Full Pipeline (Scrape + Deep + Alerts)</option>
+                <option value="scrape_deep">Scrape + Deep Research</option>
+                <option value="deep_only">Deep Research Only</option>
+                <option value="scrape_only">Scrape Only (TV Chart + DW)</option>
+              </select>
+              <button class="btn" onclick="AppSwing.launchResearch()" style="height:32px; padding:0 14px; font-size:12px; font-weight:700;">▶ Launch</button>
+              <button class="btn secondary" onclick="AppSwing.openTradingViewModal(document.getElementById('ticker-input').value || 'SPY', 'D')" style="height:32px; padding:0 12px; font-size:12px; font-weight:700;" title="Open Real-Time Interactive TradingView Chart">📈 TV Chart</button>
             </div>
-            <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
-              <button class="btn secondary" onclick="AppSwing.triggerCalibrationAudit()" style="padding:4px 10px; font-size:12px;">
-                🔄 Run Audit Now
+          </div>
+
+          <!-- Active AI & Scraping Processes / Recent Research Dossiers -->
+          <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">⚡ Active AI & Scraping Tasks</span>
+              </div>
+              <button class="btn secondary" id="btn-toggle-procs-panel" onclick="AppSwing.toggleActiveProcsPanel()" style="padding:1px 8px; font-size:10.5px;">
+                Collapse ▲
               </button>
             </div>
-          </div>
-          <div id="calibration-scoreboard-widget" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; padding:4px 0;">
-            <div style="color:var(--text-muted); font-size:13px; padding:8px 0;">Loading calibration data...</div>
+            <div id="active-procs-wrapper">
+              <div id="active-procs-container" style="display:flex; flex-direction:column; gap:6px;">
+                <div style="color:var(--text-muted); font-size:12px;">Scanning active processes...</div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -255,6 +243,210 @@
       </div>
 
       <!-- ================================================================= -->
+      <!-- DEDICATED ALERTS & PRE-MOVE SCREENERS DESK PANE                  -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-alerts" style="display:none; flex-direction:column; gap:16px;">
+
+        <!-- Subtab Switcher: TradingView Alerts vs Schwab Pre-Move Screener -->
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn alerts-subtab-btn active" id="btn-subtab-tv" onclick="AppAlerts.switchSubTab('tv')" style="padding:6px 16px; font-size:12.5px; font-weight:800; background:var(--text-main); color:var(--bg-surface);">
+            🚨 TradingView Alerts
+          </button>
+          <button class="btn secondary alerts-subtab-btn" id="btn-subtab-schwab" onclick="AppAlerts.switchSubTab('schwab')" style="padding:6px 16px; font-size:12.5px; font-weight:700;">
+            ⚡ Schwab Pre-Move Screener
+          </button>
+        </div>
+
+        <!-- SUB-VIEW 1: TRADINGVIEW ALERTS (GROUPED BY DATE) -->
+        <div id="alerts-view-tv" style="display:flex; flex-direction:column; gap:18px;">
+
+          <!-- Top Header & Live Ingestion Status Station -->
+          <div class="station-card">
+            <div class="card-head" style="flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span class="card-title">🚨 REAL-TIME TRADINGVIEW ALERTS FEED</span>
+                <span class="pill green" id="tv-alerts-count-pill">Loading Alerts...</span>
+                <span class="pill cyan" id="tv-alerts-session-pill">Today (ET)</span>
+              </div>
+              
+              <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
+                <button class="btn secondary" onclick="AppAlerts.refreshAlerts()" style="padding:4px 12px; font-size:12px;" title="Refresh alerts feed from SQLite DB">
+                  🔄 Refresh Feed
+                </button>
+                <button class="btn secondary" onclick="AppAlerts.pollGmailNow()" style="padding:4px 12px; font-size:12px;" title="Trigger 1-shot Gmail poll for new TradingView alert emails">
+                  📥 Check Gmail Now
+                </button>
+              </div>
+            </div>
+
+            <!-- Controls: Action Filters & Search Bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+              <!-- Action & AI Filter Tabs -->
+              <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <button class="btn secondary alerts-filter-btn active" data-action="ALL" onclick="AppAlerts.setFilter('ALL')" style="padding:4px 11px; font-size:11.5px; font-weight:700;">All (<span id="count-alert-all">0</span>)</button>
+                <button class="btn secondary alerts-filter-btn" data-action="ENTER_CALLS" onclick="AppAlerts.setFilter('ENTER_CALLS')" style="padding:4px 11px; font-size:11.5px; font-weight:700;">🟢 Calls (<span id="count-alert-calls">0</span>)</button>
+                <button class="btn secondary alerts-filter-btn" data-action="ENTER_PUTS" onclick="AppAlerts.setFilter('ENTER_PUTS')" style="padding:4px 11px; font-size:11.5px; font-weight:700;">🔴 Puts (<span id="count-alert-puts">0</span>)</button>
+                <button class="btn secondary alerts-filter-btn" data-action="EXIT" onclick="AppAlerts.setFilter('EXIT')" style="padding:4px 11px; font-size:11.5px; font-weight:700;">🚪 Exits (<span id="count-alert-exits">0</span>)</button>
+                
+                <span style="color:var(--border); margin:0 2px;">|</span>
+
+                <button class="btn secondary alerts-ai-filter-btn" data-ai="ALL" onclick="AppAlerts.setAiFilter('ALL')" style="padding:4px 10px; font-size:11px; font-weight:700;">AI: All</button>
+                <button class="btn secondary alerts-ai-filter-btn" data-ai="ACTIONABLE" onclick="AppAlerts.setAiFilter('ACTIONABLE')" style="padding:4px 10px; font-size:11px; font-weight:700; color:#10b981;">🎯 Actionable (<span id="count-alert-actionable">0</span>)</button>
+                <button class="btn secondary alerts-ai-filter-btn" data-ai="WATCH" onclick="AppAlerts.setAiFilter('WATCH')" style="padding:4px 10px; font-size:11px; font-weight:700; color:var(--amber);">⏳ Watch (<span id="count-alert-watch">0</span>)</button>
+                <button class="btn secondary alerts-ai-filter-btn" data-ai="CUT" onclick="AppAlerts.setAiFilter('CUT')" style="padding:4px 10px; font-size:11px; font-weight:700; color:var(--rose-light);">✂️ Cut/Stand Aside (<span id="count-alert-cut">0</span>)</button>
+
+                <div id="alerts-auto-triage-badge" style="display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:6px; font-size:11px; font-weight:800; background:rgba(6,182,212,0.12); border:1px solid rgba(6,182,212,0.35); color:var(--cyan); margin-left:4px; cursor:pointer;" onclick="AppAlerts.batchEvaluatePending()" title="Autonomous background local LLM triage engine is running. Click to expedite instant batch pass.">
+                  <span class="dot pulse green" style="width:6px; height:6px; background:#10b981; border-radius:50%; box-shadow:0 0 6px #10b981;"></span>
+                  <span>🤖 Auto-Triage Active</span>
+                  <span id="alerts-pending-counter" style="display:none; font-size:9.5px; background:rgba(0,0,0,0.35); padding:1px 5px; border-radius:4px; margin-left:2px; color:var(--text-muted);">0</span>
+                </div>
+                <button class="btn secondary" onclick="AppAlerts.openPnlModal()" style="padding:4px 11px; font-size:11px; font-weight:800; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.08); color:#10b981; margin-left:4px; display:inline-flex; align-items:center; gap:4px;" title="View Intraday Trades P&amp;L and AI Triage Attribution for each day">
+                  <span>📊</span> Intraday P&amp;L
+                </button>
+              </div>
+
+              <!-- Search input & Interactive Calendar Widget -->
+              <div style="display:flex; align-items:center; gap:8px;">
+                <!-- Calendar Widget Wrapper -->
+                <div class="calendar-widget-wrapper" id="tv-alerts-calendar-wrapper">
+                  <button type="button" class="calendar-trigger-btn" id="tv-alerts-calendar-btn" onclick="AppAlerts.toggleCalendarPicker()" title="Select Session Date from Calendar">
+                    <span style="font-size:13px;">📅</span>
+                    <span id="tv-alerts-calendar-label">All Sessions</span>
+                    <span class="pill cyan" id="tv-alerts-calendar-badge" style="font-size:10px; padding:1px 6px; margin-left:2px;">All</span>
+                    <span style="font-size:9px; opacity:0.6; margin-left:2px;">▼</span>
+                  </button>
+
+                  <!-- Floating Calendar Popover -->
+                  <div class="calendar-popover" id="tv-alerts-calendar-popover" style="display:none;">
+                    <div class="calendar-header">
+                      <button type="button" class="calendar-nav-btn" onclick="AppAlerts.prevCalendarMonth(event)" title="Previous Month">◀</button>
+                      <div class="calendar-header-title" id="tv-alerts-calendar-month-year">September 2026</div>
+                      <button type="button" class="calendar-nav-btn" onclick="AppAlerts.nextCalendarMonth(event)" title="Next Month">▶</button>
+                    </div>
+                    <div class="calendar-weekdays">
+                      <div>Su</div><div>Mo</div><div>Tu</div><div>We</div><div>Th</div><div>Fr</div><div>Sa</div>
+                    </div>
+                    <div class="calendar-grid" id="tv-alerts-calendar-days">
+                      <!-- Dynamic days rendered by AppAlerts.renderCalendar() -->
+                    </div>
+                    <div class="calendar-footer">
+                      <button type="button" class="btn secondary" onclick="AppAlerts.selectCalendarDate('ALL')" style="flex:1; padding:4px 8px; font-size:11px; font-weight:700;">
+                        🌟 All Sessions
+                      </button>
+                      <button type="button" class="btn secondary" id="tv-alerts-calendar-latest-btn" onclick="AppAlerts.selectLatestCalendarDate()" style="flex:1; padding:4px 8px; font-size:11px; font-weight:700; color:var(--blue);">
+                        ⚡ Latest Session
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Hidden fallback for backward compatibility -->
+                <select id="tv-alerts-date-select" style="display:none;" onchange="AppAlerts.setDateFilter(this.value)">
+                  <option value="ALL">📅 All Session Dates</option>
+                </select>
+
+                <div class="search-filter-box" style="min-width:180px; max-width:240px;">
+                  <span class="search-filter-icon">🔍</span>
+                  <input type="text" id="tv-alerts-search-input" class="search-filter-input" placeholder="Search Ticker, Setup..." oninput="AppAlerts.setSearch(this.value)">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Full Structured Alerts Table Station (Grouped by Date) -->
+          <div class="station-card" style="padding:0; overflow:hidden;">
+            <div style="overflow-x:auto;">
+              <table class="data-table" style="width:100%; min-width:840px; border-collapse:collapse; font-size:12px; table-layout:fixed;">
+                <thead>
+                  <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                    <th onclick="AppAlerts.setSort('timestamp')" style="text-align:left; padding:9px 6px; width:66px; cursor:pointer;">Time ⇅</th>
+                    <th onclick="AppAlerts.setSort('symbol')" style="text-align:left; padding:9px 6px; width:112px; cursor:pointer;">Ticker ⇅</th>
+                    <th onclick="AppAlerts.setSort('action')" style="text-align:center; padding:9px 6px; width:102px; cursor:pointer;">Action ⇅</th>
+                    <th onclick="AppAlerts.setSort('alert_price')" style="text-align:right; padding:9px 6px; width:72px; cursor:pointer;">Price ⇅</th>
+                    <th style="text-align:left; padding:9px 6px; width:185px;">Tactical Plan & Setup</th>
+                    <th onclick="AppAlerts.setSort('strategy')" style="text-align:center; padding:9px 6px; width:110px; cursor:pointer;">Vehicle ⇅</th>
+                    <th onclick="AppAlerts.setSort('llm_decision')" style="text-align:center; padding:9px 6px; width:115px; cursor:pointer;">AI Triage ⇅</th>
+                    <th style="text-align:center; padding:9px 6px; width:78px;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tv-alerts-table-body">
+                  <tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">Loading TradingView alerts...</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Pagination / Summary Toolbar -->
+            <div style="padding:10px 16px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; font-size:11.5px; font-family:'JetBrains Mono', monospace;">
+              <div style="color:var(--text-muted);" id="tv-alerts-pagination-info">
+                Showing 1 - 25 of 225 alerts
+              </div>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="display:flex; align-items:center; gap:4px;">
+                  <span style="color:var(--text-muted); font-size:11px;">Per Page:</span>
+                  <select id="tv-alerts-page-size-select" class="select-mode" onchange="AppAlerts.setPageSize(this.value)" style="padding:2px 6px; font-size:11px;">
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="ALL">All</option>
+                  </select>
+                </div>
+                <div style="display:flex; align-items:center; gap:4px;" id="tv-alerts-pagination-buttons">
+                  <!-- Injected buttons: Prev, [1], [2], Next -->
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- SUB-VIEW 2: SCHWAB 1000 PRE-MOVE SCREENER -->
+        <div id="alerts-view-schwab" style="display:none; flex-direction:column; gap:20px;">
+          <!-- Schwab 1000 Pre-Move Compression Screener Station -->
+          <div class="station-card" id="schwab-screener-card">
+            <div class="card-head" style="flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span class="card-title">⚡ SCHWAB 1000 PRE-MOVE SCREENER</span>
+                <span class="pill cyan" id="schwab-screener-status-pill">983 Stocks (SCHK)</span>
+                <span class="pill" id="schwab-market-tide-pill" style="border-color:var(--green); color:var(--green-light);">SPY Bullish</span>
+                <!-- Continuous Screener & Tastytrade Live Badges -->
+                <div id="screener-continuous-badge" style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.35); color:#10b981; cursor:pointer;" onclick="AppSwing.triggerContinuousScanNow()" title="Autonomous background continuous Schwab &amp; Tastytrade screener is active. Click to trigger an immediate scan cycle.">
+                  <span class="dot pulse green" style="width:6px; height:6px; background:#10b981; border-radius:50%; box-shadow:0 0 6px #10b981;"></span>
+                  <span id="screener-continuous-status-text">🤖 Continuous Active</span>
+                  <span id="screener-next-scan-timer" style="font-size:9.5px; background:rgba(0,0,0,0.35); padding:1px 5px; border-radius:4px; margin-left:2px; color:var(--text-muted);">...</span>
+                </div>
+                <div id="screener-tastytrade-badge" style="display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); color:#f87171;" title="Tastytrade Institutional Volatility &amp; 24/7 Cloud Quote Alerts connected">
+                  <span>🍒 TT Vol &amp; Cloud Alerts</span>
+                </div>
+                <!-- Side Switcher -->
+                <div style="display:inline-flex; align-items:center; gap:2px; background:var(--bg-subtle); padding:2px; border-radius:6px; border:1px solid var(--border); margin-left:6px;">
+                  <button class="btn secondary" id="screener-side-long-btn" onclick="AppSwing.setScreenerSide('long')" style="padding:2px 9px; font-size:11px; font-weight:800; background:var(--green); color:#fff; border-color:var(--green);" title="Ground-floor basing setups coiling at 20 EMA / 50 SMA with high upside runway">🟢 Long Bases</button>
+                  <button class="btn secondary" id="screener-side-short-btn" onclick="AppSwing.setScreenerSide('short')" style="padding:2px 9px; font-size:11px; font-weight:700;" title="Extended runners at 52w ceiling bumping resistance with large downside room to 50 SMA">🔴 Prime Shorts</button>
+                </div>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+                <button class="btn secondary" id="btn-run-schwab-scan" onclick="AppSwing.runSchwabScreenerScan()" style="padding:4px 12px; font-size:12px;" title="Scan all 983 Schwab constituents for 20 EMA coiling or ceiling exhaustion">
+                  🔍 Run Live Schwab Scan
+                </button>
+                <button class="btn" id="btn-run-autonomous-scan" onclick="AppSwing.runAutonomousScreenerScan()" style="padding:4px 12px; font-size:12px; font-weight:800; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; border:1px solid #10b981;" title="Autonomous Engine: Scans 983 stocks, scores with Pine rev-screener model, and automatically dispatches research & alerts for top high-priority setups">
+                  🤖 Autonomous Scan & Research
+                </button>
+                <button class="btn secondary" id="btn-scrape-all-survivors" onclick="AppSwing.autoResearchAllSurvivors()" style="padding:4px 12px; font-size:12px;">
+                  🚀 Research All Survivors
+                </button>
+              </div>
+            </div>
+
+            <!-- Screener Survivors Table / Cards -->
+            <div id="schwab-screener-container" style="overflow-x:auto;">
+              <div style="color:var(--text-muted); font-size:13px; padding:12px 0;">Loading screener candidates...</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ================================================================= -->
       <!-- WATCHLIST & TRIGGER TABLE DESK PANE                               -->
       <!-- ================================================================= -->
       <div id="desk-pane-watchlist" style="display:none; flex-direction:column; gap:20px;">
@@ -266,6 +458,9 @@
               <span class="pill cyan" id="watchlist-total-count">0 Targets</span>
             </div>
             <div style="display:flex; align-items:center; gap:10px; margin-left:auto;">
+              <button class="btn secondary" id="btn-watchlist-audit-modal" onclick="AppWatchlist.openAuditModal()" style="padding:5px 12px; font-size:12px; font-weight:700; color:var(--emerald-light); border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.08);" title="Open complete suggested trades audit trail & win/loss performance">
+                📊 Performance & Win/Loss Audit <span class="pill green" id="audit-pill-badge" style="font-size:10px; padding:1px 5px; margin-left:4px;">...</span>
+              </button>
               <button class="btn" id="btn-poll-watchlist" onclick="AppWatchlist.pollRealtimeNow()" style="padding:5px 12px; font-size:12px;">
                 🔄 Poll Realtime Prices
               </button>
@@ -279,17 +474,23 @@
           <!-- Table Filter Tabs & Search Bar -->
           <div class="table-controls-bar">
             <div class="filter-tabs-row">
-              <button class="tab-pill-btn active" data-tab="ALL" onclick="AppWatchlist.setFilterTab('ALL')">
-                All <span class="pill" style="font-size:10px; padding:1px 5px;" id="count-tab-all">0</span>
+              <button class="tab-pill-btn active" data-tab="ACTIONABLE" onclick="AppWatchlist.setFilterTab('ACTIONABLE')" style="background:rgba(16,185,129,0.08); border-color:rgba(16,185,129,0.45); color:var(--emerald-light); font-weight:800;" title="Immediately actionable setups: In Zone, In Trade, or near zone (|dist| <= 1.5%)">
+                ⚡ Actionable / Near Zone <span class="pill green" style="font-size:10px; padding:1px 5px; font-weight:800;" id="count-tab-actionable">0</span>
               </button>
               <button class="tab-pill-btn" data-tab="IN_ZONE" onclick="AppWatchlist.setFilterTab('IN_ZONE')">
                 🎯 In Zone <span class="pill green" style="font-size:10px; padding:1px 5px;" id="count-tab-in-zone">0</span>
               </button>
+              <button class="tab-pill-btn" data-tab="IN_TRADE" onclick="AppWatchlist.setFilterTab('IN_TRADE')">
+                💼 In Trade / Positions <span class="pill cyan" style="font-size:10px; padding:1px 5px;" id="count-tab-in-trade">0</span>
+              </button>
               <button class="tab-pill-btn" data-tab="STALKING" onclick="AppWatchlist.setFilterTab('STALKING')">
                 ⏳ Stalking <span class="pill amber" style="font-size:10px; padding:1px 5px;" id="count-tab-stalking">0</span>
               </button>
-              <button class="tab-pill-btn" data-tab="IN_TRADE" onclick="AppWatchlist.setFilterTab('IN_TRADE')">
-                💼 In Trade / My Positions <span class="pill cyan" style="font-size:10px; padding:1px 5px;" id="count-tab-in-trade">0</span>
+              <button class="tab-pill-btn" data-tab="ALL" onclick="AppWatchlist.setFilterTab('ALL')">
+                All Targets <span class="pill" style="font-size:10px; padding:1px 5px;" id="count-tab-all">0</span>
+              </button>
+              <button class="tab-pill-btn" data-tab="TARGET_HIT" onclick="AppWatchlist.setFilterTab('TARGET_HIT')">
+                🏁 Target Hit <span class="pill" style="font-size:10px; padding:1px 5px; background:rgba(16,185,129,0.2); color:var(--emerald-light); font-weight:800;" id="count-tab-target-hit">0</span>
               </button>
               <button class="tab-pill-btn" data-tab="INVALIDATED" onclick="AppWatchlist.setFilterTab('INVALIDATED')">
                 ⚠️ Invalidated <span class="pill red" style="font-size:10px; padding:1px 5px;" id="count-tab-invalidated">0</span>
@@ -302,11 +503,170 @@
             </div>
           </div>
 
+          <!-- Watchlist Sub-Controls Bar: Grouping, Page Size & Dynamic Stats -->
+          <div class="watchlist-subcontrols-bar">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span style="font-size:11px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Group:</span>
+              <div class="group-by-toggle">
+                <button class="group-btn active" id="grp-btn-none" onclick="AppWatchlist.setGroupBy('none')">📋 Flat List</button>
+                <button class="group-btn" id="grp-btn-date" onclick="AppWatchlist.setGroupBy('date')">📅 By Date</button>
+                <button class="group-btn" id="grp-btn-ticker" onclick="AppWatchlist.setGroupBy('ticker')">🏷️ By Ticker</button>
+                <button class="group-btn" id="grp-btn-status" onclick="AppWatchlist.setGroupBy('status')">🎯 By Status</button>
+              </div>
+              <button class="btn secondary" id="btn-toggle-all-groups" onclick="AppWatchlist.toggleAllGroups()" style="display:none; padding:3px 10px; font-size:11px; font-weight:700;">
+                ▼ Collapse All
+              </button>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:12px; margin-left:auto; flex-wrap:wrap;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-size:11.5px; color:var(--text-muted); font-weight:700;">Page Size:</span>
+                <select id="select-watchlist-pagesize" class="select-pagesize" onchange="AppWatchlist.setPageSize(this.value)">
+                  <option value="10" selected>10 per page</option>
+                  <option value="25">25 per page</option>
+                  <option value="50">50 per page</option>
+                  <option value="all">Show All</option>
+                </select>
+              </div>
+              <span id="watchlist-pagination-badge" class="pill cyan" style="font-size:10.5px; padding:2px 8px; font-weight:700;">
+                0 Targets
+              </span>
+            </div>
+          </div>
+
           <!-- Table / Content Container -->
           <div id="watchlist-content-container">
             <div style="color:var(--text-muted); font-size:13px; padding:20px; text-align:center;">Loading watchlist...</div>
           </div>
 
+        </div>
+
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- SUGGESTED TRADES & PERFORMANCE / AUDIT DESK PANE                  -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-trades" style="display:none; flex-direction:column; gap:20px;">
+
+        <!-- Top Header & KPI Summary Station -->
+        <div class="station-card">
+          <div class="card-head" style="flex-wrap:wrap; gap:10px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="card-title">💡 SUGGESTED TRADES & PERFORMANCE AUDIT DESK</span>
+              <span class="pill cyan" style="font-size:10.5px; font-weight:700;">Live PnL & Thesis Auditing</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn secondary" id="btn-poll-trades-quotes" onclick="AppTrades.pollRealtimeQuotes()" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+                🔄 Refresh Quotes
+              </button>
+            </div>
+          </div>
+
+          <!-- KPI Summary Counters -->
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-top:8px;">
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Total Tracked</div>
+              <div style="font-size:22px; font-weight:800; color:var(--text-main); font-family:var(--font-mono); margin-top:2px;" id="kpi-trades-total">0</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:11px; color:#10b981; font-weight:700; text-transform:uppercase;">🎯 In Entry Zone</div>
+              <div style="font-size:22px; font-weight:800; color:#10b981; font-family:var(--font-mono); margin-top:2px;" id="kpi-trades-in-zone">0</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:11px; color:#f59e0b; font-weight:700; text-transform:uppercase;">⏳ Stalking Entry</div>
+              <div style="font-size:22px; font-weight:800; color:#f59e0b; font-family:var(--font-mono); margin-top:2px;" id="kpi-trades-stalking">0</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:11px; color:#06b6d4; font-weight:700; text-transform:uppercase;">🏁 Target Hit / In Trade</div>
+              <div style="font-size:22px; font-weight:800; color:#06b6d4; font-family:var(--font-mono); margin-top:2px;" id="kpi-trades-winners">0</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:11px; color:#f43f5e; font-weight:700; text-transform:uppercase;">🛑 Stopped / Out</div>
+              <div style="font-size:22px; font-weight:800; color:#f43f5e; font-family:var(--font-mono); margin-top:2px;" id="kpi-trades-stopped">0</div>
+            </div>
+          </div>
+
+          <!-- Controls: Filters & Search Bar -->
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
+            <!-- Status Filter Pills -->
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn secondary trades-filter-btn active" data-filter="ALL" onclick="AppTrades.setFilter('ALL')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">All Trades</button>
+              <button class="btn secondary trades-filter-btn" data-filter="IN_ZONE" onclick="AppTrades.setFilter('IN_ZONE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🎯 In Zone</button>
+              <button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Stalking</button>
+              <button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Target Hit</button>
+              <button class="btn secondary trades-filter-btn" data-filter="STOP_BREACHED" onclick="AppTrades.setFilter('STOP_BREACHED')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🛑 Stopped</button>
+            </div>
+
+            <!-- Search input -->
+            <div style="display:flex; align-items:center; gap:8px;">
+              <input type="text" class="input-ticker" placeholder="Search ticker or company..." oninput="AppTrades.setSearch(this.value)" style="padding:5px 10px; font-size:12px; width:220px; text-transform:none; border-radius:6px;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Superforecasting Model Calibration Scoreboard (Model A vs Model B) -->
+        <div class="station-card">
+          <div class="card-head" style="flex-wrap:wrap; gap:12px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="card-title">🏆 SUPERFORECASTING CALIBRATION SCOREBOARD</span>
+              <span class="pill cyan" id="calibration-status-pill">Brier Scored</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+              <button class="btn secondary" onclick="AppSwing.triggerCalibrationAudit()" style="padding:4px 10px; font-size:12px;">
+                🔄 Run Audit Now
+              </button>
+            </div>
+          </div>
+          <div id="calibration-scoreboard-widget" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; padding:4px 0;">
+            <div style="color:var(--text-muted); font-size:13px; padding:8px 0;">Loading calibration data...</div>
+          </div>
+        </div>
+
+        <!-- Structured Suggested Trades Table Station -->
+        <div class="station-card" style="padding:0; overflow:hidden;">
+          <div style="overflow-x:auto;">
+            <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                  <th onclick="AppTrades.setSort('updated_at')" style="text-align:left; padding:10px 12px; cursor:pointer;">Time / Date ⇅</th>
+                  <th onclick="AppTrades.setSort('ticker')" style="text-align:left; padding:10px 12px; cursor:pointer;">Ticker & Company ⇅</th>
+                  <th onclick="AppTrades.setSort('verdict')" style="text-align:center; padding:10px 12px; cursor:pointer;">Verdict ⇅</th>
+                  <th style="text-align:center; padding:10px 12px;">Plan / Structure</th>
+                  <th style="text-align:right; padding:10px 12px;">Entry Zone</th>
+                  <th style="text-align:right; padding:10px 12px;">Stop Loss</th>
+                  <th style="text-align:right; padding:10px 12px;">Targets (T1 / T2)</th>
+                  <th onclick="AppTrades.setSort('last_price')" style="text-align:right; padding:10px 12px; cursor:pointer;">Live Quote ⇅</th>
+                  <th onclick="AppTrades.setSort('status')" style="text-align:center; padding:10px 12px; cursor:pointer;">Status ⇅</th>
+                  <th onclick="AppTrades.setSort('pnl_pct')" style="text-align:center; padding:10px 12px; cursor:pointer;">Theor. PnL ⇅</th>
+                  <th style="text-align:center; padding:10px 12px;">Audit / Check</th>
+                </tr>
+              </thead>
+              <tbody id="trades-table-body">
+                <!-- Dynamically populated by AppTrades.renderTable() -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination Toolbar -->
+          <div style="padding:10px 16px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; font-size:11.5px; font-family:'JetBrains Mono', monospace;">
+            <div style="color:var(--text-muted);" id="trades-pagination-info">
+              Showing 1 - 10 of 20 trades
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="display:flex; align-items:center; gap:4px;">
+                <span style="color:var(--text-muted); font-size:11px;">Per Page:</span>
+                <select id="trades-page-size-select" class="select-mode" onchange="AppTrades.setPageSize(this.value)" style="padding:2px 6px; font-size:11px;">
+                  <option value="10" selected>10</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <div style="display:flex; align-items:center; gap:4px;" id="trades-pagination-buttons">
+                <!-- Injected buttons: Prev, [1], [2], Next -->
+              </div>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -349,8 +709,9 @@
         <div class="station-card">
           <div class="card-head">
             <span class="card-title">💼 ACTIVE INTRADAY OPEN POSITIONS (data/positions.json)</span>
-            <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:flex; align-items:center; gap:8px;">
               <span class="pill cyan" id="intraday-pos-count">0 Open Positions</span>
+              <button class="btn secondary" onclick="AppIntraday.queryAllPositions()" style="padding:4px 10px; font-size:11px; font-weight:700; color:var(--blue); border-color:var(--border);" title="Ask Copilot to review and manage all open positions">💬 Query All in Chat</button>
               <button class="btn danger" onclick="AppIntraday.flattenIntradayPositions()" style="padding:4px 10px; font-size:11px;">🧹 Flatten All (EOD)</button>
             </div>
           </div>
@@ -443,9 +804,193 @@
       </div>
 
       <!-- ================================================================= -->
+      <!-- SCHWAB PORTFOLIO & INDIVIDUAL POSITIONS DESK PANE                 -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-portfolio" style="display:none; flex-direction:column; gap:20px;">
+
+        <!-- Top Stat Summary Cards -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:14px;">
+          
+          <!-- Card 1: Total Portfolio Liquidation Value -->
+          <div class="station-card" style="padding:14px 18px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">💼 Total Portfolio Value</span>
+              <span class="pill cyan" style="font-size:10px;">Schwab Live</span>
+            </div>
+            <div style="font-size:24px; font-weight:800; font-family:var(--font-mono); color:var(--text-main);" id="pf-stat-total-val">
+              $0.00
+            </div>
+            <div style="font-size:11px; color:var(--text-muted);" id="pf-stat-holdings-count">
+              Scanning accounts...
+            </div>
+          </div>
+
+          <!-- Card 2: Today's Day P/L -->
+          <div class="station-card" style="padding:14px 18px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">📈 Today's Gain / Loss</span>
+              <span class="pill" id="pf-stat-day-pnl-pct" style="font-size:10px; font-weight:700;">+0.00%</span>
+            </div>
+            <div style="font-size:24px; font-weight:800; font-family:var(--font-mono);" id="pf-stat-day-pnl">
+              +$0.00
+            </div>
+            <div style="font-size:11px; color:var(--text-muted);">
+              Across all 3 linked accounts
+            </div>
+          </div>
+
+          <!-- Card 3: Total Unrealized P/L -->
+          <div class="station-card" style="padding:14px 18px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">💰 Total Unrealized P/L</span>
+              <span class="pill" id="pf-stat-unrealized-pnl-pct" style="font-size:10px; font-weight:700;">+0.00%</span>
+            </div>
+            <div style="font-size:24px; font-weight:800; font-family:var(--font-mono);" id="pf-stat-unrealized-pnl">
+              +$0.00
+            </div>
+            <div style="font-size:11px; color:var(--text-muted);">
+              Total cumulative profit
+            </div>
+          </div>
+
+          <!-- Card 4: Cash & Available Funds -->
+          <div class="station-card" style="padding:14px 18px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">💵 Cash &amp; Money Market</span>
+              <span class="pill green" style="font-size:10px;">Liquid Reserve</span>
+            </div>
+            <div style="font-size:24px; font-weight:800; font-family:var(--font-mono); color:var(--cyan);" id="pf-stat-cash-bal">
+              $0.00
+            </div>
+            <div style="font-size:11px; color:var(--text-muted);" id="pf-last-synced-txt">
+              Last Synced: Live
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Filter & Control Station Card -->
+        <div class="station-card" style="padding:12px 18px;">
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            
+            <!-- Row 1: Account Pills & Sync Button -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Account:</span>
+                <div id="pf-account-pills-container" style="display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                  <!-- Dynamically populated -->
+                </div>
+              </div>
+
+              <button class="btn" id="btn-sync-portfolio" onclick="AppPortfolio.syncFromSchwab()" style="padding:6px 14px; font-size:12px; font-weight:700;">
+                🔄 Sync from Schwab
+              </button>
+            </div>
+
+            <!-- Row 2: Asset Filter Pills, Search, Sort -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding-top:10px; border-top:1px solid var(--border);">
+              
+              <!-- Asset Type Filter Pills -->
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Asset:</span>
+                <button class="ticker-pill-btn pf-asset-filter-btn active" data-asset="ALL" onclick="AppPortfolio.setAssetFilter('ALL')">All</button>
+                <button class="ticker-pill-btn pf-asset-filter-btn" data-asset="EQUITY" onclick="AppPortfolio.setAssetFilter('EQUITY')">📈 Equities</button>
+                <button class="ticker-pill-btn pf-asset-filter-btn" data-asset="OPTION" onclick="AppPortfolio.setAssetFilter('OPTION')">⚡ Options</button>
+                <button class="ticker-pill-btn pf-asset-filter-btn" data-asset="MUTUAL_FUND" onclick="AppPortfolio.setAssetFilter('MUTUAL_FUND')">🏛️ Mutual Funds</button>
+              </div>
+
+              <!-- Search & Sort -->
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div class="search-filter-box" style="min-width:180px;">
+                  <input type="text" id="pf-search-input" placeholder="Search ticker or description..." oninput="AppPortfolio.handleSearch(this.value)" style="height:30px; font-size:12px; width:100%;">
+                </div>
+
+                <div style="display:flex; align-items:center; gap:4px;">
+                  <span style="font-size:11px; font-weight:700; color:var(--text-muted);">Sort:</span>
+                  <select id="pf-sort-select" class="select-mode" onchange="AppPortfolio.setSort(this.value)" style="height:30px; font-size:11.5px; padding:0 8px;">
+                    <option value="market_value_desc" selected>Market Value (Highest)</option>
+                    <option value="day_pnl_desc">Today's P/L (Best First)</option>
+                    <option value="day_pnl_asc">Today's P/L (Worst First)</option>
+                    <option value="unrealized_pnl_desc">Unrealized P/L (Highest)</option>
+                    <option value="unrealized_pnl_asc">Unrealized P/L (Lowest)</option>
+                    <option value="symbol">Ticker Symbol (A-Z)</option>
+                  </select>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Individual Positions Table Station -->
+        <div class="station-card">
+          <div class="card-head">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="card-title">📋 SCHWAB INDIVIDUAL HOLDINGS &amp; POSITIONS</span>
+              <span class="pill cyan" id="pf-table-count-badge">0 Positions</span>
+            </div>
+            <div style="font-size:11px; color:var(--text-muted);">
+              1-Click 🔬 Deep Research &amp; 📈 TV Charts on Any Position
+            </div>
+          </div>
+
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border); background:var(--bg-subtle, rgba(255,255,255,0.02)); color:var(--text-muted); font-size:11px; text-transform:uppercase;">
+                  <th style="padding:10px 14px; text-align:left;">Symbol / Asset</th>
+                  <th style="padding:10px 14px; text-align:left;">Account</th>
+                  <th style="padding:10px 14px; text-align:right;">Quantity</th>
+                  <th style="padding:10px 14px; text-align:right;">Avg Cost</th>
+                  <th style="padding:10px 14px; text-align:right;">Current Px</th>
+                  <th style="padding:10px 14px; text-align:right;">Market Value</th>
+                  <th style="padding:10px 14px; text-align:right;">Today's P/L</th>
+                  <th style="padding:10px 14px; text-align:right;">Total Unrealized</th>
+                  <th style="padding:10px 14px; text-align:center;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="pf-positions-tbody">
+                <tr>
+                  <td colspan="9" style="text-align:center; padding:30px; color:var(--text-muted);">
+                    Loading Schwab positions...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ================================================================= -->
       <!-- MULTI-CHANNEL TERMINAL & LOGS DESK PANE                           -->
       <!-- ================================================================= -->
       <div id="desk-pane-logs" style="display:none; flex-direction:column; gap:20px;">
+
+        <!-- GPU VRAM & Active Background Operations Station -->
+        <div class="station-card">
+          <div class="card-head">
+            <span class="card-title">🎮 HARDWARE VRAM LOAD & ACTIVE AI PROCESSES</span>
+            <span class="pill" id="vram-summary-pill">Scanning GPUs...</span>
+          </div>
+          <div style="display:grid; grid-template-columns: 1.1fr 1fr; gap: 20px;">
+            
+            <!-- GPU VRAM Bars -->
+            <div id="gpu-cards-container" style="display:flex; flex-direction:column; gap:10px;">
+              <div style="color:var(--text-muted); font-size:12px;">Querying NVIDIA SMI...</div>
+            </div>
+
+            <!-- Active Processes / Tasks -->
+            <div>
+              <div style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">Active AI & Scraping Processes</div>
+              <div id="active-procs-container-logs" style="display:flex; flex-direction:column; gap:8px;">
+                <div style="color:var(--text-muted); font-size:12px;">Scanning active processes...</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
 
         <!-- Channel Switcher Station -->
         <div class="station-card">
@@ -493,6 +1038,7 @@
             </div>
             <div style="display:flex; align-items:center; gap:8px;">
               <button class="btn secondary" onclick="AppSwing.loadTastytradeAlerts()" style="padding:4px 10px; font-size:12px;">🔄 Refresh Alerts</button>
+              <button class="btn danger" onclick="AppSwing.deleteAllAlerts()" style="padding:4px 10px; font-size:12px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); color:#fca5a5; display:inline-flex; align-items:center; gap:4px;" title="Delete all cloud alerts across all tickers on Tastytrade">🗑️ Clear All Alerts</button>
               <button class="btn" onclick="AppSwing.openCreateAlertModal()" style="padding:4px 10px; font-size:12px;">+ Add Alert</button>
             </div>
           </div>
@@ -554,10 +1100,12 @@
 
       <!-- Quick Prompt Chips -->
       <div style="padding:8px 12px; background:var(--bg-subtle); border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:5px; flex-shrink:0;">
+        <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Review all of my active open intraday positions from data/positions.json. Give me an executive management breakdown: which ones are working, which ones need trailing stops or trims, and which ones should be cut?')" style="font-size:10px; padding:2px 7px; color:var(--emerald-light); font-weight:700;">💼 Query Open Positions</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Based on the research done today, what was run today, what did we learn, and what should we do?')" style="font-size:10px; padding:2px 7px; color:var(--blue); font-weight:700;">📋 Today's Overview & Actions</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Get live real-time price quotes, bid/ask, and day range.')" style="font-size:10px; padding:2px 7px; font-weight:600;">📊 Live Quotes</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Fetch live options chain, strikes, and volatility metrics.')" style="font-size:10px; padding:2px 7px; font-weight:600;">📈 Options Chain</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Trigger a fresh TradingView chart and Data Window scrape.')" style="font-size:10px; padding:2px 7px; font-weight:600;">🔄 Scrape Fresh Chart</button>
+        <button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal((document.getElementById('ticker-input')?.value || 'SPY'), 'D')" style="font-size:10px; padding:2px 7px; font-weight:700; color:#059669; border-color:#a7f3d0;" title="Open interactive TradingView chart modal">📈 Live TV Chart</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Explain tactical levels, entry zone, stop, and R:R.')" style="font-size:10px; padding:2px 7px;">🎯 Tactical Levels</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Execute Python code to calculate exact 10,000-path Monte Carlo probability of touching target before stop, 14d ATR, and HV20 realized volatility.')" style="font-size:10px; padding:2px 7px; font-weight:600;">🐍 Python Monte Carlo & Math</button>
         <button class="ticker-pill-btn" onclick="AppChat.askRevChat('Breakdown recommended options trade and strike geometry.')" style="font-size:10px; padding:2px 7px;">🛡️ Options Trade</button>
@@ -618,6 +1166,275 @@
     </div>
   </div>
 
+  <!-- TradingView Alert Details & JSON Modal -->
+  <div class="modal-overlay" id="tv-alert-detail-modal" style="display:none; align-items:center; justify-content:center; z-index:1050;" onclick="if(event.target===this) AppAlerts.closeAlertModal()">
+    <div class="modal-content" id="alert-modal-content-container" style="max-width:960px; width:92vw; height:92vh; display:flex; flex-direction:column; border-radius:12px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.6); background:var(--bg-surface); border:1px solid var(--border); transition: max-width 0.25s cubic-bezier(0.16, 1, 0.3, 1), width 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
+      
+      <!-- Modal Header -->
+      <div class="modal-header" style="padding:14px 20px; background:var(--bg-subtle); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span style="font-family:'Outfit',sans-serif; font-size:20px; font-weight:800; color:var(--text-main);" id="alert-modal-ticker">BEN</span>
+          <span style="font-size:13px; color:var(--text-muted); font-weight:500;" id="alert-modal-company">Franklin Resources Inc.</span>
+          <span class="pill" id="alert-modal-action-badge" style="font-size:12px; font-weight:800; padding:3px 10px;">⚡ NEUTRAL</span>
+          <span class="pill cyan" id="alert-modal-price" style="font-size:12px; font-family:var(--font-mono); font-weight:800;">$33.67</span>
+          <span class="pill" id="alert-modal-time" style="font-size:11px; font-family:var(--font-mono); opacity:0.85;">16:01:29 ET</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn secondary" onclick="AppAlerts.copyAlertJson()" style="padding:4px 10px; font-size:11.5px; font-weight:700;" title="Copy JSON payload to clipboard">
+            📋 Copy JSON
+          </button>
+          <button class="btn secondary" onclick="AppAlerts.closeAlertModal()" style="padding:4px 10px; font-size:12px; font-weight:700;">
+            ✕ Close
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Action Toolbar -->
+      <div style="padding:8px 20px; background:var(--bg-surface); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary" id="alert-modal-btn-chart" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+          📈 Interactive TV Chart
+        </button>
+        <button class="btn" id="alert-modal-btn-research" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+          🚀 1-Click Deep Research
+        </button>
+        <button class="btn secondary" id="alert-modal-btn-copilot" onclick="AppAlerts.askCopilotFromModal()" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+          💬 Ask Copilot About Setup
+        </button>
+        <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+          <span class="pill" id="alert-modal-status-pill" style="font-size:10.5px;">Status: INGESTED</span>
+        </div>
+      </div>
+
+      <!-- Modal Split Container -->
+      <div style="display:flex; flex:1; overflow:hidden; min-height:0;" id="alert-modal-split-container">
+        
+        <!-- Left Side: Main Alert Details & Chart (Scrollable) -->
+        <div id="alert-modal-main-pane" style="flex:1; min-width:0; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:16px; background:var(--bg-surface);">
+        
+        <!-- ⚡ LOCAL RESEARCH (#ponytail & revanth-gem-local) CARD -->
+        <div id="alert-modal-local-research-card" style="background:linear-gradient(135deg, rgba(6,182,212,0.08) 0%, rgba(16,185,129,0.04) 100%); border:1px solid rgba(6,182,212,0.35); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:12px; box-shadow:0 4px 20px rgba(0,0,0,0.25);">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="font-size:12.5px; font-weight:800; color:var(--cyan-glow); letter-spacing:0.5px; display:flex; align-items:center; gap:6px;">
+                ⚡ LOCAL RESEARCH (#ponytail & revanth-gem-local)
+              </span>
+              <span class="pill green" id="alert-modal-lr-verdict" style="font-size:11.5px; font-weight:800; padding:2px 10px;">
+                ⏳ PENDING EVALUATION
+              </span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn" id="alert-modal-btn-run-lr" onclick="AppAlerts.runLocalResearchForModal()" style="padding:4px 12px; font-size:11px; font-weight:800; background:linear-gradient(135deg, #06b6d4, #0284c7); border:none; color:#fff; cursor:pointer;" title="Run local GPU triage with live Tastytrade metrics and news">
+                ⚡ Run Local Research (#ponytail)
+              </button>
+            </div>
+          </div>
+
+          <!-- Ponytail PM Assessment -->
+          <div id="alert-modal-lr-ponytail-box" style="background:rgba(0,0,0,0.25); border-left:3px solid var(--cyan); padding:12px 16px; border-radius:6px; font-size:12.5px; line-height:1.6;">
+            <div style="font-size:10.5px; font-weight:800; color:var(--cyan); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;">
+              Senior PM Critique (#ponytail):
+            </div>
+            <div id="alert-modal-lr-ponytail-text" class="critique-markdown" style="color:var(--text-main);">
+              Click "Run Local Research" above to evaluate floor defense, risk-reward edge, and tactical invalidation via local GPU LLM without scraping.
+            </div>
+          </div>
+
+          <!-- Tactical Levels & Vehicle Grid -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; font-size:11.5px; font-family:var(--font-mono);">
+            <div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700;">TACTICAL KILL STOP</div>
+              <div id="alert-modal-lr-stop" style="font-size:13px; font-weight:800; color:var(--rose-light, #f43f5e); margin-top:2px;">--</div>
+            </div>
+            <div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700;">PROFIT TARGET 1</div>
+              <div id="alert-modal-lr-target" style="font-size:13px; font-weight:800; color:#10b981; margin-top:2px;">--</div>
+            </div>
+            <div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700;">RECOMMENDED VEHICLE</div>
+              <div id="alert-modal-lr-vehicle" style="font-size:12.5px; font-weight:800; color:var(--amber, #f59e0b); margin-top:2px;">--</div>
+            </div>
+            <div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700;">CONVICTION & MODE</div>
+              <div id="alert-modal-lr-mode" style="font-size:12px; font-weight:800; color:var(--cyan-glow); margin-top:2px;">--</div>
+            </div>
+          </div>
+
+          <!-- Live Broker Context Strip (Tastytrade, News, Earnings) -->
+          <div id="alert-modal-lr-broker-strip" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); padding-top:4px; border-top:1px solid rgba(255,255,255,0.05);">
+            <span>📊 Tastytrade IV Rank: <strong id="alert-modal-lr-iv" style="color:var(--text-main);">--</strong></span>
+            <span>📅 Expected Earnings: <strong id="alert-modal-lr-earnings" style="color:var(--text-main);">--</strong></span>
+            <span>📰 Catalyst: <strong id="alert-modal-lr-catalyst" style="color:var(--text-main);">--</strong></span>
+          </div>
+        </div>
+
+        <!-- 📅 TICKER SESSION TRADES & AI-ONLY P&L LIFECYCLE CARD -->
+        <div id="alert-modal-ticker-day-trades-card" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:10px;">
+          <!-- Dynamically populated by AppAlerts.renderAlertModalTickerTrades() -->
+        </div>
+
+        <!-- Chart Preview & Scraped Screenshot Station -->
+        <div id="alert-modal-chart-section" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:12px; font-weight:800; color:var(--cyan-glow);">📈 CHART PREVIEW</span>
+              <span id="alert-modal-chart-badge" class="pill blue" style="font-size:9.5px; padding:2px 6px;">Daily Candlesticks</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <button class="btn secondary" id="alert-modal-chart-toggle-tv" onclick="AppAlerts.switchModalChartType('interactive')" style="padding:2px 8px; font-size:11px; font-weight:700;">Interactive TV</button>
+              <button class="btn secondary" id="alert-modal-chart-toggle-img" onclick="AppAlerts.switchModalChartType('image')" style="padding:2px 8px; font-size:11px; font-weight:700;">Captured Screenshot</button>
+              <button class="btn" id="alert-modal-btn-scrape-normal" onclick="AppAlerts.scrapeNormalChartForModal()" style="padding:2px 10px; font-size:11px; font-weight:800; background:linear-gradient(135deg, #059669, #0284c7); border:none; color:#fff;" title="Scrape normal daily TradingView chart via Playwright">
+                📸 Scrape Normal Chart
+              </button>
+            </div>
+          </div>
+
+          <!-- Chart Container (Interactive TV Iframe or Scraped Screenshot) -->
+          <div id="alert-modal-chart-host" style="width:100%; height:380px; min-height:360px; background:#040711; border-radius:8px; border:1px solid var(--border); overflow:hidden; position:relative; display:flex; align-items:center; justify-content:center;">
+            <div style="color:var(--text-muted); font-size:12px;">Loading chart...</div>
+          </div>
+        </div>
+
+        <!-- Grid of 4 Pure Market & Broker Telemetry Cards (NO WYCKOFF STAGES, NO SCREENER SCORES) -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px;">
+          
+          <!-- Card 1: Tactical Setup & Invalidation -->
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-size:11px; font-weight:800; color:var(--blue); letter-spacing:0.5px; display:flex; align-items:center; justify-content:space-between;">
+              <span>🎯 TACTICAL SETUP & RISK</span>
+              <span id="alert-modal-grade-badge" class="pill green" style="font-size:10px; display:none;">Grade: --</span>
+            </div>
+            <div id="alert-modal-plan-content" style="font-size:12px; line-height:1.5; color:var(--text-main); font-family:var(--font-mono); background:rgba(0,0,0,0.15); padding:10px; border-radius:6px; word-break:break-word;">
+              No explicit trade plan in alert.
+            </div>
+            <div style="font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:5px; margin-top:4px;">
+              <div><strong>Invalidation (Wrong If):</strong> <span id="alert-modal-wrong-if" style="color:var(--rose-light, #f43f5e); font-family:var(--font-mono); font-weight:700;">--</span></div>
+              <div><strong>Recommended Vehicle:</strong> <span id="alert-modal-option" style="color:var(--amber, #f59e0b); font-family:var(--font-mono); font-weight:800;">--</span></div>
+            </div>
+          </div>
+
+          <!-- Card 2: Tastytrade Volatility & Options Edge -->
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-size:11px; font-weight:800; color:var(--emerald-light, #10b981); letter-spacing:0.5px; display:flex; align-items:center; justify-content:space-between;">
+              <span>⚡ TASTYTRADE VOLATILITY & OPTIONS</span>
+              <span id="alert-modal-iv-regime-pill" class="pill cyan" style="font-size:10px;">VOL REGIME</span>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11.5px; font-family:var(--font-mono);">
+              <div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+                <div style="font-size:9.5px; color:var(--text-muted);">IV RANK / PERCENTILE</div>
+                <div id="alert-modal-iv-rank-box" style="font-weight:800; font-size:12.5px; color:var(--text-main); margin-top:2px;">--</div>
+              </div>
+              <div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+                <div style="font-size:9.5px; color:var(--text-muted);">30D REALIZED HV</div>
+                <div id="alert-modal-hv30-box" style="font-weight:700; margin-top:2px; color:var(--text-main);">--</div>
+              </div>
+              <div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+                <div style="font-size:9.5px; color:var(--text-muted);">IV - HV SPREAD</div>
+                <div id="alert-modal-spread-box" style="font-weight:700; margin-top:2px;">--</div>
+              </div>
+              <div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+                <div style="font-size:9.5px; color:var(--text-muted);">OPTION LIQUIDITY</div>
+                <div id="alert-modal-liquidity-box" style="font-weight:700; margin-top:2px;">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 3: Catalysts & Earnings Calendar -->
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-size:11px; font-weight:800; color:var(--amber, #f59e0b); letter-spacing:0.5px;">
+              📅 EVENT CALENDAR & CATALYSTS
+            </div>
+            <div style="font-size:11.5px; display:flex; flex-direction:column; gap:6px;">
+              <div><strong>Expected Earnings:</strong> <span id="alert-modal-card-earnings" style="font-family:var(--font-mono); font-weight:700; color:var(--text-main);">--</span></div>
+              <div><strong>Material Catalyst:</strong> <span id="alert-modal-card-catalyst" style="color:var(--text-main);">--</span></div>
+              <div><strong>Market Setup:</strong> <span id="alert-modal-why-now" style="color:var(--text-muted); font-size:11px;">--</span></div>
+            </div>
+          </div>
+
+          <!-- Card 4: Price Action & Execution Telemetry -->
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-size:11px; font-weight:800; color:var(--purple-light, #a855f7); letter-spacing:0.5px;">
+              💵 PRICE ACTION & EXECUTION STATS
+            </div>
+            <div style="font-size:11.5px; display:flex; flex-direction:column; gap:6px;">
+              <div><strong>Alert Trigger Spot:</strong> <span id="alert-modal-card-spot" style="font-family:var(--font-mono); font-weight:800; color:var(--emerald-light, #10b981);">$0.00</span></div>
+              <div><strong>Action & Bias:</strong> <span id="alert-modal-card-bias" style="font-weight:700; color:var(--text-main);">--</span></div>
+              <div><strong>Strategy Type:</strong> <span id="alert-modal-card-strategy" style="color:var(--text-muted);">--</span></div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- AI Commentary & Playbook (if present) -->
+        <div id="alert-modal-ai-box" style="display:none; background:rgba(6,182,212,0.06); border:1px solid rgba(6,182,212,0.3); border-radius:10px; padding:12px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-size:11px; font-weight:800; color:var(--cyan-glow);">🤖 LOCAL AI ANALYSIS & PLAYBOOK</span>
+            <span class="pill green" id="alert-modal-ai-verdict" style="font-size:10px;">STAND ASIDE</span>
+          </div>
+          <div id="alert-modal-ai-playbook" style="font-size:12px; color:var(--text-main); line-height:1.5; white-space:pre-wrap;"></div>
+        </div>
+
+        <!-- Raw JSON Payload Viewer Station -->
+        <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; overflow:hidden;">
+          <div style="padding:10px 14px; background:rgba(0,0,0,0.2); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:11px; font-weight:700; color:var(--text-muted); font-family:var(--font-mono);">RAW ALERT JSON PAYLOAD</span>
+            <button class="btn secondary" onclick="AppAlerts.copyAlertJson()" style="padding:2px 8px; font-size:10.5px;">📋 Copy JSON</button>
+          </div>
+          <pre id="alert-modal-raw-json" style="margin:0; padding:14px; font-family:var(--font-mono); font-size:11.5px; line-height:1.5; color:#38bdf8; background:#040711; overflow-x:auto; max-height:260px;"></pre>
+        </div>
+
+        </div>
+
+        <!-- Draggable Resizer Splitter -->
+        <div class="modal-chat-resizer" id="alert-modal-chat-resizer" style="display:none;" title="Drag left/right to resize Copilot drawer"></div>
+
+        <!-- Right Side: Persistent Interactive AI Copilot Chat Drawer -->
+        <div id="alert-modal-copilot-drawer" style="width: 440px; min-width: 320px; max-width: 55%; display:none; flex-direction:column; background: var(--bg-surface); border-left: 1px solid var(--border); overflow:hidden; flex-shrink:0;">
+          
+          <!-- Drawer Header -->
+          <div style="padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+            <div style="display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden;">
+              <span style="font-family:'Outfit',sans-serif; font-size:13px; font-weight:800; color:var(--text-main); white-space:nowrap;">💬 COPILOT: <span id="alert-modal-copilot-ticker" style="color:var(--cyan-glow);">TICKER</span></span>
+              <span class="pill cyan" style="font-size:9.5px; padding:1px 5px; font-weight:700;">LIVE SETUP</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+              <button class="btn secondary" onclick="AppAlerts.clearAlertCopilotChat()" style="padding:2px 7px; font-size:10.5px; font-weight:600;" title="Clear chat thread">🧹 Clear</button>
+              <button class="btn secondary" onclick="AppAlerts.toggleAlertCopilotDrawer(false)" style="padding:2px 7px; font-size:11px; font-weight:700;" title="Close Copilot drawer">✕ Close</button>
+            </div>
+          </div>
+
+          <!-- Quick Question Prompts Bar -->
+          <div style="padding: 8px 12px; background: var(--bg-surface); border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:5px; flex-shrink:0;">
+            <button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('setup')" style="font-size:10px; padding:2px 7px; color:var(--cyan-glow); font-weight:700;">🎯 Setup & R:R</button>
+            <button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('stagnation')" style="font-size:10px; padding:2px 7px; color:var(--amber); font-weight:700;">⚡ Stagnation & Income</button>
+            <button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('volatility')" style="font-size:10px; padding:2px 7px; color:#10b981; font-weight:700;">📊 Volatility & IV</button>
+            <button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('catalysts')" style="font-size:10px; padding:2px 7px; font-weight:600;">📅 Catalysts & Earnings</button>
+            <button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('options')" style="font-size:10px; padding:2px 7px; font-weight:600;">📈 Options Chain</button>
+            <button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('math')" style="font-size:10px; padding:2px 7px; font-weight:600;">🐍 Python Math</button>
+          </div>
+
+          <!-- Chat Messages Area (Scrollable) -->
+          <div id="alert-modal-chat-thread" style="flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; background:var(--bg-surface);">
+            <div id="alert-modal-chat-intro" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+              <div style="font-weight:700; color:var(--cyan-glow); font-size:11px; margin-bottom:4px;">🤖 COPILOT GROUNDED IN ALERT</div>
+              <div style="font-size:11.5px; color:var(--text-muted); line-height:1.45;" id="alert-modal-chat-intro-desc">
+                Ask anything about entry timing, floor defense, risk-reward, options spread pricing, or stagnation mechanics.
+              </div>
+            </div>
+          </div>
+
+          <!-- Input Box Area -->
+          <div style="padding:10px 12px; background:var(--bg-subtle); border-top:1px solid var(--border); display:flex; gap:8px; align-items:center; flex-shrink:0;">
+            <input type="text" id="alert-modal-chat-input" placeholder="Ask Copilot about setup, stop, or options..." style="flex:1; padding:7px 10px; font-size:12px; background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; color:var(--text-main);" onkeydown="if(event.key==='Enter') AppAlerts.sendModalCopilotMsg()" />
+            <button class="btn" id="alert-modal-chat-send" onclick="AppAlerts.handleAlertCopilotSendClick()" style="padding:7px 12px; font-size:11.5px; font-weight:700; background:linear-gradient(135deg, #06b6d4, #0284c7); border:none; color:#fff; white-space:nowrap;">💬 Send</button>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+
   <!-- Tastytrade Alert Editor Modal -->
   <div class="modal-overlay" id="alert-editor-modal">
     <div class="modal-content" style="max-width:480px; height:auto;">
@@ -653,16 +1470,261 @@
     </div>
   </div>
 
+  <!-- Real-Time TradingView Interactive Chart Modal -->
+  <div class="modal-overlay" id="tv-chart-modal" style="z-index: 1050;" onclick="if(event.target === this) AppSwing.closeTradingViewModal()">
+    <div class="modal-content" style="max-width: 1440px; width: 95vw; height: 90vh; display:flex; flex-direction:column; padding:0; overflow:hidden; border-radius:12px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
+      <div class="modal-header" style="padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--bg-surface); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span style="font-size:18px;">📈</span>
+          <div style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--text-main);" id="tv-modal-ticker-title">$XYZ - TradingView Chart</div>
+          <div id="tv-modal-live-quote-badge" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-subtle); border:1px solid var(--border); padding:2px 8px; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:12px;">
+            <span class="dot pulse" style="background:#10b981;"></span>
+            <span id="tv-modal-live-price" style="font-weight:800; color:#059669;">Live Spot</span>
+          </div>
+          <!-- Timeframe selector -->
+          <div style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; background:var(--bg-subtle); padding:2px; border-radius:6px; border:1px solid var(--border);">
+            <button class="btn secondary" id="tv-tf-15" onclick="AppSwing.setTradingViewModalInterval('15')" style="padding:2px 8px; font-size:11px; font-weight:700;">15m</button>
+            <button class="btn secondary" id="tv-tf-60" onclick="AppSwing.setTradingViewModalInterval('60')" style="padding:2px 8px; font-size:11px; font-weight:700;">1h</button>
+            <button class="btn secondary active" id="tv-tf-D" onclick="AppSwing.setTradingViewModalInterval('D')" style="padding:2px 8px; font-size:11px; font-weight:800; background:var(--blue); color:#fff; border-color:var(--blue);">Daily (Swing)</button>
+            <button class="btn secondary" id="tv-tf-W" onclick="AppSwing.setTradingViewModalInterval('W')" style="padding:2px 8px; font-size:11px; font-weight:700;">Weekly</button>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn" id="tv-modal-btn-research" onclick="AppSwing.launchResearchFromTvModal()" style="padding:4px 12px; font-size:11.5px; font-weight:700;" title="Queue full deep research pipeline">
+            ⚡ Deep Research
+          </button>
+          <a id="tv-modal-btn-external" href="#" target="_blank" class="btn secondary" style="padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--blue); text-decoration:none; display:inline-flex; align-items:center; gap:4px;" title="Open in your logged-in TradingView session with the Rev - Enhanced v2 & R-VRVP layout">
+            📊 Open Rev v2 Indicators ↗
+          </a>
+          <button class="btn secondary" onclick="AppSwing.closeTradingViewModal()" style="padding:4px 10px; font-size:13px; font-weight:700;" title="Close (Esc)">
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <!-- TV Embed Widget Container -->
+      <div id="tv-modal-chart-host" style="flex:1; width:100%; height:calc(100% - 55px); background:var(--bg-surface); position:relative;">
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- SUGGESTED TRADE POSITION & STRUCTURE DETAIL MODAL                 -->
+  <!-- ================================================================= -->
+  <div class="modal-overlay" id="trade-plan-modal" style="z-index: 1060;" onclick="if(event.target === this) AppTrades.closePlanModal()">
+    <div class="modal-content" style="max-width: 840px; width: 92vw; max-height: 88vh; display:flex; flex-direction:column; padding:0; overflow:hidden; border-radius:12px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.35); background:var(--bg-surface);">
+      
+      <!-- Modal Header -->
+      <div class="modal-header" style="padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span style="font-size:20px;">⚡</span>
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-family:'Outfit',sans-serif; font-size:18px; font-weight:800; color:var(--text-main);" id="plan-modal-title">$TICKER</span>
+              <span class="pill green" id="plan-modal-side-pill" style="font-size:10px; padding:2px 6px; font-weight:800;">LONG</span>
+              <span class="pill cyan" id="plan-modal-struct-pill" style="font-size:10px; padding:2px 6px; font-weight:700;">BULL CALL SPREAD</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--text-muted); font-weight:500;" id="plan-modal-company">Company Name</div>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div id="plan-modal-live-badge" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); padding:3px 8px; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:11.5px;">
+            <span class="dot pulse" style="background:#10b981;"></span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">SPOT:</span>
+            <span id="plan-modal-spot-price" style="font-weight:800; color:var(--text-main);">$0.00</span>
+          </div>
+          <button class="modal-action-btn close" onclick="AppTrades.closePlanModal()" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Modal Body (Scrollable) -->
+      <div style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:16px;" id="plan-modal-body">
+        <!-- Dynamically rendered by AppTrades.openPlanModal(ticker) -->
+      </div>
+
+      <!-- Modal Footer Toolbar -->
+      <div style="padding:12px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <button class="btn secondary" id="btn-copy-trade-order" onclick="AppTrades.copyOrderString()" style="padding:6px 14px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;">
+          📋 Copy Broker Order String
+        </button>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn secondary" id="btn-modal-open-chart" onclick="AppTrades.openSelectedChart()" style="padding:6px 14px; font-size:12px; font-weight:700;">
+            📈 Open Chart
+          </button>
+          <button class="btn" id="btn-modal-open-dossier" onclick="AppTrades.openSelectedDossier()" style="padding:6px 16px; font-size:12px; font-weight:700;">
+            📖 Full Dossier ↗
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- SUGGESTED TRADES PERFORMANCE & AUDIT TRAIL MODAL                  -->
+  <!-- ================================================================= -->
+  <div class="modal-overlay" id="modal-watchlist-audit" style="z-index: 1070; display:none;" onclick="if(event.target === this) AppWatchlist.closeAuditModal()">
+    <div class="modal-content" style="max-width: 1200px; width: 94vw; max-height: 90vh; display:flex; flex-direction:column; padding:0; overflow:hidden; border-radius:12px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); background:var(--bg-surface); border:1px solid var(--border);">
+      
+      <!-- Modal Header -->
+      <div class="modal-header" style="padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div style="width:36px; height:36px; border-radius:8px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); display:flex; align-items:center; justify-content:center; font-size:18px;">
+            📊
+          </div>
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-family:'Outfit',sans-serif; font-size:17px; font-weight:800; color:var(--text-main); letter-spacing:0.3px;">SUGGESTED TRADES AUDIT & PERFORMANCE TRAIL</span>
+              <span class="pill green" style="font-size:10px; padding:2px 6px; font-weight:800;">ON-DEMAND ENGINE</span>
+            </div>
+            <div style="font-size:11.5px; color:var(--text-muted); font-weight:500;">
+              Historical ledger of all Options Spreads & Equity Shares prescribed by deep research • SQLite Backed
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); padding:3px 8px; border-radius:6px;">
+            <span style="font-size:11px; color:var(--text-muted); font-weight:700;">Window:</span>
+            <select id="select-audit-window" class="select-pagesize" onchange="AppWatchlist.setAuditWindow(this.value)" style="font-weight:700; padding:2px 6px; font-size:11px; border:none; background:transparent;">
+              <option value="100" selected>Last 100 Trades</option>
+              <option value="50">Last 50 Trades</option>
+              <option value="200">Last 200 Trades</option>
+              <option value="0">All Historical Trades</option>
+            </select>
+          </div>
+          <div id="modal-audit-timestamp-badge" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); padding:4px 10px; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-muted);">
+            <span class="dot pulse" style="background:#10b981;"></span>
+            <span>Evaluated: <strong id="modal-audit-evaluated-time" style="color:var(--text-main);">Loading...</strong></span>
+          </div>
+          <button class="btn btn-sm btn-primary" id="btn-re-evaluate-audit" onclick="AppWatchlist.triggerAuditEvaluation()" style="padding:5px 12px; font-size:11.5px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">
+            <span id="re-evaluate-spinner" style="display:none;" class="spinner-small"></span>
+            <span id="re-evaluate-icon">🔄</span>
+            <span>Re-Evaluate All</span>
+          </button>
+          <button class="modal-action-btn close" onclick="AppWatchlist.closeAuditModal()" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Modal Body (Scrollable) -->
+      <div style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:18px;" id="watchlist-audit-modal-body">
+        
+        <!-- 5 KPI Cards Row (The Exact User Visual!) -->
+        <div class="watchlist-performance-strip" id="modal-audit-kpi-strip" style="margin:0;">
+          <!-- Dynamically populated -->
+        </div>
+
+        <!-- Filter Pills & Search Bar -->
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; background:var(--bg-subtle); padding:10px 14px; border-radius:8px; border:1px solid var(--border);">
+          <div class="filter-tabs-row" id="audit-modal-filter-tabs">
+            <button class="tab-pill-btn active" data-audit-tab="ALL" onclick="AppWatchlist.setAuditTab('ALL')">
+              All Trades <span class="pill" id="audit-tab-count-all">0</span>
+            </button>
+            <button class="tab-pill-btn" data-audit-tab="OPTIONS" onclick="AppWatchlist.setAuditTab('OPTIONS')">
+              ⚡ Options Spreads <span class="pill cyan" id="audit-tab-count-options">0</span>
+            </button>
+            <button class="tab-pill-btn" data-audit-tab="SHARES" onclick="AppWatchlist.setAuditTab('SHARES')">
+              📈 Equity Shares <span class="pill blue" id="audit-tab-count-shares">0</span>
+            </button>
+            <button class="tab-pill-btn" data-audit-tab="WON" onclick="AppWatchlist.setAuditTab('WON')">
+              🏆 Won <span class="pill green" id="audit-tab-count-won">0</span>
+            </button>
+            <button class="tab-pill-btn" data-audit-tab="STOPPED" onclick="AppWatchlist.setAuditTab('STOPPED')">
+              🛑 Stopped <span class="pill red" id="audit-tab-count-stopped">0</span>
+            </button>
+            <button class="tab-pill-btn" data-audit-tab="ACTIVE" onclick="AppWatchlist.setAuditTab('ACTIVE')">
+              🎯 Active In Trade <span class="pill amber" id="audit-tab-count-active">0</span>
+            </button>
+            <button class="tab-pill-btn" data-audit-tab="STALKING" onclick="AppWatchlist.setAuditTab('STALKING')">
+              ⏳ Stalking <span class="pill" id="audit-tab-count-stalking">0</span>
+            </button>
+          </div>
+
+          <div class="search-filter-box" style="min-width:220px; max-width:300px;">
+            <span class="search-filter-icon">🔍</span>
+            <input type="text" id="audit-search-input" class="search-filter-input" placeholder="Search Ticker, Trade, Notes..." oninput="AppWatchlist.setAuditSearch(this.value)">
+          </div>
+        </div>
+
+        <!-- Audit Table Container -->
+        <div id="audit-table-container" style="overflow-x:auto; border:1px solid var(--border); border-radius:8px; background:var(--bg-surface);">
+          <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border); text-align:left;">
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">TICKER / DATE</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">TYPE & STRUCTURE</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">PLAN LEVELS / STRIKES</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">STATUS</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">SPOT & DIST</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">DOLLAR P&L</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">ROC %</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">OUTCOME NOTES</th>
+              </tr>
+            </thead>
+            <tbody id="audit-table-tbody">
+              <tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted);">Loading audit records from SQLite...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Audit Pagination Bar -->
+        <div class="audit-pagination-bar" id="audit-pagination-bar" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:11.5px; color:var(--text-muted); font-weight:700;">Page Size:</span>
+            <select id="select-audit-pagesize" class="select-pagesize" onchange="AppWatchlist.setAuditPageSize(this.value)">
+              <option value="10" selected>10 per page</option>
+              <option value="25">25 per page</option>
+              <option value="50">50 per page</option>
+              <option value="100">100 per page</option>
+            </select>
+            <span id="audit-pagination-range" style="font-size:11.5px; font-weight:700; color:var(--text-muted); margin-left:6px;">
+              Showing 1–10 of 37 Trades
+            </span>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button class="pagination-btn" id="btn-audit-page-first" onclick="AppWatchlist.setAuditPage(1)" title="First Page">⏮ First</button>
+            <button class="pagination-btn" id="btn-audit-page-prev" onclick="AppWatchlist.prevAuditPage()" title="Previous Page">◀ Prev</button>
+            <div id="audit-page-indicator" style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; padding:3px 10px; background:var(--bg-surface); border:1px solid var(--border); border-radius:6px;">
+              Page <span id="audit-current-page">1</span> of <span id="audit-total-pages">4</span>
+            </div>
+            <button class="pagination-btn" id="btn-audit-page-next" onclick="AppWatchlist.nextAuditPage()" title="Next Page">Next ▶</button>
+            <button class="pagination-btn" id="btn-audit-page-last" onclick="AppWatchlist.setAuditPage('last')" title="Last Page">Last ⏭</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Modal Footer Toolbar -->
+      <div style="padding:12px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="font-size:11.5px; color:var(--text-muted); display:flex; align-items:center; gap:8px;">
+          <span>💾 Database: <code>data/research_watch.db</code> (<code>suggested_trades_audit</code>)</span>
+          <span>•</span>
+          <span>Preserves complete attribution trail for reinforcement learning & pipeline improvement</span>
+        </div>
+        <button class="btn secondary" onclick="AppWatchlist.closeAuditModal()" style="padding:6px 16px; font-size:12px; font-weight:700;">
+          Close
+        </button>
+      </div>
+
+    </div>
+  </div>
+
   <!-- 3-Model Research Viewer Modal with Right-Side Copilot Chat -->
   <div class="modal-overlay" id="report-modal">
-    <div class="modal-content" style="max-width: 1480px; width: 96vw; height: 92vh;">
-      <div class="modal-header">
-        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+    <div class="modal-content" id="report-modal-content" style="max-width: 1480px; width: 96vw; height: 92vh;" onclick="AppSwing.handleModalHeaderClick(event)">
+      <div class="modal-header" id="modal-header">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:nowrap; min-width:0;">
           <span class="dot pulse" style="background:var(--blue); display:none;" id="modal-minimized-pulse"></span>
-          <div style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--text-main); letter-spacing:0.3px;" id="modal-ticker-title">RESEARCH REPORT</div>
+          <div style="font-family:'Outfit',sans-serif; font-size:15px; font-weight:800; color:var(--text-main); letter-spacing:0.3px; white-space:nowrap;" id="modal-ticker-title">RESEARCH REPORT</div>
           
+          <!-- Multi-Chat Active Tabs (Max 3) -->
+          <div id="modal-active-chat-tabs" class="modal-active-chat-tabs"></div>
+
           <!-- Live Current Price Badge -->
-          <div id="modal-live-quote-badge" style="display:inline-flex; align-items:center; gap:8px; background:var(--bg-subtle); border:1px solid var(--border); padding:3px 10px; border-radius:6px; font-family:'JetBrains Mono',monospace;">
+          <div id="modal-live-quote-badge" style="display:inline-flex; align-items:center; gap:8px; background:var(--bg-subtle); border:1px solid var(--border); padding:3px 10px; border-radius:6px; font-family:'JetBrains Mono',monospace; white-space:nowrap; flex-shrink:0;">
             <span class="dot pulse" style="background:#10b981;"></span>
             <span style="font-size:10.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">LIVE:</span>
             <span id="modal-live-price-val" style="font-size:13px; font-weight:800; color:#059669;">Fetching...</span>
@@ -670,9 +1732,9 @@
             <button class="btn secondary" onclick="AppSwing.refreshModalLivePrice()" style="padding:1px 6px; font-size:10px; cursor:pointer;" title="Refresh live price">🔄</button>
           </div>
         </div>
-        <div class="modal-window-actions" onclick="event.stopPropagation()" style="display:flex; align-items:center; gap:8px;">
+        <div class="modal-window-actions" onclick="event.stopPropagation()" style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
           <button class="btn secondary" id="btn-toggle-positions-pane" onclick="AppSwing.togglePositionsPane()" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#059669; border-color:#059669; background:rgba(5, 150, 105, 0.08); cursor:pointer;" title="Toggle Suggested Positions side pane">🎯 Trade Plan</button>
-          <button class="modal-action-btn" id="btn-modal-expand-full" onclick="AppSwing.restoreReportModal(event)" title="Expand to full dossier modal" style="display:none;">🗖 Full Report</button>
+          <button class="modal-action-btn primary" id="btn-modal-expand-full" onclick="AppSwing.restoreReportModal(event)" title="Maximize to full dossier modal" style="display:none; font-weight:700;">🗖 Maximize</button>
           <button class="modal-action-btn minimize" id="btn-modal-min-toggle" onclick="AppSwing.toggleMinimizeReportModal(event)" title="Float as bottom-right chat window">🗕 Float Chat</button>
           <button class="modal-action-btn close" onclick="AppSwing.closeReportModal(event)" title="Close dossier">✕ Close</button>
         </div>
@@ -815,7 +1877,7 @@
 
             <!-- Action Buttons -->
             <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
-              <button class="btn" onclick="AppSwing.askCopilotExecutionPlan()" style="padding:7px 12px; font-size:11.5px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:6px;" title="Ask Copilot for the exact order execution parameters">
+              <button class="btn" onclick="AppSwing.askCopilotExecutionPlan(event)" style="padding:7px 12px; font-size:11.5px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:6px;" title="Ask Copilot for the exact order execution parameters">
                 <span>⚡</span> Plan Execution with Copilot
               </button>
               <button class="btn secondary" onclick="AppSwing.switchDossierTab('tv')" style="padding:6px 12px; font-size:11.5px; font-weight:700; cursor:pointer; width:100%; text-align:center;" title="Switch dossier tab to Live TradingView chart">
@@ -832,11 +1894,11 @@
         <!-- Right Side: Persistent Interactive AI Copilot Chat Drawer -->
         <div id="modal-copilot-drawer" style="width: var(--modal-copilot-w, 420px); min-width: 280px; max-width: 65%; display:flex; flex-direction:column; background: var(--bg-surface); border-left: 1px solid var(--border); overflow:hidden;">
           <div style="padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main);">💬 AI DOSSIER COPILOT</span>
-              <span class="pill green" style="font-size:9.5px; padding:1px 6px;"><span class="dot pulse"></span>Active</span>
+            <div style="display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden;">
+              <span style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main); white-space:nowrap;">💬 AI COPILOT</span>
+              <div id="modal-copilot-active-tabs" class="modal-active-chat-tabs" style="display:inline-flex; align-items:center; gap:4px;"></div>
             </div>
-            <div style="display:flex; align-items:center; gap:5px;">
+            <div style="display:flex; align-items:center; gap:5px; flex-shrink:0;">
               <button class="btn secondary" id="btn-modal-prior-chats" onclick="AppChat.togglePriorChats('modal')" style="padding:3px 8px; font-size:11px; font-weight:700; color:var(--blue);" title="View prior chats from the last 15 days">📜 15d Chats</button>
               <button class="btn secondary" onclick="AppChat.startNewChat('modal')" style="padding:3px 8px; font-size:11px; font-weight:700;" title="Start a fresh chat thread">➕ New</button>
               <button class="btn secondary" onclick="AppChat.clearModalChat()" style="padding:3px 8px; font-size:11px;" title="Clear active chat view">Clear</button>
@@ -902,7 +1964,278 @@
     </div>
   </div>
 
+
+  <!-- ================================================================
+       Suggested Trades Audit & Win/Loss Performance Trail Modal
+       ================================================================ -->
+  <div class="modal-overlay" id="modal-watchlist-audit" style="display:none; align-items:flex-start; justify-content:center; z-index:1200; padding:24px 12px; overflow-y:auto; background:rgba(2,6,20,0.85); backdrop-filter:blur(6px);" onclick="if(event.target===this) AppWatchlist.closeAuditModal()">
+    <div class="audit-modal-container" onclick="event.stopPropagation()">
+
+      <!-- Modal Header -->
+      <div class="audit-modal-header">
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <span class="audit-modal-title">📊 Suggested Trades Audit &amp; Performance Trail</span>
+          <span class="audit-modal-subtitle">Every trade prescribed by the research pipeline — options spreads, equity entries, and more. On-demand attribution for self-improvement.</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+          <span style="font-size:11px; color:#475569; font-weight:500;">Last evaluated: <span id="modal-audit-evaluated-time" style="color:#64748b;">—</span></span>
+          <button id="btn-re-evaluate-audit" class="btn secondary" onclick="AppWatchlist.triggerAuditEvaluation()" style="padding:6px 14px; font-size:12px; font-weight:700; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.07); display:flex; align-items:center; gap:6px;" title="Re-evaluate active setups against live quotes and persist to SQLite">
+            <span class="btn-re-evaluate-spinner" id="re-evaluate-spinner"></span>
+            <span id="re-evaluate-icon">🔄</span>
+            <span>Re-Evaluate Now</span>
+          </button>
+          <button class="btn secondary" onclick="AppWatchlist.closeAuditModal()" style="padding:6px 10px; font-size:13px; font-weight:800; color:#94a3b8;" title="Close">✕</button>
+        </div>
+      </div>
+
+      <!-- Modal Body -->
+      <div class="audit-modal-body">
+
+        <!-- 5 KPI Cards -->
+        <div id="modal-audit-kpi-strip">
+          <!-- Rendered by renderAuditKpis() -->
+          <div class="perf-kpi-card win-rate">
+            <span class="perf-kpi-title">🏆 Win Rate</span>
+            <div class="perf-kpi-val" style="color:#10b981;">—<span class="perf-kpi-sub">Loading…</span></div>
+          </div>
+          <div class="perf-kpi-card avg-win">
+            <span class="perf-kpi-title">📈 Avg Win</span>
+            <div class="perf-kpi-val" style="color:#34d399;">—<span class="perf-kpi-sub">Loading…</span></div>
+          </div>
+          <div class="perf-kpi-card avg-loss">
+            <span class="perf-kpi-title">📉 Avg Loss</span>
+            <div class="perf-kpi-val" style="color:#f87171;">—<span class="perf-kpi-sub">Loading…</span></div>
+          </div>
+          <div class="perf-kpi-card net-alpha">
+            <span class="perf-kpi-title">💰 Net Profit</span>
+            <div class="perf-kpi-val" style="color:#fbbf24;">—<span class="perf-kpi-sub">Loading…</span></div>
+          </div>
+          <div class="perf-kpi-card actionable">
+            <span class="perf-kpi-title">⚡ Actionable Now</span>
+            <div class="perf-kpi-val" style="color:#f59e0b;">—<span class="perf-kpi-sub">Loading…</span></div>
+          </div>
+        </div>
+
+        <!-- Filter Controls Row -->
+        <div class="audit-controls-bar">
+          <!-- Filter Tab Pills -->
+          <div class="audit-tab-pills" id="audit-modal-filter-tabs">
+            <button class="audit-tab-btn active" data-audit-tab="ALL"      onclick="AppWatchlist.setAuditTab('ALL')">      All <span id="audit-tab-count-all">0</span></button>
+            <button class="audit-tab-btn"        data-audit-tab="ACTIVE"   onclick="AppWatchlist.setAuditTab('ACTIVE')">   ⚡ Active <span id="audit-tab-count-active">0</span></button>
+            <button class="audit-tab-btn"        data-audit-tab="WON"      onclick="AppWatchlist.setAuditTab('WON')">      🏁 Won <span id="audit-tab-count-won">0</span></button>
+            <button class="audit-tab-btn"        data-audit-tab="STOPPED"  onclick="AppWatchlist.setAuditTab('STOPPED')">  🛑 Stopped <span id="audit-tab-count-stopped">0</span></button>
+            <button class="audit-tab-btn"        data-audit-tab="STALKING" onclick="AppWatchlist.setAuditTab('STALKING')"> ⏳ Stalking <span id="audit-tab-count-stalking">0</span></button>
+            <button class="audit-tab-btn"        data-audit-tab="OPTIONS"  onclick="AppWatchlist.setAuditTab('OPTIONS')">  📋 Options <span id="audit-tab-count-options">0</span></button>
+            <button class="audit-tab-btn"        data-audit-tab="SHARES"   onclick="AppWatchlist.setAuditTab('SHARES')">   📈 Shares <span id="audit-tab-count-shares">0</span></button>
+          </div>
+
+          <!-- Search & Window Controls (pushed right) -->
+          <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
+            <label style="font-size:11px; color:#475569; font-weight:600;">Window:</label>
+            <select class="select-audit-pagesize" id="select-audit-window" onchange="AppWatchlist.setAuditWindow(this.value)" title="Performance calculation window">
+              <option value="0">All Time</option>
+              <option value="10">Last 10</option>
+              <option value="25">Last 25</option>
+              <option value="50">Last 50</option>
+              <option value="100" selected>Last 100</option>
+            </select>
+            <input type="text" id="audit-search-input" class="audit-search-input" placeholder="🔍 Search ticker, structure…" oninput="AppWatchlist.setAuditSearch(this.value)">
+          </div>
+        </div>
+
+        <!-- Audit Table -->
+        <div class="audit-table-wrapper">
+          <div style="overflow-x:auto;">
+            <table class="audit-table" id="audit-table">
+              <thead>
+                <tr>
+                  <th>Ticker / Date</th>
+                  <th>Type &amp; Structure</th>
+                  <th>Key Levels</th>
+                  <th>Status</th>
+                  <th style="text-align:right;">Spot / Dist%</th>
+                  <th style="text-align:right;">P&amp;L ($)</th>
+                  <th style="text-align:right;">ROC %</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody id="audit-table-tbody">
+                <tr><td colspan="8" style="text-align:center; padding:40px; color:#475569;">Click <strong>Re-Evaluate Now</strong> to load suggested trades audit…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Pagination Footer -->
+        <div class="audit-pagination-bar">
+          <button class="audit-page-btn" id="btn-audit-page-first" onclick="AppWatchlist.setAuditPage(1)" title="First page" disabled>«</button>
+          <button class="audit-page-btn" id="btn-audit-page-prev"  onclick="AppWatchlist.prevAuditPage()" title="Previous page" disabled>‹</button>
+          <span id="audit-pagination-range" style="font-size:12px; color:#64748b; padding:0 4px;">No trades</span>
+          <button class="audit-page-btn" id="btn-audit-page-next" onclick="AppWatchlist.nextAuditPage()" title="Next page" disabled>›</button>
+          <button class="audit-page-btn" id="btn-audit-page-last" onclick="AppWatchlist.setAuditPage('last')" title="Last page" disabled>»</button>
+          <span style="margin-left:4px; font-size:11px; color:#475569;">Page <span id="audit-current-page">1</span> / <span id="audit-total-pages">1</span></span>
+          <select class="select-audit-pagesize" id="select-audit-pagesize" onchange="AppWatchlist.setAuditPageSize(this.value)" style="margin-left:8px;" title="Rows per page">
+            <option value="10" selected>10 / page</option>
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+          </select>
+        </div>
+
+      </div><!-- /audit-modal-body -->
+    </div><!-- /audit-modal-container -->
+  </div><!-- /#modal-watchlist-audit -->
+
+  <!-- ================================================================
+       Intraday TradingView Alerts PnL & AI Attribution Modal
+       ================================================================ -->
+  <div class="modal-overlay" id="modal-alerts-pnl" style="display:none; align-items:flex-start; justify-content:center; z-index:1250; padding:24px 12px; overflow-y:auto; background:rgba(2,6,20,0.85); backdrop-filter:blur(8px);" onclick="if(event.target===this) AppAlerts.closePnlModal()">
+    <div class="pnl-modal-container" onclick="event.stopPropagation()">
+
+      <!-- Header -->
+      <div class="pnl-modal-header">
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <div class="pnl-modal-title">
+            <span>📊 Intraday Alerts P&amp;L &amp; AI Triage Attribution</span>
+            <span class="pill cyan" style="font-size:10px; padding:2px 7px; font-weight:800;">100 Shares Standard</span>
+          </div>
+          <span class="pnl-modal-subtitle">
+            Chronological entry-to-exit matching per intraday session · Evaluates AI Take vs Avoided losses.
+          </span>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <!-- Session Day Selector -->
+          <div style="display:flex; align-items:center; gap:6px;">
+            <label style="font-size:11px; color:var(--text-muted); font-weight:700;">SESSION:</label>
+            <select id="pnl-modal-session-select" class="select-mode" onchange="AppAlerts.switchPnlSession(this.value)" style="padding:4px 10px; font-size:11.5px; font-weight:700; border-radius:6px; background:var(--bg-card); color:var(--text-main); border:1px solid var(--border);">
+              <!-- Populated dynamically -->
+            </select>
+          </div>
+
+          <button class="btn secondary" onclick="AppAlerts.refreshPnlModal()" style="padding:5px 10px; font-size:11.5px; font-weight:700;" title="Recalculate with latest spot prices and alerts">
+            🔄 Refresh
+          </button>
+          <button class="btn secondary" onclick="AppAlerts.closePnlModal()" style="padding:5px 10px; font-size:13px; font-weight:800; color:#94a3b8;" title="Close Modal">✕</button>
+        </div>
+      </div>
+
+      <!-- 4 KPI Cards Strip -->
+      <div class="pnl-kpi-grid">
+        <div class="pnl-kpi-card ai-taken">
+          <div class="pnl-kpi-title"><span>🟢 AI Realized P&amp;L</span></div>
+          <div class="pnl-kpi-value" id="pnl-kpi-ai-taken" style="color:#10b981;">$0.00</div>
+          <div class="pnl-kpi-sub" id="pnl-kpi-ai-taken-sub">0 trades (0% win rate)</div>
+        </div>
+
+        <div class="pnl-kpi-card ai-avoided">
+          <div class="pnl-kpi-title"><span>🛡️ Losses Avoided (AI Filter)</span></div>
+          <div class="pnl-kpi-value" id="pnl-kpi-avoided" style="color:#38bdf8;">$0.00</div>
+          <div class="pnl-kpi-sub" id="pnl-kpi-avoided-sub">0 losing alerts vetoed by AI</div>
+        </div>
+
+        <div class="pnl-kpi-card tv-raw">
+          <div class="pnl-kpi-title"><span>⚡ Raw TV Strategy P&amp;L</span></div>
+          <div class="pnl-kpi-value" id="pnl-kpi-tv-raw" style="color:#f59e0b;">$0.00</div>
+          <div class="pnl-kpi-sub" id="pnl-kpi-tv-raw-sub">Unfiltered baseline execution</div>
+        </div>
+
+        <div class="pnl-kpi-card net-alpha">
+          <div class="pnl-kpi-title"><span>🏆 AI Net Edge / Alpha</span></div>
+          <div class="pnl-kpi-value" id="pnl-kpi-net-alpha" style="color:#c084fc;">$0.00</div>
+          <div class="pnl-kpi-sub" id="pnl-kpi-net-alpha-sub">AI Taken vs Unfiltered Baseline</div>
+        </div>
+      </div>
+
+      <!-- Controls & Filter Bar -->
+      <div class="pnl-controls-bar">
+        <div class="pnl-tab-pills" id="pnl-modal-filter-tabs">
+          <button class="pnl-tab-btn active" data-pnl-tab="ALL" onclick="AppAlerts.setPnlTab('ALL')">All Trades (<span id="pnl-count-all">0</span>)</button>
+          <button class="pnl-tab-btn" data-pnl-tab="TAKEN" onclick="AppAlerts.setPnlTab('TAKEN')">🟢 AI Taken (<span id="pnl-count-taken">0</span>)</button>
+          <button class="pnl-tab-btn" data-pnl-tab="AVOIDED" onclick="AppAlerts.setPnlTab('AVOIDED')">🛡️ AI Filtered (<span id="pnl-count-avoided">0</span>)</button>
+          <button class="pnl-tab-btn" data-pnl-tab="OPEN" onclick="AppAlerts.setPnlTab('OPEN')">⚡ Live Open (<span id="pnl-count-open">0</span>)</button>
+          <button class="pnl-tab-btn" data-pnl-tab="WIN" onclick="AppAlerts.setPnlTab('WIN')">🏆 Won (<span id="pnl-count-win">0</span>)</button>
+          <button class="pnl-tab-btn" data-pnl-tab="LOSS" onclick="AppAlerts.setPnlTab('LOSS')">🛑 Loss (<span id="pnl-count-loss">0</span>)</button>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px;">
+          <input type="text" id="pnl-modal-search" class="input-ticker" style="padding:4px 10px; font-size:11px; width:160px; text-transform:none;" placeholder="🔍 Filter ticker..." oninput="AppAlerts.setPnlSearch(this.value)">
+        </div>
+      </div>
+
+      <!-- Table Wrapper -->
+      <div class="pnl-table-wrapper">
+        <table class="pnl-table">
+          <thead>
+            <tr>
+              <th style="width:115px;">Time / Duration</th>
+              <th style="width:130px;">Ticker &amp; Setup</th>
+              <th style="width:105px; text-align:center;">Direction</th>
+              <th style="width:180px;">Execution (In ➔ Out)</th>
+              <th style="width:90px; text-align:right;">Pts Diff</th>
+              <th style="width:115px; text-align:right;">100-Sh P&amp;L</th>
+              <th style="width:135px; text-align:center;">AI Triage Call</th>
+              <th style="width:120px; text-align:center;">Attribution</th>
+            </tr>
+          </thead>
+          <tbody id="pnl-modal-table-body">
+            <tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted);">Loading session trades…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:10px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-muted); font-family:var(--font-mono);">
+        <div id="pnl-modal-footer-summary">Summary: 0 completed trades</div>
+        <div>Standard calculation: 100 shares per signal</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ================================================================
+       Ticker Day Trades & AI-Only P&L Modal
+       Groups trade alerts for a specific ticker on that day only
+       ================================================================ -->
+  <div class="modal-overlay" id="modal-ticker-day-trades" style="display:none; align-items:flex-start; justify-content:center; z-index:1260; padding:24px 12px; overflow-y:auto; background:rgba(2,6,20,0.85); backdrop-filter:blur(8px);" onclick="if(event.target===this) AppAlerts.closeTickerTradesModal()">
+    <div class="ticker-trades-modal-container" style="width:100%; max-width:880px; background:var(--bg-surface, #0b1120); border:1px solid var(--border, rgba(255,255,255,0.1)); border-radius:12px; box-shadow:0 24px 70px rgba(0,0,0,0.7); overflow:hidden; display:flex; flex-direction:column; margin-top:20px;" onclick="event.stopPropagation()">
+      
+      <!-- Header -->
+      <div style="padding:14px 20px; background:var(--bg-subtle, #0f172a); border-bottom:1px solid var(--border, rgba(255,255,255,0.08)); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span style="font-family:'Outfit',sans-serif; font-size:22px; font-weight:800; color:var(--text-main, #f8fafc);" id="ttm-ticker-sym">MSFT</span>
+          <span style="font-size:13px; color:var(--text-muted, #94a3b8); font-weight:500;" id="ttm-ticker-name">Microsoft Corporation</span>
+          <span class="pill cyan" id="ttm-session-date" style="font-family:var(--font-mono); font-weight:800; font-size:11px;">📅 Session: 2026-09-14</span>
+          <span class="pill" id="ttm-alert-count" style="font-size:11px;">0 Alerts</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn secondary" id="ttm-btn-chart" onclick="AppAlerts.openChartFromTickerModal()" style="padding:4px 10px; font-size:11.5px; font-weight:700;">
+            📈 Chart
+          </button>
+          <button class="btn secondary" onclick="AppAlerts.closeTickerTradesModal()" style="padding:4px 12px; font-size:13px; font-weight:800; color:#94a3b8;" title="Close Modal">✕</button>
+        </div>
+      </div>
+
+      <!-- AI-Only P&L Hero Banner -->
+      <div id="ttm-pnl-hero" style="padding:16px 20px; border-bottom:1px solid var(--border, rgba(255,255,255,0.08));">
+        <!-- Injected dynamically -->
+      </div>
+
+      <!-- Body: Trades Grouped by Trade Alerts -->
+      <div id="ttm-trades-list" style="padding:16px 20px; display:flex; flex-direction:column; gap:14px; max-height:60vh; overflow-y:auto; background:var(--bg-surface, #0b1120);">
+        <!-- Injected dynamically -->
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:10px 20px; border-top:1px solid var(--border, rgba(255,255,255,0.08)); background:var(--bg-subtle, #0f172a); display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-muted, #94a3b8); font-family:var(--font-mono);">
+        <div id="ttm-footer-stats">P&amp;L calculated strictly on AI Suggested trades (100 shares basis)</div>
+        <div style="color:var(--cyan-glow);">Grouped by Intraday Trade Alerts</div>
+      </div>
+
+    </div>
+  </div>
+
   <!-- Floating Minimized Dossier Dock Widget -->
+
   <div class="minimized-dossier-dock" id="minimized-dossier-dock" onclick="AppSwing.restoreReportModal()">
     <div class="dock-content">
       <span class="dot pulse" style="background:var(--cyan-glow);"></span>
@@ -916,16 +2249,18 @@
   </div>
 
   <!-- Modular Scripts -->
-  <script src="/static/js/state.js?v=62"></script>
-  <script src="/static/js/utils.js?v=62"></script>
-  <script src="/static/js/api.js?v=62"></script>
-  <script src="/static/js/status.js?v=62"></script>
-  <script src="/static/js/swing.js?v=62"></script>
-  <script src="/static/js/watchlist.js?v=62"></script>
-  <script src="/static/js/intraday.js?v=62"></script>
-  <script src="/static/js/logs.js?v=62"></script>
-  <script src="/static/js/chat.js?v=62"></script>
-  <script src="/static/js/app.js?v=62"></script>
-
+  <script src="/static/js/state.js?v=76"></script>
+  <script src="/static/js/utils.js?v=76"></script>
+  <script src="/static/js/api.js?v=76"></script>
+  <script src="/static/js/status.js?v=76"></script>
+  <script src="/static/js/swing.js?v=76"></script>
+  <script src="/static/js/watchlist.js?v=76"></script>
+  <script src="/static/js/trades.js?v=76"></script>
+  <script src="/static/js/intraday.js?v=76"></script>
+  <script src="/static/js/portfolio.js?v=1"></script>
+  <script src="/static/js/logs.js?v=76"></script>
+  <script src="/static/js/alerts.js?v=85"></script>
+  <script src="/static/js/chat.js?v=76"></script>
+  <script src="/static/js/app.js?v=76"></script>
 </body>
 </html>

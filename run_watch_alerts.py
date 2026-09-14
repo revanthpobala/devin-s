@@ -131,14 +131,20 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                 if live_price > entry_high:
                     distance_pct = round(((live_price - entry_high) / entry_high) * 100, 2)
                 elif live_price < entry_low:
-                    distance_pct = round(((live_price - entry_low) / entry_low) * 100, 2)
+                    if inv_price and live_price > inv_price:
+                        distance_pct = 0.0
+                    else:
+                        distance_pct = round(((live_price - entry_low) / entry_low) * 100, 2)
                 else:
                     distance_pct = 0.0
             else:  # SHORT
                 if live_price < entry_low:
                     distance_pct = round(((entry_low - live_price) / entry_low) * 100, 2)
                 elif live_price > entry_high:
-                    distance_pct = round(((entry_high - live_price) / entry_high) * 100, 2)
+                    if inv_price and live_price < inv_price:
+                        distance_pct = 0.0
+                    else:
+                        distance_pct = round(((entry_high - live_price) / entry_high) * 100, 2)
                 else:
                     distance_pct = 0.0
 
@@ -184,7 +190,13 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             elif side == "LONG" and entry_high < live_price <= round(entry_high * 1.01, 2):
                 hit_in_zone = True
                 in_proximity_zone = True
+            elif side == "LONG" and inv_price and inv_price < live_price < entry_low:
+                hit_in_zone = True
+                in_proximity_zone = True
             elif side == "SHORT" and round(entry_low * 0.99, 2) <= live_price < entry_low:
+                hit_in_zone = True
+                in_proximity_zone = True
+            elif side == "SHORT" and inv_price and entry_high < live_price < inv_price:
                 hit_in_zone = True
                 in_proximity_zone = True
 

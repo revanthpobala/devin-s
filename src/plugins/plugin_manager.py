@@ -17,6 +17,7 @@ from src.plugins.candlestick_patterns_plugin import CandlestickPatternsPlugin
 from src.plugins.tastytrade_plugin import TastytradeVolatilityPlugin
 from src.plugins.options_skew_gex_plugin import OptionsSkewGEXPlugin
 from src.plugins.conformal_prediction_plugin import ConformalPredictionPlugin
+from src.plugins.monte_carlo_plugin import MonteCarloPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class PluginManager:
         self.register_plugin(TastytradeVolatilityPlugin())
         self.register_plugin(OptionsSkewGEXPlugin())
         self.register_plugin(ConformalPredictionPlugin())
+        self.register_plugin(MonteCarloPlugin())
 
     def register_plugin(self, plugin: BaseAnalyticsPlugin):
         self._plugins[plugin.name] = plugin

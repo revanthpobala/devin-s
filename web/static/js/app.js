@@ -3,16 +3,35 @@
  */
 window.App = {
   switchDesk(desk) {
+    if (desk === 'screener') {
+      desk = 'alerts';
+      if (window.AppAlerts && typeof window.AppAlerts.switchSubTab === 'function') {
+        window.AppAlerts.switchSubTab('schwab');
+      }
+    }
     window.AppState.currentDesk = desk;
-    ['swing', 'watchlist', 'intraday', 'logs'].forEach(d => {
+    ['swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'logs'].forEach(d => {
       const pane = document.getElementById(`desk-pane-${d}`);
       const btn = document.getElementById(`btn-desk-${d}`);
       if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
       if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
     });
 
-    if (desk === 'watchlist' && window.AppWatchlist) {
+    if (desk === 'alerts' && window.AppAlerts) {
+      if (window.AppAlerts._activeSubTab === 'schwab' && window.AppSwing) {
+        window.AppSwing.loadSchwabScreener();
+      } else {
+        window.AppAlerts.loadAlerts();
+      }
+    } else if (desk === 'watchlist' && window.AppWatchlist) {
       window.AppWatchlist.loadWatchlist();
+    } else if (desk === 'trades' && window.AppTrades) {
+      window.AppTrades.loadSuggestedTrades();
+      if (window.AppSwing && typeof window.AppSwing.loadCalibrationScoreboard === 'function') {
+        window.AppSwing.loadCalibrationScoreboard();
+      }
+    } else if (desk === 'portfolio' && window.AppPortfolio) {
+      window.AppPortfolio.loadPortfolio();
     } else if (desk === 'intraday' && window.AppIntraday) {
       window.AppIntraday.loadIntradayPositions();
     } else if (desk === 'logs' && window.AppLogs) {
@@ -73,15 +92,21 @@ window.App = {
     }
 
     // 2. Initial Data Loading
+    if (window.AppUtils && window.AppUtils.initCompanyNames) {
+      window.AppUtils.initCompanyNames();
+    }
     if (window.AppStatus) window.AppStatus.updateStatus();
     if (window.AppWatchlist) window.AppWatchlist.loadWatchlist();
+    if (window.AppTrades) window.AppTrades.loadSuggestedTrades();
     if (window.AppSwing) {
       window.AppSwing.refreshResearchQueue();
       window.AppSwing.loadTastytradeAlerts();
       window.AppSwing.loadReportArchive();
       window.AppSwing.loadCalibrationScoreboard();
+      window.AppSwing.loadSchwabScreener();
     }
     if (window.AppLogs) window.AppLogs.loadLogs();
+    if (window.AppAlerts) window.AppAlerts.loadAlerts();
     this.loadAllTickersDatalist();
 
     // 3. Fast Poll Loop (2.5s) for Live Status, Logs, and Positions
@@ -92,6 +117,8 @@ window.App = {
         window.AppIntraday.loadIntradayPositions();
       } else if (window.AppState.currentDesk === 'logs' && window.AppLogs) {
         window.AppLogs.loadDedicatedLogs();
+      } else if (window.AppState.currentDesk === 'alerts' && window.AppAlerts) {
+        window.AppAlerts.loadAlerts();
       }
     }, 2500);
 
@@ -99,6 +126,9 @@ window.App = {
     setInterval(() => {
       if (window.AppWatchlist) {
         window.AppWatchlist.loadWatchlist();
+      }
+      if (window.AppState.currentDesk === 'trades' && window.AppTrades) {
+        window.AppTrades.loadSuggestedTrades();
       }
       if (window.AppSwing) {
         window.AppSwing.loadTastytradeAlerts();

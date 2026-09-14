@@ -59,8 +59,8 @@ def is_market_hours() -> bool:
         microsecond=0,
     )
     end_time = now_mt.replace(
-        hour=getattr(config, "MARKET_CLOSE_HOUR", 14),
-        minute=getattr(config, "MARKET_CLOSE_MINUTE", 30),
+        hour=getattr(config, "MARKET_CLOSE_HOUR", 20),
+        minute=getattr(config, "MARKET_CLOSE_MINUTE", 0),
         second=0,
         microsecond=0,
     )
@@ -133,6 +133,7 @@ def main():
     python_exe = _get_python_exe()
     tracker_process = None
     external_llm_running = False
+    eod_screener_date = None
 
     try:
         while True:
@@ -231,19 +232,35 @@ def main():
                     )
                     logger.info(f"Email Alert Ingestor started (PID {tracker_process.pid}).")
 
-            else:
-                # Outside market hours — auto-flatten any lingering intraday/0DTE positions
-                try:
-                    from src.tracking.position_state import flatten_eod_intraday_positions
-                    closed_intraday = flatten_eod_intraday_positions()
-                    if closed_intraday:
-                        logger.info(f"EOD Auto-Flattened {len(closed_intraday)} intraday position(s).")
-                except Exception as e:
-                    logger.warning(f"Error during EOD intraday position flattening: {e}")
+                # Check if regular trading hours (RTH) have closed (>= 2:30 PM MT / 4:30 PM ET)
+                # to run the daily intraday position auto-flatten and Schwab screener once per day
+                now_mt = datetime.now(ZoneInfo("America/Denver"))
+                if (now_mt.hour > 14) or (now_mt.hour == 14 and now_mt.minute >= 30):
+                    today_str = now_mt.strftime("%Y-%m-%d")
+                    if eod_screener_date != today_str:
+                        # Auto-flatten any lingering intraday/0DTE positions once per day
+                        try:
+                            from src.tracking.position_state import flatten_eod_intraday_positions
+                            closed_intraday = flatten_eod_intraday_positions()
+                            if closed_intraday:
+                                logger.info(f"RTH EOD Auto-Flattened {len(closed_intraday)} intraday position(s).")
+                        except Exception as e:
+                            logger.warning(f"Error during RTH intraday position flattening: {e}")
 
-                # Shut down tracker to free resources
+                        # Run EOD Schwab 1000 Autonomous Screener & High-Priority Research once per day
+                        logger.info(f"RTH Closed: Launching Autonomous Schwab 1000 Screener & Research for {today_str}...")
+                        try:
+                            eod_screener_date = today_str
+                            screener_script = config.BASE_DIR / "src" / "screener" / "schwab_pre_move_scan.py"
+                            if screener_script.exists():
+                                subprocess.Popen([python_exe, str(screener_script), "--autonomous", "--auto-max", "3"], cwd=config.BASE_DIR)
+                        except Exception as e_scan:
+                            logger.error(f"Failed to launch EOD Schwab screener: {e_scan}")
+
+            else:
+                # Outside control window (after 8:00 PM MT or weekends) — shut down services to free GPU/CPU
                 if tracker_process is not None and tracker_process.poll() is None:
-                    logger.info("Market is closed. Shutting down Email Alert Ingestor...")
+                    logger.info("Control window closed (8:00 PM MT). Shutting down Email Alert Ingestor...")
                     tracker_process.terminate()
                     tracker_process.wait()
                     tracker_process = None

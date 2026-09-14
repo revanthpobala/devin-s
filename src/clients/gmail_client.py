@@ -45,11 +45,14 @@ class GmailClient:
             self.mail = None
             logger.info("Disconnected from Gmail.")
 
-    def fetch_new_alerts(self) -> List[Dict[str, Any]]:
-        """Fetch all unread TradingView alert emails, parse them, and return a list of alerts."""
+    def fetch_new_alerts(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Fetch all unread TradingView alert emails and recent emails up to limit,
+        filtering out any alerts already recorded in SQLite (guaranteeing zero missed alerts)."""
         if not self.mail:
             if not self.connect() or not self.mail:
                 return []
+
+        from src.tracking.alert_db import get_processed_email_ids
 
         mail = self.mail
         alerts = []
@@ -57,21 +60,49 @@ class GmailClient:
             # Select inbox
             mail.select("inbox")
 
-            # Search for UNSEEN emails from the specified sender
-            search_query = f'(UNSEEN FROM "{self.sender}")'
-            status, response_data = mail.search(None, search_query)
+            # 1. Search UNSEEN emails from sender
+            unseen_query = f'(UNSEEN FROM "{self.sender}")'
+            status, unseen_data = mail.search(None, unseen_query)
+            unseen_ids = unseen_data[0].split() if status == "OK" and unseen_data[0] else []
 
-            if status != "OK":
-                logger.warning(f"Search command returned status {status}")
-                return []
+            # 2. Also search recent emails from sender in case user opened them on phone/web
+            all_query = f'(FROM "{self.sender}")'
+            status_all, all_data = mail.search(None, all_query)
+            all_ids = all_data[0].split() if status_all == "OK" and all_data[0] else []
+            recent_limit = min(limit, 60)  # Keep window to recent 60 to prevent IMAP stalls
+            recent_ids = all_ids[-recent_limit:] if len(all_ids) > recent_limit else all_ids
 
-            email_ids = response_data[0].split()
-            logger.info(f"Found {len(email_ids)} unread alert emails.")
+            # Combine and deduplicate, prioritizing NEWEST FIRST
+            candidate_ids = []
+            seen_set = set()
+            # Process newest emails first so live intraday alerts are ingested with zero latency
+            for eid in reversed(list(unseen_ids) + list(recent_ids)):
+                if eid not in seen_set:
+                    seen_set.add(eid)
+                    candidate_ids.append(eid)
 
-            for e_id in email_ids:
+            # Pre-filter: bulk-check email_ids against SQLite in a single <1ms query
+            # BEFORE fetching any RFC822 bodies. Eliminates redundant downloads for
+            # already-processed emails (drops per-cycle work from 60 fetches to only new ones).
+            str_candidate_ids = [eid.decode("utf-8", errors="ignore") if isinstance(eid, bytes) else str(eid) for eid in candidate_ids]
+            already_seen = get_processed_email_ids(str_candidate_ids)
+            new_candidate_ids = [eid for eid, sid in zip(candidate_ids, str_candidate_ids) if sid not in already_seen]
+
+            logger.info(
+                f"Found {len(unseen_ids)} unread, {len(candidate_ids)} candidates, "
+                f"{len(already_seen)} already in SQLite -> fetching {len(new_candidate_ids)} new email(s)."
+            )
+
+            for e_id in new_candidate_ids:
                 alert_data = self.process_email(e_id)
-                if alert_data:
-                    alerts.append(alert_data)
+                if not alert_data:
+                    continue
+                alerts.append(alert_data)
+
+            if alerts:
+                logger.info(f"Returning {len(alerts)} new unprocessed alert(s).")
+            else:
+                logger.info("All TV alerts already processed in SQLite.")
 
         except Exception as e:
             logger.error(f"Error fetching alerts: {e}")
@@ -134,6 +165,11 @@ class GmailClient:
             # Clean and parse the alert
             parsed_data = parse_alert(subject, body)
             parsed_data["email_id"] = email_str
+
+            # Extract Message-ID header (unique RFC822 identifier)
+            message_id_hdr = msg.get("Message-ID")
+            if message_id_hdr:
+                parsed_data["message_id"] = str(message_id_hdr).strip("<> \r\n\t")
 
             # Parse email Date header and convert to Eastern Time (America/New_York)
             from datetime import timezone

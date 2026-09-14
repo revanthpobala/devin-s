@@ -293,6 +293,63 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             short_strike = float(m_bps.group(2))
             long_strike = float(m_bps.group(3))
             opt_summary = f"${short_strike:.0f}P/${long_strike:.0f}P Bull Put Spread"
+        else:
+            # 3. Bear Call Spread regex (credit)
+            m_bcs = re.search(
+                r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)C?\s*/\s*\$?([0-9.]+)C?\s*Bear Call Spread",
+                clean_combined,
+                re.IGNORECASE,
+            )
+            if m_bcs:
+                options_struct = "BEAR_CALL_SPREAD"
+                short_strike = float(m_bcs.group(2))
+                long_strike = float(m_bcs.group(3))
+                opt_summary = f"${short_strike:.0f}C/${long_strike:.0f}C Bear Call Spread"
+            else:
+                # 4. Bear Put Spread regex (debit)
+                m_bds = re.search(
+                    r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)P?\s*/\s*\$?([0-9.]+)P?\s*Bear Put Spread",
+                    clean_combined,
+                    re.IGNORECASE,
+                )
+                if m_bds:
+                    options_struct = "BEAR_PUT_SPREAD"
+                    long_strike = float(m_bds.group(2))
+                    short_strike = float(m_bds.group(3))
+                    opt_summary = f"${long_strike:.0f}P/${short_strike:.0f}P Bear Put Spread"
+                else:
+                    # 5. Outright Long Call / LEAPS
+                    m_lc = re.search(
+                        r"(?:Long Call|LEAPS Call|Buy Call)[^\$]*\$?([0-9.]+)\s*Call",
+                        clean_combined,
+                        re.IGNORECASE,
+                    )
+                    if m_lc:
+                        options_struct = "LONG_CALL"
+                        long_strike = float(m_lc.group(1))
+                        opt_summary = f"${long_strike:.0f} Long Call"
+                    else:
+                        # 6. Outright Long Put
+                        m_lp = re.search(
+                            r"(?:Long Put|Protective Put|Buy Put)[^\$]*\$?([0-9.]+)\s*Put",
+                            clean_combined,
+                            re.IGNORECASE,
+                        )
+                        if m_lp:
+                            options_struct = "LONG_PUT"
+                            long_strike = float(m_lp.group(1))
+                            opt_summary = f"${long_strike:.0f} Long Put"
+                        else:
+                            # 7. Cash-Secured Put
+                            m_csp = re.search(
+                                r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?",
+                                clean_combined,
+                                re.IGNORECASE,
+                            )
+                            if m_csp:
+                                options_struct = "CASH_SECURED_PUT"
+                                short_strike = float(m_csp.group(1))
+                                opt_summary = f"${short_strike:.0f} Cash-Secured Put"
 
     m_debit = (
         re.search(r"Net debit\s*[≈~]?\s*\$?([0-9.]+)", clean_combined, re.IGNORECASE)

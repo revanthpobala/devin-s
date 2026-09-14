@@ -41,6 +41,29 @@ window.AppStatus = {
         tastyTxt.innerText = `Tastytrade (${data.tasty_alert_count || 0} Alerts)`;
       }
 
+      // 3b. Schwab OAuth 7-Day Lifecycle Indicator
+      const schwabPill = document.getElementById('pill-schwab');
+      const schwabTxt = document.getElementById('txt-schwab');
+      if (schwabPill && schwabTxt && data.schwab_status) {
+        const s = data.schwab_status;
+        window._lastSchwabStatus = s;
+        if (!s.configured) {
+          schwabPill.className = 'pill';
+          schwabTxt.innerText = '⚪ Schwab Unset';
+        } else if (s.valid) {
+          if (s.status === 'EXPIRING_SOON') {
+            schwabPill.className = 'pill amber pulse';
+            schwabTxt.innerText = `⚠️ Schwab (${s.hours_remaining}h left)`;
+          } else {
+            schwabPill.className = 'pill green';
+            schwabTxt.innerText = `🟢 Schwab (${s.days_remaining}d)`;
+          }
+        } else {
+          schwabPill.className = 'pill red';
+          schwabTxt.innerText = '🔴 Schwab Expired';
+        }
+      }
+
       // 4. Gmail Ingestor Tracker Status
       const trPill = document.getElementById('pill-tracker');
       const trTxt = document.getElementById('txt-tracker');
@@ -175,19 +198,24 @@ window.AppStatus = {
   async loadJobs() {
     try {
       const data = await window.AppApi.getJobs();
-      const container = document.getElementById('active-procs-container');
-      if (!container) return;
+      const targets = [
+        document.getElementById('active-procs-container'),
+        document.getElementById('active-procs-container-logs')
+      ].filter(Boolean);
+      if (targets.length === 0) return;
 
       const activeJobs = (data.jobs || []).filter(j => j.status === 'RUNNING');
-      const recentJobs = (data.jobs || []).filter(j => j.status !== 'RUNNING').slice(0, 3);
+      const queuedJobs = (data.jobs || []).filter(j => j.status === 'QUEUED');
+      const recentJobs = (data.jobs || []).filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED').slice(0, 8);
 
       const slotCount = activeJobs.length;
       const slotColor = slotCount >= (data.max_concurrent || 2) ? 'red' : (slotCount === 1 ? 'amber' : 'green');
+      const queuedBadge = queuedJobs.length > 0 ? ` (${queuedJobs.length} Queued)` : '';
 
       let html = `
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:11px; font-family:'JetBrains Mono', monospace;">
           <span style="color:var(--text-muted); font-weight:700;">CONCURRENCY SLOTS:</span>
-          <span class="pill ${slotColor}" style="font-size:10px; padding:2px 6px;">${slotCount} / ${data.max_concurrent || 2} Slots In Use</span>
+          <span class="pill ${slotColor}" style="font-size:10px; padding:2px 6px;">${slotCount} / ${data.max_concurrent || 2} Slots In Use${queuedBadge}</span>
         </div>
       `;
 
@@ -197,12 +225,13 @@ window.AppStatus = {
           const elapsedMin = Math.floor((new Date() - startDt) / 60000);
           const elapsedSec = Math.floor(((new Date() - startDt) % 60000) / 1000);
           const timeStr = `${elapsedMin}m ${elapsedSec}s`;
+          const compActive = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
 
           html += `
             <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px solid var(--border); padding:8px 12px; border-radius:8px; font-family:'JetBrains Mono', monospace; font-size:12px; margin-bottom:6px;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <span class="pill green pulse" style="font-size:10px; padding:2px 6px;">ACTIVE</span>
-                <span style="font-weight:700; color:var(--blue);">${j.ticker}</span>
+                <strong style="font-weight:700; color:var(--blue); cursor:help;" title="${String(compActive).replace(/"/g, '&quot;')}" data-ticker="${j.ticker || ''}">$${j.ticker || ''}</strong>
                 <span style="color:var(--text-muted); font-size:11px;">(${j.stage})</span>
               </div>
               <div style="display:flex; align-items:center; gap:10px;">
@@ -214,34 +243,95 @@ window.AppStatus = {
         });
       }
 
+      if (queuedJobs.length > 0) {
+        html += `<div style="font-size:10px; color:var(--text-muted); margin-top:6px; margin-bottom:4px; font-weight:700; text-transform:uppercase;">⏳ Queued (Auto-Dispatches When Slot Frees)</div>`;
+        queuedJobs.forEach((q, idx) => {
+          const compQueued = (window.AppUtils ? AppUtils.getCompanyName(q.ticker) : q.ticker) || q.ticker || '';
+          html += `
+            <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px dashed var(--border); padding:6px 12px; border-radius:6px; font-family:'JetBrains Mono', monospace; font-size:11.5px; margin-bottom:4px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="pill purple" style="font-size:9px; padding:1px 5px; font-weight:700;">#${idx + 1} QUEUE</span>
+                <strong style="color:var(--text-main); font-size:12px; cursor:help;" title="${String(compQueued).replace(/"/g, '&quot;')}" data-ticker="${q.ticker || ''}">$${q.ticker || ''}</strong>
+                <span style="color:var(--text-muted); font-size:10.5px;">(Waiting for slot)</span>
+              </div>
+              <button class="btn secondary" onclick="AppStatus.killJob('${q.job_id}')" style="padding:1px 7px; font-size:10.5px;">Cancel</button>
+            </div>
+          `;
+        });
+      }
+
       if (recentJobs.length > 0) {
         html += `<div style="font-size:10px; color:var(--text-muted); margin-top:8px; margin-bottom:4px; font-weight:700; text-transform:uppercase;">Recent Finished Research (Click to Open Dossier)</div>`;
         recentJobs.forEach(j => {
+          const isFailed = (j.status === 'FAILED' || j.status === 'KILLED');
           const stColor = j.status === 'COMPLETED' ? 'green' : (j.status === 'KILLED' ? 'amber' : 'red');
           const timeDisplay = this.formatJobTime(j.completed_at || j.started_at);
           const rawTime = j.completed_at || j.started_at || '';
+          
+          // Reason kept strictly in tooltip on status pill (no inline table clutter)
+          const errReason = j.error_message 
+            ? j.error_message.replace(/"/g, '&quot;') 
+            : (isFailed ? 'Research process terminated or interrupted' : 'Deep research completed successfully');
+          const pillTitle = ` title="${errReason}"`;
+
+          // Company name tooltip on ticker
+          const compName = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+          const compTitle = String(compName).replace(/"/g, '&quot;');
+
+          const restartBtn = isFailed ? `
+            <button class="btn primary"
+                    onclick="event.stopPropagation(); AppStatus.restartResearch('${j.ticker}', '${j.mode || 'full'}', '${j.target_date || ''}')"
+                    title="Retry deep research for ${j.ticker} (forces fresh run)"
+                    style="padding:2px 8px; font-size:10.5px; font-weight:700; display:inline-flex; align-items:center; gap:3px; background:linear-gradient(135deg, #2563eb, #1d4ed8); border:none; color:#fff; border-radius:4px; box-shadow:0 1px 4px rgba(37,99,235,0.4); cursor:pointer;">
+              🔄 Restart
+            </button>
+          ` : '';
+
           html += `
             <div class="recent-job-row"
                  onclick="AppStatus.openResearchDossier('${j.ticker}', '${rawTime}')"
-                 title="Click to open ${j.ticker} dossier & interactive copilot window"
+                 title="Click to open ${j.ticker} (${compTitle}) research dossier"
                  style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px solid var(--border); padding:7px 12px; border-radius:6px; font-family:'JetBrains Mono', monospace; font-size:11px; margin-bottom:5px; cursor:pointer; transition:all 0.15s ease;">
               <div style="display:flex; align-items:center; gap:8px;">
-                <span class="pill ${stColor}" style="font-size:9px; padding:1px 5px;">${j.status}</span>
-                <strong style="font-weight:700; font-size:12.5px; color:var(--text-main);">$${j.ticker}</strong>
+                <span class="pill ${stColor}" style="font-size:9px; padding:2px 6px; cursor:help;"${pillTitle}>${j.status}${j.error_message ? ' ⚠️' : ''}</span>
+                <strong style="font-weight:700; font-size:12.5px; color:var(--text-main); cursor:help;" title="${compTitle}" data-ticker="${j.ticker}">$${j.ticker}</strong>
                 <span style="color:var(--text-muted); font-size:10.5px;">[${j.mode}]</span>
               </div>
-              <div style="display:flex; align-items:center; gap:10px;">
-                <span style="color:var(--text-muted); font-size:11px; font-weight:600;" title="${rawTime}">${timeDisplay}</span>
-                <span style="color:var(--blue); font-size:11px; font-weight:700; display:inline-flex; align-items:center; gap:3px;">📖 Dossier ↗</span>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="color:var(--text-muted); font-size:11px; font-weight:600; white-space:nowrap;" title="${rawTime}">${timeDisplay}</span>
+                ${restartBtn}
+                <span style="color:var(--blue); font-size:11px; font-weight:700; display:inline-flex; align-items:center; gap:3px; white-space:nowrap;">📖 Dossier ↗</span>
               </div>
             </div>
           `;
         });
       }
 
-      container.innerHTML = html;
+      targets.forEach(c => {
+        c.innerHTML = html;
+        if (window.AppUtils && window.AppUtils.decorateTickerTooltips) {
+          window.AppUtils.decorateTickerTooltips(c);
+        }
+      });
     } catch (e) {
       console.error('Failed loading jobs', e);
+    }
+  },
+
+  async restartResearch(ticker, mode = 'full', date = '') {
+    try {
+      const res = await window.AppApi.triggerResearch(ticker, mode, date, true);
+      if (res.status === 'started') {
+        alert(`🚀 Restarted deep research for ${ticker} in open slot!`);
+      } else if (res.status === 'queued') {
+        alert(`📥 Slots full. ${ticker} queued for research and will auto-dispatch when a slot opens.`);
+      } else {
+        alert(`Research status for ${ticker}: ${res.status}`);
+      }
+      await this.loadJobs();
+      await this.updateStatus();
+    } catch (e) {
+      alert(`Restart Error: ${e.message}`);
     }
   },
 
@@ -343,5 +433,50 @@ window.AppStatus = {
     if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
       window.AppSwing.openReportModal(reportDate || null, ticker);
     }
+  },
+
+  showSchwabInfo() {
+    const s = window._lastSchwabStatus || {};
+    let modal = document.getElementById('schwab-info-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'schwab-info-modal';
+      modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:999999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);';
+      modal.onclick = (e) => { if (e.target === modal) modal.style.display = 'none'; };
+      document.body.appendChild(modal);
+    }
+    
+    const isValid = s.valid;
+    const statusColor = isValid ? (s.status === 'EXPIRING_SOON' ? '#f59e0b' : '#10b981') : '#ef4444';
+    const statusBadge = isValid ? (s.status === 'EXPIRING_SOON' ? '⚠️ EXPIRING SOON' : '🟢 ACTIVE & CONNECTED') : '🔴 EXPIRED';
+
+    modal.innerHTML = `
+      <div style="background:var(--bg-surface, #1e222d); border:1px solid var(--border, #2a2e39); border-radius:12px; padding:22px; max-width:440px; width:90%; box-shadow:0 12px 36px rgba(0,0,0,0.5); color:var(--text-main, #d1d4dc); font-family:'Inter',sans-serif;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <span style="font-size:15px; font-weight:800; display:flex; align-items:center; gap:8px;">🏦 Charles Schwab API</span>
+          <button onclick="document.getElementById('schwab-info-modal').style.display='none'" style="background:none; border:none; color:var(--text-muted, #787b86); font-size:18px; cursor:pointer;">✕</button>
+        </div>
+        <div style="margin-bottom:16px; padding:10px 14px; background:rgba(0,0,0,0.25); border-radius:8px; border-left:4px solid ${statusColor};">
+          <div style="font-size:11px; text-transform:uppercase; color:var(--text-muted, #787b86); font-weight:700;">OAuth 7-Day Lifecycle Status</div>
+          <div style="font-size:14px; font-weight:800; color:${statusColor}; margin-top:2px;">${statusBadge}</div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px; font-size:12.5px; margin-bottom:18px;">
+          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted, #787b86);">Token Created:</span><strong>${s.created_at || 'N/A'}</strong></div>
+          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted, #787b86);">Expires At:</span><strong>${s.expires_at || 'N/A'}</strong></div>
+          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-muted, #787b86);">Time Remaining:</span><strong style="color:${statusColor};">${s.days_remaining !== undefined ? s.days_remaining + ' days (' + s.hours_remaining + 'h)' : 'N/A'}</strong></div>
+        </div>
+        <div style="font-size:11.5px; color:var(--text-muted, #787b86); line-height:1.5; margin-bottom:16px; background:var(--bg-subtle, rgba(255,255,255,0.03)); padding:10px; border-radius:6px;">
+          💡 <em>Access tokens refresh automatically every 30 mins in the background. Per Charles Schwab retail developer policy, refresh tokens require browser re-auth once every 7 days.</em>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted, #787b86);">TO RENEW TOKEN (15 SECONDS):</div>
+          <div style="background:#0f172a; padding:8px 12px; border-radius:6px; font-family:monospace; font-size:12px; color:#38bdf8; display:flex; justify-content:space-between; align-items:center;">
+            <span>python setup_schwab.py</span>
+            <button onclick="navigator.clipboard.writeText('python setup_schwab.py'); window.AppUtils && window.AppUtils.showToast('Copied to clipboard!', 'success');" style="background:#1e293b; border:1px solid #334155; color:#fff; padding:2px 8px; border-radius:4px; font-size:10.5px; cursor:pointer;">Copy</button>
+          </div>
+        </div>
+      </div>
+    `;
+    modal.style.display = 'flex';
   }
 };

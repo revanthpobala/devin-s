@@ -123,6 +123,11 @@ def open_position(
         state[ticker] = rec
         _save_state(state)
     logger.info(f"[state] OPEN {ticker} {side} @ {entry_price} (strategy={strategy})")
+    try:
+        from src.tracking.alert_db import sync_position
+        sync_position(ticker, rec)
+    except Exception as e:
+        logger.debug(f"Failed syncing position to alert_db: {e}")
     return rec
 
 
@@ -137,6 +142,12 @@ def close_position(ticker: str) -> dict | None:
             logger.info(f"[state] close requested for {ticker} but not in open state.")
             return None
         _save_state(state)
+    rec["closed_at"] = _now_iso()
+    try:
+        from src.tracking.alert_db import sync_position
+        sync_position(ticker, rec)
+    except Exception as e:
+        logger.debug(f"Failed syncing closed position to alert_db: {e}")
     logger.info(f"[state] CLOSED {ticker} (was open since {rec.get('opened_at')})")
     return rec
 
@@ -152,6 +163,11 @@ def update_position(ticker: str, **fields) -> dict | None:
         rec.update(fields)
         state[ticker] = rec
         _save_state(state)
+    try:
+        from src.tracking.alert_db import sync_position
+        sync_position(ticker, rec)
+    except Exception as e:
+        logger.debug(f"Failed syncing updated position to alert_db: {e}")
     return rec
 
 
@@ -175,10 +191,18 @@ def flatten_eod_intraday_positions(force: bool = False) -> list[dict]:
             if strat == "intraday" and (force or is_old):
                 tickers_to_close.append(t)
 
+        now_iso = _now_iso()
         for t in tickers_to_close:
             rec = state.pop(t, None)
             if rec:
+                rec["closed_at"] = now_iso
+                rec["exit_reason"] = "EOD Flatten"
                 closed_list.append(rec)
+                try:
+                    from src.tracking.alert_db import sync_position
+                    sync_position(t, rec)
+                except Exception as e:
+                    logger.debug(f"Failed syncing EOD flattened position to alert_db: {e}")
         if tickers_to_close:
             _save_state(state)
             logger.info(f"[state] EOD Flattened {len(closed_list)} intraday position(s): {tickers_to_close}")

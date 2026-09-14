@@ -52,7 +52,7 @@ One JSON object per committed event. Map to the card and OBEY `action`:
 | `option` | Row 7 OPTION (structure / DTE). On `ENTRY` it may read `manage: scale half at T1…` — that is the engine's plan for ITS paper fill; for you it's the plan you'd follow **IF** you take the entry. |
 | `wrong_if` | Row 8 WRONG IF (kill line, or the stand-aside/pause reason) |
 | `context` | Row 9 CONTEXT (regime · VWAP side · OR state) |
-| `exit_dir` / `exit_px` / `exit_r` / `exit_why` | **EXIT ONLY** — side, fill, realized R, reason (`catastrophe stop`, `bias flipped`, `runner target`, `runner stop (BE+)`, `stopped`, `time stop`, `chop stall …`, `EOD flat (0DTE)`). Zero/blank on ENTRY. |
+| `exit_dir` / `exit_px` / `exit_r` / `exit_why` | **EXIT ONLY** — side, fill, realized R, reason (`catastrophe stop`, `bias flipped`, `runner target`, `runner stop (BE+)`, `stopped`, `time stop`, `chop stall …`, `EOD flat (0DTE)`, `profit lock`). Zero/blank on ENTRY. |
 | `session_r` / `session_pnl` / `session_w` / `session_n` | running session tally — R / $ (on share size, raw underlying) / wins / trades. **Resets daily.** |
 
 **Behavior by event:**
@@ -72,7 +72,7 @@ The prompt injects a block titled **"OUR POSITION STATE GOING INTO THIS ALERT"**
 
 **If you were given the JSON, skip this section** — parse the field map in *THE JSON WEBHOOK* above; it is authoritative and needs no OCR. This card audit is for the **screenshot** path only.
 
-The Decision Card has 10 rows. Transcribe the literal strings:
+The Decision Card has 11 rows (rows 0–10). Transcribe the literal strings:
 
 | Row | Label | What it carries |
 |-----|-------|-----------------|

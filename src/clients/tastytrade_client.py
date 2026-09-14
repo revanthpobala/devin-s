@@ -224,6 +224,25 @@ class TastytradeClient:
             logger.error(f"Error deleting alert {alert_id}: {e}")
             return False
 
+    def delete_all_quote_alerts(self) -> int:
+        """Delete ALL active quote alerts across all symbols in parallel. Returns count of deleted alerts."""
+        alerts = self.get_quote_alerts()
+        if not alerts:
+            return 0
+
+        import concurrent.futures
+        aids = [a.get("alert-external-id") for a in alerts if a.get("alert-external-id")]
+
+        def _del(aid):
+            return self.delete_quote_alert(aid)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(_del, aids))
+            deleted = sum(1 for r in results if r)
+
+        logger.info(f"Deleted {deleted}/{len(alerts)} quote alerts from Tastytrade.")
+        return deleted
+
     def modify_quote_alert(
         self,
         alert_id: str,

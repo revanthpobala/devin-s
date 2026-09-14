@@ -37,10 +37,11 @@ window.AppChat = {
 
     // 2. If report modal is open or source is modal
     if (isModalOpen || source === 'modal') {
-      const sym = window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '';
-      const currentTab = window.AppSwing && window.AppSwing._currentTab ? window.AppSwing._currentTab : 'suggested';
+      const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '') || 'STOCK').toUpperCase();
+      const currentTab = window.AppState.activeDossierTab || 'plan';
+      const data = window.AppState.currentReportData || {};
 
-      if (currentTab === 'optflow') {
+      if (currentTab === 'optflow' || currentTab === 'flow') {
         const optPane = document.getElementById('pane-tab-optflow');
         const rows = optPane ? optPane.querySelectorAll('tr, .flow-row') : [];
         let tableText = '';
@@ -56,32 +57,32 @@ window.AppChat = {
           tableText = optPane.innerText.slice(0, 3500);
         }
         return {
-          name: `Options Flow (${sym || 'Active'})`,
+          name: `Options Flow (${sym})`,
           context: `**CURRENTLY VISIBLE OPTIONS FLOW TABLE FOR ${sym}:**\n${tableText || 'Options Flow view active.'}`
         };
       } else if (currentTab === 'arb') {
-        const arbPane = document.getElementById('pane-tab-arb');
+        const text = data.arbitration_md || (document.getElementById('modal-body') ? document.getElementById('modal-body').innerText : '');
         return {
-          name: `PM Arbitration (${sym || 'Active'})`,
-          context: `**CURRENTLY VISIBLE PM ARBITRATION RULING FOR ${sym}:**\n${arbPane ? arbPane.innerText.slice(0, 3500) : ''}`
+          name: `PM Arbitration (${sym})`,
+          context: `**PM ARBITRATION RULING FOR ${sym}:**\n${text ? text.slice(0, 4500) : 'Arbitration view active.'}`
         };
-      } else if (currentTab === 'modela') {
-        const pane = document.getElementById('pane-tab-modela');
+      } else if (currentTab === 'sum' || currentTab === 'modela') {
+        const text = data.summary_md || (document.getElementById('modal-body') ? document.getElementById('modal-body').innerText : '');
         return {
-          name: `Model A Synthesis (${sym || 'Active'})`,
-          context: `**CURRENTLY VISIBLE MODEL A SYNTHESIS DOSSIER FOR ${sym}:**\n${pane ? pane.innerText.slice(0, 3500) : ''}`
+          name: `Model A Synthesis (${sym})`,
+          context: `**MODEL A SYNTHESIS DOSSIER FOR ${sym}:**\n${text ? text.slice(0, 4500) : 'Synthesis view active.'}`
         };
-      } else if (currentTab === 'modelb') {
-        const pane = document.getElementById('pane-tab-modelb');
+      } else if (currentTab === 'ind' || currentTab === 'modelb') {
+        const text = data.independent_md || (document.getElementById('modal-body') ? document.getElementById('modal-body').innerText : '');
         return {
-          name: `Model B Independent (${sym || 'Active'})`,
-          context: `**CURRENTLY VISIBLE MODEL B INDEPENDENT REPORT FOR ${sym}:**\n${pane ? pane.innerText.slice(0, 3500) : ''}`
+          name: `Model B Independent (${sym})`,
+          context: `**MODEL B INDEPENDENT REPORT FOR ${sym}:**\n${text ? text.slice(0, 4500) : 'Independent Report view active.'}`
         };
       } else {
-        const pane = document.getElementById('pane-tab-suggested');
+        const text = (document.getElementById('pane-tab-suggested') ? document.getElementById('pane-tab-suggested').innerText : (document.getElementById('modal-body') ? document.getElementById('modal-body').innerText : ''));
         return {
-          name: `Suggested Position (${sym || 'Active'})`,
-          context: `**CURRENTLY VISIBLE SUGGESTED POSITION SETUP FOR ${sym}:**\n${pane ? pane.innerText.slice(0, 3500) : ''}`
+          name: `Suggested Position (${sym})`,
+          context: `**CURRENTLY VISIBLE SUGGESTED POSITION SETUP FOR ${sym}:**\n${text ? text.slice(0, 4500) : 'Position Setup view active.'}`
         };
       }
     } else {
@@ -478,8 +479,9 @@ window.AppChat = {
   startNewChat(target = 'modal') {
     const isModal = target === 'modal';
     if (isModal) {
-      const sym = (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK';
+      const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK').toUpperCase().trim();
       const date = (window.AppState.currentReportData && window.AppState.currentReportData.date) || '';
+      this.stopModalCopilotStream(sym);
       this._modalSessionId = `sess_${sym}_${date}_${Date.now()}`;
       window.AppState.modalChatHistory = [];
       const key = `${sym}_${date}`;
@@ -494,6 +496,14 @@ window.AppChat = {
       this.renderRevChat();
       const panel = document.getElementById('sidebar-prior-chats-panel');
       if (panel) panel.style.display = 'none';
+    }
+  },
+
+  startFreshModalSession() {
+    this.startNewChat('modal');
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK').toUpperCase().trim();
+    if (window.AppUtils && typeof window.AppUtils.showToast === 'function') {
+      window.AppUtils.showToast(`Started fresh isolated session for $${sym}`);
     }
   },
 
@@ -555,13 +565,55 @@ window.AppChat = {
   },
 
   askActiveChat(prompt) {
+    const alertModal = document.getElementById('tv-alert-detail-modal');
+    const isAlertOpen = alertModal && alertModal.style.display !== 'none';
+    if (isAlertOpen && window.AppAlerts && typeof window.AppAlerts.sendModalCopilotMsg === 'function') {
+      window.AppAlerts.sendModalCopilotMsg(prompt);
+      return;
+    }
+
     const reportModal = document.getElementById('report-modal');
-    const isModalOpen = reportModal && reportModal.style.display !== 'none' && !reportModal.classList.contains('minimized');
+    const isModalOpen = reportModal && reportModal.style.display !== 'none';
     if (isModalOpen) {
+      if (reportModal.classList.contains('collapsed')) {
+        if (window.AppSwing && typeof window.AppSwing.toggleMinimizeReportModal === 'function') {
+          window.AppSwing.toggleMinimizeReportModal();
+        }
+      }
       this.askModalCopilot(prompt);
     } else {
       this.askRevChat(prompt);
     }
+  },
+
+  openChatWithPrompt(prompt, sym = null) {
+    if (sym) {
+      this.updateSidebarFocusBadge(sym);
+      window.AppState.revChatFocusTicker = sym;
+      const tickerInput = document.getElementById('ticker-input');
+      if (tickerInput && !tickerInput.value) tickerInput.value = sym;
+    }
+
+    // Ensure sidebar chat width is at least 420px
+    try {
+      const curW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--chat-w')) || 0;
+      if (curW < 320) {
+        this.applyChatWidth(460);
+      }
+    } catch (e) {}
+
+    // Scroll sidebar into view if on narrow/mobile view
+    const sidebar = document.querySelector('.sidebar-rev-chat');
+    if (sidebar && typeof sidebar.scrollIntoView === 'function') {
+      sidebar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // Trigger message stream in Rev Chat
+    this.sendRevChatMsg(prompt);
+  },
+
+  sendCopilotMsg(prompt = null) {
+    return this.sendRevChatMsg(prompt);
   },
 
   askRevChat(prompt) {
@@ -804,9 +856,10 @@ window.AppChat = {
 
   // ---- Modal Dossier Copilot Chat ----
   clearModalChat() {
-    const sym = (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK';
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK').toUpperCase().trim();
     const date = (window.AppState.currentReportData && window.AppState.currentReportData.date) || '';
     const key = `${sym}_${date}`;
+    this.stopModalCopilotStream(sym);
     if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
     window.AppState.modalChatHistories[key] = [];
     window.AppState.modalChatHistory = [];
@@ -816,19 +869,36 @@ window.AppChat = {
 
   async initModalChatForTicker(ticker, date) {
     if (!ticker) return;
-    const key = `${ticker}_${date || ''}`;
+    const sym = ticker.toUpperCase().trim();
+    const key = `${sym}_${date || ''}`;
+    if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
+
+    const stream = window.AppState.modalStreams && window.AppState.modalStreams[key];
+    // Instant switch if history is already in memory or if active stream is in progress for this stock
+    if ((window.AppState.modalChatHistories[key] && window.AppState.modalChatHistories[key].length > 0) || (stream && stream.isStreaming)) {
+      window.AppState.modalChatHistory = window.AppState.modalChatHistories[key] || [];
+      this.renderModalCopilotChat();
+      this.initModalChatResize();
+      return;
+    }
+
     try {
-      const res = await fetch(`/api/copilot/chats/history?ticker=${encodeURIComponent(ticker)}&date=${encodeURIComponent(date || '')}`);
+      const res = await fetch(`/api/copilot/chats/history?ticker=${encodeURIComponent(sym)}&date=${encodeURIComponent(date || '')}`);
       const data = await res.json();
-      if (data && data.messages && data.messages.length > 0) {
-        window.AppState.modalChatHistory = data.messages.map(m => ({ role: m.role, content: m.content, date: m.date, created_at: m.created_at }));
-        this._modalSessionId = data.messages[0].session_id || `sess_${ticker}_${date}_${Date.now()}`;
+      const fetched = (data && data.messages && data.messages.length > 0)
+        ? data.messages.map(m => ({ role: m.role, content: m.content, date: m.date, created_at: m.created_at }))
+        : [];
+
+      // Check if local messages or stream were added during the network round-trip
+      const currentLocal = window.AppState.modalChatHistories[key] || [];
+      const currentStream = window.AppState.modalStreams && window.AppState.modalStreams[key];
+      if (currentLocal.length > 0 || (currentStream && currentStream.isStreaming)) {
+        window.AppState.modalChatHistory = currentLocal;
       } else {
-        window.AppState.modalChatHistory = [];
-        this._modalSessionId = `sess_${ticker}_${date}_${Date.now()}`;
+        window.AppState.modalChatHistory = fetched;
+        window.AppState.modalChatHistories[key] = fetched;
       }
-      if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
-      window.AppState.modalChatHistories[key] = window.AppState.modalChatHistory;
+      this._modalSessionId = (data && data.messages && data.messages[0] && data.messages[0].session_id) || `sess_${sym}_${date}_${Date.now()}`;
     } catch (e) {
       console.debug('Could not load ticker chat history from DB:', e);
     }
@@ -837,22 +907,23 @@ window.AppChat = {
   },
 
   renderModalCopilotChat() {
-    const sym = (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK';
-    const date = (window.AppState.currentReportData && window.AppState.currentReportData.date) || '';
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK').toUpperCase().trim();
+    const date = (window.AppState.currentReportData && window.AppState.currentReportData.ticker === sym)
+      ? (window.AppState.currentReportData.date || '')
+      : '';
     const thread = document.getElementById('modal-chat-thread');
     if (!thread) return;
 
     const key = `${sym}_${date}`;
     if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
-    if (!window.AppState.modalChatHistory || window.AppState.modalChatHistory.length === 0) {
-      window.AppState.modalChatHistory = window.AppState.modalChatHistories[key] || [];
-    }
+    const history = window.AppState.modalChatHistories[key] || [];
+    window.AppState.modalChatHistory = history;
 
     const todayStr = new Date().toISOString().slice(0, 10);
     const isPastDossier = Boolean(date && date < todayStr);
-    const hasHistory = window.AppState.modalChatHistory && window.AppState.modalChatHistory.length > 0;
+    const hasHistory = history && history.length > 0;
 
-    let historyHtml = window.AppState.modalChatHistory.map(m => {
+    let historyHtml = history.map(m => {
       if (m.role === 'user') {
         return `<div style="align-self:flex-end; max-width:85%; background:var(--blue); color:#ffffff; border-radius:10px; padding:8px 12px; font-size:12.5px; line-height:1.4; box-shadow:0 1px 3px rgba(0,0,0,0.08);">${m.displayHtml || m.content}</div>`;
       } else {
@@ -872,46 +943,145 @@ window.AppChat = {
       `;
     }
 
-    if (!historyHtml) {
+    const stream = window.AppState.modalStreams && window.AppState.modalStreams[key];
+    if (!historyHtml && !stream) {
       historyHtml = `
         <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-          <div style="font-weight:700; color:var(--blue); font-size:11px; margin-bottom:4px;">🤖 ACTIVE DOSSIER: ${sym} (${date})</div>
-          <div style="font-size:12px; color:var(--text-muted); line-height:1.5;">Ask follow-up questions on this report. Answers are grounded in the active dossier context and live real-time quotes.</div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-weight:700; color:var(--blue); font-size:11px;">🤖 ACTIVE DOSSIER: ${sym} (${date || 'Active'})</span>
+            <span class="pill cyan" style="font-size:9.5px; padding:1px 6px;">FRESH CONTEXT</span>
+          </div>
+          <div style="font-size:11.5px; color:var(--text-muted); line-height:1.45; margin-bottom:10px;">
+            Two-Pass Protocol active: evaluates current state, checks binary risks & tactical levels, and asks in case of ambiguity before locking execution.
+          </div>
+          <div style="display:flex; flex-direction:column; gap:5px;">
+            <button class="btn" style="background:linear-gradient(135deg, #0284c7, #2563eb); color:#fff; font-size:11px; padding:5px 10px; text-align:left; border-radius:6px; cursor:pointer;" onclick="AppChat.sendModalCopilotMsg('What is going on with ${sym} right now? Run Pass 1: assess current state, check live price vs entry zone, binary risk/earnings, and volatility. In case of ANY ambiguity, ask me to clarify with options before proceeding.')">
+              ⚡ <strong>Pass 1</strong>: What is going on? (State & Ambiguity Check)
+            </button>
+            <button class="btn secondary" style="font-size:11px; padding:5px 10px; text-align:left; border-radius:6px; cursor:pointer;" onclick="AppChat.sendModalCopilotMsg('Explain the exact tactical execution plan for ${sym} (limit entry, stop, targets, R:R). If ambiguous, ask first.')">
+              🎯 <strong>Pass 2</strong>: Tactical Execution Levels
+            </button>
+            <button class="btn secondary" style="font-size:11px; padding:5px 10px; text-align:left; border-radius:6px; cursor:pointer;" onclick="AppChat.startFreshModalSession()">
+              🔄 <strong>Reset</strong>: Start Fresh Isolated Session
+            </button>
+          </div>
         </div>
       `;
     }
+
+    // IF THIS TICKER HAS AN ACTIVE STREAM IN PROGRESS, EMBED ITS LIVE STREAM BUBBLE!
+    if (stream && stream.isStreaming) {
+      const streamContent = stream.fullAnswer
+        ? window.AppUtils.renderMarkdown(stream.fullAnswer)
+        : `<em>${stream.statusText || 'Connecting to local model stream...'}</em>`;
+      const titleColor = stream.fullAnswer ? 'var(--emerald-light)' : 'var(--blue)';
+
+      historyHtml += `
+        <div id="modal-assistant-stream-bubble" style="align-self:flex-start; max-width:92%; background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:12.5px; line-height:1.5; color:var(--text-main); box-shadow:var(--shadow-card);">
+          <div style="font-size:10px; font-weight:700; color:${titleColor}; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+            <span>🤖 COPILOT ANALYSIS (${sym})</span>
+            <button class="btn danger" onclick="AppChat.stopModalCopilotStream('${sym}')" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button>
+          </div>
+          <div id="modal-stream-content">${streamContent}</div>
+        </div>
+      `;
+    }
+
     thread.innerHTML = historyHtml;
     thread.scrollTop = thread.scrollHeight;
+    this.updateModalSendButtonState();
+  },
+
+  updateModalSendButtonState() {
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || '').toUpperCase().trim();
+    const date = (window.AppState.currentReportData && window.AppState.currentReportData.ticker === sym)
+      ? (window.AppState.currentReportData.date || '')
+      : '';
+    const key = `${sym}_${date}`;
+    const stream = window.AppState.modalStreams && window.AppState.modalStreams[key];
+    const isStreamingThis = Boolean(stream && stream.isStreaming);
+
+    const btn = document.getElementById('btn-modal-chat-send');
+    if (btn) {
+      if (isStreamingThis) {
+        btn.className = 'btn danger';
+        btn.innerText = '⏹ Stop';
+        btn.disabled = false;
+      } else {
+        btn.className = 'btn';
+        btn.innerText = '💬 Send';
+        btn.disabled = false;
+      }
+    }
+    window.AppState.isModalChatStreaming = isStreamingThis;
   },
 
   handleModalCopilotBtnClick() {
-    const btn = document.getElementById('btn-modal-chat-send');
-    if (window.AppState.isModalChatStreaming && btn && btn.innerText.includes('Stop')) {
-      this.stopModalCopilotStream();
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || '').toUpperCase().trim();
+    const date = (window.AppState.currentReportData && window.AppState.currentReportData.ticker === sym)
+      ? (window.AppState.currentReportData.date || '')
+      : '';
+    const key = `${sym}_${date}`;
+    const isStreamingThis = Boolean(window.AppState.modalStreams && window.AppState.modalStreams[key] && window.AppState.modalStreams[key].isStreaming);
+
+    if (isStreamingThis) {
+      this.stopModalCopilotStream(sym);
     } else {
       this.sendModalCopilotMsg();
     }
   },
 
-  stopModalCopilotStream() {
-    if (window.AppState.modalChatAbortController) {
-      try {
-        window.AppState.modalChatAbortController.abort();
-      } catch (e) {}
-      window.AppState.modalChatAbortController = null;
+  stopModalCopilotStream(targetTicker = null) {
+    const sym = (targetTicker || window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || '').toUpperCase().trim();
+    if (!sym) return;
+    const date = (window.AppState.currentReportData && window.AppState.currentReportData.ticker === sym)
+      ? (window.AppState.currentReportData.date || '')
+      : '';
+    const key = `${sym}_${date}`;
+    if (window.AppState.modalStreams && window.AppState.modalStreams[key]) {
+      const stream = window.AppState.modalStreams[key];
+      if (stream.abortController) {
+        try { stream.abortController.abort(); } catch (e) {}
+      }
+      stream.isStreaming = false;
+      delete window.AppState.modalStreams[key];
     }
-    window.AppState.isModalChatStreaming = false;
-    const btn = document.getElementById('btn-modal-chat-send');
-    if (btn) {
-      btn.className = 'btn';
-      btn.innerText = '💬 Send';
-      btn.disabled = false;
-    }
+    this.updateModalSendButtonState();
   },
 
   async sendModalCopilotMsg(customPrompt = null) {
-    if (this._isSendingModalMsg) return;
-    this._isSendingModalMsg = true;
+    let sym = window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '';
+    let date = window.AppState.currentReportData ? window.AppState.currentReportData.date : '';
+    if (!sym) {
+      const titleEl = document.getElementById('modal-ticker-title');
+      if (titleEl) {
+        const m = titleEl.innerText.match(/^([A-Z0-9.\-]+)/);
+        if (m) sym = m[1];
+      }
+    }
+    if (!sym) sym = 'STOCK';
+    sym = sym.toUpperCase().trim();
+    if (!date) {
+      const titleEl = document.getElementById('modal-ticker-title');
+      if (titleEl) {
+        const m = titleEl.innerText.match(/\((\d{4}-\d{2}-\d{2})\)/);
+        if (m) date = m[1];
+      }
+    }
+    const key = `${sym}_${date}`;
+
+    // Ensure active ticker matches so chat UI displays this message & stream tokens
+    window.AppState.activeChatTicker = sym;
+
+    // Check if THIS specific ticker is currently streaming
+    if (window.AppState.modalStreams && window.AppState.modalStreams[key] && window.AppState.modalStreams[key].isStreaming) {
+      if (customPrompt) {
+        this.stopModalCopilotStream(sym);
+        await new Promise(r => setTimeout(r, 60));
+      } else {
+        return; // Already streaming on this ticker
+      }
+    }
 
     try {
       const input = document.getElementById('modal-chat-input');
@@ -930,35 +1100,18 @@ window.AppChat = {
         return;
       }
 
-      if (window.AppState.isModalChatStreaming) {
-        this.stopModalCopilotStream();
-        await new Promise(r => setTimeout(r, 60));
-      }
-
       if (input) input.value = '';
 
-      let sym = window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '';
-      let date = window.AppState.currentReportData ? window.AppState.currentReportData.date : '';
-      if (!sym) {
-        const titleEl = document.getElementById('modal-ticker-title');
-        if (titleEl) {
-          const m = titleEl.innerText.match(/^([A-Z0-9.\-]+)/);
-          if (m) sym = m[1];
+      // Auto-extract board context from the active tab if not manually pinned
+      let boardContext = this._modalAttachedBoard ? this._modalAttachedBoard.context : null;
+      let boardName = this._modalAttachedBoard ? this._modalAttachedBoard.name : null;
+      if (!boardContext) {
+        const autoBoard = this.getActiveBoardContext('modal');
+        if (autoBoard) {
+          boardContext = autoBoard.context;
+          boardName = autoBoard.name;
         }
       }
-      if (!sym) sym = 'STOCK';
-      if (!date) {
-        const titleEl = document.getElementById('modal-ticker-title');
-        if (titleEl) {
-          const m = titleEl.innerText.match(/\((\d{4}-\d{2}-\d{2})\)/);
-          if (m) date = m[1];
-        }
-      }
-      const key = `${sym}_${date}`;
-
-      // Use board context ONLY if user explicitly attached it via the 📌 button
-      const boardContext = this._modalAttachedBoard ? this._modalAttachedBoard.context : null;
-      const boardName = this._modalAttachedBoard ? this._modalAttachedBoard.name : null;
 
       let userDisplayHtml = this.escapeHtml(question);
       if (boardName) {
@@ -969,48 +1122,47 @@ window.AppChat = {
       }
 
       if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
-      if (!window.AppState.modalChatHistory) window.AppState.modalChatHistory = [];
+      if (!window.AppState.modalChatHistories[key]) window.AppState.modalChatHistories[key] = [];
+      const targetHistory = window.AppState.modalChatHistories[key];
       if (!this._modalSessionId) this._modalSessionId = `sess_${sym}_${date}_${Date.now()}`;
 
       // Clean history for payload (only valid string content and roles)
-      const cleanHistory = (window.AppState.modalChatHistory || [])
+      const cleanHistory = targetHistory
         .filter(m => (m.role === 'user' || m.role === 'assistant') && m.content)
         .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : String(m.content) }));
 
-      window.AppState.modalChatHistory.push({ role: 'user', content: question, displayHtml: userDisplayHtml });
-      window.AppState.modalChatHistories[key] = window.AppState.modalChatHistory;
-      this.renderModalCopilotChat();
+      targetHistory.push({ role: 'user', content: question, displayHtml: userDisplayHtml });
+      window.AppState.modalChatHistories[key] = targetHistory;
+      window.AppState.modalChatHistory = targetHistory;
 
       // Reset image attachment after staging to message
       this._modalAttachedImage = null;
       this.updateAttachmentUI('modal');
 
-      const thread = document.getElementById('modal-chat-thread');
-      const btn = document.getElementById('btn-modal-chat-send');
-      
-      window.AppState.modalChatAbortController = new AbortController();
-      window.AppState.isModalChatStreaming = true;
+      // Create isolated stream tracking for THIS ticker
+      const abortController = new AbortController();
+      const streamObj = {
+        ticker: sym,
+        date: date,
+        abortController: abortController,
+        isStreaming: true,
+        fullAnswer: '',
+        statusText: `Connecting to local model stream...`,
+        sessionId: this._modalSessionId
+      };
+      if (!window.AppState.modalStreams) window.AppState.modalStreams = {};
+      window.AppState.modalStreams[key] = streamObj;
 
-      if (btn) {
-        btn.className = 'btn danger';
-        btn.innerText = '⏹ Stop';
-        btn.disabled = false;
+      if (window.AppState.activeChatTicker === sym) {
+        this.renderModalCopilotChat();
       }
+      this.updateModalSendButtonState();
 
-      const assistantBubble = document.createElement('div');
-      assistantBubble.style = 'align-self:flex-start; max-width:92%; background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:12.5px; line-height:1.5; color:var(--text-main); box-shadow:var(--shadow-card);';
-      assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>🤖 COPILOT ANALYSIS (${sym})</span><button class="btn danger" onclick="AppChat.stopModalCopilotStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div><em>Connecting to local model stream...</em></div>`;
-      if (thread) {
-        thread.appendChild(assistantBubble);
-        thread.scrollTop = thread.scrollHeight;
-      }
-
-      let fullAnswer = '';
       try {
         const response = await fetch('/api/copilot/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: window.AppState.modalChatAbortController.signal,
+          signal: abortController.signal,
           body: JSON.stringify({
             question,
             ticker: sym,
@@ -1043,54 +1195,66 @@ window.AppChat = {
               try {
                 const data = JSON.parse(jsonStr);
                 if (data.session_id) this._modalSessionId = data.session_id;
+
                 if (data.status === 'connecting') {
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>🤖 COPILOT ANALYSIS (${sym})</span><button class="btn danger" onclick="AppChat.stopModalCopilotStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div><em>Analyzing real-time market data for $${sym}...</em></div>`;
+                  streamObj.statusText = `Analyzing real-time market data for $${sym}...`;
+                  if (window.AppState.activeChatTicker === sym) {
+                    const contentEl = document.getElementById('modal-stream-content');
+                    if (contentEl && !streamObj.fullAnswer) {
+                      contentEl.innerHTML = `<em>${streamObj.statusText}</em>`;
+                    }
+                  }
                 } else if (data.token) {
-                  fullAnswer += data.token;
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>🤖 COPILOT ANALYSIS (${sym})</span><button class="btn danger" onclick="AppChat.stopModalCopilotStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
-                  if (thread) thread.scrollTop = thread.scrollHeight;
+                  streamObj.fullAnswer += data.token;
+                  if (window.AppState.activeChatTicker === sym) {
+                    const contentEl = document.getElementById('modal-stream-content');
+                    const thread = document.getElementById('modal-chat-thread');
+                    if (contentEl) {
+                      contentEl.innerHTML = window.AppUtils.renderMarkdown(streamObj.fullAnswer);
+                      if (thread) thread.scrollTop = thread.scrollHeight;
+                    } else {
+                      this.renderModalCopilotChat();
+                    }
+                  }
                 } else if (data.error) {
-                  fullAnswer += `\n\n❌ **Error:** ${data.error}`;
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--rose-light); margin-bottom:4px;">❌ ERROR</div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
+                  streamObj.fullAnswer += `\n\n❌ **Error:** ${data.error}`;
+                  if (window.AppState.activeChatTicker === sym) {
+                    const contentEl = document.getElementById('modal-stream-content');
+                    if (contentEl) {
+                      contentEl.innerHTML = window.AppUtils.renderMarkdown(streamObj.fullAnswer);
+                    }
+                  }
                 }
               } catch (parseErr) {}
             }
           }
         }
-        
-        assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:4px;">🤖 COPILOT ANALYSIS (${sym})</div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
-        if (fullAnswer.trim()) {
-          window.AppState.modalChatHistory.push({ role: 'assistant', content: fullAnswer });
-          window.AppState.modalChatHistories[key] = window.AppState.modalChatHistory;
+
+        if (streamObj.fullAnswer.trim()) {
+          targetHistory.push({ role: 'assistant', content: streamObj.fullAnswer });
+          window.AppState.modalChatHistories[key] = targetHistory;
         }
       } catch (e) {
-        const isAbort = e.name === 'AbortError' || (window.AppState.modalChatAbortController && window.AppState.modalChatAbortController.signal.aborted);
-        if (fullAnswer.trim()) {
-          const savedText = isAbort ? `${fullAnswer}\n\n*[⏹ Stream stopped by user]*` : `${fullAnswer}\n\n*[⚠️ Connection interrupted: ${e.message}]*`;
-          window.AppState.modalChatHistory.push({ role: 'assistant', content: savedText });
-          window.AppState.modalChatHistories[key] = window.AppState.modalChatHistory;
-          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:4px;">🤖 COPILOT ANALYSIS (${sym})</div><div>${window.AppUtils.renderMarkdown(savedText)}</div>`;
+        const isAbort = e.name === 'AbortError' || abortController.signal.aborted;
+        if (streamObj.fullAnswer.trim()) {
+          const savedText = isAbort ? `${streamObj.fullAnswer}\n\n*[⏹ Stream stopped by user]*` : `${streamObj.fullAnswer}\n\n*[⚠️ Connection interrupted: ${e.message}]*`;
+          targetHistory.push({ role: 'assistant', content: savedText });
         } else {
           const errText = isAbort ? '*[⏹ Stream cancelled]*' : `❌ Error: ${e.message}`;
-          window.AppState.modalChatHistory.push({ role: 'assistant', content: errText });
-          window.AppState.modalChatHistories[key] = window.AppState.modalChatHistory;
-          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--rose-light); margin-bottom:4px;">❌ NOTICE</div><div>${window.AppUtils.renderMarkdown(errText)}</div>`;
+          targetHistory.push({ role: 'assistant', content: errText });
         }
+        window.AppState.modalChatHistories[key] = targetHistory;
       }
     } catch (topErr) {
       console.error("sendModalCopilotMsg error:", topErr);
     } finally {
-      this._isSendingModalMsg = false;
-      window.AppState.isModalChatStreaming = false;
-      window.AppState.modalChatAbortController = null;
-      const btn = document.getElementById('btn-modal-chat-send');
-      if (btn) {
-        btn.className = 'btn';
-        btn.innerText = '💬 Send';
-        btn.disabled = false;
+      if (window.AppState.modalStreams) {
+        delete window.AppState.modalStreams[key];
       }
-      const thread = document.getElementById('modal-chat-thread');
-      if (thread) thread.scrollTop = thread.scrollHeight;
+      if (window.AppState.activeChatTicker === sym) {
+        this.renderModalCopilotChat();
+      }
+      this.updateModalSendButtonState();
     }
   }
 };

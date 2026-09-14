@@ -16,21 +16,94 @@ window.AppSwing = {
     }
   },
 
-  async launchResearch(dateOverride) {
-    const ticker = (document.getElementById('ticker-input').value || '').trim().toUpperCase();
-    const mode = document.getElementById('mode-select').value;
-    if (!ticker) return alert('Please enter a ticker');
+  async launchResearch(dateOverride = null, forceOverride = null) {
+    const tickerInput = document.getElementById('ticker-input');
+    const rawInput = (tickerInput ? tickerInput.value : '').trim();
+    if (!rawInput) return alert('Please enter a ticker');
+
+    // Support comma-separated or space-separated multiple tickers: e.g. "AAPL, MSFT, NVDA"
+    const tickers = rawInput.split(/[,\s]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
+    if (tickers.length === 0) return alert('Please enter a valid ticker');
+
+    const modeSelect = document.getElementById('mode-select');
+    const mode = modeSelect ? modeSelect.value : 'full';
+    const targetDate = dateOverride || null;
+    const force = (forceOverride !== null && forceOverride !== undefined) ? forceOverride : true;
 
     try {
-      const activeDate = dateOverride || (window.AppState ? window.AppState.currentArchiveDate : null) || (document.getElementById('archive-date-select') ? document.getElementById('archive-date-select').value : null);
-      await window.AppApi.triggerResearch(ticker, mode, activeDate);
+      let startedCount = 0;
+      let queuedCount = 0;
+      let alreadyActiveCount = 0;
+      let lastRes = null;
+
+      for (const t of tickers) {
+        if (window.AppUtils && AppUtils.showToast && tickers.length === 1) {
+          AppUtils.showToast(`🚀 Launching ${mode} research for $${t}...`, 'info');
+        }
+
+        const res = await window.AppApi.triggerResearch(t, mode, targetDate, force);
+        lastRes = res;
+        if (res && res.status === 'started') startedCount++;
+        else if (res && res.status === 'queued') queuedCount++;
+        else if (res && res.status === 'running') alreadyActiveCount++;
+      }
+
       if (window.AppStatus) {
         await window.AppStatus.updateStatus();
         await window.AppStatus.loadJobs();
       }
+
+      if (tickers.length === 1) {
+        const t = tickers[0];
+        if (lastRes && lastRes.status === 'started') {
+          if (window.AppUtils && AppUtils.showToast) {
+            AppUtils.showToast(`🚀 Started research for $${t} in open slot! (Job: ${lastRes.job_id})`, 'success');
+          }
+        } else if (lastRes && lastRes.status === 'queued') {
+          if (window.AppUtils && AppUtils.showToast) {
+            AppUtils.showToast(`⏳ Hardware slots busy (2/2). $${t} queued for research!`, 'info');
+          }
+        } else if (lastRes && lastRes.status === 'running') {
+          if (window.AppUtils && AppUtils.showToast) {
+            AppUtils.showToast(`⚡ Research already active for $${t}!`, 'info');
+          }
+        } else if (lastRes && lastRes.status === 'skipped') {
+          const skipMsg = lastRes.message || `${t} already researched for ${lastRes.target_date || targetDate || 'today'}`;
+          if (window.AppUtils && AppUtils.showToast) {
+            AppUtils.showToast(`ℹ️ ${skipMsg}. Opening dossier...`, 'info');
+          }
+          if (typeof this.openReportModal === 'function') {
+            this.openReportModal(lastRes.target_date || targetDate || null, t);
+          }
+        }
+      } else {
+        if (window.AppUtils && AppUtils.showToast) {
+          AppUtils.showToast(`📋 Dispatched ${tickers.length} tickers: ${startedCount} started, ${queuedCount} queued!`, 'success');
+        }
+      }
+
+      // Automatically uncollapse active procs panel if hidden so user sees progress
+      const procsEl = document.getElementById('active-procs-wrapper');
+      if (procsEl && procsEl.style.display === 'none') {
+        this.toggleActiveProcsPanel();
+      }
     } catch (e) {
-      alert(`Research Alert: ${e.message}`);
+      if (window.AppUtils && AppUtils.showToast) {
+        AppUtils.showToast(`Research Error: ${e.message}`, 'error');
+      } else {
+        alert(`Research Alert: ${e.message}`);
+      }
     }
+  },
+
+  toggleActiveProcsPanel() {
+    const el = document.getElementById('active-procs-wrapper');
+    const btn = document.getElementById('btn-toggle-procs-panel');
+    if (!el) return;
+    const isHidden = el.style.display === 'none';
+    el.style.display = isHidden ? 'block' : 'none';
+    if (btn) btn.innerText = isHidden ? 'Collapse ▲' : 'Expand ▼';
+    try { localStorage.setItem('launcher_procs_collapsed', isHidden ? '0' : '1'); } catch(e){}
   },
 
   _allTargets: [],
@@ -43,6 +116,630 @@ window.AppSwing = {
     await this.refreshResearchQueue();
     await this.loadTastytradeAlerts();
     await this.loadCalibrationScoreboard();
+    await this.loadSchwabScreener();
+  },
+
+  _currentScreenerCandidates: [],
+  _screenerSide: (function() {
+    try { return localStorage.getItem('screener_side') || 'long'; } catch (e) { return 'long'; }
+  })(),
+
+  updateScreenerTabButtons() {
+    const isShort = this._screenerSide === 'short';
+    const longBtn = document.getElementById('screener-side-long-btn');
+    const shortBtn = document.getElementById('screener-side-short-btn');
+    const scanBtn = document.getElementById('btn-run-schwab-scan');
+    const researchAllBtn = document.getElementById('btn-scrape-all-survivors');
+
+    if (longBtn && shortBtn) {
+      if (!isShort) {
+        longBtn.style.background = 'var(--green)';
+        longBtn.style.color = '#fff';
+        longBtn.style.borderColor = 'var(--green)';
+        longBtn.style.fontWeight = '800';
+        longBtn.style.boxShadow = '0 0 8px rgba(16,185,129,0.3)';
+
+        shortBtn.style.background = '';
+        shortBtn.style.color = '';
+        shortBtn.style.borderColor = '';
+        shortBtn.style.fontWeight = '700';
+        shortBtn.style.boxShadow = '';
+      } else {
+        shortBtn.style.background = 'var(--red)';
+        shortBtn.style.color = '#fff';
+        shortBtn.style.borderColor = 'var(--red)';
+        shortBtn.style.fontWeight = '800';
+        shortBtn.style.boxShadow = '0 0 8px rgba(239,68,68,0.3)';
+
+        longBtn.style.background = '';
+        longBtn.style.color = '';
+        longBtn.style.borderColor = '';
+        longBtn.style.fontWeight = '700';
+        longBtn.style.boxShadow = '';
+      }
+    }
+
+    if (scanBtn && !scanBtn.disabled) {
+      scanBtn.innerHTML = isShort ? '🔍 Scan Prime Shorts' : '🔍 Scan Long Bases';
+      scanBtn.title = isShort ? 'Scan 983 Schwab constituents for overextended ceiling stalls' : 'Scan 983 Schwab constituents for 20 EMA / 50 SMA coiling bases';
+    }
+
+    if (researchAllBtn) {
+      researchAllBtn.innerHTML = isShort ? '🚀 Research All Shorts' : '🚀 Research All Longs';
+      researchAllBtn.title = isShort ? 'Launch full deep research pipeline for all prime short candidates' : 'Launch full deep research pipeline for all coiled long candidates';
+    }
+  },
+
+  setScreenerSide(side) {
+    this._screenerSide = (side || 'long').toLowerCase();
+    try { localStorage.setItem('screener_side', this._screenerSide); } catch (e) {}
+    this.updateScreenerTabButtons();
+    this.loadSchwabScreener();
+  },
+
+  async loadSchwabScreener(explicitDate = null) {
+    const container = document.getElementById('schwab-screener-container');
+    if (!container) return;
+    this.updateScreenerTabButtons();
+
+    try {
+      const activeDate = explicitDate || null;
+      const isShort = this._screenerSide === 'short';
+      const data = await window.AppApi.getSchwabScreenerCandidates(activeDate, this._screenerSide);
+      const allCandidates = (data && data.candidates) ? data.candidates : [];
+      // Strictly filter out any stub/queue items that have neither price nor support level
+      const candidates = allCandidates.filter(c => c && (c.price !== undefined && c.price !== null || c.support_level !== undefined && c.support_level !== null));
+      this._currentScreenerCandidates = candidates;
+
+      const countPill = document.getElementById('schwab-screener-status-pill');
+      if (countPill) {
+        const label = isShort ? 'Prime Short Exhaustion' : 'Coiled Base Setups';
+        countPill.innerText = `${candidates.length} ${label} (${data.date || 'Today'})`;
+        countPill.style.color = isShort ? 'var(--red-light)' : 'var(--cyan-glow)';
+        countPill.style.borderColor = isShort ? 'var(--red)' : 'var(--border)';
+      }
+
+      if (data && data.market_tide) {
+        const tidePill = document.getElementById('schwab-market-tide-pill');
+        if (tidePill) {
+          if (isShort) {
+            if (data.market_tide.bullish) {
+              tidePill.innerText = `SPY Bullish (⚠️ Counter-Trend Fades)`;
+              tidePill.style.color = '#f59e0b';
+              tidePill.style.borderColor = '#d97706';
+            } else {
+              tidePill.innerText = `SPY Defensive (✅ Short Tide Confirmed)`;
+              tidePill.style.color = 'var(--red-light)';
+              tidePill.style.borderColor = 'var(--red)';
+            }
+          } else {
+            tidePill.innerText = `SPY ${data.market_tide.trend_str || 'Bullish'}`;
+            tidePill.style.color = data.market_tide.bullish ? 'var(--green-light)' : 'var(--red-light)';
+            tidePill.style.borderColor = data.market_tide.bullish ? 'var(--green)' : 'var(--red)';
+          }
+        }
+      }
+
+      if (candidates.length === 0) {
+        container.innerHTML = `
+          <div style="color:var(--text-muted); font-size:12.5px; padding:16px 8px; text-align:center;">
+            <span>No ${isShort ? 'prime short exhaustion' : 'pre-move compression'} setups found for ${data.date || 'today'}. Click <strong>"${isShort ? 'Scan Prime Shorts' : 'Scan Long Bases'}"</strong> above to scan the 983 Schwab constituents live!</span>
+          </div>
+        `;
+        return;
+      }
+
+      let html = '';
+      if (!isShort) {
+        // LONG BASING TABLE
+        html = `
+          <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border); background:var(--bg-subtle);">
+                <th style="text-align:left; padding:8px 10px;">Ticker</th>
+                <th style="text-align:right; padding:8px 10px;">Price</th>
+                <th style="text-align:right; padding:8px 10px;">Stop Floor</th>
+                <th style="text-align:right; padding:8px 10px;">Ceiling</th>
+                <th style="text-align:center; padding:8px 10px;">Long R:R</th>
+                <th style="text-align:center; padding:8px 10px;">Stage</th>
+                <th style="text-align:center; padding:8px 10px;">Rev Zone</th>
+                <th style="text-align:center; padding:8px 10px;">Priority</th>
+                <th style="text-align:left; padding:8px 10px;">Support Anchor</th>
+                <th style="text-align:center; padding:8px 10px;">Posture / Headroom</th>
+                <th style="text-align:center; padding:8px 10px;">Squeeze (SQZ)</th>
+                <th style="text-align:center; padding:8px 10px;">NR7 Bar</th>
+                <th style="text-align:right; padding:8px 10px;">RS vs SPY</th>
+                <th style="text-align:center; padding:8px 10px;">Tastytrade Vol</th>
+                <th style="text-align:center; padding:8px 10px;">Live Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        candidates.forEach(c => {
+          const sym = c.Symbol || c.Ticker;
+          const px = c.price ? `$${Number(c.price).toFixed(2)}` : '-';
+          const sup = c.support_level ? `$${Number(c.support_level).toFixed(2)}` : '-';
+          const stop = c.stop_level ? `$${Number(c.stop_level).toFixed(2)}` : sup;
+          const ceil = c.ceiling_level ? `$${Number(c.ceiling_level).toFixed(2)}` : '-';
+          const longRR = c.long_rr !== undefined ? `${Number(c.long_rr).toFixed(1)}:1` : '2.0:1';
+          const longRRBadge = `<span class="badge" style="background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; font-weight:800; font-size:11.5px;">${longRR}</span>`;
+          const setup = c.screener_setup || '20 EMA';
+          const sqzBadge = c.squeeze_on ? `<span class="badge" style="background:#ecfdf5; color:#059669; border:1px solid #a7f3d0; font-weight:700;">🔥 SQUEEZE</span>` : `<span style="color:var(--text-muted);">No</span>`;
+          const nr7Badge = c.nr7 ? `<span class="badge" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:700;">NR7</span>` : `<span style="color:var(--text-muted);">-</span>`;
+          const rsVal = c.relative_strength_20d !== undefined ? Number(c.relative_strength_20d).toFixed(1) : null;
+          const rsBadge = rsVal ? `<span style="color:${Number(rsVal) >= 0 ? 'var(--green-light)' : 'var(--red-light)'}; font-weight:700;">${Number(rsVal) >= 0 ? '+' : ''}${rsVal}%</span>` : '-';
+          const pos52Str = (c.pos_52w !== undefined && c.pos_52w > 0) ? ` [${Number(c.pos_52w).toFixed(0)}% Base]` : '';
+
+          // Tastytrade Volatility & 24/7 Cloud Alert Badge
+          let ttBadge = '<span style="color:var(--text-muted); font-size:11px;">-</span>';
+          if (c.tastytrade && c.tastytrade.connected) {
+            const ivr = (c.tastytrade.iv_rank !== null && c.tastytrade.iv_rank !== undefined) ? `${Number(c.tastytrade.iv_rank).toFixed(0)}%` : '-';
+            const ivp = (c.tastytrade.iv_percentile !== null && c.tastytrade.iv_percentile !== undefined) ? `${Number(c.tastytrade.iv_percentile).toFixed(0)}%` : '-';
+            const hv30 = (c.tastytrade.hv30 !== null && c.tastytrade.hv30 !== undefined) ? `${Number(c.tastytrade.hv30).toFixed(0)}%` : '-';
+            const diff = (c.tastytrade.iv_hv_diff !== null && c.tastytrade.iv_hv_diff !== undefined) ? `${Number(c.tastytrade.iv_hv_diff) > 0 ? '+' : ''}${Number(c.tastytrade.iv_hv_diff).toFixed(0)}%` : null;
+            const alertTag = c.tastytrade_alert_active ? `<span class="badge" style="background:rgba(239,68,68,0.18); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-size:9.5px; padding:1px 4px; margin-top:2px;" title="24/7 Cloud Quote Alert Active on Tastytrade Mobile">🔔 Cloud Alert</span>` : '';
+
+            ttBadge = `
+              <div style="display:flex; flex-direction:column; gap:2px; align-items:center;">
+                <span class="badge" style="background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(239,68,68,0.3); font-weight:700; font-size:11px;" title="Tastytrade IV Rank: ${ivr} | IV Percentile: ${ivp} | 30d HV: ${hv30}${diff ? ' | IV-HV: ' + diff : ''}">
+                  IVR ${ivr}
+                </span>
+                ${diff ? `<span style="font-size:9.5px; color:var(--text-muted);" title="IV-HV Spread">IV-HV ${diff}</span>` : ''}
+                ${alertTag}
+              </div>
+            `;
+          }
+
+          // Pine Screener Model Badges
+          const stageNum = c.weinstein_stage !== undefined ? Number(c.weinstein_stage) : 1;
+          let stageBadge = `<span class="badge" style="background:#eff6ff; color:#2563eb; font-weight:700;">Stg 1 (Base)</span>`;
+          if (stageNum === 2) {
+            stageBadge = `<span class="badge" style="background:#ecfdf5; color:#059669; font-weight:800; border:1px solid #a7f3d0;">Stg 2 (Adv)</span>`;
+          } else if (stageNum === 3) {
+            stageBadge = `<span class="badge" style="background:#fef3c7; color:#d97706; font-weight:700;">Stg 3 (Dist)</span>`;
+          } else if (stageNum === 4) {
+            stageBadge = `<span class="badge" style="background:#fee2e2; color:#dc2626; font-weight:800; border:1px solid #fca5a5;">Stg 4 (Dec)</span>`;
+          } else if (stageNum === 5) {
+            stageBadge = `<span class="badge" style="background:#f3e8ff; color:#9333ea; font-weight:700;">Stg 5 (Rec)</span>`;
+          }
+
+          const revLong = c.rev_zone_long !== undefined ? Number(c.rev_zone_long) : 0.0;
+          let revBadge = `<span style="color:var(--text-muted); font-size:11px;">-</span>`;
+          if (c.is_extreme_reversal || revLong >= 7.0) {
+            revBadge = `<span class="badge" style="background:rgba(16,185,129,0.22); color:#34d399; border:1px solid #10b981; font-weight:800;" title="Connors Extreme Reversal Zone (86-91% Win Rate Setup)">⚡ Z1+ (${revLong.toFixed(1)})</span>`;
+          } else if (revLong >= 4.0) {
+            revBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; font-weight:700;">Z2 (${revLong.toFixed(1)})</span>`;
+          }
+
+          const prioScore = c.priority_score !== undefined ? Number(c.priority_score) : 50.0;
+          const prioTier = c.priority_tier || 'MONITOR';
+          let prioBadge = `<span class="badge" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">MONITOR (${prioScore.toFixed(0)})</span>`;
+          if (prioTier === 'HIGH_PRIORITY' || prioScore >= 75) {
+            prioBadge = `<span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981; border:1px solid rgba(16,185,129,0.5); font-weight:800; font-size:11.5px;" title="Autonomous Dispatch Eligible: High-Priority Pine Setup">🔥 HIGH (${prioScore.toFixed(0)})</span>`;
+          } else if (prioTier === 'MEDIUM_PRIORITY' || prioScore >= 55) {
+            prioBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); font-weight:700; font-size:11px;">MED (${prioScore.toFixed(0)})</span>`;
+          }
+
+          let postureBadge = '-';
+          if (c.headroom_pct !== undefined && Number(c.headroom_pct) >= 12.0) {
+            postureBadge = `<span class="badge" style="background:#ecfdf5; color:#047857; border:1px solid #a7f3d0; font-weight:700;" title="Substantial upside room to resistance. Ground floor swing edge.">🚀 OPEN RUNWAY (+${Number(c.headroom_pct).toFixed(1)}%)${pos52Str}</span>`;
+          } else if (c.headroom_pct !== undefined) {
+            postureBadge = `<span class="badge" style="background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; font-weight:600;">MID PULLBACK (+${Number(c.headroom_pct).toFixed(1)}%)${pos52Str}</span>`;
+          }
+
+          const compName = window.AppUtils ? AppUtils.getCompanyName(sym) : sym;
+          const compTitle = (compName || sym).replace(/"/g, '&quot;');
+
+          html += `
+            <tr style="border-bottom:1px solid var(--border); transition:background 0.2s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
+              <td style="padding:8px 10px;">
+                <button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer;" title="${compTitle} ($${sym}) - Click to view live TradingView Chart" data-ticker="${sym}">$${sym}</button>
+              </td>
+              <td style="text-align:right; padding:8px 10px; font-weight:700; font-family:var(--font-mono);">${px}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); color:var(--red-light);">${stop}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); color:var(--text-muted);">${ceil}</td>
+              <td style="text-align:center; padding:8px 10px;">${longRRBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${stageBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${revBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${prioBadge}</td>
+              <td style="padding:8px 10px; color:var(--blue); font-weight:600;">
+                ${setup} (${sup})
+                ${c.pattern && c.pattern !== 'Support Coil' ? `<div style="font-size:11px; margin-top:2px; font-weight:700; color:#059669;" title="TA-Lib Bullish Candlestick Pattern">🕯️ ${c.pattern}</div>` : ''}
+              </td>
+              <td style="text-align:center; padding:8px 10px;">${postureBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${sqzBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${nr7Badge}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono);">${rsBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${ttBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">
+                <div style="display:inline-flex; gap:5px; align-items:center;">
+                  <a href="https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(sym)}&interval=D" target="_blank" class="btn secondary" style="padding:2px 7px; font-size:11px; font-weight:700; color:var(--blue); text-decoration:none; display:inline-flex; align-items:center; gap:2px;" title="Open directly in TradingView with Rev - Enhanced v2 & R-VRVP Indicators">
+                    📊 Rev v2 ↗
+                  </a>
+                  <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="padding:2px 7px; font-size:11px; font-weight:700;" title="Open Interactive TradingView Modal">
+                    📈 Modal
+                  </button>
+                  <button class="btn secondary" onclick="AppSwing.setTicker('${sym}'); AppSwing.launchResearch();" style="padding:2px 7px; font-size:11px; font-weight:700;" title="Queue Full Deep Research">
+                    ⚡ Deep Research
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        });
+      } else {
+        // PRIME SHORT TABLE
+        html = `
+          <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border); background:var(--bg-subtle);">
+                <th style="text-align:left; padding:8px 10px;">Ticker</th>
+                <th style="text-align:right; padding:8px 10px;">Price</th>
+                <th style="text-align:right; padding:8px 10px;">Stop Loss</th>
+                <th style="text-align:right; padding:8px 10px;">Ceiling Resist</th>
+                <th style="text-align:right; padding:8px 10px;">Dist to Ceil</th>
+                <th style="text-align:center; padding:8px 10px;">Short R:R</th>
+                <th style="text-align:center; padding:8px 10px;">Stage</th>
+                <th style="text-align:center; padding:8px 10px;">Rev Short</th>
+                <th style="text-align:center; padding:8px 10px;">Priority</th>
+                <th style="text-align:right; padding:8px 10px;">50 SMA Target</th>
+                <th style="text-align:right; padding:8px 10px;">Profit Runway</th>
+                <th style="text-align:center; padding:8px 10px;">Squeeze (SQZ)</th>
+                <th style="text-align:center; padding:8px 10px;">NR7 Bar</th>
+                <th style="text-align:right; padding:8px 10px;">Ext vs 200 SMA</th>
+                <th style="text-align:center; padding:8px 10px;">Exhaustion Pattern</th>
+                <th style="text-align:center; padding:8px 10px;">Tastytrade Vol</th>
+                <th style="text-align:center; padding:8px 10px;">Live Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        candidates.forEach(c => {
+          const sym = c.Symbol || c.Ticker;
+          const px = c.price ? `$${Number(c.price).toFixed(2)}` : '-';
+          const stop = c.stop_level ? `$${Number(c.stop_level).toFixed(2)}` : '-';
+          const ceil = c.ceiling_level ? `$${Number(c.ceiling_level).toFixed(2)}` : '-';
+          const ceilDist = c.headroom_pct !== undefined ? `+${Number(c.headroom_pct).toFixed(1)}%` : '-';
+          const ext200 = c.ext_200_pct !== undefined ? `+${Number(c.ext_200_pct).toFixed(1)}%` : '-';
+          const tgt = c.target_level ? `$${Number(c.target_level).toFixed(2)}` : '-';
+          const downPct = c.downside_to_50sma !== undefined ? Number(c.downside_to_50sma).toFixed(1) : '15.0';
+          const rr = c.short_rr !== undefined ? `${Number(c.short_rr).toFixed(1)}:1` : '1.5:1';
+          const rrBadge = `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800; font-size:11.5px;">${rr}</span>`;
+          const runwayBadge = `<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-weight:700;">+${downPct}%</span>`;
+          const sqzBadge = c.squeeze_on ? `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:700;">🔥 SQUEEZE</span>` : `<span style="color:var(--text-muted);">No</span>`;
+          const nr7Badge = c.nr7 ? `<span class="badge" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:700;">NR7</span>` : `<span style="color:var(--text-muted);">-</span>`;
+
+          // Tastytrade Volatility & 24/7 Cloud Alert Badge
+          let ttBadge = '<span style="color:var(--text-muted); font-size:11px;">-</span>';
+          if (c.tastytrade && c.tastytrade.connected) {
+            const ivr = (c.tastytrade.iv_rank !== null && c.tastytrade.iv_rank !== undefined) ? `${Number(c.tastytrade.iv_rank).toFixed(0)}%` : '-';
+            const ivp = (c.tastytrade.iv_percentile !== null && c.tastytrade.iv_percentile !== undefined) ? `${Number(c.tastytrade.iv_percentile).toFixed(0)}%` : '-';
+            const hv30 = (c.tastytrade.hv30 !== null && c.tastytrade.hv30 !== undefined) ? `${Number(c.tastytrade.hv30).toFixed(0)}%` : '-';
+            const diff = (c.tastytrade.iv_hv_diff !== null && c.tastytrade.iv_hv_diff !== undefined) ? `${Number(c.tastytrade.iv_hv_diff) > 0 ? '+' : ''}${Number(c.tastytrade.iv_hv_diff).toFixed(0)}%` : null;
+            const alertTag = c.tastytrade_alert_active ? `<span class="badge" style="background:rgba(239,68,68,0.18); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-size:9.5px; padding:1px 4px; margin-top:2px;" title="24/7 Cloud Quote Alert Active on Tastytrade Mobile">🔔 TT Alert</span>` : '';
+
+            ttBadge = `
+              <div style="display:flex; flex-direction:column; gap:2px; align-items:center;">
+                <span class="badge" style="background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(239,68,68,0.3); font-weight:700; font-size:11px;" title="Tastytrade IV Rank: ${ivr} | IV Percentile: ${ivp} | 30d HV: ${hv30}${diff ? ' | IV-HV: ' + diff : ''}">
+                  IVR ${ivr}
+                </span>
+                ${diff ? `<span style="font-size:9.5px; color:var(--text-muted);" title="IV-HV Spread">IV-HV ${diff}</span>` : ''}
+                ${alertTag}
+              </div>
+            `;
+          }
+
+          // Pine Screener Model Badges
+          const stageNum = c.weinstein_stage !== undefined ? Number(c.weinstein_stage) : 3;
+          let stageBadge = `<span class="badge" style="background:#fef3c7; color:#d97706; font-weight:700;">Stg 3 (Dist)</span>`;
+          if (stageNum === 4) {
+            stageBadge = `<span class="badge" style="background:#fee2e2; color:#dc2626; font-weight:800; border:1px solid #fca5a5;">Stg 4 (Dec)</span>`;
+          } else if (stageNum === 2) {
+            stageBadge = `<span class="badge" style="background:#ecfdf5; color:#059669; font-weight:700;">Stg 2 (Adv)</span>`;
+          }
+
+          const revShort = c.rev_zone_short !== undefined ? Number(c.rev_zone_short) : 0.0;
+          let revBadge = `<span style="color:var(--text-muted); font-size:11px;">-</span>`;
+          if (c.is_extreme_reversal || revShort >= 7.0) {
+            revBadge = `<span class="badge" style="background:rgba(239,68,68,0.22); color:#f87171; border:1px solid #ef4444; font-weight:800;" title="Connors Extreme Overbought Rejection Zone">⚡ Z1+ (${revShort.toFixed(1)})</span>`;
+          } else if (revShort >= 4.0) {
+            revBadge = `<span class="badge" style="background:rgba(249,115,22,0.15); color:#fb923c; font-weight:700;">Z2 (${revShort.toFixed(1)})</span>`;
+          }
+
+          const prioScore = c.priority_score !== undefined ? Number(c.priority_score) : 50.0;
+          const prioTier = c.priority_tier || 'MONITOR';
+          let prioBadge = `<span class="badge" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">MONITOR (${prioScore.toFixed(0)})</span>`;
+          if (prioTier === 'HIGH_PRIORITY' || prioScore >= 75) {
+            prioBadge = `<span class="badge" style="background:rgba(239,68,68,0.2); color:#f87171; border:1px solid rgba(239,68,68,0.5); font-weight:800; font-size:11.5px;" title="Autonomous Dispatch Eligible: High-Priority Pine Short Setup">🔥 HIGH (${prioScore.toFixed(0)})</span>`;
+          } else if (prioTier === 'MEDIUM_PRIORITY' || prioScore >= 55) {
+            prioBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); font-weight:700; font-size:11px;">MED (${prioScore.toFixed(0)})</span>`;
+          }
+
+          const pat = c.pattern || 'Ceiling Stall';
+          let patBadge = `<span class="badge" style="background:rgba(245,158,11,0.15); color:#fbbf24; border:1px solid rgba(245,158,11,0.3); font-weight:700;">🧱 ${pat}</span>`;
+          if (pat.includes('Shooting Star') || pat.includes('Evening Star')) {
+            patBadge = `<span class="badge" style="background:rgba(239,68,68,0.18); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800;" title="TA-Lib Confirmed Candlestick Rejection">⭐ ${pat}</span>`;
+          } else if (pat.includes('Engulfing') || pat.includes('Dark Cloud')) {
+            patBadge = `<span class="badge" style="background:rgba(220,38,38,0.18); color:#ef4444; border:1px solid rgba(220,38,38,0.4); font-weight:800;" title="TA-Lib Bearish Momentum Engulfing">🔻 ${pat}</span>`;
+          } else if (pat.includes('Hanging Man') || pat.includes('Harami') || pat.includes('Hikkake') || pat.includes('Crows')) {
+            patBadge = `<span class="badge" style="background:rgba(249,115,22,0.18); color:#fb923c; border:1px solid rgba(249,115,22,0.4); font-weight:800;" title="TA-Lib Reversal Pattern">⚡ ${pat}</span>`;
+          } else if (pat.includes('Doji') || pat.includes('Spinning Top')) {
+            patBadge = `<span class="badge" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3); font-weight:700;" title="TA-Lib Indecision / Exhaustion at Highs">⚖️ ${pat}</span>`;
+          } else if (pat.includes('NR7')) {
+            patBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); font-weight:700;" title="NR7 Volatility Contraction">📦 ${pat}</span>`;
+          }
+
+          const compName = window.AppUtils ? AppUtils.getCompanyName(sym) : sym;
+          const compTitle = (compName || sym).replace(/"/g, '&quot;');
+
+          html += `
+            <tr style="border-bottom:1px solid var(--border); transition:background 0.2s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
+              <td style="padding:8px 10px;">
+                <button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer; color:var(--red-light); border-color:#fca5a5;" title="${compTitle} ($${sym}) - Click to view live TradingView Chart" data-ticker="${sym}">$${sym}</button>
+              </td>
+              <td style="text-align:right; padding:8px 10px; font-weight:700; font-family:var(--font-mono);">${px}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); font-weight:700; color:var(--rose-light);">${stop}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); font-weight:600; color:#fbbf24;">${ceil}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); color:var(--text-muted);">${ceilDist}</td>
+              <td style="text-align:center; padding:8px 10px;">${rrBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${stageBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${revBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${prioBadge}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); font-weight:700; color:var(--cyan-glow);">${tgt}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono);">${runwayBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${sqzBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${nr7Badge}</td>
+              <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); font-weight:700; color:#fb923c;">${ext200}</td>
+              <td style="text-align:center; padding:8px 10px;">${patBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${ttBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">
+                <div style="display:inline-flex; gap:5px; align-items:center;">
+                  <a href="https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(sym)}&interval=D" target="_blank" class="btn secondary" style="padding:2px 7px; font-size:11px; font-weight:700; color:var(--blue); text-decoration:none; display:inline-flex; align-items:center; gap:2px;" title="Open directly in TradingView with Rev - Enhanced v2 & R-VRVP Indicators">
+                    📊 Rev v2 ↗
+                  </a>
+                  <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="padding:2px 7px; font-size:11px; font-weight:700;" title="Open Interactive TradingView Modal">
+                    📈 Modal
+                  </button>
+                  <button class="btn secondary" onclick="AppSwing.setTicker('${sym}'); AppSwing.launchResearch();" style="padding:2px 7px; font-size:11px; font-weight:700;" title="Queue Full Deep Research">
+                    ⚡ Deep Research
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        });
+      }
+
+      html += `</tbody></table>`;
+      container.innerHTML = html;
+    } catch (e) {
+      console.error(`Failed loading Schwab screener candidates: ${e}`);
+      container.innerHTML = `<div style="color:var(--red-light); font-size:12px; padding:8px;">Failed loading screener: ${e.message}</div>`;
+    }
+  },
+
+  async runSchwabScreenerScan() {
+    const isShort = this._screenerSide === 'short';
+    const btn = document.getElementById('btn-run-schwab-scan');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = isShort ? '⏳ Scanning Shorts...' : '⏳ Scanning 983 Stocks...';
+    }
+
+    try {
+      await window.AppApi.runSchwabScreenerScan(10, false, this._screenerSide || 'long');
+      
+      const startTime = Date.now();
+      if (this._schwabScanTimer) clearInterval(this._schwabScanTimer);
+      
+      this._schwabScanTimer = setInterval(async () => {
+        const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+        if (btn) {
+          btn.innerHTML = `⏳ Scanning ${isShort ? 'Shorts' : '983 Stocks'} (${elapsedSec}s)...`;
+        }
+        
+        try {
+          const status = await window.AppApi.getSchwabScanStatus();
+          if (!status.running || elapsedSec >= 120) {
+            clearInterval(this._schwabScanTimer);
+            this._schwabScanTimer = null;
+            if (btn) {
+              btn.disabled = false;
+              this.updateScreenerTabButtons();
+            }
+            await this.loadSchwabScreener();
+            await this.refreshResearchQueue();
+          }
+        } catch (pollErr) {
+          if (elapsedSec >= 75) {
+            clearInterval(this._schwabScanTimer);
+            this._schwabScanTimer = null;
+            if (btn) {
+              btn.disabled = false;
+              this.updateScreenerTabButtons();
+            }
+            await this.loadSchwabScreener();
+          }
+        }
+      }, 2000);
+    } catch (e) {
+      alert(`Screener Scan Error: ${e.message}`);
+      if (btn) {
+        btn.disabled = false;
+        this.updateScreenerTabButtons();
+      }
+    }
+  },
+
+  async runAutonomousScreenerScan() {
+    const isShort = this._screenerSide === 'short';
+    const btn = document.getElementById('btn-run-autonomous-scan');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '🤖 Autonomous Pipeline...';
+    }
+
+    try {
+      await window.AppApi.runAutonomousScreenerScan(10, this._screenerSide || 'long', 3);
+
+      const startTime = Date.now();
+      if (this._schwabScanTimer) clearInterval(this._schwabScanTimer);
+
+      this._schwabScanTimer = setInterval(async () => {
+        const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+        if (btn) {
+          btn.innerHTML = `🤖 Autonomous Pipeline (${elapsedSec}s)...`;
+        }
+
+        try {
+          const status = await window.AppApi.getSchwabScanStatus();
+          if (!status.running || elapsedSec >= 180) {
+            clearInterval(this._schwabScanTimer);
+            this._schwabScanTimer = null;
+            if (btn) {
+              btn.disabled = false;
+              btn.innerHTML = '🤖 Autonomous Scan & Research';
+            }
+            await this.loadSchwabScreener();
+            await this.refreshResearchQueue();
+          }
+        } catch (pollErr) {
+          if (elapsedSec >= 120) {
+            clearInterval(this._schwabScanTimer);
+            this._schwabScanTimer = null;
+            if (btn) {
+              btn.disabled = false;
+              btn.innerHTML = '🤖 Autonomous Scan & Research';
+            }
+            await this.loadSchwabScreener();
+          }
+        }
+      }, 2000);
+    } catch (e) {
+      alert(`Autonomous Pipeline Error: ${e.message}`);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '🤖 Autonomous Scan & Research';
+      }
+    }
+  },
+
+  _lastContinuousScanTime: null,
+  _continuousPollingTimer: null,
+
+  async triggerContinuousScanNow() {
+    try {
+      if (window.AppUtils && AppUtils.showToast) {
+        AppUtils.showToast('⚡ Triggering continuous Schwab 1000 & Tastytrade scan...', 'info');
+      }
+      const labelEl = document.getElementById('screener-continuous-status-text');
+      if (labelEl) labelEl.innerText = '⚡ Triggering...';
+      const res = await fetch('/api/screener/continuous-scan-now', { method: 'POST' });
+      const data = await res.json();
+      setTimeout(() => this.pollContinuousScreenerStatus(), 1000);
+    } catch (e) {
+      console.error('Trigger continuous scan failed:', e);
+    }
+  },
+
+  async pollContinuousScreenerStatus() {
+    try {
+      const res = await fetch('/api/screener/continuous-status');
+      if (!res.ok) return;
+      const s = await res.json();
+
+      const labelEl = document.getElementById('screener-continuous-status-text');
+      const timerEl = document.getElementById('screener-next-scan-timer');
+      const badgeEl = document.getElementById('screener-continuous-badge');
+      const ttBadgeEl = document.getElementById('screener-tastytrade-badge');
+
+      if (ttBadgeEl) {
+        if (s.tastytrade_connected) {
+          ttBadgeEl.innerHTML = `<span>🍒 TT Vol &amp; Alerts</span><span style="font-size:9.5px; background:rgba(0,0,0,0.35); padding:1px 5px; border-radius:4px; margin-left:2px; color:var(--text-muted);">${s.active_alerts_registered || 0} Alerts</span>`;
+          ttBadgeEl.style.color = '#f87171';
+          ttBadgeEl.style.borderColor = 'rgba(239,68,68,0.4)';
+        } else {
+          ttBadgeEl.innerHTML = `<span>🍒 TT Connected</span>`;
+          ttBadgeEl.style.color = '#f87171';
+          ttBadgeEl.style.borderColor = 'rgba(239,68,68,0.3)';
+        }
+      }
+
+      if (s.is_scanning) {
+        if (labelEl) labelEl.innerText = '⚡ Scanning 983 Stocks...';
+        if (timerEl) timerEl.innerText = 'Live';
+        if (badgeEl) {
+          badgeEl.style.borderColor = '#3b82f6';
+          badgeEl.style.color = 'var(--cyan)';
+        }
+      } else {
+        if (labelEl) labelEl.innerText = '🤖 Continuous Active';
+        if (timerEl) {
+          const sec = s.seconds_until_next_scan || 0;
+          const m = Math.floor(sec / 60);
+          const remS = sec % 60;
+          timerEl.innerText = m > 0 ? `(~${m}m)` : `(${remS}s)`;
+        }
+        if (badgeEl) {
+          badgeEl.style.borderColor = 'rgba(16,185,129,0.35)';
+          badgeEl.style.color = '#10b981';
+        }
+      }
+
+      // Auto-refresh candidate table when a new scan finishes
+      if (s.last_scan_time && s.last_scan_time !== this._lastContinuousScanTime) {
+        const isInitial = this._lastContinuousScanTime === null;
+        this._lastContinuousScanTime = s.last_scan_time;
+        if (!isInitial) {
+          if (window.AppUtils && AppUtils.showToast) {
+            AppUtils.showToast(`✅ Continuous screener updated (${s.long_count} Longs, ${s.short_count} Shorts)`, 'success');
+          }
+          this.loadSchwabScreener();
+        }
+      }
+    } catch (e) {
+      console.debug('Continuous status poll error:', e);
+    }
+  },
+
+  startContinuousScreenerPolling() {
+    if (this._continuousPollingTimer) clearInterval(this._continuousPollingTimer);
+    this.pollContinuousScreenerStatus();
+    this._continuousPollingTimer = setInterval(() => this.pollContinuousScreenerStatus(), 8000);
+  },
+
+  async autoResearchAllSurvivors() {
+    const isShort = this._screenerSide === 'short';
+    if (!this._currentScreenerCandidates || this._currentScreenerCandidates.length === 0) {
+      return alert(`No ${isShort ? 'prime short' : 'long basing'} survivors available. Run the Schwab scan first!`);
+    }
+
+    const label = isShort ? 'prime short' : 'coiled long';
+    const total = this._currentScreenerCandidates.length;
+    const conf = confirm(`Queue deep research for all ${total} ${label} candidates?\n(The system will automatically process 2 at a time based on hardware slots until all ${total} finish)`);
+    if (!conf) return;
+
+    let startedCount = 0;
+    let queuedCount = 0;
+    for (const c of this._currentScreenerCandidates) {
+      const sym = c.Symbol || c.Ticker;
+      if (sym) {
+        try {
+          const res = await window.AppApi.triggerResearch(sym, 'full');
+          if (res && res.status === 'started') startedCount++;
+          else if (res && res.status === 'queued') queuedCount++;
+        } catch (e) {
+          console.warn(`Could not queue ${sym}:`, e);
+        }
+      }
+    }
+    if (window.AppStatus) {
+      await window.AppStatus.updateStatus();
+      await window.AppStatus.loadJobs();
+    }
+    alert(`Queued all ${total} ${label} candidates!\n${startedCount} running immediately in open slots, ${queuedCount} queued to auto-process as slots free up.\nMonitor progress in Hardware/Processes.`);
   },
 
   async refreshResearchQueue() {
@@ -65,9 +762,12 @@ window.AppSwing = {
           ? 'background:#eff6ff; border-color:#bfdbfe; color:#1d4ed8;'
           : 'background:#fffbeb; border-color:#fde68a; color:#b45309;';
 
+        const compQ = window.AppUtils ? AppUtils.getCompanyName(item.ticker) : item.ticker;
+        const compTitle = (compQ || item.ticker).replace(/"/g, '&quot;');
+
         return `
           <div style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:3px 8px; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-            <strong style="color:var(--text-main); font-size:12px;">$${item.ticker}</strong>
+            <strong style="color:var(--text-main); font-size:12px; cursor:help;" title="${compTitle}" data-ticker="${item.ticker}">$${item.ticker}</strong>
             <span style="font-size:10.5px; color:${badgeColor}; font-weight:600;">${item.reason}</span>
             <button class="btn secondary" onclick="AppSwing.runResearchAction('${item.ticker}', '${item.action}', '${item.date || ''}')" style="padding:2px 7px; font-size:10.5px; font-weight:700; ${btnStyle}">
               ${item.action_label}
@@ -152,12 +852,34 @@ window.AppSwing = {
         const entry = Number(t.entry_zone_high || spot);
         const t1 = Number(t.target_1 || (spot * 1.05));
         const t2 = Number(t.target_2 || (spot * 1.10));
+        const isShortTarget = (t.side === 'SHORT') || (stop > entry);
+        const sideBadge = isShortTarget
+          ? `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800; font-size:10px; margin-left:4px;">🔴 SHORT</span>`
+          : `<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-weight:800; font-size:10px; margin-left:4px;">🟢 LONG</span>`;
+
+        const ladderLabels = isShortTarget ? `
+          <span style="color:var(--rose-light);">Stop $${stop.toFixed(2)}</span>
+          <span style="color:var(--amber-light);">Ceiling Entry $${entry.toFixed(2)}</span>
+          <span style="color:var(--cyan-glow); font-weight:700;">Spot $${spot.toFixed(2)}</span>
+          <span style="color:var(--emerald-light);">T1 $${t1.toFixed(2)}</span>
+          <span style="color:var(--violet-light);">T2 $${t2.toFixed(2)}</span>
+        ` : `
+          <span style="color:var(--rose-light);">Stop $${stop.toFixed(2)}</span>
+          <span style="color:var(--amber-light);">Entry $${entry.toFixed(2)}</span>
+          <span style="color:var(--cyan-glow); font-weight:700;">Spot $${spot.toFixed(2)}</span>
+          <span style="color:var(--emerald-light);">T1 $${t1.toFixed(2)}</span>
+          <span style="color:var(--violet-light);">T2 $${t2.toFixed(2)}</span>
+        `;
+
+        const compT = window.AppUtils ? AppUtils.getCompanyName(t.ticker) : t.ticker;
+        const compTitle = (compT || t.ticker).replace(/"/g, '&quot;');
 
         return `
           <div class="target-card">
             <div class="target-header">
               <div class="target-sym">
-                <span>${t.ticker}</span>
+                <span class="target-sym-text" title="${compTitle} ($${t.ticker})" data-ticker="${t.ticker}" style="cursor:help;">${t.ticker}</span>
+                ${sideBadge}
                 <span class="spot-badge">$${spot.toFixed(2)}</span>
                 <span class="badge ${statusClass}">${t.status} (${distDisplay})</span>
               </div>
@@ -167,11 +889,7 @@ window.AppSwing = {
             <!-- Visual Price Ladder -->
             <div class="price-ladder-box">
               <div class="price-ladder-labels">
-                <span style="color:var(--rose-light);">Stop $${stop.toFixed(2)}</span>
-                <span style="color:var(--amber-light);">Entry $${entry.toFixed(2)}</span>
-                <span style="color:var(--cyan-glow); font-weight:700;">Spot $${spot.toFixed(2)}</span>
-                <span style="color:var(--emerald-light);">T1 $${t1.toFixed(2)}</span>
-                <span style="color:var(--violet-light);">T2 $${t2.toFixed(2)}</span>
+                ${ladderLabels}
               </div>
               <div class="price-ladder-track">
                 <div class="price-ladder-progress" style="width: 100%;"></div>
@@ -179,7 +897,7 @@ window.AppSwing = {
             </div>
 
             <div class="levels-row">
-              <div class="level-col"><label>Entry Zone</label><span>$${Number(t.entry_zone_low||0).toFixed(2)} - $${Number(t.entry_zone_high||0).toFixed(2)}</span></div>
+              <div class="level-col"><label>${isShortTarget ? 'Ceiling Entry' : 'Entry Zone'}</label><span>$${Number(t.entry_zone_low||0).toFixed(2)} - $${Number(t.entry_zone_high||0).toFixed(2)}</span></div>
               <div class="level-col"><label>Tactical Stop</label><span style="color:var(--rose-light);">$${stop.toFixed(2)}</span></div>
               <div class="level-col"><label>Target 1</label><span style="color:var(--emerald-light);">$${t1.toFixed(2)}</span></div>
               <div class="level-col"><label>Target 2</label><span style="color:var(--cyan-glow);">$${t2.toFixed(2)}</span></div>
@@ -315,6 +1033,18 @@ window.AppSwing = {
     }
   },
 
+  async deleteAllAlerts() {
+    if (!confirm('⚠️ Are you sure you want to delete ALL cloud alerts from Tastytrade across ALL tickers? This cannot be undone.')) return;
+    try {
+      if (window.AppToast) window.AppToast.show('Clearing all Tastytrade cloud alerts...', 'info');
+      const res = await window.AppApi.deleteAllTastytradeAlerts();
+      if (window.AppToast) window.AppToast.show(`Successfully cleared ${res.deleted_count ?? 0} alerts from Tastytrade`, 'success');
+      await this.loadTastytradeAlerts();
+    } catch (e) {
+      alert(`Error deleting all alerts: ${e.message}`);
+    }
+  },
+
   async deleteAlert(id) {
     if (!confirm('Delete this cloud alert on Tastytrade?')) return;
     try {
@@ -386,7 +1116,8 @@ window.AppSwing = {
       if (sel) {
         sel.innerHTML = window.AppState.allReportDates.map(d => {
           const isSelected = (d === window.AppState.currentArchiveDate) ? 'selected' : '';
-          return `<option value="${d}" ${isSelected}>📅 ${d}</option>`;
+          const label = (data.date_labels && data.date_labels[d]) || `📅 ${d}`;
+          return `<option value="${d}" ${isSelected}>${label}</option>`;
         }).join('');
       }
 
@@ -419,9 +1150,11 @@ window.AppSwing = {
     }
 
     if (countPill) {
+      const isLatest = window.AppState.currentArchiveDate === ((window.AppState.allReportDates && window.AppState.allReportDates[0]) || '');
+      const dateTag = isLatest ? `${window.AppState.currentArchiveDate} · Latest Session` : window.AppState.currentArchiveDate;
       countPill.innerText = query
         ? `${reports.length} / ${this._allArchiveReports.length} Reports`
-        : `${reports.length} Reports (${window.AppState.currentArchiveDate})`;
+        : `${reports.length} Reports (${dateTag})`;
     }
 
     if (reports.length === 0) {
@@ -435,19 +1168,50 @@ window.AppSwing = {
       const verdictStr = r.verdict || 'ANALYZED';
       const verdictClass = window.AppUtils.getVerdictBadgeClass(verdictStr);
       const optText = r.options_summary || 'Detailed strategy inside 3-model dossier.';
-      const entryStr = (r.entry_zone && r.entry_zone.length >= 2)
-        ? `$${Number(r.entry_zone[0]).toFixed(2)} - $${Number(r.entry_zone[1]).toFixed(2)}`
-        : 'At Trigger';
-      const stopStr = r.tactical_stop ? `$${Number(r.tactical_stop).toFixed(2)}` : 'N/A';
-      const t1Str = r.target_1 ? `$${Number(r.target_1).toFixed(2)}` : 'N/A';
-      const t2Str = r.target_2 ? `$${Number(r.target_2).toFixed(2)}` : 'N/A';
+
+      let entryStr = '--';
+      if (r.entry_zone && r.entry_zone.length >= 2) {
+        entryStr = `$${Number(r.entry_zone[0]).toFixed(2)} - $${Number(r.entry_zone[1]).toFixed(2)}`;
+      } else if (r.entry_zone && r.entry_zone.length === 1) {
+        entryStr = `$${Number(r.entry_zone[0]).toFixed(2)}`;
+      }
+
+      const stopStr = (r.tactical_stop !== null && r.tactical_stop !== undefined && !isNaN(r.tactical_stop))
+        ? `$${Number(r.tactical_stop).toFixed(2)}`
+        : '--';
+      const t1Str = (r.target_1 !== null && r.target_1 !== undefined && !isNaN(r.target_1))
+        ? `$${Number(r.target_1).toFixed(2)}`
+        : '--';
+      const t2Str = (r.target_2 !== null && r.target_2 !== undefined && !isNaN(r.target_2))
+        ? `$${Number(r.target_2).toFixed(2)}`
+        : '--';
+
+      // Format research execution time
+      let timeStr = '';
+      if (r.researched_at) {
+        try {
+          const dt = new Date(r.researched_at);
+          const now = new Date();
+          const diffMs = now - dt;
+          const diffHours = Math.floor(diffMs / 3600000);
+          const timeH = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          if (diffHours < 24 && dt.getDate() === now.getDate()) {
+            timeStr = `⚡ Run Today ${timeH}${diffHours > 0 ? ` (${diffHours}h ago)` : ''}`;
+          } else if (diffHours < 48) {
+            timeStr = `📅 Yesterday ${timeH}`;
+          } else {
+            timeStr = `📅 ${r.date}`;
+          }
+        } catch (e) {}
+      }
 
       return `
         <div class="target-card">
           <div class="target-header">
             <div class="target-sym">
-              <span style="color:var(--cyan-glow);">${r.ticker}</span>
+              <span style="color:var(--cyan-glow); font-weight:800; font-size:15px; font-family:var(--font-mono);">${r.ticker}</span>
               <span class="badge ${verdictClass}">${verdictStr}</span>
+              ${timeStr ? `<span style="font-size:11px; color:var(--text-muted); font-family:var(--font-mono); font-weight:600; margin-left:6px;">${timeStr}</span>` : ''}
             </div>
             <button class="btn secondary" onclick="AppSwing.openReportModal('${r.date}', '${r.ticker}')" style="padding:5px 12px; font-size:12px;">📑 Open Dossier</button>
           </div>
@@ -457,10 +1221,10 @@ window.AppSwing = {
           </div>
 
           <div class="levels-row">
-            <div class="level-col"><label>Entry Zone</label><span>${entryStr}</span></div>
-            <div class="level-col"><label>Tactical Stop</label><span style="color:var(--rose-light);">${stopStr}</span></div>
-            <div class="level-col"><label>Target 1</label><span style="color:var(--emerald-light);">${t1Str}</span></div>
-            <div class="level-col"><label>Target 2</label><span style="color:var(--cyan-glow);">${t2Str}</span></div>
+            <div class="level-col"><label>Entry Zone</label><span style="font-weight:700; color:var(--text-main); font-family:var(--font-mono);">${entryStr}</span></div>
+            <div class="level-col"><label>Tactical Stop</label><span style="color:var(--rose-light); font-weight:700; font-family:var(--font-mono);">${stopStr}</span></div>
+            <div class="level-col"><label>Target 1</label><span style="color:var(--emerald-light); font-weight:700; font-family:var(--font-mono);">${t1Str}</span></div>
+            <div class="level-col"><label>Target 2</label><span style="color:var(--cyan-glow); font-weight:700; font-family:var(--font-mono);">${t2Str}</span></div>
           </div>
         </div>
       `;
@@ -485,8 +1249,21 @@ window.AppSwing = {
   async openPlanExecution(ticker, date) {
     if (!ticker) return;
     await this.openReportModal(date, ticker, 'plan');
+    this.togglePositionsPane(false);
+    const drawer = document.getElementById('modal-copilot-drawer');
+    if (drawer) {
+      drawer.style.display = 'flex';
+      try {
+        drawer.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
+      } catch (e) {}
+    }
+    const data = window.AppState.currentReportData;
+    const optPlan = data?.watch_levels?.options_plan?.summary || 'the suggested position';
+    const prompt = `What is the exact execution step for $${ticker} (${optPlan}) right now?`;
     if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {
-      window.AppChat.askModalCopilot(`What is the exact execution step for $${ticker} right now?`);
+      window.AppChat.askModalCopilot(prompt);
+    } else if (window.AppChat && typeof window.AppChat.askActiveChat === 'function') {
+      window.AppChat.askActiveChat(prompt);
     }
   },
 
@@ -510,20 +1287,35 @@ window.AppSwing = {
     ticker = (ticker || '').toUpperCase().trim();
     if (!ticker) return;
 
-    if (initialTab) {
-      window.AppState.activeDossierTab = initialTab;
+    if (!window.AppState.activeChats) window.AppState.activeChats = [];
+    const maxChats = window.AppState.maxActiveChats || 3;
+
+    // 1. If ticker is already open in activeChats
+    const existingIdx = window.AppState.activeChats.findIndex(c => c.ticker === ticker);
+    if (existingIdx !== -1) {
+      const existing = window.AppState.activeChats[existingIdx];
+      if (date && date !== 'latest' && existing.date !== date) {
+        // Different archive date requested for existing ticker, will fetch below
+      } else {
+        if (initialTab) existing.activeTab = initialTab;
+        this.switchToChat(ticker, initialTab);
+        return;
+      }
     }
 
+    // 2. Prepare modal UI
     const modal = document.getElementById('report-modal');
     if (!modal) return;
-    modal.classList.remove('minimized');
+    if (modal.classList.contains('collapsed')) {
+      this.restoreReportModal();
+    }
     modal.style.display = 'flex';
+
     document.getElementById('modal-ticker-title').innerText = `${ticker} RESEARCH REPORT (${date || 'Latest'})`;
     const pulse = document.getElementById('modal-minimized-pulse');
     if (pulse) pulse.style.display = 'none';
-    const minBtn = document.getElementById('btn-modal-min-toggle');
-    if (minBtn) minBtn.innerHTML = '<span style="font-size:11px;">🗕</span> Minimize';
-    document.getElementById('modal-body').innerHTML = '<div style="padding:40px; text-align:center;">Loading dossier...</div>';
+    const bodyEl = document.getElementById('modal-body');
+    if (bodyEl) bodyEl.innerHTML = `<div style="padding:40px; text-align:center;">⏳ Loading dossier for <strong>${ticker}</strong>...</div>`;
 
     try {
       const reqDate = date || (window.AppState ? window.AppState.currentArchiveDate : null) || 'latest';
@@ -531,55 +1323,204 @@ window.AppSwing = {
       data.ticker = ticker;
       const actualDate = data.date || reqDate;
       data.date = actualDate;
-      window.AppState.currentReportData = data;
-      document.getElementById('modal-ticker-title').innerText = `${ticker} RESEARCH REPORT (${actualDate})`;
-      if (window.AppChat && typeof window.AppChat.updateSidebarFocusBadge === 'function') {
-        window.AppChat.updateSidebarFocusBadge(ticker);
-      }
 
-      // Render Dedicated Suggested Positions Side Pane
-      this.renderSuggestedPositionsPane(data);
+      // 3. Manage activeChats array (CAPPED AT 3 MAX)
+      if (!window.AppState.activeChats) window.AppState.activeChats = [];
+      const chatIndex = window.AppState.activeChats.findIndex(c => c.ticker === ticker);
 
-      // Populate Date Switcher dropdown
-      const dateSelect = document.getElementById('modal-report-date-select');
-      const histCountEl = document.getElementById('modal-hist-count');
-      const dates = data.available_dates || [actualDate];
-      if (histCountEl) histCountEl.innerText = dates.length;
-
-      if (dateSelect) {
-        dateSelect.innerHTML = dates.map(d => {
-          const isSel = (d === actualDate) ? 'selected' : '';
-          const matchItem = (data.historical_timeline || []).find(x => x.date === d);
-          const spotLabel = (matchItem && matchItem.spot) ? ` ($${Number(matchItem.spot).toFixed(2)})` : '';
-          return `<option value="${d}" ${isSel}>${d}${spotLabel}</option>`;
-        }).join('');
-      }
-
-      const key = `${ticker}_${actualDate}`;
-      if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
-      window.AppState.modalChatHistory = window.AppState.modalChatHistories[key] || [];
-      
-      const activeTab = initialTab || window.AppState.activeDossierTab || 'arb';
-      this.switchDossierTab(activeTab);
-
-      // Display live current price and start polling
-      this.refreshModalLivePrice(ticker, data.live_price);
-      if (this._modalLivePricePollTimer) clearInterval(this._modalLivePricePollTimer);
-      this._modalLivePricePollTimer = setInterval(() => {
-        const m = document.getElementById('report-modal');
-        if (m && m.style.display !== 'none') {
-          this.refreshModalLivePrice();
-        } else {
-          clearInterval(this._modalLivePricePollTimer);
-          this._modalLivePricePollTimer = null;
+      if (chatIndex !== -1) {
+        window.AppState.activeChats[chatIndex].date = actualDate;
+        window.AppState.activeChats[chatIndex].reportData = data;
+        window.AppState.activeChats[chatIndex].activeTab = initialTab || window.AppState.activeChats[chatIndex].activeTab || 'arb';
+        window.AppState.activeChats[chatIndex].lastAccessed = Date.now();
+      } else {
+        // Enforce max 3 chats limit
+        if (window.AppState.activeChats.length >= maxChats) {
+          // Find an inactive chat (not currently focused) to evict
+          let evictIdx = window.AppState.activeChats.findIndex(c => c.ticker !== window.AppState.activeChatTicker);
+          if (evictIdx === -1) evictIdx = 0;
+          const evicted = window.AppState.activeChats.splice(evictIdx, 1)[0];
+          console.log(`[Multi-Chat] Max 3 chats reached: replaced ${evicted?.ticker} with ${ticker}`);
         }
-      }, 15000);
 
-      if (window.AppChat) {
-        window.AppChat.initModalChatForTicker(ticker, actualDate);
+        window.AppState.activeChats.push({
+          ticker: ticker,
+          date: actualDate,
+          reportData: data,
+          activeTab: initialTab || 'arb',
+          draftInput: '',
+          lastAccessed: Date.now()
+        });
       }
+
+      // 4. Switch to this chat
+      this.switchToChat(ticker, initialTab);
+
     } catch (e) {
-      document.getElementById('modal-body').innerText = `Failed loading report: ${e.message}`;
+      if (bodyEl) bodyEl.innerText = `Failed loading report for ${ticker}: ${e.message}`;
+    }
+  },
+
+  switchToChat(ticker, initialTab = null) {
+    ticker = (ticker || '').toUpperCase().trim();
+    if (!window.AppState.activeChats || window.AppState.activeChats.length === 0) return;
+
+    const chat = window.AppState.activeChats.find(c => c.ticker === ticker) || window.AppState.activeChats[0];
+    if (!chat) return;
+
+    // Preserve draft input for the previous active chat
+    const currentInput = document.getElementById('modal-chat-input');
+    if (currentInput && window.AppState.activeChatTicker && window.AppState.activeChatTicker !== chat.ticker) {
+      const prev = window.AppState.activeChats.find(c => c.ticker === window.AppState.activeChatTicker);
+      if (prev) prev.draftInput = currentInput.value;
+    }
+
+    // Set active chat
+    window.AppState.activeChatTicker = chat.ticker;
+    chat.lastAccessed = Date.now();
+    if (initialTab) chat.activeTab = initialTab;
+
+    window.AppState.currentReportData = chat.reportData;
+    const data = chat.reportData;
+    const actualDate = chat.date;
+
+    const modal = document.getElementById('report-modal');
+    if (modal && modal.style.display === 'none') {
+      modal.style.display = 'flex';
+    }
+
+    // Update modal title
+    const titleEl = document.getElementById('modal-ticker-title');
+    if (titleEl) {
+      titleEl.innerText = `${chat.ticker} RESEARCH REPORT (${actualDate || 'Active'})`;
+    }
+
+    if (window.AppChat && typeof window.AppChat.updateSidebarFocusBadge === 'function') {
+      window.AppChat.updateSidebarFocusBadge(chat.ticker);
+    }
+
+    // Render Suggested Positions Pane for this stock
+    this.renderSuggestedPositionsPane(data);
+
+    // Populate Date Switcher dropdown
+    const dateSelect = document.getElementById('modal-report-date-select');
+    const histCountEl = document.getElementById('modal-hist-count');
+    const dates = (data && data.available_dates) ? data.available_dates : [actualDate];
+    if (histCountEl) histCountEl.innerText = dates.length;
+
+    if (dateSelect) {
+      dateSelect.innerHTML = dates.map(d => {
+        const isSel = (d === actualDate) ? 'selected' : '';
+        const matchItem = ((data && data.historical_timeline) || []).find(x => x.date === d);
+        const spotLabel = (matchItem && matchItem.spot) ? ` ($${Number(matchItem.spot).toFixed(2)})` : '';
+        return `<option value="${d}" ${isSel}>${d}${spotLabel}</option>`;
+      }).join('');
+    }
+
+    // Switch to active dossier tab
+    const activeTab = chat.activeTab || window.AppState.activeDossierTab || 'arb';
+    this.switchDossierTab(activeTab);
+
+    // Refresh live price & poll for this ticker
+    this.refreshModalLivePrice(chat.ticker, data ? data.live_price : null);
+    if (this._modalLivePricePollTimer) clearInterval(this._modalLivePricePollTimer);
+    this._modalLivePricePollTimer = setInterval(() => {
+      const m = document.getElementById('report-modal');
+      if (m && m.style.display !== 'none') {
+        this.refreshModalLivePrice();
+      } else {
+        clearInterval(this._modalLivePricePollTimer);
+        this._modalLivePricePollTimer = null;
+      }
+    }, 15000);
+
+    // Render multi-chat tabs across modal and floating drawer
+    this.renderActiveChatTabs();
+
+    // Restore or initialize Copilot chat thread
+    if (window.AppChat) {
+      window.AppChat.initModalChatForTicker(chat.ticker, actualDate);
+      if (currentInput) {
+        currentInput.value = chat.draftInput || '';
+      }
+      if (typeof window.AppChat.updateModalSendButtonState === 'function') {
+        window.AppChat.updateModalSendButtonState();
+      }
+    }
+  },
+
+  closeActiveChatTab(ticker, event) {
+    if (event) event.stopPropagation();
+    ticker = (ticker || '').toUpperCase().trim();
+    if (window.AppChat && typeof window.AppChat.stopModalCopilotStream === 'function') {
+      window.AppChat.stopModalCopilotStream(ticker);
+    }
+    if (!window.AppState.activeChats) return;
+
+    const idx = window.AppState.activeChats.findIndex(c => c.ticker === ticker);
+    if (idx === -1) return;
+
+    const wasActive = (window.AppState.activeChatTicker === ticker);
+    window.AppState.activeChats.splice(idx, 1);
+
+    if (window.AppState.activeChats.length === 0) {
+      window.AppState.activeChatTicker = '';
+      this.closeReportModal();
+    } else {
+      if (wasActive) {
+        const nextChat = window.AppState.activeChats[Math.min(idx, window.AppState.activeChats.length - 1)];
+        this.switchToChat(nextChat.ticker);
+      } else {
+        this.renderActiveChatTabs();
+      }
+    }
+  },
+
+  renderActiveChatTabs() {
+    const containers = [
+      document.getElementById('modal-active-chat-tabs'),
+      document.getElementById('modal-copilot-active-tabs')
+    ];
+
+    const activeChats = window.AppState.activeChats || [];
+    const currentTicker = window.AppState.activeChatTicker || '';
+    const maxChats = window.AppState.maxActiveChats || 3;
+
+    containers.forEach(cont => {
+      if (!cont) return;
+      if (activeChats.length === 0) {
+        cont.innerHTML = '';
+        return;
+      }
+
+      let tabsHtml = activeChats.map(c => {
+        const isActive = (c.ticker === currentTicker);
+        return `
+          <div class="chat-tab ${isActive ? 'active' : ''}" onclick="AppSwing.switchToChat('${c.ticker}')" title="${c.ticker} (${c.date}) - Click to switch chat">
+            <span class="chat-tab-icon">💬</span>
+            <span class="chat-tab-label">$${c.ticker}</span>
+            <button class="chat-tab-close" onclick="AppSwing.closeActiveChatTab('${c.ticker}', event)" title="Close $${c.ticker} chat">✕</button>
+          </div>
+        `;
+      }).join('');
+
+      tabsHtml += `
+        <span class="chat-tab-count" title="Active chats (max ${maxChats})">${activeChats.length}/${maxChats}</span>
+      `;
+
+      cont.innerHTML = tabsHtml;
+    });
+  },
+
+  handleModalHeaderClick(event) {
+    const modal = document.getElementById('report-modal');
+    if (!modal) return;
+    if (modal.classList.contains('collapsed')) {
+      // If user clicked an action button or tab close, do not intercept
+      if (event.target.closest('.modal-window-actions') || event.target.closest('.chat-tab-close')) {
+        return;
+      }
+      this.restoreReportModal(event);
     }
   },
 
@@ -602,6 +1543,58 @@ window.AppSwing = {
         btn.style.borderColor = 'var(--border)';
         btn.style.background = 'transparent';
       }
+    }
+  },
+
+  async fetchLiveOptionSpread(ticker, optPlan) {
+    if (!ticker || !optPlan || !optPlan.expiration || !optPlan.short_strike || !optPlan.long_strike) return;
+    try {
+      const url = `/api/options/spread-calc?ticker=${encodeURIComponent(ticker)}&expiration=${encodeURIComponent(optPlan.expiration)}&short_strike=${optPlan.short_strike}&long_strike=${optPlan.long_strike}&structure=${encodeURIComponent(optPlan.structure || 'BULL_PUT_SPREAD')}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!data || !data.success) return;
+
+      const optDebit = document.getElementById('pane-opt-debit');
+      const optLoss = document.getElementById('pane-opt-loss');
+      const optProfit = document.getElementById('pane-opt-profit');
+      const optSummary = document.getElementById('pane-opt-summary');
+
+      const isCredit = data.pricing_type === 'CREDIT';
+      const label = isCredit ? 'Live Credit' : 'Live Debit';
+
+      if (optDebit) {
+        optDebit.innerHTML = `
+          <div style="font-weight:800; color:var(--cyan-glow);">${label}: $${data.live_mid.toFixed(2)}</div>
+          <div style="font-size:9px; color:var(--text-muted); margin-top:2px;">Nat: $${data.live_natural.toFixed(2)} | Plan: ~$${Number(optPlan.target_debit || (optPlan.max_profit ? optPlan.max_profit / 100 : 0) || 0).toFixed(2)}</div>
+        `;
+      }
+      if (optLoss) {
+        optLoss.innerHTML = `
+          <div style="font-weight:800; color:var(--rose);">$${Math.round(data.live_max_loss).toLocaleString()}</div>
+          <div style="font-size:9px; color:var(--text-muted); margin-top:2px;">Plan: $${Math.round(optPlan.max_loss || 0).toLocaleString()}</div>
+        `;
+      }
+      if (optProfit) {
+        optProfit.innerHTML = `
+          <div style="font-weight:800; color:var(--emerald);">$${Math.round(data.live_max_profit).toLocaleString()}</div>
+          <div style="font-size:9px; color:var(--text-muted); margin-top:2px;">Plan: $${Math.round(optPlan.max_profit || 0).toLocaleString()}</div>
+        `;
+      }
+      if (optSummary) {
+        const shortLeg = data.short_leg;
+        const longLeg = data.long_leg;
+        const shortLegStr = `$${shortLeg.strike} (Bid $${shortLeg.bid} / Ask $${shortLeg.ask})`;
+        const longLegStr = `$${longLeg.strike} (Bid $${longLeg.bid} / Ask $${longLeg.ask})`;
+        optSummary.innerHTML = `
+          <div style="margin-bottom:6px;">${optPlan.summary || ''}</div>
+          <div style="padding:5px 8px; background:rgba(6,182,212,0.09); border-left:3px solid var(--cyan-glow); border-radius:4px; font-size:10.5px; color:var(--cyan-glow); font-family:'JetBrains Mono',monospace;">
+            ⚡ <strong>LIVE SCHWAB:</strong> Mid: $${data.live_mid.toFixed(2)} | Nat: $${data.live_natural.toFixed(2)}<br>
+            <span style="opacity:0.85; font-size:9.5px;">Short ${shortLegStr} · Long ${longLegStr}</span>
+          </div>
+        `;
+      }
+    } catch (e) {
+      console.debug('Live option spread calc skipped:', e);
     }
   },
 
@@ -688,6 +1681,11 @@ window.AppSwing = {
     const optProfit = document.getElementById('pane-opt-profit');
     if (optProfit) {
       optProfit.textContent = optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--';
+    }
+
+    // Trigger live mathematical options calculation from Schwab
+    if (data && data.ticker && optPlan && optPlan.expiration && optPlan.short_strike && optPlan.long_strike) {
+      this.fetchLiveOptionSpread(data.ticker, optPlan);
     }
 
     // 4. Equity Execution Plan
@@ -781,7 +1779,7 @@ window.AppSwing = {
             </div>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn" onclick="AppSwing.askCopilotExecutionPlan()" style="padding:6px 14px; font-size:12px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer;">
+            <button class="btn" onclick="AppSwing.askCopilotExecutionPlan(event)" style="padding:6px 14px; font-size:12px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer;">
               ⚡ Plan Execution with Copilot
             </button>
             <button class="btn secondary" onclick="AppSwing.switchDossierTab('tv')" style="padding:6px 14px; font-size:12px; font-weight:700; cursor:pointer;">
@@ -901,13 +1899,104 @@ window.AppSwing = {
     `;
   },
 
-  askCopilotExecutionPlan() {
+  askCopilotExecutionPlan(event) {
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    const btn = (event && (event.currentTarget || event.target)) || document.querySelector("button:has-text('Plan Execution with Copilot')") || null;
+    let origHtml = '';
+    if (btn) {
+      origHtml = btn.innerHTML;
+      btn.innerHTML = '<span>⚡</span> Opening Copilot Execution...';
+      btn.style.opacity = '0.85';
+    }
+
+    // 1. Auto-collapse redundant positions side-pane so Copilot drawer is spacious & in view
+    this.togglePositionsPane(false);
+
+    // 2. Ensure Copilot drawer and resizer are visible and uncollapsed
+    const drawer = document.getElementById('modal-copilot-drawer');
+    const resizer = document.getElementById('modal-chat-resizer');
+    const modal = document.getElementById('report-modal');
+
+    if (modal && modal.classList.contains('collapsed')) {
+      this.restoreReportModal();
+    }
+
+    if (drawer) {
+      drawer.style.display = 'flex';
+      if (window.AppChat && typeof window.AppChat.applyModalChatWidth === 'function') {
+        const curW = parseFloat(drawer.style.width) || 420;
+        if (curW < 380) window.AppChat.applyModalChatWidth(420);
+      }
+
+      // Smooth scroll drawer into view
+      try {
+        drawer.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
+      } catch (e) {}
+
+      // Flash highlight pulse on drawer
+      drawer.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease';
+      drawer.style.boxShadow = '0 0 25px rgba(6, 182, 212, 0.45)';
+      drawer.style.borderColor = 'var(--cyan-glow)';
+      setTimeout(() => {
+        if (drawer) {
+          drawer.style.boxShadow = '';
+          drawer.style.borderColor = '';
+        }
+      }, 1800);
+    }
+    if (resizer) resizer.style.display = 'flex';
+
+    // 3. Build execution query
     const data = window.AppState.currentReportData;
-    if (!data) return;
-    const ticker = data.ticker || 'STOCK';
-    const optPlan = data.watch_levels?.options_plan?.summary || 'the suggested position';
-    if (window.AppChat && typeof window.AppChat.askActiveChat === 'function') {
-      window.AppChat.askActiveChat(`What is the exact execution step for $${ticker} (${optPlan}) right now?`);
+    const ticker = (data && data.ticker) || window.AppState.activeChatTicker || 'STOCK';
+    const optPlan = data?.watch_levels?.options_plan?.summary || 'the suggested position';
+    const prompt = `What is the exact execution step for $${ticker} (${optPlan}) right now?`;
+
+    // 4. Send directly to Modal Copilot
+    if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {
+      window.AppChat.askModalCopilot(prompt);
+    } else if (window.AppChat && typeof window.AppChat.askActiveChat === 'function') {
+      window.AppChat.askActiveChat(prompt);
+    }
+
+    // 5. Reset button text with confirmation feedback
+    if (btn) {
+      setTimeout(() => {
+        btn.innerHTML = '<span>⚡</span> Sent to Copilot!';
+        setTimeout(() => {
+          btn.innerHTML = origHtml || '⚡ Plan Execution with Copilot';
+          btn.style.opacity = '';
+        }, 1500);
+      }, 600);
+    }
+  },
+
+  askIndependentCopilot(type) {
+    const data = window.AppState.currentReportData || {};
+    const sym = (data.ticker || 'STOCK').toUpperCase();
+
+    // Ensure Copilot drawer and resizer are visible and uncollapsed
+    const drawer = document.getElementById('modal-copilot-drawer');
+    const resizer = document.getElementById('modal-chat-resizer');
+    const modal = document.getElementById('report-modal');
+
+    if (modal && modal.classList.contains('collapsed')) {
+      this.restoreReportModal();
+    }
+    if (drawer) drawer.style.display = 'flex';
+    if (resizer) resizer.style.display = 'flex';
+
+    let prompt = '';
+    if (type === 'two_pass') {
+      prompt = `What is going on with ${sym} in this Model B Independent report right now? Run Pass 1: assess auction structure, live spot vs base floor, binary risk/earnings, and options volatility. In case of ANY ambiguity, ask me to clarify with options before proceeding.`;
+    } else if (type === 'plan') {
+      prompt = `Provide the exact execution plan for ${sym} based on the Model B report (Plan A equity limit entry / breakout trigger vs Plan B options credit spread). If ambiguous, ask for clarification first.`;
+    } else {
+      prompt = `Analyze the Model B Independent report for ${sym}.`;
+    }
+
+    if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {
+      window.AppChat.askModalCopilot(prompt);
     }
   },
 
@@ -941,19 +2030,21 @@ window.AppSwing = {
     modalContent.style.position = 'fixed';
     modalContent.style.bottom = '20px';
     modalContent.style.right = '24px';
-    modalContent.style.width = '440px';
-    modalContent.style.height = '580px';
+    modalContent.style.width = '480px';
+    modalContent.style.height = '600px';
     modalContent.style.maxHeight = 'calc(100vh - 40px)';
     modalContent.style.maxWidth = 'calc(100vw - 32px)';
     modalContent.style.pointerEvents = 'auto';
-    modalContent.style.boxShadow = '0 16px 50px rgba(0, 0, 0, 0.9), 0 0 30px rgba(6, 182, 212, 0.4)';
-    modalContent.style.border = '1.5px solid var(--cyan-glow)';
+    modalContent.style.boxShadow = '0 16px 50px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border)';
+    modalContent.style.border = 'none';
     modalContent.style.borderRadius = '12px';
 
+    const splitCont = document.getElementById('modal-split-container');
     const reportPane = document.getElementById('modal-report-pane');
     const posPane = document.getElementById('modal-positions-pane');
     const resizer = document.getElementById('modal-chat-resizer');
     const copilotDrawer = document.getElementById('modal-copilot-drawer');
+    if (splitCont) splitCont.style.display = 'flex';
     if (reportPane) reportPane.style.display = 'none';
     if (posPane) posPane.style.display = 'none';
     if (resizer) resizer.style.display = 'none';
@@ -961,25 +2052,33 @@ window.AppSwing = {
       copilotDrawer.style.width = '100%';
       copilotDrawer.style.maxWidth = '100%';
       copilotDrawer.style.flex = '1';
+      copilotDrawer.style.display = 'flex';
     }
 
-    const data = window.AppState.currentReportData;
-    const ticker = data ? data.ticker : 'REPORT';
-    const date = data ? data.date : '';
-
+    const activeTicker = window.AppState.activeChatTicker || (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : 'CHAT');
     const titleEl = document.getElementById('modal-ticker-title');
-    if (titleEl) titleEl.innerText = `💬 ${ticker} Copilot (${date || 'Active'})`;
+    if (titleEl) titleEl.innerText = `💬 ${activeTicker} Copilot`;
     const pulse = document.getElementById('modal-minimized-pulse');
     if (pulse) pulse.style.display = 'inline-block';
 
     const expandBtn = document.getElementById('btn-modal-expand-full');
-    if (expandBtn) expandBtn.style.display = 'inline-flex';
+    if (expandBtn) {
+      expandBtn.style.display = 'inline-flex';
+      expandBtn.innerHTML = '<span style="font-size:11px;">🗖</span> Maximize';
+      expandBtn.className = 'modal-action-btn primary';
+      expandBtn.title = 'Maximize to full dossier modal';
+    }
 
     const minBtn = document.getElementById('btn-modal-min-toggle');
     if (minBtn) {
       minBtn.innerHTML = '<span style="font-size:12px;">➖</span> Collapse';
-      minBtn.title = 'Collapse chat to compact bar';
+      minBtn.title = 'Collapse chat to bottom dock pill';
     }
+
+    const togglePosBtn = document.getElementById('btn-toggle-positions-pane');
+    if (togglePosBtn) togglePosBtn.style.display = 'none';
+
+    this.renderActiveChatTabs();
   },
 
   restoreReportModal(event) {
@@ -1008,15 +2107,18 @@ window.AppSwing = {
     modalContent.style.maxWidth = '1480px';
     modalContent.style.height = '92vh';
     modalContent.style.maxHeight = '';
+    modalContent.style.minWidth = '';
     modalContent.style.pointerEvents = '';
     modalContent.style.boxShadow = '';
     modalContent.style.border = '';
     modalContent.style.borderRadius = '';
 
+    const splitCont = document.getElementById('modal-split-container');
     const reportPane = document.getElementById('modal-report-pane');
     const posPane = document.getElementById('modal-positions-pane');
     const resizer = document.getElementById('modal-chat-resizer');
     const copilotDrawer = document.getElementById('modal-copilot-drawer');
+    if (splitCont) splitCont.style.display = 'flex';
     if (reportPane) reportPane.style.display = 'flex';
     if (posPane) posPane.style.display = (window.AppState.showPositionsPane !== false) ? 'flex' : 'none';
     if (resizer) resizer.style.display = 'flex';
@@ -1026,11 +2128,11 @@ window.AppSwing = {
     }
 
     const data = window.AppState.currentReportData;
-    const ticker = data ? data.ticker : 'REPORT';
+    const ticker = data ? data.ticker : (window.AppState.activeChatTicker || 'REPORT');
     const date = data ? data.date : '';
 
     const titleEl = document.getElementById('modal-ticker-title');
-    if (titleEl) titleEl.innerText = `${ticker} RESEARCH REPORT (${date})`;
+    if (titleEl) titleEl.innerText = `${ticker} RESEARCH REPORT (${date || 'Active'})`;
     const pulse = document.getElementById('modal-minimized-pulse');
     if (pulse) pulse.style.display = 'none';
 
@@ -1042,6 +2144,11 @@ window.AppSwing = {
       minBtn.innerHTML = '<span style="font-size:12px;">🗕</span> Float Chat';
       minBtn.title = 'Float as bottom-right chat window';
     }
+
+    const togglePosBtn = document.getElementById('btn-toggle-positions-pane');
+    if (togglePosBtn) togglePosBtn.style.display = 'inline-flex';
+
+    this.renderActiveChatTabs();
     if (window.AppChat) {
       window.AppChat.initModalChatResize();
     }
@@ -1055,20 +2162,51 @@ window.AppSwing = {
 
     if (modal.classList.contains('minimized')) {
       if (modal.classList.contains('collapsed')) {
+        // Expand back to floating chat
         modal.classList.remove('collapsed');
-        modalContent.style.height = '580px';
+        modalContent.style.height = '600px';
+        modalContent.style.width = '480px';
+        modalContent.style.borderRadius = '12px';
         const splitCont = document.getElementById('modal-split-container');
         if (splitCont) splitCont.style.display = 'flex';
+        const copilotDrawer = document.getElementById('modal-copilot-drawer');
+        if (copilotDrawer) copilotDrawer.style.display = 'flex';
         const minBtn = document.getElementById('btn-modal-min-toggle');
-        if (minBtn) minBtn.innerHTML = '<span style="font-size:12px;">➖</span> Collapse';
+        if (minBtn) {
+          minBtn.innerHTML = '<span style="font-size:12px;">➖</span> Collapse';
+          minBtn.title = 'Collapse chat to bottom dock pill';
+        }
+        const expandBtn = document.getElementById('btn-modal-expand-full');
+        if (expandBtn) {
+          expandBtn.style.display = 'inline-flex';
+          expandBtn.innerHTML = '<span style="font-size:11px;">🗖</span> Maximize';
+          expandBtn.className = 'modal-action-btn primary';
+          expandBtn.title = 'Maximize to full dossier modal';
+        }
       } else {
+        // Collapse to dock pill
         modal.classList.add('collapsed');
-        modalContent.style.height = '50px';
+        modalContent.style.height = '52px';
+        modalContent.style.width = 'auto';
+        modalContent.style.minWidth = '440px';
+        modalContent.style.maxWidth = '760px';
+        modalContent.style.borderRadius = '26px';
         const splitCont = document.getElementById('modal-split-container');
         if (splitCont) splitCont.style.display = 'none';
         const minBtn = document.getElementById('btn-modal-min-toggle');
-        if (minBtn) minBtn.innerHTML = '<span style="font-size:12px;">💬</span> Open Chat';
+        if (minBtn) {
+          minBtn.innerHTML = '<span style="font-size:12px;">💬</span> Open Chat';
+          minBtn.title = 'Expand to floating chat window';
+        }
+        const expandBtn = document.getElementById('btn-modal-expand-full');
+        if (expandBtn) {
+          expandBtn.style.display = 'inline-flex';
+          expandBtn.innerHTML = '<span style="font-size:11px;">🗖</span> Maximize';
+          expandBtn.className = 'modal-action-btn primary';
+          expandBtn.title = 'Maximize to full dossier modal';
+        }
       }
+      this.renderActiveChatTabs();
     } else {
       this.minimizeReportModal(event);
     }
@@ -1094,11 +2232,18 @@ window.AppSwing = {
         modalContent.style.maxWidth = '1480px';
         modalContent.style.height = '92vh';
       }
+      window.AppState.activeChats = [];
+      window.AppState.activeChatTicker = '';
+      this.renderActiveChatTabs();
     }
   },
 
   switchDossierTab(tab) {
     window.AppState.activeDossierTab = tab;
+    if (window.AppState.activeChats && window.AppState.activeChatTicker) {
+      const activeChat = window.AppState.activeChats.find(c => c.ticker === window.AppState.activeChatTicker);
+      if (activeChat) activeChat.activeTab = tab;
+    }
     ['plan', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow'].forEach(t => {
       const btn = document.getElementById(`tab-${t}-btn`);
       if (btn) btn.className = `tab-btn ${t === tab ? 'active' : ''}`;
@@ -1109,6 +2254,7 @@ window.AppSwing = {
     if (!bodyEl || !data) return;
 
     if (tab === 'plan') {
+      this.togglePositionsPane(false);
       this.renderSuggestedPositionsFullTab(data, bodyEl);
     } else if (tab === 'arb') {
       bodyEl.innerHTML = data.arbitration_md
@@ -1119,9 +2265,34 @@ window.AppSwing = {
         ? window.AppUtils.renderMarkdown(data.summary_md)
         : '<em>No synthesis summary found.</em>';
     } else if (tab === 'ind') {
-      bodyEl.innerHTML = data.independent_md
+      const bannerHtml = `
+        <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(139,92,246,0.28); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span style="font-weight:700; color:var(--violet); font-size:12.5px;">📐 MODEL B (Independent Quant & Macro)</span>
+              <span class="pill purple" style="font-size:9.5px; padding:1px 6px;">ISOLATED CONTEXT</span>
+            </div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+              Objective macro & volume profile thesis. Two-Pass protocol active: clarifies ambiguities before locking execution.
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="btn" style="background:var(--violet); color:#fff; font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.askIndependentCopilot('two_pass')">
+              ⚡ What Is Going On? (State Check)
+            </button>
+            <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.askIndependentCopilot('plan')">
+              🎯 Tactical Execution Plan
+            </button>
+            <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppChat.startFreshModalSession()">
+              🔄 Fresh Chat
+            </button>
+          </div>
+        </div>
+      `;
+      const reportHtml = data.independent_md
         ? window.AppUtils.renderMarkdown(data.independent_md)
         : '<em>No independent report found.</em>';
+      bodyEl.innerHTML = bannerHtml + reportHtml;
     } else if (tab === 'history') {
       const timeline = data.historical_timeline || [];
       const ticker = data.ticker || 'STOCK';
@@ -1254,6 +2425,124 @@ window.AppSwing = {
   },
 
   _tvInterval: 'D',
+
+  // =====================================================================
+  // DEDICATED REAL-TIME TRADINGVIEW CHART MODAL
+  // =====================================================================
+  _currentTvModalTicker: 'SPY',
+  _currentTvModalInterval: 'D',
+
+  openTradingViewModal(ticker, interval = 'D') {
+    const sym = (ticker || 'SPY').trim().toUpperCase();
+    this._currentTvModalTicker = sym;
+    this._currentTvModalInterval = interval;
+    this.setTicker(sym);
+
+    const modal = document.getElementById('tv-chart-modal');
+    const title = document.getElementById('tv-modal-ticker-title');
+    const extLink = document.getElementById('tv-modal-btn-external');
+    const priceEl = document.getElementById('tv-modal-live-price');
+
+    if (title) title.innerText = `$${sym} - TradingView Interactive Chart`;
+    if (extLink) extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}`;
+    if (priceEl) priceEl.innerText = 'Live Spot';
+
+    // Update interval buttons styling
+    ['15', '60', 'D', 'W'].forEach(tf => {
+      const btn = document.getElementById(`tv-tf-${tf}`);
+      if (btn) {
+        if (tf === interval) {
+          btn.style.background = 'var(--blue)';
+          btn.style.color = '#fff';
+          btn.style.borderColor = 'var(--blue)';
+          btn.style.fontWeight = '800';
+        } else {
+          btn.style.background = '';
+          btn.style.color = '';
+          btn.style.borderColor = '';
+          btn.style.fontWeight = '700';
+        }
+      }
+    });
+
+    this.renderTradingViewModalFrame();
+
+    // Fetch live quote for header badge if available
+    if (window.AppApi && typeof window.AppApi.getQuotes === 'function') {
+      window.AppApi.getQuotes([sym]).then(quotes => {
+        if (quotes && quotes[sym] && quotes[sym].price) {
+          if (priceEl) priceEl.innerText = `$${Number(quotes[sym].price).toFixed(2)}`;
+        }
+      }).catch(() => {});
+    }
+
+    if (modal) {
+      modal.style.display = 'flex';
+    }
+  },
+
+  setTradingViewModalInterval(interval) {
+    this._currentTvModalInterval = interval;
+    const extLink = document.getElementById('tv-modal-btn-external');
+    if (extLink) extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(this._currentTvModalTicker || 'SPY')}&interval=${encodeURIComponent(interval)}`;
+
+    ['15', '60', 'D', 'W'].forEach(tf => {
+      const btn = document.getElementById(`tv-tf-${tf}`);
+      if (btn) {
+        if (tf === interval) {
+          btn.style.background = 'var(--blue)';
+          btn.style.color = '#fff';
+          btn.style.borderColor = 'var(--blue)';
+          btn.style.fontWeight = '800';
+        } else {
+          btn.style.background = '';
+          btn.style.color = '';
+          btn.style.borderColor = '';
+          btn.style.fontWeight = '700';
+        }
+      }
+    });
+    this.renderTradingViewModalFrame();
+  },
+
+  renderTradingViewModalFrame() {
+    const host = document.getElementById('tv-modal-chart-host');
+    if (!host) return;
+
+    const rawSym = this._currentTvModalTicker || 'SPY';
+    // If not already prefixed with an exchange, use BATS: for real-time (0 delay) data on US stocks
+    const sym = rawSym.includes(':') ? rawSym : `BATS:${rawSym}`;
+    const interval = this._currentTvModalInterval || 'D';
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const theme = isDark ? 'dark' : 'light';
+    const toolbarBg = isDark ? '1e293b' : 'f1f3f6';
+
+    host.innerHTML = `
+      <iframe
+        id="tv-modal-iframe"
+        src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=${toolbarBg}&studies=%5B%5D&theme=${theme}&style=1&timezone=America%2FNew_York"
+        style="width:100%; height:100%; min-height:500px; border:none;"
+        allowtransparency="true"
+        scrolling="no">
+      </iframe>
+    `;
+  },
+
+  closeTradingViewModal() {
+    const modal = document.getElementById('tv-chart-modal');
+    if (modal) modal.style.display = 'none';
+    const host = document.getElementById('tv-modal-chart-host');
+    if (host) host.innerHTML = '';
+  },
+
+  launchResearchFromTvModal() {
+    const sym = this._currentTvModalTicker;
+    if (sym) {
+      this.setTicker(sym);
+      this.closeTradingViewModal();
+      this.launchResearch();
+    }
+  },
 
   setTradingViewInterval(interval) {
     this._tvInterval = interval;
@@ -1758,11 +3047,34 @@ window.AppSwing = {
   }
 };
 
-// Immediate Self-Healing Auto-Load for Calibration Scoreboard
+// Immediate Self-Healing Auto-Load for Calibration Scoreboard & Schwab Screener
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  setTimeout(() => { if (window.AppSwing) window.AppSwing.loadCalibrationScoreboard(); }, 50);
+  setTimeout(() => {
+    if (window.AppSwing) {
+      window.AppSwing.loadCalibrationScoreboard();
+      window.AppSwing.loadSchwabScreener();
+      window.AppSwing.startContinuousScreenerPolling();
+    }
+  }, 50);
 } else {
   document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => { if (window.AppSwing) window.AppSwing.loadCalibrationScoreboard(); }, 50);
+    setTimeout(() => {
+      if (window.AppSwing) {
+        window.AppSwing.loadCalibrationScoreboard();
+        window.AppSwing.loadSchwabScreener();
+        window.AppSwing.startContinuousScreenerPolling();
+      }
+    }, 50);
   });
 }
+
+// Global Keyboard Shortcut: Escape to close TV Chart Modal or Report Modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (window.AppSwing && typeof window.AppSwing.closeTradingViewModal === 'function') {
+      window.AppSwing.closeTradingViewModal();
+    }
+  }
+});
+
+

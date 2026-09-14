@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, Any, Optional
 
 from playwright.sync_api import sync_playwright
 
@@ -44,9 +45,10 @@ DEFAULT_LOOKBACK_DAYS = 90
 SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 
 class TVScraper:
-    def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None):
+    def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None, headless: bool = False):
         self.chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/jPAQSlZC/")
         self.plain_chart_url = os.getenv("TV_PLAIN_CHART_URL", "https://www.tradingview.com/chart/92oElFWJ/")
+        self.headless = bool(headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"))
         # Store Chrome profile locally or read from TV_CHROME_PROFILE_DIR
         env_profile = os.getenv("TV_CHROME_PROFILE_DIR")
         if env_profile and os.path.exists(env_profile):
@@ -123,6 +125,76 @@ class TVScraper:
         page.keyboard.press("Escape")
         time.sleep(1.0)
 
+    def capture_normal_chart(self, symbol: str) -> Dict[str, str]:
+        """
+        Scrapes a standard TradingView daily candlestick chart (without private layout dependency)
+        at https://www.tradingview.com/chart/?symbol={symbol}&interval=D
+        Saves:
+        {safe_symbol}_chart.png
+        """
+        safe_symbol = symbol.split(":")[-1].strip().upper()
+        ticker_dir = self.screenshots_dir / safe_symbol
+        ticker_dir.mkdir(parents=True, exist_ok=True)
+        chart_path = ticker_dir / f"{safe_symbol}_chart.png"
+
+        logger.info(f"Scraping normal TradingView chart for {safe_symbol}...")
+        profile_path = Path(self.user_data_dir)
+        if profile_path.exists():
+            for item in profile_path.rglob("*"):
+                if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
+                    try:
+                        item.unlink()
+                    except Exception:
+                        pass
+
+        with sync_playwright() as p:
+            context = None
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=self.user_data_dir,
+                    headless=False,
+                    viewport={"width": 1920, "height": 1080},
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+            except Exception as launch_err:
+                avail_profs = [
+                    pr.name for pr in config.BASE_DIR.glob("tv_chrome_profile_*")
+                    if pr.is_dir() and pr.name != Path(self.user_data_dir).name
+                ]
+                for alt in avail_profs:
+                    try:
+                        context = p.chromium.launch_persistent_context(
+                            user_data_dir=str(config.BASE_DIR / alt),
+                            headless=False,
+                            viewport={"width": 1920, "height": 1080},
+                            args=["--disable-blink-features=AutomationControlled"],
+                        )
+                        if context:
+                            break
+                    except Exception:
+                        pass
+                if not context:
+                    raise launch_err
+
+            page = context.new_page()
+            url = f"https://www.tradingview.com/chart/?symbol={safe_symbol}&interval=D"
+            logger.info(f"Navigating to normal chart: {url}")
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_selector("canvas", timeout=25000)
+            time.sleep(4.0)
+
+            try:
+                page.keyboard.press("Escape")
+                time.sleep(0.3)
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+            page.screenshot(path=str(chart_path))
+            logger.info(f"✅ Saved normal chart screenshot to {chart_path}")
+            context.close()
+            return {"chart_path": str(chart_path), "symbol": safe_symbol}
+
     def capture_ticker(self, symbol: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS,
                        settle_s: float = SETTLE_SECONDS):
         """
@@ -143,12 +215,44 @@ class TVScraper:
                         pass
 
         with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=self.user_data_dir,
-                headless=False,
-                viewport={"width": 1920, "height": 1080},
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            context = None
+            launch_args = ["--disable-blink-features=AutomationControlled"]
+            if self.headless:
+                launch_args.extend(["--enable-webgl", "--use-gl=angle"])
+
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=self.user_data_dir,
+                    headless=self.headless,
+                    viewport={"width": 1920, "height": 1080},
+                    args=launch_args,
+                )
+            except Exception as launch_err:
+                err_msg = str(launch_err).lower()
+                if "already in use" in err_msg or "existing browser session" in err_msg:
+                    import random
+                    avail_profs = [
+                        pr.name for pr in config.BASE_DIR.glob("tv_chrome_profile_*")
+                        if pr.is_dir() and pr.name != Path(self.user_data_dir).name
+                    ]
+                    random.shuffle(avail_profs)
+                    for alt in avail_profs:
+                        try:
+                            logger.warning(f"Profile {self.user_data_dir} was busy; retrying with alternate profile {alt}...")
+                            self.user_data_dir = str(config.BASE_DIR / alt)
+                            context = p.chromium.launch_persistent_context(
+                                user_data_dir=self.user_data_dir,
+                                headless=self.headless,
+                                viewport={"width": 1920, "height": 1080},
+                                args=launch_args,
+                            )
+                            if context:
+                                logger.info(f"Successfully launched fallback browser using profile {alt}!")
+                                break
+                        except Exception as alt_err:
+                            logger.debug(f"Alternate profile {alt} also busy: {alt_err}")
+                if not context:
+                    raise launch_err
 
             page = context.new_page()
             sep = "&" if "?" in self.chart_url else "?"

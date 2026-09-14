@@ -2,16 +2,18 @@ import argparse
 import json
 import logging
 import os
+import queue
 import sys
+import threading
 import time
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from src import config
 from src.clients.gmail_client import GmailClient
 from src.clients.price_client import get_current_price
 from src.tracking.position_monitor import PositionManager
-from src.tracking.sheets_tracker import SheetsTracker
 
 # Singleton: lives for the lifetime of the tracker process. Routes every alert
 # (entry/exit) into the open-position state + per-ticker monitor threads.
@@ -197,45 +199,66 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
 
 
 def _append_screener_candidate(symbol: str, setup: str, date_str: str):
-    """Append a screener-sourced ticker to today's survivors.json so it flows
-    through the existing local-research pipeline unchanged. Dedupes by ticker;
-    never overwrites or removes existing entries."""
-    out_dir = config.BASE_DIR / "data" / "raw" / date_str
-    out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = out_dir / "survivors.json"
-    survivors = []
-    if manifest_path.exists():
-        try:
-            raw_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(raw_data, list):
-                survivors = raw_data
-        except Exception as e:
-            logger.warning(f"Failed to read survivors.json, will not overwrite: {e}")
-            return
-    existing = {(s.get("Ticker") or s.get("ticker") or s.get("Symbol") or "").upper() for s in survivors}
-    if symbol.upper() not in existing:
-        survivors.append({"Ticker": symbol.upper(), "source": "screener", "screener_setup": setup})
-        manifest_path.write_text(json.dumps(survivors, indent=2), encoding="utf-8")
-        logger.info(f"[screener] Added {symbol} to today's research candidates (setup={setup}).")
+    """Append a screener-sourced ticker to today's research queue (SQLite) and survivors.json.
+    Dedupes by ticker; never overwrites or removes existing entries."""
+    from src.tracking.alert_db import queue_for_research
+    queue_for_research(
+        symbol=symbol,
+        date_str=date_str,
+        setup=setup,
+        source="screener",
+        reason=f"Screener candidate setup: {setup}",
+    )
 
 
-def process_alert(alert, sheets):
-    symbol = alert.get("symbol")
-    strategy = alert.get("strategy")
+_enrichment_queue: queue.Queue = queue.Queue()
+
+
+def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
+    """Stage 1: FAST Ingestion (<15ms).
+    
+    1. Immediately records alert to SQLite (trading_alerts.db) for instant Cockpit UI visibility.
+    2. Immediately routes Intraday directional alerts into PositionManager (positions.json updated,
+       monitor threads started/stopped with zero delay).
+    3. Immediately marks email as read in Gmail so no duplicates occur.
+    4. Enqueues the alert for asynchronous downstream enrichment (Sheets + Local LLM).
+    
+    This function NEVER waits for Google Sheets API, News API, or Local LLM inference.
+    """
+    symbol = (alert.get("symbol") or alert.get("ticker") or "").strip().upper()
+    strategy = str(alert.get("strategy") or "Intraday").strip()
     alert_price = alert.get("alert_price")
     email_id = alert.get("email_id")
 
     if not symbol or strategy not in ["Intraday", "Daily"]:
         logger.info(f"Skipping alert for {symbol} as strategy is {strategy}.")
-        return email_id  # Return email_id to mark as read
+        if email_id and gmail:
+            try:
+                gmail.mark_as_read(email_id)
+            except Exception:
+                pass
+        return False
 
-    from src.tracking.position_state import get_position as _get_position
+    # 1. Immediate SQLite Persistence (Durable Audit Trail & Cockpit UI)
+    from src.tracking.alert_db import (
+        get_eastern_date_str,
+        record_alert as _record_alert_db,
+    )
+    try:
+        inserted = _record_alert_db(alert)
+        if not inserted:
+            # Already in DB — deduplicated. Mark read and skip to avoid ghost routing.
+            logger.debug(f"[DEDUP] {symbol} alert already in SQLite. Skipping.")
+            if email_id and gmail:
+                try:
+                    gmail.mark_as_read(email_id)
+                except Exception:
+                    pass
+            return False
+    except Exception as e_rec:
+        logger.warning(f"Immediate SQLite record error for {symbol}: {e_rec}")
 
-    prior_position = _get_position(symbol)
-
-    # Route into the open-position state + monitor threads: entry alerts open a
-    # position + spawn a monitor thread; exit alerts close it + stop the thread.
-    # Only Intraday directional execution alerts or exits are routed (never Daily screener/research feeds or NEUTRAL entries).
+    # 2. Immediate Position State & Monitor Routing
     from src.tracking.position_monitor import _is_exit_event
 
     raw_action = str(alert.get("action", "")).upper().strip()
@@ -248,7 +271,21 @@ def process_alert(alert, sheets):
     )
     if strategy == "Intraday" and not is_non_trade:
         try:
-            _position_manager.route_alert(alert)
+            if is_exit:
+                exit_decision = _position_manager.handle_exit_alert(alert)
+                if exit_decision.get("action") == "VETO_HOLD":
+                    alert["llm_decision"] = "🛡️ VETOED PREMATURE TV EXIT — HOLDING"
+                    alert["llm_playbook"] = f"VETO REASON: {exit_decision.get('reason')}"
+                    from src.tracking.alert_db import update_alert_llm
+                    if alert.get("message_id"):
+                        update_alert_llm(
+                            alert["message_id"],
+                            alert["llm_decision"],
+                            alert["llm_playbook"],
+                            status="PROCESSED",
+                        )
+            else:
+                _position_manager.route_alert(alert)
         except Exception as e:
             logger.warning(f"PositionManager routing failed for {symbol}: {e}")
     else:
@@ -257,175 +294,222 @@ def process_alert(alert, sheets):
         )
 
     logger.info(
-        f"New alert received -> Symbol: {symbol}, Strategy: {strategy}, Alert Price: {alert_price}"
+        f"⚡ [INGESTED] Symbol: {symbol}, Strategy: {strategy}, Action: {raw_action}, Price: {alert_price}"
     )
 
-    # 3. Get actual market price at alert processing time
-    market_price = get_current_price(symbol)
-    if market_price is None:
-        logger.warning(f"Could not retrieve market price for {symbol}. Will log alert price only.")
+    # 3. Mark email as read in Gmail immediately
+    if email_id and gmail:
+        try:
+            gmail.mark_as_read(email_id)
+        except Exception as e_mark:
+            logger.debug(f"Failed to mark email {email_id} as read: {e_mark}")
 
-    # Get the action type and log it
+    # 4. Enqueue for background asynchronous enrichment
+    _enrichment_queue.put(alert)
+    return True
+
+
+def process_alert_enrichment(alert: dict, sheets=None):
+    """Stage 2: Asynchronous Downstream Enrichment.
+
+    Runs in background worker threads:
+    - Fetches market price & live news
+    - Runs scraping-free local LLM analysis (#ponytail triage)
+    - Updates SQLite with LLM decision
+
+    Completely decoupled from Gmail polling and Google Sheets.
+    """
+    symbol = (alert.get("symbol") or alert.get("ticker") or "").strip().upper()
+    strategy = str(alert.get("strategy") or "Intraday").strip()
+    alert_price = alert.get("alert_price")
     action_val = alert.get("action", "ALERT")
-    logger.info(f"Alert action: {action_val}")
+    timestamp_str = alert.get("timestamp")
 
-    news_headline = ""
-    news_url = ""
-    news_source = ""
-    news_sentiment = ""
-    news_catalyst = ""
-    news_data = None  # pre-initialized; query_local_llm_for_trade guards with `if news_data`    # Only fetch news for Intraday (Swing trades do not need it right now)
+    from src.tracking.alert_db import (
+        get_eastern_date_str,
+        update_alert_llm as _update_alert_llm_db,
+    )
+
+    # 1. Market price at processing time
+    if strategy == "Daily" and alert_price is not None:
+        market_price = alert_price
+    else:
+        try:
+            market_price = get_current_price(symbol)
+        except Exception:
+            market_price = None
+        if market_price is None:
+            market_price = alert_price
+
+    # 2. News data
+    news_data = None
     if strategy == "Intraday":
         try:
             from src.clients.news_client import get_ticker_news
-
             news_data = get_ticker_news(symbol)
-            news_url = news_data.get("url", "")
-            news_source = news_data.get("source", "")
-            news_sentiment = news_data.get("sentiment", "")
-            news_catalyst = news_data.get("catalyst", "")
         except Exception as e:
-            logger.warning(f"Failed to fetch news for {symbol}: {e}")
+            logger.debug(f"Failed to fetch news for {symbol}: {e}")
 
-    # 4. Log alert immediately to Google Sheet (LLM columns blank first)
-    timestamp_str = alert.get("timestamp")
-    success = sheets.log_alert(
-        timestamp=timestamp_str,
-        symbol=symbol,
-        action=action_val,
-        strategy=strategy,
-        alert_price=alert_price,
-        market_price=market_price,
-        raw_message=alert.get("body", ""),
-        score=alert.get("score", ""),
-        dir_prob=alert.get("dir_prob", ""),
-        net_sigma=alert.get("net_sigma", ""),
-        grade=alert.get("grade", ""),
-        align=alert.get("align", ""),
-        premium=alert.get("premium", ""),
-        wrong_if=alert.get("wrong_if", ""),
-        context=alert.get("context", ""),
-        news_url=news_url,
-        news_source=news_source,
-        news_sentiment=news_sentiment,
-        news_catalyst=news_catalyst,
-        llm_decision="",  # Blank initially
-        llm_playbook="",  # Blank initially
-    )
-
-    # 5. Mark email as read and update Trades Ledger only if logged successfully to Sheet
-    if success:
-        # Update Trades Ledger immediately
-        sheets.log_trade_action(
-            timestamp=timestamp_str,
-            symbol=symbol,
-            action=action_val,
-            alert_price=alert_price,
-            market_price=market_price,
-            strategy=strategy,
-            news_url=news_url,
-            news_source=news_source,
-            news_sentiment=news_sentiment,
-            news_catalyst=news_catalyst,
-            raw_alert=alert,
-        )
-
-        # 6. Run LLM analysis for Intraday alerts only (Swing uses future infrastructure)
-        date_str = (
-            timestamp_str[:10] if timestamp_str else datetime.now().strftime("%Y-%m-%d")
-        )
-        if strategy == "Daily" and alert.get("setup"):
+    # 3. Screener queueing if applicable
+    date_str = get_eastern_date_str(timestamp_str)
+    if (strategy == "Daily" and alert.get("setup")) or alert.get("setup"):
+        try:
             _append_screener_candidate(symbol, alert.get("setup"), date_str)
+        except Exception as e_scr:
+            logger.debug(f"Screener candidate append error for {symbol}: {e_scr}")
 
-        if strategy == "Intraday":
-            # Since threads might update last_logged_row, we use the value cached in sheet if possible,
-            # but for now we rely on the tracker returning True. Note: last_logged_row might be slightly off
-            # if multiple threads write to the same sheet exactly concurrently.
-            row_num = sheets.last_logged_row
-            logger.info(
-                f"Alert logged. Running local AI trade analysis for {symbol} [{action_val}] (Row {row_num})..."
+    # 4. Local LLM Analysis (#ponytail triage)
+    try:
+        from src.tracking.alert_evaluator import evaluate_alert_payload
+        eval_res = evaluate_alert_payload(alert, use_tools=False)
+        llm_decision = eval_res.get("llm_decision", "")
+        llm_playbook = eval_res.get("llm_playbook", "")
+        if llm_decision or llm_playbook:
+            _update_alert_llm_db(
+                message_id=alert.get("message_id"),
+                email_id=alert.get("email_id"),
+                symbol=symbol,
+                action=action_val,
+                timestamp=timestamp_str,
+                llm_decision=llm_decision,
+                llm_playbook=llm_playbook,
             )
-            llm_decision, llm_playbook = query_local_llm_for_trade(
-                alert, symbol, strategy, news_data=news_data, prior_position=prior_position
-            )
-            if llm_decision or llm_playbook:
-                sheets.update_llm_decision(date_str, row_num, llm_decision, llm_playbook)
-                logger.info(f"AI decision updated in Row {row_num}: {llm_decision}")
+            logger.info(f"AI decision written to SQLite for {symbol}: {llm_decision}")
+    except Exception as e_eval:
+        logger.warning(f"Local alert evaluation failed for {symbol}: {e_eval}")
+
+
+# Backward-compatible alias for single-threaded / legacy callers
+process_alert = process_alert_enrichment
+
+
+def start_enrichment_workers(
+    num_workers: int = 2, stop_event: Optional[threading.Event] = None
+) -> list[threading.Thread]:
+    """Start background worker threads to drain and process the enrichment queue."""
+    stop = stop_event or threading.Event()
+
+    def _worker(worker_id: int):
+        logger.info(f"[EnrichmentWorker-{worker_id}] started.")
+        while not stop.is_set():
+            try:
+                alert = _enrichment_queue.get(timeout=1.5)
+            except queue.Empty:
+                # During idle polling, autonomously check if there are pending alerts in SQLite and triage them!
+                if worker_id == 1:
+                    try:
+                        from src.tracking.alert_evaluator import evaluate_batch_pending
+                        evaluate_batch_pending(limit=2)
+                    except Exception:
+                        pass
+                continue
+
+            try:
+                process_alert_enrichment(alert)
+            except Exception as e:
+                logger.error(f"[EnrichmentWorker-{worker_id}] Error: {e}", exc_info=True)
+            finally:
+                _enrichment_queue.task_done()
+        logger.info(f"[EnrichmentWorker-{worker_id}] stopped.")
+
+    workers = []
+    for i in range(num_workers):
+        t = threading.Thread(target=_worker, args=(i + 1,), name=f"EnrichmentWorker-{i+1}", daemon=True)
+        t.start()
+        workers.append(t)
+    return workers
+
+
+class GmailIngestionThread(threading.Thread):
+    """Dedicated background thread for Gmail ingestion.
+    
+    Continuously polls Gmail for unread TradingView alerts on its own independent loop.
+    Never blocked by downstream LLM inference, news scraping, or Google Sheets latency.
+    """
+
+    def __init__(self, poll_interval: int = 15, stop_event: Optional[threading.Event] = None):
+        super().__init__(name="GmailIngestorThread", daemon=True)
+        self.poll_interval = poll_interval
+        self._stop = stop_event or threading.Event()
+        self.gmail = GmailClient()
+
+    def run(self):
+        logger.info(f"🚀 Gmail Ingestion Thread started (interval={self.poll_interval}s).")
+        while not self._stop.is_set():
+            if is_market_hours() or getattr(config, "DEBUG_FORCE_MARKET_OPEN", False):
+                try:
+                    self._poll_cycle()
+                except Exception as e:
+                    logger.error(f"Error during Gmail ingestion cycle: {e}", exc_info=True)
             else:
-                logger.warning(f"LLM returned empty response for {symbol} [{action_val}].")
-        else:
-            logger.info(
-                f"Alert logged to spreadsheet. Routing {symbol} ({alert.get('setup')}) to research candidate list."
-            )
+                now_mt = datetime.now(ZoneInfo("America/Denver"))
+                if now_mt.minute % 15 == 0 and now_mt.second < 20:
+                    logger.info("Outside market control window. Ingestion idle.")
+            self._stop.wait(self.poll_interval)
+        logger.info("Gmail Ingestion Thread stopped.")
 
-        return email_id
-    else:
-        logger.error(
-            f"Failed to log alert for {symbol} to Google Sheets. Retaining email as unread for retry."
-        )
-        return None
+    def _poll_cycle(self):
+        if not self.gmail.connect():
+            logger.warning("Could not establish Gmail connection. Retrying next cycle.")
+            return
+
+        try:
+            alerts = self.gmail.fetch_new_alerts(limit=100)
+            if alerts:
+                logger.info(f"📥 Found {len(alerts)} new alert(s) in Gmail. Ingesting immediately...")
+                for alert in alerts:
+                    ingest_alert_fast(alert, self.gmail)
+            else:
+                logger.debug("No new TradingView alerts found in Gmail.")
+        finally:
+            try:
+                self.gmail.disconnect()
+            except Exception:
+                pass
 
 
-def run_tracker():
-    """Main execution cycle: check emails, log to sheets, run LLM."""
-    # 1. Check if market is open (or use override for testing)
-    force_run = getattr(config, "DEBUG_FORCE_MARKET_OPEN", False)
-
-    if not is_market_hours() and not force_run:
+def run_tracker(force_run: bool = False):
+    """One-shot execution cycle: check emails, ingest immediately, and process enrichment."""
+    effective_force = force_run or getattr(config, "DEBUG_FORCE_MARKET_OPEN", False)
+    if not is_market_hours() and not effective_force:
         logger.info("Market is closed. Sleeping...")
         return
 
-    logger.info("Market is open (or forced). Checking for TradingView alerts...")
-
-    # Initialize Google Sheets client
-    sheets = SheetsTracker()
-
-    # Start the live position monitor (idempotent; rehydrates open positions
-    # from data/positions.json so monitors survive a tracker restart).
+    logger.info("Checking for TradingView alerts (one-shot)...")
     _position_manager.start()
 
-    # 2. Connect to Gmail and fetch new alerts
     gmail = GmailClient()
     if not gmail.connect():
-        logger.error("Could not establish Gmail connection. Skipping this cycle.")
+        logger.error("Could not establish Gmail connection. Skipping.")
         return
 
     try:
-        alerts = gmail.fetch_new_alerts()
+        alerts = gmail.fetch_new_alerts(limit=100)
         if not alerts:
             logger.info("No new TradingView alerts found in Gmail.")
             return
 
-        logger.info(f"Processing {len(alerts)} new alert(s) in parallel via local LLM server...")
+        logger.info(f"Ingesting {len(alerts)} alert(s)...")
+        for alert in alerts:
+            ingest_alert_fast(alert, gmail)
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        successful_email_ids = []
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_alert = {
-                executor.submit(process_alert, alert, sheets): alert for alert in alerts
-            }
-            for future in as_completed(future_to_alert):
-                try:
-                    eid = future.result()
-                    if eid:
-                        successful_email_ids.append(eid)
-                except Exception as exc:
-                    logger.error(f"Alert processing generated an exception: {exc}")
-
-        # Mark all successful emails as read sequentially to avoid IMAP thread-safety issues
-        for eid in successful_email_ids:
-            gmail.mark_as_read(eid)
-
-    except Exception as e:
-        logger.error(f"Error during tracker execution cycle: {e}", exc_info=True)
+        # Drain enrichment queue for one-shot mode
+        while not _enrichment_queue.empty():
+            try:
+                alert = _enrichment_queue.get_nowait()
+                process_alert_enrichment(alert)
+                _enrichment_queue.task_done()
+            except queue.Empty:
+                break
     finally:
-        gmail.disconnect()
+        try:
+            gmail.disconnect()
+        except Exception:
+            pass
 
 
 def is_market_hours() -> bool:
-    """Check if current Mountain Time is within configured market hours (Monday-Friday)."""
+    """Check if current Mountain Time is within configured market hours (Monday-Friday, 7:15 AM - 8:00 PM MT)."""
     now_mt = datetime.now(ZoneInfo("America/Denver"))
     if now_mt.weekday() >= 5:  # Saturday or Sunday
         return False
@@ -436,8 +520,8 @@ def is_market_hours() -> bool:
         microsecond=0,
     )
     end_time = now_mt.replace(
-        hour=getattr(config, "MARKET_CLOSE_HOUR", 14),
-        minute=getattr(config, "MARKET_CLOSE_MINUTE", 30),
+        hour=getattr(config, "MARKET_CLOSE_HOUR", 20),
+        minute=getattr(config, "MARKET_CLOSE_MINUTE", 0),
         second=0,
         microsecond=0,
     )
@@ -464,39 +548,44 @@ def main():
         logger.error("Please configure your .env file with valid credentials.")
         sys.exit(1)
 
-    # Determine run mode
     if args.once:
         run_once = True
     elif args.loop:
         run_once = False
     else:
-        # Fall back to config file setting
         run_once = not config.LOOP_MODE
 
     if run_once:
         logger.info("Running in ONE-SHOT mode.")
         try:
-            run_tracker()
+            run_tracker(force_run=True)
         finally:
             _position_manager.stop()
         logger.info("One-shot run complete. Exiting.")
     else:
-        logger.info(f"Running in LOOP mode. Polling interval: {config.POLLING_INTERVAL} seconds.")
+        interval = int(getattr(config, "POLLING_INTERVAL", 15))
+        logger.info(f"Running in MULTI-THREADED LOOP mode. Ingestion interval: {interval}s.")
+        stop_event = threading.Event()
+
+        # 1. Start live Position Manager
+        _position_manager.start()
+
+        # 2. Start background enrichment workers
+        start_enrichment_workers(num_workers=2, stop_event=stop_event)
+
+        # 3. Start dedicated Gmail Ingestion Thread
+        ingestor_thread = GmailIngestionThread(poll_interval=interval, stop_event=stop_event)
+        ingestor_thread.start()
+
         try:
             while True:
-                if is_market_hours():
-                    run_tracker()
-                else:
-                    # Log only periodically to avoid filling up log file
-                    now_mt = datetime.now(ZoneInfo("America/Denver"))
-                    if now_mt.minute % 15 == 0 and now_mt.second < 60:
-                        logger.info(
-                            "Outside market hours (7:15 AM - 3:00 PM MT Mon-Fri). Skipping check cycle."
-                        )
-                time.sleep(config.POLLING_INTERVAL)
+                time.sleep(1.0)
         except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received. Stopping tracker loop.")
+            logger.info("Keyboard interrupt received. Stopping threads...")
+            stop_event.set()
+            ingestor_thread.join(timeout=5.0)
         finally:
+            stop_event.set()
             _position_manager.stop()
         sys.exit(0)
 

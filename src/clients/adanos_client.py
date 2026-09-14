@@ -22,23 +22,7 @@ _daily_cache = {}
 
 
 def _get_json(path: str) -> dict | None:
-    """GET an Adanos endpoint. Returns parsed JSON or None on any failure/quota hit."""
-    if not config.ADANOS_API_KEY:
-        return None
-    url = f"{config.ADANOS_BASE_URL}/{path.lstrip('/')}"
-    try:
-        req = urllib.request.Request(url, headers=_ADANOS_HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            logger.warning(f"[Adanos] Monthly quota exceeded (429) on {path}")
-        elif e.code == 401:
-            logger.warning("[Adanos] API key missing/invalid (401).")
-        else:
-            logger.warning(f"[Adanos] HTTP {e.code} on {path}: {e.read().decode()[:120]}")
-    except Exception as e:
-        logger.warning(f"[Adanos] request failed for {path}: {e}")
+    """Disabled — Adanos retired to eliminate latency and quota limits."""
     return None
 
 
@@ -114,87 +98,18 @@ def get_social_sentiment(ticker: str) -> dict:
 
 
 def format_social_block(ticker: str) -> str:
-    """Human-readable social-sentiment block for the deep-research prompt."""
-    ss = get_social_sentiment(ticker)
-    if not ss.get("news") and not ss.get("reddit"):
-        return f"--- PER-TICKER SOCIAL SENTIMENT ({ticker}) ---\n(no Adanos data available for this ticker)\n"
-
-    lines = [f"--- PER-TICKER SOCIAL SENTIMENT ({ticker} Adanos) ---"]
-    for label, plat in (("NEWS", ss.get("news")), ("REDDIT", ss.get("reddit"))):
-        if not plat or not plat.get("found"):
-            continue
-        lines.append(
-            f"{label}: sentiment_score={plat.get('sentiment_score')} "
-            f"bullish={plat.get('bullish_pct')}% bearish={plat.get('bearish_pct')}% "
-            f"buzz={plat.get('buzz_score')} trend={plat.get('trend')}"
-        )
-    return "\n".join(lines) + "\n"
+    """Human-readable social-sentiment block (Retired)."""
+    return ""
 
 
 def get_market_sentiment() -> dict:
-    """Service-wide market mood for the macro context (deep research).
-
-    Returns {"news": {...}, "reddit": {...}} aggregates, each with overall
-    sentiment_score / bullish_pct / bearish_pct / buzz_score / trend / trend_history
-    plus top `drivers` (hottest tickers by buzz). Empty dicts if unavailable.
-    Costs 2 quota calls per call (one per platform) — call once per deep-research run.
-    """
-    out = {}
-    for platform in ("news", "reddit"):
-        cache_key = ("market", platform)
-        if cache_key in _daily_cache:
-            out[platform] = _daily_cache[cache_key]
-            continue
-        data = _get_json(f"{platform}/stocks/v1/market-sentiment")
-        plat = {}
-        if data:
-            plat = {
-                "found": True,
-                "buzz_score": data.get("buzz_score"),
-                "sentiment_score": data.get("sentiment_score"),
-                "bullish_pct": data.get("bullish_pct"),
-                "bearish_pct": data.get("bearish_pct"),
-                "trend": data.get("trend"),
-                "mentions": data.get("mentions"),
-                "active_tickers": data.get("active_tickers"),
-                "drivers": [
-                    {
-                        "ticker": d.get("ticker"),
-                        "mentions": d.get("mentions"),
-                        "buzz_score": d.get("buzz_score"),
-                        "sentiment_score": d.get("sentiment_score"),
-                    }
-                    for d in (data.get("drivers") or [])[:8]
-                ],
-            }
-        _daily_cache[cache_key] = plat
-        out[platform] = plat
-    return out
+    """Service-wide market mood for the macro context (Retired)."""
+    return {}
 
 
 def format_market_sentiment_block() -> str:
-    """Human-readable macro social-sentiment block for the deep-research prompt."""
-    ms = get_market_sentiment()
-    if not ms.get("news") and not ms.get("reddit"):
-        return ""
-    lines = ["--- MACRO SOCIAL SENTIMENT (Adanos, overall market mood) ---"]
-    for label, plat in (("NEWS", ms.get("news")), ("REDDIT", ms.get("reddit"))):
-        if not plat:
-            continue
-        lines.append(
-            f"{label}: sentiment_score={plat.get('sentiment_score')} "
-            f"bullish={plat.get('bullish_pct')}% bearish={plat.get('bearish_pct')}% "
-            f"buzz={plat.get('buzz_score')} trend={plat.get('trend')} "
-            f"active_tickers={plat.get('active_tickers')}"
-        )
-        drivers = plat.get("drivers") or []
-        if drivers:
-            top = ", ".join(
-                f"{d['ticker']}(buzz={d.get('buzz_score')},sent={d.get('sentiment_score')})"
-                for d in drivers[:5]
-            )
-            lines.append(f"  top movers: {top}")
-    return "\n".join(lines)
+    """Human-readable macro social-sentiment block (Retired)."""
+    return ""
 
 
 if __name__ == "__main__":

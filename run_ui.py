@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +48,9 @@ WEB_DIR = config.BASE_DIR / "web"
 STATIC_DIR = WEB_DIR / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+DATA_DIR = config.BASE_DIR / "data"
+if DATA_DIR.exists():
+    app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
 
 
 @app.middleware("http")
@@ -304,6 +307,29 @@ def _get_active_processes():
 # =====================================================================
 
 
+def _find_running_tracker_pid() -> Optional[int]:
+    """Return PID of running main.py (Alert Ingestor), whether started by UI or externally."""
+    global TRACKER_PROCESS
+    if TRACKER_PROCESS is not None and TRACKER_PROCESS.poll() is None:
+        return TRACKER_PROCESS.pid
+    try:
+        import psutil
+        curr_pid = os.getpid()
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            if p.info['pid'] == curr_pid:
+                continue
+            name = (p.info.get('name') or '').lower()
+            if 'python' in name:
+                cmdline = p.info.get('cmdline') or []
+                for arg in cmdline:
+                    arg_clean = str(arg).replace('\\', '/').split('/')[-1]
+                    if arg_clean == 'main.py':
+                        return p.info['pid']
+    except Exception:
+        pass
+    return None
+
+
 @app.get("/api/status")
 def get_system_status():
     """System heartbeat, market hours, GPU VRAM, active tasks, LLM health, orchestrator status, and active counts."""
@@ -351,8 +377,9 @@ def get_system_status():
     except Exception:
         llm_online = False
 
-    # Orchestrator / Gmail Ingestor status
-    tracker_running = (TRACKER_PROCESS is not None and TRACKER_PROCESS.poll() is None)
+    # Orchestrator / Gmail Ingestor status (detects both UI-spawned and CLI/orchestrator-spawned)
+    tracker_pid = _find_running_tracker_pid()
+    tracker_running = tracker_pid is not None
 
     # GPU VRAM and active process metrics
     gpu_stats = _get_gpu_stats()
@@ -382,17 +409,34 @@ def get_system_status():
     except Exception:
         pass
 
-    # Open positions count
+    # Open positions count (today's active intraday positions)
     open_pos_count = 0
     if POSITIONS_FILE.exists():
         try:
             with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
                 pos_data = json.load(f)
-                open_pos_count = len(pos_data.get("positions", {}))
+                pos_dict = pos_data.get("positions", pos_data) if isinstance(pos_data, dict) else {}
+                today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+                open_pos_count = sum(
+                    1 for sym, p in pos_dict.items()
+                    if isinstance(p, dict)
+                    and p.get("opened_at", "")[:10] == today_str
+                    and str(p.get("raw_alert", {}).get("subject", "")).lower() != "alert: screener"
+                )
         except Exception:
             pass
 
-    tracker_pid = TRACKER_PROCESS.pid if (TRACKER_PROCESS is not None and tracker_running) else None
+    if tracker_pid is None and TRACKER_PROCESS is not None and TRACKER_PROCESS.poll() is None:
+        tracker_pid = TRACKER_PROCESS.pid
+    tracker_running = tracker_pid is not None
+
+    # Schwab OAuth token status (7-day lifecycle)
+    schwab_status = None
+    try:
+        from src.clients.schwab_client import get_schwab_token_status
+        schwab_status = get_schwab_token_status()
+    except Exception:
+        pass
 
     return {
         "time_mt": now_mt.strftime("%Y-%m-%d %I:%M:%S %p MT"),
@@ -402,6 +446,7 @@ def get_system_status():
         "market_status_text": market_status_text,
         "llm_online": llm_online,
         "tasty_auth": tasty_auth,
+        "schwab_status": schwab_status,
         "tracker_running": tracker_running,
         "tracker_pid": tracker_pid,
         "tasty_alert_count": tasty_count,
@@ -410,8 +455,17 @@ def get_system_status():
         "research_state": RESEARCH_STATE,
         "vix_price": vix_price,
         "gpu_stats": gpu_stats,
+        "gpus": gpu_stats,
         "active_processes": active_procs,
     }
+
+
+@app.get("/api/schwab/status")
+def get_schwab_status_endpoint():
+    """Returns metadata and expiration time for Schwab OAuth token."""
+    from src.clients.schwab_client import get_schwab_token_status
+    return get_schwab_token_status()
+
 
 
 class KillProcessRequest(BaseModel):
@@ -436,8 +490,9 @@ def kill_process(req: KillProcessRequest):
 def start_orchestrator():
     """Start the Email Alert Ingestor (main.py --loop) in a background process."""
     global TRACKER_PROCESS
-    if TRACKER_PROCESS is not None and TRACKER_PROCESS.poll() is None:
-        return {"status": "already_running", "pid": TRACKER_PROCESS.pid}
+    existing_pid = _find_running_tracker_pid()
+    if existing_pid is not None:
+        return {"status": "already_running", "pid": existing_pid}
 
     _append_log("🚀 Starting Email Alert Ingestor (main.py --loop)...")
     cmd = [sys.executable, "main.py", "--loop"]
@@ -447,6 +502,8 @@ def start_orchestrator():
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     def _pipe_logs(proc):
@@ -465,19 +522,123 @@ def start_orchestrator():
 def stop_orchestrator():
     """Stop the Email Alert Ingestor cleanly."""
     global TRACKER_PROCESS
-    if TRACKER_PROCESS is None or TRACKER_PROCESS.poll() is not None:
+    active_pid = _find_running_tracker_pid()
+    if active_pid is None:
         return {"status": "not_running"}
 
-    _append_log("🛑 Stopping Email Alert Ingestor...")
-    try:
-        TRACKER_PROCESS.terminate()
-        TRACKER_PROCESS.wait(timeout=5)
-    except Exception:
-        TRACKER_PROCESS.kill()
+    _append_log(f"🛑 Stopping Email Alert Ingestor (PID {active_pid})...")
+    if TRACKER_PROCESS is not None and TRACKER_PROCESS.poll() is None:
+        try:
+            TRACKER_PROCESS.terminate()
+            TRACKER_PROCESS.wait(timeout=5)
+        except Exception:
+            TRACKER_PROCESS.kill()
+        TRACKER_PROCESS = None
+    else:
+        try:
+            import psutil
+            p = psutil.Process(active_pid)
+            p.terminate()
+            p.wait(timeout=5)
+        except Exception:
+            pass
 
     _append_log("✅ Email Alert Ingestor terminated.")
-    TRACKER_PROCESS = None
     return {"status": "stopped"}
+
+
+@app.on_event("startup")
+def on_startup():
+    """Initialize database and dynamically auto-start Email Alert Ingestor on UI launch."""
+    _init_db()
+    try:
+        pid = _find_running_tracker_pid()
+        if pid is not None:
+            _append_log(f"🟢 [Startup] Detected Email Alert Ingestor already active (PID {pid}).")
+        else:
+            _append_log("🚀 [Startup] Dynamically auto-starting Email Alert Ingestor (main.py --loop)...")
+            res = start_orchestrator()
+            _append_log(f"✅ [Startup] Email Alert Ingestor running (PID {res.get('pid')}).")
+    except Exception as e:
+        logger.error(f"Failed to auto-start Email Alert Ingestor on startup: {e}")
+        _append_log(f"⚠️ [Startup] Auto-start Email Alert Ingestor failed: {e}")
+
+    # Launch Autonomous Alert Triage Daemon
+    try:
+        from src.tracking.auto_triage_daemon import start_auto_triage_daemon
+        start_auto_triage_daemon(poll_interval=8, batch_size=15)
+        _append_log("🤖 [Startup] Autonomous Alert Triage Daemon active.")
+    except Exception as e_triage:
+        logger.warning(f"Failed to start AutoTriageDaemon: {e_triage}")
+
+    # Launch Continuous Schwab 1000 & Tastytrade Screener Daemon
+    try:
+        from src.screener.continuous_screener_daemon import start_continuous_screener_daemon
+        start_continuous_screener_daemon()
+        _append_log("🤖 [Startup] Continuous Schwab & Tastytrade Screener Daemon active.")
+    except Exception as e_screener:
+        logger.warning(f"Failed to start ContinuousScreenerDaemon: {e_screener}")
+
+    # Launch Watchlist & Trigger Alert Daemon (Continuous Real-Time Price Polling & Alerts)
+    try:
+        def _bg_watch_alerts():
+            from run_watch_alerts import run_watch_loop
+            run_watch_loop(poll_interval=60, sync_sheets=False)
+        threading.Thread(target=_bg_watch_alerts, daemon=True, name="WatchAlertsDaemon").start()
+        _append_log("🤖 [Startup] Real-Time Watchlist Trigger Alert Daemon active (60s loop).")
+    except Exception as e_watch:
+        logger.warning(f"Failed to start WatchAlertsDaemon: {e_watch}")
+
+    # Check Local LLM Server on Port 8000
+    def _bg_check_llm():
+        import urllib.request
+        try:
+            req = urllib.request.Request("http://127.0.0.1:8000/health")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                if resp.status == 200:
+                    _append_log("🟢 [Startup] Local LLM Server healthy on port 8000.")
+        except Exception:
+            _append_log("⚠️ [Startup] Local LLM Server not detected on port 8000. Start via scripts\\launchers\\start_llm_server.bat if using local inference.")
+    threading.Thread(target=_bg_check_llm, daemon=True, name="LLMHealthCheck").start()
+
+    # Initial Schwab Portfolio Sync in background
+    def _bg_portfolio_sync():
+        try:
+            from src.tracking.schwab_portfolio_manager import sync_schwab_positions
+            res = sync_schwab_positions()
+            if res.get("success"):
+                _append_log(f"💼 [Startup] Synced Schwab Portfolio ({res.get('positions_count', 0)} positions, Total: ${res.get('total_liquidation_value', 0):,.2f}).")
+        except Exception as e_pfsync:
+            logger.debug(f"Initial Schwab portfolio sync skipped/deferred: {e_pfsync}")
+
+    threading.Thread(target=_bg_portfolio_sync, daemon=True, name="StartupPortfolioSync").start()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    """Cleanly stop background ingestor, auto-triage daemon, and continuous screener on server shutdown."""
+    global TRACKER_PROCESS
+    if TRACKER_PROCESS is not None and TRACKER_PROCESS.poll() is None:
+        try:
+            logger.info("Stopping Email Alert Ingestor on UI shutdown...")
+            TRACKER_PROCESS.terminate()
+            TRACKER_PROCESS.wait(timeout=3)
+        except Exception:
+            TRACKER_PROCESS.kill()
+        TRACKER_PROCESS = None
+
+    try:
+        from src.tracking.auto_triage_daemon import _daemon_instance
+        if _daemon_instance:
+            _daemon_instance.stop()
+    except Exception:
+        pass
+
+    try:
+        from src.screener.continuous_screener_daemon import stop_continuous_screener_daemon
+        stop_continuous_screener_daemon()
+    except Exception:
+        pass
 
 
 @app.get("/api/watch-targets")
@@ -611,12 +772,219 @@ def get_watch_targets():
             except Exception as q_err:
                 logger.debug(f"Error enriching watch targets with Schwab quotes: {q_err}")
 
+            # Enrich all targets with Suggested Trades P&L (options spreads & shares) and outcomes
+            won_pnls = []
+            lost_pnls = []
+            active_pnls = []
+
+            won_dollars = []
+            lost_dollars = []
+            active_dollars = []
+            actionable_count = 0
+
+            for item in targets:
+                entry_low = item.get("entry_zone_low")
+                entry_high = item.get("entry_zone_high")
+                side = str(item.get("side") or "LONG").upper()
+                tactical_stop = item.get("tactical_stop") or item.get("invalidation_price")
+                target_1 = item.get("target_1")
+                target_2 = item.get("target_2")
+                live_px = item.get("last_price")
+                status = (item.get("status") or "STALKING").upper()
+                dist_pct = item.get("distance_to_entry_pct")
+                opt_act = bool(item.get("options_actionable"))
+
+                raw = item.get("parsed_json") or {}
+                op = raw.get("options_plan") or {}
+                sp = raw.get("shares_plan") or {}
+
+                struct = op.get("structure") or item.get("options_structure") or "NONE"
+                max_prof = float(op.get("max_profit") or 0.0)
+                max_loss = float(op.get("max_loss") or 0.0)
+                long_k = float(op.get("long_strike") or 0.0)
+                short_k = float(op.get("short_strike") or 0.0)
+                debit = float(op.get("target_debit") or 0.0)
+                is_options = (struct and struct != "NONE" and (max_prof > 0 or max_loss > 0))
+
+                trade_type = "OPTIONS" if is_options else "SHARES"
+                trade_label = struct.replace("_", " ").title() if is_options else f"Shares ({sp.get('entry_type', 'Limit')})"
+
+                entry_mid = None
+                if entry_low is not None and entry_high is not None and (entry_low > 0 or entry_high > 0):
+                    entry_mid = round((entry_low + entry_high) / 2.0, 2)
+                elif entry_low and entry_low > 0:
+                    entry_mid = entry_low
+                elif entry_high and entry_high > 0:
+                    entry_mid = entry_high
+                item["entry_midpoint"] = entry_mid
+
+                # 1. Underlying Stock Price Delta %
+                pnl_pct = None
+                if entry_mid and live_px and entry_mid > 0:
+                    if side == "SHORT":
+                        pnl_pct = round(((entry_mid - live_px) / entry_mid) * 100.0, 2)
+                    else:
+                        pnl_pct = round(((live_px - entry_mid) / entry_mid) * 100.0, 2)
+                item["pnl_pct"] = pnl_pct
+
+                # 2. SUGGESTED TRADE DOLLAR P&L & ROC %
+                trade_dollar_pnl = 0.0
+                trade_roc_pct = 0.0
+
+                if status in ("TARGET_HIT", "COMPLETED"):
+                    if is_options and max_prof > 0:
+                        trade_dollar_pnl = max_prof
+                        trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                    else:
+                        t_exit = target_2 if (target_2 and target_2 > 0) else target_1
+                        if t_exit and entry_mid:
+                            sh_gain = (t_exit - entry_mid) if side == "LONG" else (entry_mid - t_exit)
+                            trade_dollar_pnl = round(sh_gain * 100, 2)
+                            trade_roc_pct = round((sh_gain / entry_mid * 100), 2)
+                    won_dollars.append(trade_dollar_pnl)
+                    won_pnls.append(trade_roc_pct)
+
+                elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
+                    if is_options and max_loss > 0:
+                        trade_dollar_pnl = -max_loss
+                        trade_roc_pct = -100.0
+                    else:
+                        if tactical_stop and entry_mid:
+                            sh_loss = (tactical_stop - entry_mid) if side == "LONG" else (entry_mid - tactical_stop)
+                            trade_dollar_pnl = round(sh_loss * 100, 2)
+                            trade_roc_pct = round((sh_loss / entry_mid * 100), 2)
+                    lost_dollars.append(trade_dollar_pnl)
+                    lost_pnls.append(trade_roc_pct)
+
+                elif status in ("IN_TRADE", "IN_ZONE") and live_px and live_px > 0:
+                    if is_options and (max_prof > 0 or max_loss > 0):
+                        if "PUT" in struct:
+                            if live_px >= short_k:
+                                trade_dollar_pnl = max_prof
+                                trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                            elif live_px <= long_k:
+                                trade_dollar_pnl = -max_loss
+                                trade_roc_pct = -100.0
+                            elif short_k > long_k:
+                                ratio = (live_px - long_k) / (short_k - long_k)
+                                trade_dollar_pnl = round(max_prof * ratio - max_loss * (1.0 - ratio), 2)
+                                trade_roc_pct = round((trade_dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
+                        else:
+                            if live_px >= short_k:
+                                trade_dollar_pnl = max_prof
+                                trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                            elif live_px <= long_k:
+                                trade_dollar_pnl = -max_loss
+                                trade_roc_pct = -100.0
+                            else:
+                                spread_val = (live_px - long_k) * 100.0
+                                trade_dollar_pnl = round(spread_val - (debit * 100.0), 2)
+                                trade_roc_pct = round((trade_dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
+                    else:
+                        if entry_mid:
+                            sh_gain = (live_px - entry_mid) if side == "LONG" else (entry_mid - live_px)
+                            trade_dollar_pnl = round(sh_gain * 100, 2)
+                            trade_roc_pct = round((sh_gain / entry_mid * 100), 2)
+                    active_dollars.append(trade_dollar_pnl)
+                    active_pnls.append(trade_roc_pct)
+
+                item["trade_type"] = trade_type
+                item["trade_label"] = trade_label
+                item["trade_dollar_pnl"] = trade_dollar_pnl
+                item["trade_roc_pct"] = trade_roc_pct
+                item["trade_max_profit"] = max_prof
+                item["trade_max_loss"] = max_loss
+                item["realized_pnl_pct"] = trade_roc_pct
+
+                # Risk to Reward ratio
+                rr_ratio = None
+                if is_options and max_loss > 0:
+                    rr_ratio = round(max_prof / max_loss, 2)
+                elif entry_mid and target_1 and tactical_stop and entry_mid > 0:
+                    reward = abs(target_1 - entry_mid)
+                    risk = abs(entry_mid - tactical_stop)
+                    if risk > 0.01:
+                        rr_ratio = round(reward / risk, 2)
+                item["rr_ratio"] = rr_ratio
+
+                # Actionable flag: IN_ZONE, IN_TRADE, or distance <= 1.0%
+                is_actionable = (status in ("IN_ZONE", "IN_TRADE")) or (dist_pct is not None and abs(dist_pct) <= 1.0) or opt_act
+                item["is_actionable"] = is_actionable
+                if is_actionable:
+                    actionable_count += 1
+
+            total_resolved = len(won_dollars) + len(lost_dollars)
+            win_rate = round((len(won_dollars) / total_resolved) * 100.0, 1) if total_resolved > 0 else 0.0
+
+            total_won_dollars = round(sum(won_dollars), 2)
+            total_lost_dollars = round(sum(lost_dollars), 2)
+            total_active_dollars = round(sum(active_dollars), 2)
+            net_dollar_profit = round(total_won_dollars + total_lost_dollars + total_active_dollars, 2)
+
+            avg_win_dollars = round(total_won_dollars / len(won_dollars), 2) if won_dollars else 0.0
+            avg_loss_dollars = round(total_lost_dollars / len(lost_dollars), 2) if lost_dollars else 0.0
+            profit_factor = round(abs(total_won_dollars) / max(1.0, abs(total_lost_dollars)), 2) if total_lost_dollars != 0 else 99.9
+
+            performance_summary = {
+                "total_targets": len(targets),
+                "won_count": len(won_dollars),
+                "lost_count": len(lost_dollars),
+                "resolved_count": total_resolved,
+                "win_rate_pct": win_rate,
+                "total_won_dollars": total_won_dollars,
+                "total_lost_dollars": total_lost_dollars,
+                "total_active_dollars": total_active_dollars,
+                "net_dollar_profit": net_dollar_profit,
+                "avg_win_dollars": avg_win_dollars,
+                "avg_loss_dollars": avg_loss_dollars,
+                "profit_factor": profit_factor,
+                "actionable_count": actionable_count,
+            }
+
             # Sort by research timestamp DESC (newest research runs first)
             targets.sort(key=lambda x: str(x.get("research_timestamp", "")), reverse=True)
-            return {"targets": targets}
+            return {"targets": targets, "performance": performance_summary}
     except Exception as e:
         logger.error(f"Error in get_watch_targets: {e}")
         return {"targets": [], "error": str(e)}
+
+
+@app.get("/api/trades/audit")
+def get_trades_audit(
+    tab: str = Query("ALL"),
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=200),
+    window: int = Query(100, ge=0, le=5000),
+):
+    """Returns the pre-computed suggested trades audit trail, tab counts, and summary from SQLite with server-side pagination."""
+    try:
+        from src.tracking.suggested_trades_auditor import get_audit_summary
+        return get_audit_summary(
+            tab=tab,
+            search=search,
+            page=page,
+            page_size=page_size,
+            window=window,
+            force_sync=True
+        )
+    except Exception as e:
+        logger.error(f"Error in get_trades_audit: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "summary": {}, "trades": [], "pagination": {}}
+
+
+@app.post("/api/trades/audit/evaluate")
+def evaluate_trades_audit(
+    window: int = Query(100, ge=0, le=5000),
+):
+    """Triggers on-demand evaluation of suggested trades against live quotes (safe batching, rate-limit protected) and updates SQLite."""
+    try:
+        from src.tracking.suggested_trades_auditor import evaluate_all_suggested_trades
+        result = evaluate_all_suggested_trades(refresh_quotes=True, window=window)
+        return {"success": True, "message": f"Successfully evaluated live quotes on demand for last {window} trades without API overload.", **result}
+    except Exception as e:
+        logger.error(f"Error in evaluate_trades_audit: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "summary": {}, "trades": []}
 
 
 @app.get("/api/research/queue")
@@ -799,6 +1167,157 @@ def get_watch_alerts(limit: int = 50, ticker: Optional[str] = None):
         }
 
 
+@app.get("/api/alerts/history")
+def get_alerts_history(limit: int = 1000, date: Optional[str] = None, symbol: Optional[str] = None, strategy: Optional[str] = None):
+    """Retrieve historical TradingView alerts directly from the SQLite alert database."""
+    try:
+        from src.tracking.alert_db import get_alerts_for_date, get_recent_alerts
+        if date:
+            alerts = get_alerts_for_date(date)
+        else:
+            alerts = get_recent_alerts(limit=limit)
+        if symbol:
+            sym_clean = symbol.strip().upper()
+            alerts = [a for a in alerts if a.get("symbol") == sym_clean]
+        if strategy:
+            strat_clean = strategy.strip().lower()
+            alerts = [a for a in alerts if str(a.get("strategy") or "").lower() == strat_clean]
+        return {"status": "ok", "count": len(alerts), "alerts": alerts}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "alerts": []}
+
+
+@app.post("/api/alerts/check-gmail")
+def check_gmail_alerts_now():
+    """Trigger a fast 1-shot poll of Gmail for TradingView alerts into trading_alerts.db."""
+    def _poll():
+        _append_log("📥 Checking Gmail for fresh TradingView alerts (main.py --once)...")
+        try:
+            cmd = [sys.executable, "main.py", "--once"]
+            proc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            for line in proc.stdout:
+                l = line.strip()
+                if l:
+                    _append_log(f"[Alert Ingestor] {l}")
+            proc.wait()
+            _append_log("✅ Gmail alert check finished.")
+        except Exception as err:
+            _append_log(f"⚠️ Gmail alert check error: {err}")
+
+    threading.Thread(target=_poll, daemon=True).start()
+    return {"status": "ok", "message": "Gmail alert poll dispatched"}
+
+
+@app.post("/api/alerts/local-research")
+def run_alert_local_research(payload: dict = Body(...)):
+    """Run local research (#ponytail & revanth-gem-local.md) on an individual alert."""
+    try:
+        from src.tracking.alert_evaluator import evaluate_alert_payload
+        from src.tracking.alert_db import DB_PATH
+        import sqlite3
+
+        message_id = payload.get("message_id")
+        symbol = payload.get("symbol")
+        use_tools = payload.get("use_tools", True)
+
+        alert_dict = None
+        with sqlite3.connect(str(DB_PATH), timeout=30.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            if message_id:
+                cur.execute("SELECT * FROM alerts WHERE message_id = ?", (message_id,))
+                row = cur.fetchone()
+                if row:
+                    alert_dict = dict(row)
+            if not alert_dict and symbol:
+                cur.execute("SELECT * FROM alerts WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1", (symbol.upper(),))
+                row = cur.fetchone()
+                if row:
+                    alert_dict = dict(row)
+
+        if not alert_dict:
+            # Construct a minimal alert dict from payload
+            alert_dict = {
+                "symbol": (symbol or "UNKNOWN").upper(),
+                "strategy": payload.get("strategy", "Daily"),
+                "action": payload.get("action", "ALERT"),
+                "alert_price": payload.get("price"),
+                "setup": payload.get("setup"),
+                "raw_payload": json.dumps(payload),
+            }
+
+        res = evaluate_alert_payload(alert_dict, use_tools=use_tools)
+        return {"status": "ok", "result": res}
+    except Exception as e:
+        logger.error(f"Error running local research for alert: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/api/alerts/scrape-chart")
+def scrape_normal_chart_endpoint(payload: dict = Body(...)):
+    """Scrape normal TradingView daily candlestick chart screenshot for a symbol."""
+    try:
+        from src.data.tv_scraper import TVScraper
+        symbol = (payload.get("symbol") or "SPY").strip().upper()
+        date_str = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
+        scraper = TVScraper(target_date=date_str)
+        res = scraper.capture_normal_chart(symbol)
+        rel_path = f"/data/raw/{date_str}/{symbol}/{symbol}_chart.png"
+        return {"status": "ok", "image_url": rel_path, **res}
+    except Exception as e:
+        logger.error(f"Normal chart scrape error for {payload.get('symbol')}: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/api/alerts/evaluate-pending")
+def trigger_batch_evaluate_alerts(payload: dict = Body(default={})):
+    """Run local LLM evaluation across pending alerts in the background."""
+    def _run_batch():
+        try:
+            from src.tracking.alert_evaluator import evaluate_batch_pending
+            limit = payload.get("limit", 50)
+            date_str = payload.get("date")
+            _append_log(f"🤖 Starting batch local LLM triage for pending alerts (limit={limit})...")
+            res = evaluate_batch_pending(limit=limit, date_str=date_str)
+            _append_log(f"✅ Batch alert triage complete: {res.get('message')}")
+        except Exception as err:
+            _append_log(f"⚠️ Batch alert triage error: {err}")
+
+    threading.Thread(target=_run_batch, daemon=True).start()
+    return {"status": "ok", "message": "Batch evaluation started in background"}
+
+
+@app.get("/api/alerts/evaluate-status")
+def get_alerts_evaluation_status(date: Optional[str] = None):
+    """Return evaluation stats for alerts."""
+    try:
+        from src.tracking.alert_db import DB_PATH
+        import sqlite3
+
+        with sqlite3.connect(str(DB_PATH), timeout=30.0) as conn:
+            cur = conn.cursor()
+            if date:
+                cur.execute("SELECT count(*), count(NULLIF(llm_decision, '')) FROM alerts WHERE date = ?", (date,))
+            else:
+                cur.execute("SELECT count(*), count(NULLIF(llm_decision, '')) FROM alerts")
+            total, evaluated = cur.fetchone()
+            return {
+                "status": "ok",
+                "total": total,
+                "evaluated": evaluated,
+                "pending": total - evaluated,
+            }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/api/alerts/auto-triage-status")
+def get_auto_triage_daemon_status():
+    """Return live status of the autonomous background alert triage daemon."""
+    from src.tracking.auto_triage_daemon import get_auto_triage_status
+    return {"status": "ok", **get_auto_triage_status()}
+
+
 @app.get("/api/tastytrade-alerts")
 def get_tastytrade_alerts():
     """Fetch active cloud alerts directly from Tastytrade."""
@@ -831,6 +1350,137 @@ def trigger_superforecasting_audit_api():
         return {"status": "ok", **res}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@app.get("/api/options/spread-calc")
+def calculate_options_spread_live(
+    ticker: str,
+    expiration: str,
+    short_strike: float,
+    long_strike: float,
+    structure: Optional[str] = "BULL_PUT_SPREAD"
+):
+    """
+    Live mathematical options spread calculator using real-time Schwab market data.
+    Calculates exact live mid credit/debit, natural fill prices, max loss, max profit, and Greeks.
+    """
+    try:
+        from datetime import datetime, date
+        from src.clients.schwab_client import get_schwab_client
+
+        sym = ticker.upper().strip().replace(".", "/")
+        exp_clean = expiration.strip()
+        try:
+            exp_date = datetime.strptime(exp_clean, "%Y-%m-%d").date()
+        except Exception:
+            return {"success": False, "error": f"Invalid expiration format: {expiration}. Expected YYYY-MM-DD."}
+
+        client = get_schwab_client()
+        r = client.get_option_chain(
+            sym,
+            contract_type=client.Options.ContractType.ALL,
+            from_date=exp_date,
+            to_date=exp_date
+        )
+        if r.status_code != 200:
+            return {"success": False, "error": f"Schwab API error {r.status_code}: {r.text[:200]}"}
+
+        data = r.json()
+        underlying = float(data.get("underlyingPrice") or 0.0)
+        is_put = "PUT" in (structure or "").upper()
+        target_map = data.get("putExpDateMap", {}) if is_put else data.get("callExpDateMap", {})
+
+        if not target_map:
+            return {"success": False, "error": f"No {'put' if is_put else 'call'} chains found for {sym} on {expiration}"}
+
+        exp_key = list(target_map.keys())[0]
+        strike_dict = target_map[exp_key]
+
+        def find_contract(target_strike):
+            for k, contracts in strike_dict.items():
+                if abs(float(k) - target_strike) < 0.05:
+                    return contracts[0]
+            return None
+
+        c_short = find_contract(short_strike)
+        c_long = find_contract(long_strike)
+
+        if not c_short or not c_long:
+            return {
+                "success": False,
+                "error": f"Strikes {short_strike} or {long_strike} not found in {expiration} chain.",
+                "available_sample": [float(k) for k in list(strike_dict.keys())[:10]],
+                "underlying_price": underlying
+            }
+
+        s_bid = float(c_short.get("bid") or 0.0)
+        s_ask = float(c_short.get("ask") or 0.0)
+        s_mid = round((s_bid + s_ask) / 2, 2)
+        s_vol = int(c_short.get("totalVolume") or 0)
+        s_oi = int(c_short.get("openInterest") or 0)
+        s_delta = float(c_short.get("delta") or 0.0)
+
+        l_bid = float(c_long.get("bid") or 0.0)
+        l_ask = float(c_long.get("ask") or 0.0)
+        l_mid = round((l_bid + l_ask) / 2, 2)
+        l_vol = int(c_long.get("totalVolume") or 0)
+        l_oi = int(c_long.get("openInterest") or 0)
+        l_delta = float(c_long.get("delta") or 0.0)
+
+        width = abs(short_strike - long_strike)
+        is_credit = ("PUT" in (structure or "").upper() and "BULL" in (structure or "").upper()) or ("CALL" in (structure or "").upper() and "BEAR" in (structure or "").upper())
+
+        if is_credit:
+            # Sell short strike, buy long strike
+            live_mid = round(s_mid - l_mid, 2)
+            live_natural = round(s_bid - l_ask, 2)
+            max_profit = round(live_mid * 100, 2)
+            max_loss = round((width - live_mid) * 100, 2)
+            pricing_type = "CREDIT"
+        else:
+            # Buy long strike, sell short strike
+            live_mid = round(l_mid - s_mid, 2)
+            live_natural = round(l_ask - s_bid, 2)
+            max_loss = round(live_mid * 100, 2)
+            max_profit = round((width - live_mid) * 100, 2)
+            pricing_type = "DEBIT"
+
+        return {
+            "success": True,
+            "ticker": sym,
+            "expiration": exp_clean,
+            "structure": structure,
+            "pricing_type": pricing_type,
+            "underlying_price": underlying,
+            "spread_width": width,
+            "live_mid": live_mid,
+            "live_natural": live_natural,
+            "live_max_profit": max_profit,
+            "live_max_loss": max_loss,
+            "short_leg": {
+                "strike": short_strike,
+                "bid": s_bid,
+                "ask": s_ask,
+                "mid": s_mid,
+                "volume": s_vol,
+                "open_interest": s_oi,
+                "delta": s_delta
+            },
+            "long_leg": {
+                "strike": long_strike,
+                "bid": l_bid,
+                "ask": l_ask,
+                "mid": l_mid,
+                "volume": l_vol,
+                "open_interest": l_oi,
+                "delta": l_delta
+            },
+            "quote_source": "SCHWAB_REALTIME",
+            "calculated_at": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error calculating live options spread: {e}")
+        return {"success": False, "error": str(e)}
 
 
 class CreateAlertRequest(BaseModel):
@@ -887,6 +1537,18 @@ def modify_tastytrade_alert(req: ModifyAlertRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.delete("/api/tastytrade-alerts/all")
+def delete_all_tastytrade_alerts():
+    """Delete all quote alerts across all tickers from Tastytrade."""
+    try:
+        from src.clients.tastytrade_client import TastytradeClient
+        client = TastytradeClient()
+        deleted_count = client.delete_all_quote_alerts()
+        return {"success": True, "deleted_count": deleted_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/tastytrade-alerts/{alert_id}")
 def delete_tastytrade_alert(alert_id: str):
     """Delete a cloud alert by external ID."""
@@ -906,6 +1568,7 @@ def get_positions():
         return {"positions": []}
     try:
         from src.clients.price_client import get_current_price
+        today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
             pos_dict = raw_data.get("positions", raw_data) if isinstance(raw_data, dict) else {}
@@ -914,6 +1577,14 @@ def get_positions():
                 if not isinstance(p, dict):
                     continue
                 item = dict(p)
+                # Ignore stale prior-day positions
+                opened_at = item.get("opened_at", "")
+                if opened_at and opened_at[:10] != today_str:
+                    continue
+                # Ignore any position mistakenly saved from a Screener alert
+                if str(item.get("raw_alert", {}).get("subject", "")).lower() == "alert: screener":
+                    continue
+
                 entry = item.get("entry_price") or item.get("alert_price") or 0.0
                 try:
                     spot = get_current_price(sym)
@@ -942,6 +1613,18 @@ def get_schwab_positions_endpoint():
     except Exception as e:
         return {"status": "error", "error": str(e), "accounts": []}
 
+
+@app.get("/api/positions")
+def get_open_positions():
+    """Return active open positions from data/positions.json."""
+    try:
+        from src.tracking.position_state import load_state
+        state = load_state()
+        pos_list = list(state.values())
+        return {"positions": pos_list, "count": len(pos_list)}
+    except Exception as e:
+        logger.error(f"Failed to fetch open positions: {e}")
+        return {"positions": [], "count": 0, "error": str(e)}
 
 
 @app.post("/api/positions/{ticker}/close")
@@ -1240,7 +1923,7 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "HIGHS", "LOWS", "OPENS", "CLOSES", "EXP", "DTE", "STOCK", "STOCKS", "SHARE", "SHARES", "TICKER", "TICKERS",
         "SYMBOL", "SYMBOLS", "DESK", "DESKS", "MARKET", "MARKETS", "CHATS", "VIEWS", "SETUP", "SETUPS", "ACTION", "ACTIONS",
         "REPORT", "REPORTS", "RESEARCH", "MONTE", "CARLO", "DATA", "WINDOW", "CHAIN", "CHAINS", "GREEKS", "OPTION", "OPTIONS",
-        "EXACT", "EXECUTION", "TODAY", "RIGHT"
+        "EXACT", "EXECUTION", "TODAY", "RIGHT", "SPOT", "SPOTS", "TRIM", "TRAIL"
     }
     q_words = re.findall(r'[A-Za-z0-9&]+', q_clean)
     n = len(q_words)
@@ -1280,7 +1963,8 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "EXAMPLE", "EXAMPLES", "LATEST", "COVERED", "SELLING", "BUYING", "HOLDING", "OPTION", "OPTIONS",
         "PATH", "WAYS", "NEED", "WANT", "LIKE", "THINK", "WONDER", "WONDERING", "ABOUT", "COULD", "WOULD", "SHOULD",
         "STEP", "STEPS", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
-        "CALLS", "PUTS", "LEAP", "LEAPS", "STRIKE", "STRIKES", "BOUGHT", "SOLD", "EXACT", "EXECUTION", "TODAY", "RIGHT"
+        "CALLS", "PUTS", "LEAP", "LEAPS", "STRIKE", "STRIKES", "BOUGHT", "SOLD", "EXACT", "EXECUTION", "TODAY", "RIGHT",
+        "SPOT", "SPOTS", "TRIM", "TRIMS", "TRAIL", "TRAILS", "SL", "TP"
     }
     tokens = re.findall(r'\b[A-Za-z]{3,5}\b', q_clean)
     for t in tokens:
@@ -1361,7 +2045,7 @@ def _launch_background_job(name: str, command: list, log_file: str = None) -> st
     def _worker():
         try:
             _append_log(f"🚀 [{name}] Starting background job {job_id}...")
-            p = subprocess.Popen(command, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            p = subprocess.Popen(command, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
             ACTIVE_RESEARCH_SUBPROCS[job_id] = p
             with _get_db() as conn:
                 conn.cursor().execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (p.pid, job_id))
@@ -1660,8 +2344,9 @@ def _extract_targeted_schwab_strikes(ticker: str, question: str) -> Optional[str
         call_map = data.get("callExpDateMap", {})
         put_map = data.get("putExpDateMap", {})
 
-        # Detect target expiration hints (e.g. 2027, 2028, jan, oct, etc.)
+        # Detect target expiration hints (e.g. 2027, 2028, Oct 2, Sep 25, jan, oct, etc.)
         q_lower = question.lower()
+        now_year = datetime.now().year
         year_matches = re.findall(r'\b(202[5-9])\b', q_lower)
         month_matches = re.findall(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b', q_lower)
         month_map = {
@@ -1671,13 +2356,33 @@ def _extract_targeted_schwab_strikes(ticker: str, question: str) -> Optional[str
             'nov': '11', 'november': '11', 'dec': '12', 'december': '12'
         }
         target_prefixes = []
-        for y in year_matches:
+
+        # Check for specific day match e.g. "Oct 2", "Oct 16", "Sep 25"
+        day_match = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{1,2})\b', q_lower)
+        if day_match:
+            m_name, d_num = day_match.groups()
+            mm = month_map.get(m_name[:3])
+            if mm:
+                day_year = now_year if int(mm) >= datetime.now().month else (now_year + 1)
+                target_prefixes.append(f"{day_year}-{mm}-{int(d_num):02d}")
+                if year_matches:
+                    for y in year_matches:
+                        target_prefixes.append(f"{y}-{mm}-{int(d_num):02d}")
+
+        if year_matches:
+            for y in year_matches:
+                for m in month_matches:
+                    mm = month_map.get(m[:3])
+                    if mm:
+                        target_prefixes.append(f"{y}-{mm}")
+                if not month_matches:
+                    target_prefixes.append(f"{y}-")
+        elif month_matches:
             for m in month_matches:
                 mm = month_map.get(m[:3])
                 if mm:
-                    target_prefixes.append(f"{y}-{mm}")
-            if not month_matches:
-                target_prefixes.append(f"{y}-")
+                    target_prefixes.append(f"{now_year}-{mm}")
+                    target_prefixes.append(f"{now_year + 1}-{mm}")
 
         lines = []
         for strike_val, req_side in requested[:6]:
@@ -1689,7 +2394,7 @@ def _extract_targeted_schwab_strikes(ticker: str, question: str) -> Optional[str
                     is_targeted_exp = any(tp in exp_str for tp in target_prefixes) if target_prefixes else False
                     if exp_matched >= 3 and not is_targeted_exp:
                         continue
-                    if exp_matched >= 8:
+                    if exp_matched >= 10:
                         break
                     for k, contracts in strikes.items():
                         try:
@@ -1729,6 +2434,26 @@ def _extract_targeted_schwab_strikes(ticker: str, question: str) -> Optional[str
     return None
 
 
+def _get_latest_research_date_for_ticker(ticker: str) -> Optional[str]:
+    """Find the latest date containing actual research files or raw data for ticker."""
+    if not ticker or ticker in ("GENERAL", "AUTO", "NONE", ""):
+        return None
+    raw_root = config.BASE_DIR / "data" / "raw"
+    rep_root = config.BASE_DIR / "reports"
+    dates_set = set()
+    if raw_root.exists():
+        for d in raw_root.glob("202*"):
+            t_dir = d / ticker
+            if t_dir.is_dir() and any(t_dir.glob(f"{ticker}_*")):
+                dates_set.add(d.name)
+    if rep_root.exists():
+        for d in rep_root.glob("202*"):
+            if any(d.glob(f"{ticker}_*")):
+                dates_set.add(d.name)
+    sorted_d = sorted(list(dates_set), reverse=True)
+    return sorted_d[0] if sorted_d else None
+
+
 _TICKER_CONTEXT_CACHE: Dict[str, Tuple[float, List[str]]] = {}
 
 
@@ -1737,35 +2462,261 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     if not ticker_u or ticker_u in ("GENERAL", "AUTO", "NONE", ""):
         return []
 
-    # Fast in-memory cache (TTL: 45s per ticker & query profile to eliminate latency on follow-up questions)
+    # Fast in-memory cache (TTL: 30s per ticker & query profile to eliminate latency on follow-up questions)
     import time
     is_leaps_req = bool(re.search(r'\b(leap|leaps|2027|2028|2029|long term|long-term|multi-year|far out)\b', question, re.IGNORECASE))
     cache_key = f"{ticker_u}_{date_str}_{is_leaps_req}_{bool(re.findall(r'\d{2,4}', question))}"
     now_ts = time.time()
     if cache_key in _TICKER_CONTEXT_CACHE:
         cached_ts, cached_parts = _TICKER_CONTEXT_CACHE[cache_key]
-        if now_ts - cached_ts < 45.0:
+        if now_ts - cached_ts < 30.0:
             return list(cached_parts)
 
     parts = []
 
-    # 1. Live Real-Time Market Quote
+    # 1. Resolve Historical Research Reports & Baseline Levels First
+    raw_root = config.BASE_DIR / "data" / "raw"
+    rep_root = config.BASE_DIR / "reports"
+    dates_set = set()
+    if raw_root.exists():
+        for d in raw_root.glob("202*"):
+            t_dir = d / ticker_u
+            if t_dir.is_dir() and any(t_dir.glob(f"{ticker_u}_*")):
+                dates_set.add(d.name)
+    if rep_root.exists():
+        for d in rep_root.glob("202*"):
+            if any(d.glob(f"{ticker_u}_*")):
+                dates_set.add(d.name)
+
+    sorted_hist_dates = sorted(list(dates_set), reverse=True)
+    latest_dt = sorted_hist_dates[0] if sorted_hist_dates else (date_str if date_str else None)
+
+    report_spot: Optional[float] = None
+    report_date: Optional[str] = latest_dt
+    shares_plan: Dict[str, Any] = {}
+    options_plan: Dict[str, Any] = {}
+    invalidation_rule: Dict[str, Any] = {}
+    verdict: str = "STALK"
+    conviction: int = 5
+    levels_file: Optional[Path] = None
+    arb_file: Optional[Path] = None
+    ind_file: Optional[Path] = None
+    sum_file: Optional[Path] = None
+
+    if latest_dt:
+        t_raw_dir = raw_root / latest_dt / ticker_u
+        t_rep_dir = rep_root / latest_dt
+
+        # Check watch_levels.json
+        levels_cand = t_raw_dir / f"{ticker_u}_watch_levels.json"
+        if not levels_cand.exists():
+            for od in sorted_hist_dates:
+                cand_lvl = raw_root / od / ticker_u / f"{ticker_u}_watch_levels.json"
+                if cand_lvl.exists():
+                    levels_cand = cand_lvl
+                    report_date = od
+                    break
+        if levels_cand.exists():
+            levels_file = levels_cand
+            try:
+                wl_data = json.loads(levels_file.read_text(encoding="utf-8"))
+                shares_plan = wl_data.get("shares_plan") or {}
+                options_plan = wl_data.get("options_plan") or {}
+                invalidation_rule = wl_data.get("invalidation") or {}
+                verdict = wl_data.get("verdict") or verdict
+                conviction = wl_data.get("conviction") or conviction
+                if wl_data.get("last_price"):
+                    report_spot = float(wl_data["last_price"])
+            except Exception:
+                pass
+
+        # Check arbitration directive
+        arb_cand = t_rep_dir / f"{ticker_u}_arbitration.md"
+        if not arb_cand.exists():
+            for od in sorted_hist_dates:
+                cand_arb = rep_root / od / f"{ticker_u}_arbitration.md"
+                if cand_arb.exists():
+                    arb_cand = cand_arb
+                    if not report_date:
+                        report_date = od
+                    break
+        if arb_cand.exists():
+            arb_file = arb_cand
+            try:
+                arb_text = arb_file.read_text(encoding="utf-8")
+                if report_spot is None:
+                    m_sp = re.search(r'(?:spot price|current spot|spot)\s*(?::|\(|is|\$)\s*\$?([0-9]+\.[0-9]+)', arb_text, re.IGNORECASE)
+                    if m_sp:
+                        report_spot = float(m_sp.group(1))
+                if not shares_plan:
+                    m_wl = re.search(r'```json:watch_levels\s*(\{.*?\})\s*```', arb_text, re.DOTALL)
+                    if m_wl:
+                        try:
+                            wl_raw = json.loads(m_wl.group(1))
+                            shares_plan = wl_raw.get("shares_plan") or {}
+                            options_plan = wl_raw.get("options_plan") or {}
+                            invalidation_rule = wl_raw.get("invalidation") or {}
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # Check synthesis and independent files
+        sum_cand = t_raw_dir / f"{ticker_u}_gemini_thesis.md"
+        if not sum_cand.exists():
+            sum_cand = t_rep_dir / f"{ticker_u}_summary.md"
+        if sum_cand.exists():
+            sum_file = sum_cand
+
+        ind_cand = t_raw_dir / f"{ticker_u}_independent_thesis.md"
+        if not ind_cand.exists():
+            ind_cand = t_rep_dir / f"{ticker_u}_independent.md"
+        if ind_cand.exists():
+            ind_file = ind_cand
+
+    # 2. Live Real-Time Market Quote & Exact Numerical Spot Extraction
+    quote_str = ""
     try:
         from src.clients.options_client import get_realtime_quote
         quote_str = get_realtime_quote(ticker_u)
-        if quote_str:
-            parts.append(f"### 📊 LIVE REAL-TIME MARKET QUOTE ({ticker_u}):\n{quote_str}")
-        else:
-            from src.clients.price_client import get_current_price
-            p = get_current_price(ticker_u)
-            if p:
-                parts.append(f"### 📊 LIVE SPOT PRICE ({ticker_u}):\nLatest Spot: ${p:.2f}")
     except Exception as qe:
         logger.debug(f"Quote fetch failed for {ticker_u}: {qe}")
 
+    from src.clients.price_client import get_current_price
+    live_spot: Optional[float] = None
+    bid_str, ask_str = "N/A", "N/A"
+    if quote_str:
+        m_lp = re.search(r'Last:\s*([0-9]+\.[0-9]+)', quote_str)
+        if m_lp:
+            try:
+                live_spot = float(m_lp.group(1))
+            except Exception:
+                pass
+        m_ba = re.search(r'Bid/Ask:\s*([0-9]+\.[0-9]+)\s*/\s*([0-9]+\.[0-9]+)', quote_str)
+        if m_ba:
+            bid_str, ask_str = f"${m_ba.group(1)}", f"${m_ba.group(2)}"
+
+    if live_spot is None:
+        try:
+            live_spot = get_current_price(ticker_u)
+        except Exception:
+            pass
+
+    # 3. Deterministic Level Evaluation & Status
+    ez_low = shares_plan.get("entry_zone_low")
+    ez_high = shares_plan.get("entry_zone_high")
+    stop_p = shares_plan.get("tactical_stop") or invalidation_rule.get("price_level")
+    t1_p = shares_plan.get("target_1")
+    breakout_p = shares_plan.get("breakout_level")
+
+    calendar_today = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+    status_badge = "📊 ACTIVE LIVE TAPE"
+    status_desc = f"Live spot: ${live_spot:.2f}" if live_spot else "Awaiting live quote"
+    copilot_instruction = ""
+
+    if live_spot:
+        if stop_p and live_spot <= stop_p:
+            status_badge = "🛑 STOP BREACHED / THESIS INVALIDATED"
+            status_desc = f"Live spot (${live_spot:.2f}) has breached the tactical stop / invalidation floor (${stop_p:.2f})."
+            copilot_instruction = f"The trade setup is INVALIDATED because live spot (${live_spot:.2f}) is at or below the stop (${stop_p:.2f}). Do not enter long."
+        elif t1_p and live_spot >= t1_p:
+            status_badge = "🏁 TARGET 1 REACHED"
+            status_desc = f"Live spot (${live_spot:.2f}) reached Target 1 (${t1_p:.2f}). Consider taking partial profits."
+            copilot_instruction = f"Live spot (${live_spot:.2f}) is in the profit target zone (T1 ${t1_p:.2f}). Advise locking in gains or trailing stop."
+        elif ez_low and ez_high and ez_low <= live_spot <= ez_high:
+            status_badge = "🎯 IN MANDATED ENTRY ZONE RIGHT NOW"
+            status_desc = f"Live spot (${live_spot:.2f}) is INSIDE the suggested entry limit zone [${ez_low:.2f} – ${ez_high:.2f}]. Orders are filling live."
+            copilot_instruction = f"The stock is ACTIVELY IN THE ENTRY ZONE (${ez_low:.2f}–${ez_high:.2f}). The pullback to ${ez_high:.2f} has already occurred. Setup is buyable/executable here with stop at ${stop_p or 'tactical stop'}."
+        elif ez_low and stop_p and stop_p < live_spot < ez_low:
+            dist_to_stop = ((live_spot - stop_p) / stop_p) * 100
+            status_badge = "⚡ TESTING POC STRUCTURAL FLOOR (PULLBACK COMPLETE)"
+            status_desc = f"Live spot (${live_spot:.2f}) pulled back through the limit ceiling (${ez_high:.2f}) down to the structural floor (+{dist_to_stop:.1f}% above ${stop_p:.2f} stop)."
+            copilot_instruction = f"The stock HAS ALREADY PULLED BACK from ${report_spot or 'prior highs'} to ${live_spot:.2f}. It is testing the POC structural floor above the ${stop_p:.2f} stop. DO NOT tell the user to wait for a pullback to ${ez_high:.2f}—the pullback has already completed! Evaluate whether support is defending above ${stop_p:.2f}."
+        elif ez_high and live_spot > ez_high:
+            dist_above = ((live_spot - ez_high) / ez_high) * 100
+            status_badge = f"⏳ STALKING (+{dist_above:.1f}% ABOVE ENTRY ZONE)"
+            status_desc = f"Live spot (${live_spot:.2f}) is trading above the entry zone ceiling (${ez_high:.2f}). Awaiting pullback or breakout above ${breakout_p or 'resistance'}."
+            copilot_instruction = f"Price (${live_spot:.2f}) is currently {dist_above:.1f}% above the top of the entry zone (${ez_high:.2f}). Await pullback to ${ez_high:.2f} or breakout above ${breakout_p or 'resistance'}."
+
+    elapsed_days_str = ""
+    if report_date:
+        try:
+            d_rep = datetime.strptime(report_date, "%Y-%m-%d")
+            d_tod = datetime.strptime(calendar_today, "%Y-%m-%d")
+            el = (d_tod - d_rep).days
+            elapsed_days_str = f"({el} calendar day{'s' if el != 1 else ''} ago)" if el > 0 else "(today)"
+        except Exception:
+            pass
+
+    delta_str = ""
+    if live_spot and report_spot:
+        d_val = live_spot - report_spot
+        d_pct = (d_val / report_spot) * 100
+        sign = "+" if d_val >= 0 else ""
+        delta_str = f"• **NET CHANGE SINCE REPORT:** **{sign}${d_val:.2f} ({sign}{d_pct:.2f}%)**"
+
+    top_card = [
+        f"### 🚨 AUTHORITATIVE LIVE REAL-TIME MARKET QUOTE & EXECUTION STATUS ({ticker_u}):",
+        f"• **CURRENT LIVE SPOT PRICE (NOW):** **${live_spot:.2f}**" if live_spot else f"• **CURRENT LIVE SPOT PRICE (NOW):** Quote Ingesting",
+        f"• **REAL-TIME BID / ASK:** {bid_str} / {ask_str}" if (bid_str != "N/A" and ask_str != "N/A") else "",
+        f"• **HISTORICAL REPORT BASELINE:** ${report_spot:.2f} (Compiled on {report_date or 'prior session'} {elapsed_days_str})" if report_spot else "",
+    ]
+    if delta_str:
+        top_card.append(delta_str)
+    if ez_low and ez_high:
+        top_card.append(f"• **MANDATED ENTRY ZONE:** **${ez_low:.2f} – ${ez_high:.2f}** | **TACTICAL STOP:** **${stop_p:.2f}**" + (f" | **TARGET 1:** **${t1_p:.2f}**" if t1_p else ""))
+    top_card.append(f"• **REAL-TIME EXECUTION STATUS:** **{status_badge}**")
+    top_card.append(f"• **EXECUTION DETAIL:** {status_desc}")
+
+    if quote_str:
+        top_card.append(f"\n```\n{quote_str}\n```")
+
+    top_card.append(f"""
+> ⚠️ **MANDATORY INSTRUCTION FOR COPILOT / REV CHAT**:
+> 1. The **AUTHORITATIVE LIVE SPOT PRICE** right now is **${live_spot:.2f}** (NOT {f'${report_spot:.2f}' if report_spot else 'historical prices'}).
+> 2. Any prices cited in historical dossiers below were recorded on {report_date or 'earlier dates'}. NEVER repeat historical prices as today's live spot!
+> 3. {copilot_instruction}
+> 4. All trade recommendations, options strikes, delta/gamma risk, and distance to stops MUST be computed from the LIVE SPOT PRICE of **${live_spot:.2f}**.
+""")
+    parts.append("\n".join(l for l in top_card if l))
+
+    # 1a-ii. Active Intraday Open Position Dossier (data/positions.json)
+    try:
+        pos_file = config.BASE_DIR / "data" / "positions.json"
+        if pos_file.exists():
+            pos_dict = json.loads(pos_file.read_text(encoding="utf-8"))
+            if ticker_u in pos_dict:
+                pos = pos_dict[ticker_u]
+                p_side = (pos.get("side") or "LONG").upper()
+                p_entry = float(pos.get("entry_price") or pos.get("alert_price") or 0.0)
+                p_spot = float(pos.get("current_price") or pos.get("last_price") or p_entry)
+                p_pnl = 0.0
+                if p_entry > 0:
+                    p_pnl = ((p_spot - p_entry) / p_entry * 100) if p_side == "LONG" else ((p_entry - p_spot) / p_entry * 100)
+                raw_alert = pos.get("raw_alert") or {}
+                p_plan = raw_alert.get("plan") or (f"Entry: ${p_entry:.2f}" if p_entry else "N/A")
+                p_wrong = raw_alert.get("wrong_if") or "N/A"
+                p_ctx = raw_alert.get("context") or "N/A"
+                p_opened = (pos.get("opened_at") or "")[11:19] or "Active"
+                p_eval = pos.get("last_eval") or ""
+                
+                pos_card = [
+                    f"### 🚨 ACTIVE OPEN POSITION ON YOUR DESK ({ticker_u}):",
+                    f"• **Side**: **{p_side}** | **Entry Price**: **${p_entry:.2f}** | **Live Spot**: **${p_spot:.2f}** | **Unrealized P&L**: **{p_pnl:+.2f}%**",
+                    f"• **Opened At**: {p_opened} | **Strategy**: {pos.get('strategy', 'Intraday')}",
+                    f"• **Engine Card Plan**: {p_plan}",
+                    f"• **Kill Line / Invalidation**: {p_wrong}",
+                    f"• **Tape Context**: {p_ctx}",
+                ]
+                if p_eval:
+                    pos_card.append(f"\n**Latest Position Monitor Evaluation & Guidance:**\n{p_eval}")
+                parts.insert(1, "\n".join(pos_card))
+    except Exception as pe:
+        logger.debug(f"Position check failed for {ticker_u}: {pe}")
+
     # 1b. Live Tape & Current Events Past Prior Chat / Dossier Date
     try:
-        past_events = _build_events_past_chat_context(ticker_u, date_str, history=history, session_id=session_id)
+        past_events = _build_events_past_chat_context(ticker_u, report_date or date_str, history=history, session_id=session_id)
         if past_events:
             parts.append(past_events)
     except Exception as ee:
@@ -1774,14 +2725,51 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     # 2. Live Options Chain & Volatility Metrics
     try:
         from src.clients.options_client import fetch_options_chain_tool
+        q_lower = question.lower()
+        plan_str = str(options_plan).lower()
+        is_put_req = bool(re.search(r'\b(put|puts|bull put|bear put|credit spread|cash secured|csp|\d+p)\b', question, re.I)) or ("put" in plan_str)
+        is_call_req = bool(re.search(r'\b(call|calls|bull call|bear call|debit spread|long call|\d+c)\b', question, re.I)) or ("call" in plan_str)
+
+        # Check for specific expiration hints (e.g. Oct 2, Sep 25)
+        exp_hint = None
+        day_match_opt = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{1,2})\b', question, re.I)
+        if day_match_opt:
+            m_name, d_num = day_match_opt.groups()
+            mm_dict = {
+                'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+                'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+            }
+            mm = mm_dict.get(m_name.lower()[:3])
+            if mm:
+                now_dt = datetime.now()
+                year_cand = now_dt.year
+                explicit_yr = re.search(r'\b(202[5-9])\b', question)
+                if explicit_yr:
+                    year_cand = int(explicit_yr.group(1))
+                elif int(mm) < now_dt.month:
+                    year_cand += 1
+                exp_hint = f"{year_cand}-{mm}-{int(d_num):02d}"
+
         if is_leaps_req:
-            opt_data = fetch_options_chain_tool(ticker=ticker_u, min_dte=90, max_dte=1200)
+            opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="PUT" if (is_put_req and not is_call_req) else "CALL", min_dte=90, max_dte=1200, expiration=exp_hint)
             if opt_data:
                 parts.append(f"### 📈 LIVE 2027-2028 LEAPS OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
         else:
-            opt_data_std = fetch_options_chain_tool(ticker=ticker_u, min_dte=14, max_dte=120)
-            if opt_data_std:
-                parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data_std}")
+            if is_put_req and not is_call_req:
+                opt_data_put = fetch_options_chain_tool(ticker=ticker_u, direction="PUT", min_dte=14, max_dte=120, expiration=exp_hint)
+                if opt_data_put:
+                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS (PUTS) ({ticker_u}):\n{opt_data_put}")
+            elif is_put_req and is_call_req:
+                opt_data_put = fetch_options_chain_tool(ticker=ticker_u, direction="PUT", min_dte=14, max_dte=120, expiration=exp_hint)
+                opt_data_call = fetch_options_chain_tool(ticker=ticker_u, direction="CALL", min_dte=14, max_dte=120, expiration=exp_hint)
+                if opt_data_put:
+                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS (PUTS) ({ticker_u}):\n{opt_data_put}")
+                if opt_data_call:
+                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS (CALLS) ({ticker_u}):\n{opt_data_call}")
+            else:
+                opt_data_std = fetch_options_chain_tool(ticker=ticker_u, direction="CALL", min_dte=14, max_dte=120, expiration=exp_hint)
+                if opt_data_std:
+                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data_std}")
     except Exception as oe:
         logger.debug(f"Options chain fetch error for {ticker_u}: {oe}")
 
@@ -1951,54 +2939,40 @@ if not df.empty:
 
     # 5. Local Filesystem Research Reports
     try:
-        raw_root = config.BASE_DIR / "data" / "raw"
-        rep_root = config.BASE_DIR / "reports"
-        dates_set = set()
-        if raw_root.exists():
-            for d in raw_root.glob("202*"):
-                if (d / ticker_u).exists():
-                    dates_set.add(d.name)
-        if rep_root.exists():
-            for d in rep_root.glob("202*"):
-                if any(d.glob(f"{ticker_u}_*")):
-                    dates_set.add(d.name)
-
-        sorted_hist_dates = sorted(list(dates_set), reverse=True)
-        if sorted_hist_dates:
-            latest_dt = sorted_hist_dates[0]
-            t_raw_dir = raw_root / latest_dt / ticker_u
-            t_rep_dir = rep_root / latest_dt
+        if latest_dt:
+            spot_comp_str = f" (Spot at publication was ${report_spot:.2f} vs LIVE SPOT ${live_spot:.2f} right now)" if (report_spot and live_spot) else ""
 
             # Independent Quantitative Study (Model B)
-            ind_file = t_raw_dir / f"{ticker_u}_independent_thesis.md"
-            if not ind_file.exists():
-                ind_file = t_rep_dir / f"{ticker_u}_independent.md"
-            if ind_file.exists():
-                parts.append(f"### 🧠 LATEST INDEPENDENT QUANTITATIVE THESIS ({ticker_u}, Date: {latest_dt}):\n{ind_file.read_text(encoding='utf-8')[:4000]}")
+            if ind_file and ind_file.exists():
+                parts.append(
+                    f"### 🧠 LATEST INDEPENDENT QUANTITATIVE THESIS ({ticker_u} — Date: {report_date}):\n"
+                    f"> ⚠️ **HISTORICAL DOSSIER FROM {report_date}**{spot_comp_str}:\n"
+                    f"> The thesis below reflects technical patterns as of {report_date}. Do NOT confuse historical prices with today's live tape.\n\n"
+                    + ind_file.read_text(encoding='utf-8')[:4000]
+                )
 
             # Synthesis Report (Model A)
-            sum_file = t_raw_dir / f"{ticker_u}_gemini_thesis.md"
-            if not sum_file.exists():
-                sum_file = t_rep_dir / f"{ticker_u}_summary.md"
-            if sum_file.exists():
-                parts.append(f"### 🔬 LATEST MULTI-MODEL SYNTHESIS DOSSIER ({ticker_u}, Date: {latest_dt}):\n{sum_file.read_text(encoding='utf-8')[:3500]}")
+            if sum_file and sum_file.exists():
+                parts.append(
+                    f"### 🔬 LATEST MULTI-MODEL SYNTHESIS DOSSIER ({ticker_u} — Date: {report_date}):\n"
+                    f"> ⚠️ **HISTORICAL DOSSIER FROM {report_date}**{spot_comp_str}:\n\n"
+                    + sum_file.read_text(encoding='utf-8')[:3500]
+                )
 
             # Senior PM Arbitration Directive
-            arb_file = t_rep_dir / f"{ticker_u}_arbitration.md"
-            if not arb_file.exists():
-                for od in sorted_hist_dates:
-                    cand_arb = rep_root / od / f"{ticker_u}_arbitration.md"
-                    if cand_arb.exists():
-                        arb_file = cand_arb
-                        break
             if arb_file and arb_file.exists():
-                parts.append(f"### ⚖️ SENIOR PM ARBITRATION DIRECTIVE ({ticker_u}):\n{arb_file.read_text(encoding='utf-8')[:3500]}")
+                parts.append(
+                    f"### ⚖️ SENIOR PM ARBITRATION DIRECTIVE ({ticker_u} — COMPILED ON {report_date}):\n"
+                    f"> ⚠️ **HISTORICAL ARBITRATION DIRECTIVE FROM {report_date}**{spot_comp_str}:\n"
+                    f"> Any mention of 'current spot' in the text below refers to {report_date} (${report_spot:.2f}). "
+                    f"Today's live price is **${live_spot:.2f}**. Never quote the historical spot as current price!\n\n"
+                    + arb_file.read_text(encoding='utf-8')[:3500]
+                )
 
             # Tactical Watch Levels
-            levels_file = t_raw_dir / f"{ticker_u}_watch_levels.json"
-            if levels_file.exists():
+            if levels_file and levels_file.exists():
                 try:
-                    parts.append(f"### 🎯 STRUCTURED TACTICAL WATCH LEVELS ({ticker_u}):\n{levels_file.read_text(encoding='utf-8')}")
+                    parts.append(f"### 🎯 STRUCTURED TACTICAL WATCH LEVELS ({ticker_u} — Base Date {report_date}):\n{levels_file.read_text(encoding='utf-8')}")
                 except Exception:
                     pass
     except Exception as he:
@@ -2160,6 +3134,18 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                         wl = json.loads(m_wl.group(1))
                     except Exception:
                         pass
+                if not wl:
+                    for cand_p in [
+                        raw_root / active_date / sym / f"{sym}_watch_levels.json",
+                        config.BASE_DIR / "data" / "triage" / active_date / "_DEEP_RESEARCH" / sym / f"{sym}_watch_levels.json",
+                        config.BASE_DIR / "data" / "triage" / active_date / "force" / sym / f"{sym}_watch_levels.json",
+                    ]:
+                        if cand_p.exists():
+                            try:
+                                wl = json.loads(cand_p.read_text(encoding="utf-8"))
+                                break
+                            except Exception:
+                                pass
                 
                 # Extract verdict & conviction
                 verdict = wl.get("verdict")
@@ -2279,7 +3265,34 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     except Exception as we:
         logger.debug(f"Error querying watch targets: {we}")
 
-    # 4. Open Positions & Portfolio State (Schwab Broker + positions.json)
+    # 4. Open Positions & Portfolio State (data/positions.json)
+    try:
+        pos_file = config.BASE_DIR / "data" / "positions.json"
+        if pos_file.exists():
+            pos_dict = json.loads(pos_file.read_text(encoding="utf-8"))
+            if pos_dict:
+                pos_lines = []
+                for sym, p in pos_dict.items():
+                    side = (p.get("side") or "LONG").upper()
+                    entry = float(p.get("entry_price") or p.get("alert_price") or 0.0)
+                    spot = float(p.get("current_price") or p.get("last_price") or entry)
+                    pnl = 0.0
+                    if entry > 0:
+                        pnl = ((spot - entry) / entry * 100) if side == "LONG" else ((entry - spot) / entry * 100)
+                    raw_a = p.get("raw_alert") or {}
+                    plan = raw_a.get("plan") or (f"Entry: ${entry:.2f}" if entry else "")
+                    wrong_if = raw_a.get("wrong_if") or ""
+                    opened = (p.get("opened_at") or "")[11:19] or "Active"
+                    line = f"• **${sym}** ({side}) | Entry: **${entry:.2f}** | Spot: **${spot:.2f}** | P&L: **{pnl:+.2f}%** | Opened: {opened}"
+                    if plan:
+                        line += f"\n  - Plan: {plan}"
+                    if wrong_if:
+                        line += f" | Invalidation: {wrong_if}"
+                    pos_lines.append(line)
+                parts.append(f"### 💼 ACTIVE INTRADAY OPEN POSITIONS ({len(pos_lines)} open positions in data/positions.json):\n" + "\n\n".join(pos_lines))
+    except Exception as pe:
+        logger.debug(f"Error loading positions.json in overview: {pe}")
+
     # 5. Live Benchmark Quotes & Volatility
     try:
         benchmarks = []
@@ -2325,9 +3338,15 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
     if not date_str:
         date_str = calendar_today
 
-    is_prior = (date_str < calendar_today)
+    dossier_date = date_str
+    if has_specific_ticker and (not explicit_ticker or date_str == calendar_today):
+        discovered_date = _get_latest_research_date_for_ticker(primary_ticker)
+        if discovered_date:
+            dossier_date = discovered_date
+
+    is_prior = (dossier_date < calendar_today)
     try:
-        elapsed_days = (datetime.strptime(calendar_today, "%Y-%m-%d") - datetime.strptime(date_str, "%Y-%m-%d")).days if is_prior else 0
+        elapsed_days = (datetime.strptime(calendar_today, "%Y-%m-%d") - datetime.strptime(dossier_date, "%Y-%m-%d")).days if is_prior else 0
     except Exception:
         elapsed_days = 1 if is_prior else 0
     elapsed_days_str = f"{elapsed_days} calendar day(s) ago" if elapsed_days > 1 else ("yesterday" if elapsed_days == 1 else "today")
@@ -2376,16 +3395,31 @@ You MUST follow this exact structure:
 
     is_single_stock = bool(primary_ticker and primary_ticker not in ("GENERAL", "AUTO", "NONE", "ALL", ""))
 
+    is_modal_or_alert = bool(board_context and any(k in board_context for k in (
+        "CURRENT TRADINGVIEW ALERT MODAL CONTEXT",
+        "MODEL B INDEPENDENT REPORT",
+        "MODEL A SYNTHESIS",
+        "PM ARBITRATION",
+        "OPTIONS FLOW TABLE"
+    )))
+
     # 2. Check if daily overview is needed
     # Only inject broad market overview if explicitly requested, or if no specific ticker is in focus.
     market_wide_request = bool(re.search(
         r'\b(market overview|desk overview|whole market|all stocks|all tickers|what was run across|what was run today|what did we run today|what did we learn today|desk briefing)\b',
         question, re.IGNORECASE
     ))
-    is_overview_request = market_wide_request or (not is_single_stock and bool(re.search(
-        r'\b(today|overview|summary|learn|learned|what should we do|what to do|gameplan|plan|what was run|runs|run today|research done|researched|watchlist|stalking|portfolio|positions|desk|market|status)\b',
+    positions_request = bool(re.search(
+        r'\b(positi?y?ons?|open\s*pos\w*|intraday\s*pos\w*|active\s*pos\w*|trade|trades|open\s*trades?|active\s*trades?|my\s*trades?|portfolio|pnl|p&l|holdings?)\b',
         question, re.IGNORECASE
-    )))
+    ))
+    if is_single_stock or is_modal_or_alert:
+        is_overview_request = market_wide_request
+    else:
+        is_overview_request = market_wide_request or positions_request or bool(re.search(
+            r'\b(today|overview|summary|learn|learned|what should we do|what to do|gameplan|plan|what was run|runs|run today|research done|researched|watchlist|stalking|portfolio|positions|desk|market|status)\b',
+            question, re.IGNORECASE
+        ))
 
     daily_overview_text, today_universe_tickers = "", []
     if is_overview_request:
@@ -2422,10 +3456,11 @@ The user is actively inspecting the research dossier, options structures, and tr
 
 CORE DIRECTIVE:
 Every user query (including conversational queries like "thoughts for today", "what is the plan", "what should we do", "levels", "options") MUST FOCUS DIRECTLY AND SPECIFICALLY ON ${primary_ticker}:
-1. Address ${primary_ticker}'s price action today ({calendar_today}) vs the report date ({date_str}, {elapsed_days_str}). Compare spot then vs spot now.
-2. Evaluate ${primary_ticker}'s specific Suggested Trade Plan (Entry Zone, Stop Loss, Target) and Options Vehicle (e.g. Bull Call Spread strikes, expiration, debit).
-3. Provide actionable, concise execution advice for ${primary_ticker} right now today: Is it in-zone and buyable, stalking (awaiting fill/pullback), or invalidated?
-4. DO NOT output a broad multi-ticker desk briefing of other companies (AVGO, META, TSLA, GOOGL, etc.) unless the user explicitly asks for other tickers."""
+1. Address ${primary_ticker}'s price action today ({calendar_today}) vs the report date ({dossier_date}, {elapsed_days_str}). Compare spot then vs spot now.
+2. CRITICAL LIVE PRICE RULE: The CURRENT SPOT PRICE is the live quote under '### 🚨 AUTHORITATIVE LIVE REAL-TIME MARKET QUOTE'. NEVER cite historical dossier prices as current spot!
+3. Evaluate ${primary_ticker}'s specific Suggested Trade Plan (Entry Zone, Stop Loss, Target) and Options Vehicle against the LIVE SPOT PRICE: Has the pullback already occurred? Is price in-zone or testing support?
+4. Provide actionable, concise execution advice for ${primary_ticker} right now today: Is it in-zone and buyable, stalking (awaiting fill/pullback), or invalidated?
+5. DO NOT output a broad multi-ticker desk briefing of other companies (AVGO, META, TSLA, GOOGL, etc.) unless the user explicitly asks for other tickers."""
 
         desk_briefing_directive = f"""3. Ticker-Specific Analysis Directive:
    - Your response must focus 100% on ${primary_ticker} ({company_name}).
@@ -2452,20 +3487,44 @@ Guidelines:
 2. You have FULL ACCESS to real-time live market data, options chains, SEC EDGAR filings, breaking news, daily research briefings, Senior PM arbitration rulings, watch triggers, and open positions provided in the context below for {symbols_list_str}.
 {desk_briefing_directive}
 4. When the user asks about a correlated stock, sector peer, or comparison (e.g. comparing EIX to PCG, AMD to NVDA), analyze the real-time quotes, options, and catalysts for BOTH tickers directly from the active context. NEVER claim you lack data when it is provided.
-5. Cite exact real-time spot prices, bid/ask spreads, Greeks, and strikes when discussing levels.
+5. Cite exact real-time spot prices, bid/ask spreads, Greeks, and strikes when discussing levels. ALWAYS treat the LIVE REAL-TIME MARKET QUOTE as the sole authoritative current spot price. Never repeat historical report spot prices as today's price.
 6. When recommending trades, always specify: Actionable Vehicle (Equity vs Option Structure), Exact Strikes / Expiration, Target Premium/Debit, Max Loss, and The ONE Thing Invalidation level.
 7. Mathematical Rigor & Deterministic Execution: All quantitative metrics, 14d ATRs, 20d Realized Volatilities, moving averages, and 10,000-path Monte Carlo probabilities are computed deterministically via the verified Python sandbox engine below. Always double-check mathematical identities (e.g. Max Profit + Max Loss = Spread Width, Breakeven = Strike ± Premium, R:R = Target Gain / Risk). Never hallucinate mental arithmetic.
 8. Strict Historical Factuality & No Retrospective Attribution: Never claim that a research report or technical model from an earlier date "had notice" or "saw the news" of a catalyst that occurred after that report was compiled. If a stock moved on news published today, state clearly that the news broke today, not in the earlier report. Distinguish between what the technical indicators saw on the report date and what news broke subsequently.
-9. Interactive Clarification & Ticker Verification:
+9. Mandatory Two-Pass Clarification & Execution Protocol (Interactive Clarification & Ticker Verification):
+   - When evaluating an alert, setup, or independent report for ${primary_ticker}:
+     * PASS 1 — STATE ASSESSMENT & AMBIGUITY CHECK:
+       Assess what is going on right now:
+       1. Compare live spot price to entry zone and structural support floor. (Has the pullback already happened? Is price in-zone, or has it extended/chased? Is it near the stop?)
+       2. Check binary risk: Are earnings, CPI, or major events occurring within 14 days?
+       3. Check volatility & vehicle: What is the Tastytrade IV Rank? Does it favor credit spreads (>50%) or debit/shares (<35%)?
+     * GATE — IN CASE OF ANY AMBIGUITY, ALWAYS ASK THE USER BEFORE PROCEEDING! NEVER GUESS!
+       If there is ANY ambiguity, strategic conflict, or branching decision:
+       1. State the current state in 2-3 concise bullet points.
+       2. ALWAYS ASK the user to clarify using clickable interactive markdown action links:
+          Format: `[Option Label](action:ask?prompt=Exact+prompt+text)`
+          Examples:
+          * Price extended: "Price is currently extended above entry floor.
+            [⏳ Stalk Limit Pullback to $[Price]](action:ask?prompt=I+want+to+wait+for+a+limit+pullback+to+$[Price])  [⚡ Structure Defined-Risk Spread Here](action:ask?prompt=Structure+a+defined+risk+spread+at+current+levels)"
+          * Earnings close: "Earnings are upcoming in 6 days.
+            [🛑 Wait Until Post-Earnings](action:ask?prompt=Wait+until+after+earnings)  [🛡️ Defined-Risk Buffer Spread](action:ask?prompt=Structure+a+wide+defined+risk+spread+below+support)"
+          * Vehicle choice: "IV Rank is neutral. Preference:
+            [📈 Long Shares (Equity)](action:ask?prompt=Plan+shares+entry+with+limit)  [🦅 Bull Put Credit Spread](action:ask?prompt=Structure+Bull+Put+Spread)"
+       3. Stop there and await user input!
+     * PASS 2 — ACTIONABLE EXECUTION:
+       Only when there is ZERO ambiguity (or when the user has answered the clarification question):
+       Provide the exact institutional execution plan:
+       - Exact Limit Entry Level / Execution Trigger
+       - Hard Kill Stop (proven wrong in 1 sentence)
+       - Profit Targets (T1 trim 50%, T2 runner)
+       - Option Contract: Strikes, Expiration, Debit/Credit
+       - Mathematical Risk-to-Reward (R:R)
    - When a ticker is inferred from conversational text or company names rather than explicitly typed with a '$':
      ALWAYS confirm the ticker with the user up-front with interactive action links:
      "🎯 **Ticker Check**: Analyzing **$[TICKER]** ([Company Name]). Is this the stock you want?"
      Followed by: `[✅ Yes, Analyze $[TICKER]](action:ask?prompt=Yes,+analyze+$[TICKER])  [✏️ Different Ticker](action:ask?prompt=No,+I+meant+$)`
-   - If an input contains typos, multiple possible symbols, or ambiguous wording:
-     DO NOT guess or hallucinate analysis for arbitrary companies. Ask for clarification directly, just like a disciplined senior trading desk lead.
-   - Once confirmed, proceed with full quantitative execution and deep options forensics.
 10. Temporal Chronology & Past-Chat Continuity Directive:
-   - Today is {calendar_today} ({now_str} / {now_et_str}). The active dossier or conversation baseline was recorded on {date_str} ({elapsed_days_str}).
+   - Today is {calendar_today} ({now_str} / {now_et_str}). The active dossier or conversation baseline was recorded on {dossier_date} ({elapsed_days_str}).
    - You MUST recognize that time has elapsed since the previous chat turns and dossier compilation.
    - NEVER speak of prior-day statements as future expectations (e.g. if the prior chat or dossier said 'until NFP data tomorrow' or 'at tomorrow's open', recognize that tomorrow HAS ARRIVED and is TODAY, {calendar_today}).
    - Address how current events, today's macro prints (such as NFP jobs release), breaking news, and live spot prices compare to the setup discussed in the prior chat.
@@ -2476,7 +3535,7 @@ Guidelines:
 ### ACTIVE REAL-TIME MARKET CONTEXT:
 • CURRENT SYSTEM TIME: {now_str} ({now_et_str})
 • CALENDAR TODAY: {calendar_today}
-• ACTIVE DOSSIER / REFERENCE DATE: {date_str} ({elapsed_days_str})
+• ACTIVE DOSSIER / REFERENCE DATE: {dossier_date} ({elapsed_days_str})
 • TICKERS IN CONTEXT: {symbols_list_str}
 
 {dossier_context}
@@ -2580,6 +3639,125 @@ def get_all_tickers_endpoint():
     return {"tickers": sorted(list(tickers))}
 
 
+_COMPANY_NAMES_MAP: Optional[Dict[str, str]] = None
+
+
+def get_company_names_dict() -> Dict[str, str]:
+    global _COMPANY_NAMES_MAP
+    if _COMPANY_NAMES_MAP is not None:
+        return _COMPANY_NAMES_MAP
+    cache_file = STATIC_DIR / "data" / "company_names.json"
+    if cache_file.exists():
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                _COMPANY_NAMES_MAP = json.load(f)
+                return _COMPANY_NAMES_MAP
+        except Exception:
+            pass
+    _COMPANY_NAMES_MAP = {}
+    return _COMPANY_NAMES_MAP
+
+
+@app.get("/api/company-names")
+def get_company_names_endpoint():
+    """Returns dictionary mapping tickers to company names for frontend tooltips."""
+    names = get_company_names_dict()
+    return JSONResponse(content=names)
+
+
+@app.get("/api/trades/suggested")
+def get_suggested_trades_endpoint():
+    """Returns structured suggested trades from watch_targets with live PnL and trade outcome metrics."""
+    try:
+        rep_root = config.BASE_DIR / "reports"
+        with _get_db() as conn:
+            c = conn.cursor()
+            rows = c.execute("SELECT * FROM watch_targets ORDER BY date DESC, updated_at DESC").fetchall()
+
+        trades = []
+        company_names = get_company_names_dict()
+        for r in rows:
+            t = dict(r)
+            sym = (t.get("ticker") or "").upper()
+            d_str = t.get("date") or ""
+
+            raw = {}
+            if t.get("raw_json"):
+                try:
+                    raw = json.loads(t["raw_json"])
+                except Exception:
+                    pass
+            t["options_plan"] = raw.get("options_plan") or {}
+            t["shares_plan"] = raw.get("shares_plan") or {}
+            t["invalidation"] = raw.get("invalidation") or {}
+
+            rep_path = rep_root / d_str / f"{sym}_summary.md"
+            arb_path = rep_root / d_str / f"{sym}_arbitration.md"
+            has_report = rep_path.exists() or arb_path.exists()
+
+            entry_low = t.get("entry_zone_low")
+            entry_high = t.get("entry_zone_high")
+            stop_loss = t.get("tactical_stop")
+            target_1 = t.get("target_1")
+            target_2 = t.get("target_2")
+            last_price = t.get("last_price")
+            side = (t.get("side") or "LONG").upper()
+            status = (t.get("status") or "STALKING").upper()
+
+            entry_mid = None
+            if entry_low is not None and entry_high is not None:
+                entry_mid = round((entry_low + entry_high) / 2.0, 2)
+            elif entry_low is not None:
+                entry_mid = entry_low
+            elif entry_high is not None:
+                entry_mid = entry_high
+
+            pnl_pct = None
+            if entry_mid and last_price and entry_mid > 0:
+                if side == "SHORT":
+                    pnl_pct = round(((entry_mid - last_price) / entry_mid) * 100.0, 2)
+                else:
+                    pnl_pct = round(((last_price - entry_mid) / entry_mid) * 100.0, 2)
+
+            target_1_pct = None
+            if entry_mid and target_1 and entry_mid > 0:
+                if side == "SHORT":
+                    target_1_pct = round(((entry_mid - target_1) / entry_mid) * 100.0, 2)
+                else:
+                    target_1_pct = round(((target_1 - entry_mid) / entry_mid) * 100.0, 2)
+
+            stop_risk_pct = None
+            if entry_mid and stop_loss and entry_mid > 0:
+                stop_risk_pct = round((abs(entry_mid - stop_loss) / entry_mid) * 100.0, 2)
+
+            rr_ratio = None
+            if target_1_pct is not None and stop_risk_pct is not None and stop_risk_pct > 0:
+                rr_ratio = round(abs(target_1_pct) / max(0.01, stop_risk_pct), 2)
+
+            t["company_name"] = company_names.get(sym, sym)
+            t["entry_midpoint"] = entry_mid
+            t["pnl_pct"] = pnl_pct
+            t["target_1_pct"] = target_1_pct
+            t["stop_risk_pct"] = stop_risk_pct
+            t["rr_ratio"] = rr_ratio
+            t["has_report"] = has_report
+
+            trades.append(t)
+
+        summary = {
+            "total": len(trades),
+            "in_zone": sum(1 for tr in trades if tr.get("status") == "IN_ZONE"),
+            "stalking": sum(1 for tr in trades if tr.get("status") == "STALKING"),
+            "target_hit": sum(1 for tr in trades if tr.get("status") in ("TARGET_HIT", "COMPLETED")),
+            "stopped": sum(1 for tr in trades if tr.get("status") in ("STOP_BREACHED", "STOPPED", "INVALIDATED")),
+        }
+        return {"trades": trades, "summary": summary}
+    except Exception as e:
+        logger.error(f"Failed to fetch suggested trades: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+
 @app.get("/api/copilot/chats/sessions")
 def get_copilot_chat_sessions_endpoint(days: int = 15, ticker: Optional[str] = None):
     """Returns prior chat sessions from the last N days (default 15 days), ordered by most recent."""
@@ -2674,8 +3852,11 @@ def copilot_execute_python_endpoint(req: ExecutePythonRequest):
     t0 = time.time()
     res = execute_python_code_tool(code=req.code, ticker=req.ticker or "AMD", date_str=req.date)
     duration_ms = (time.time() - t0) * 1000
+    is_err = isinstance(res, str) and (res.startswith("Python Execution Error:") or res.startswith("Security Error:"))
     return {
+        "success": not is_err,
         "output": res,
+        "error": res if is_err else None,
         "ticker": req.ticker,
         "duration_ms": round(duration_ms, 2)
     }
@@ -2731,7 +3912,7 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     messages=messages,
-                    use_tools=False,
+                    use_tools=True,
                     use_openrouter=False,
                     max_tokens=2048,
                 )
@@ -2777,7 +3958,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
 
             from starlette.concurrency import run_in_threadpool
             try:
-                system_prompt, messages, user_prompt, ticker_u, date_str = await run_in_threadpool(
+                build_task = asyncio.create_task(run_in_threadpool(
                     _build_copilot_context_and_tools,
                     question=question_text,
                     explicit_ticker=req.ticker,
@@ -2785,10 +3966,21 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     history=req.history,
                     session_id=req.session_id,
                     board_context=req.board_context,
-                )
+                ))
+                while True:
+                    done, _ = await asyncio.wait([build_task], timeout=4.0)
+                    if not done:
+                        if await request.is_disconnected():
+                            build_task.cancel()
+                            return
+                        yield ": ping\n\n"
+                    else:
+                        system_prompt, messages, user_prompt, ticker_u, date_str = build_task.result()
+                        break
             except Exception as ce:
                 logger.error(f"Error compiling copilot context: {ce}", exc_info=True)
                 yield f"data: {json.dumps({'error': f'Context compilation error: {ce}'})}\n\n"
+                yield "data: [DONE]\n\n"
                 return
 
             session_id = req.session_id or f"sess_{ticker_u}_{date_str}_{uuid.uuid4().hex[:8]}"
@@ -2807,6 +3999,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                 offline_msg = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server_qwen38_27b_q4.bat` to stream responses in real time."
                 yield f"data: {json.dumps({'token': offline_msg})}\n\n"
                 yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+                yield "data: [DONE]\n\n"
                 _save_chat_turn(session_id, ticker_u, date_str, "assistant", offline_msg)
                 return
 
@@ -2835,34 +4028,154 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             {"type": "image_url", "image_url": {"url": req.image_data}}
                         ]
 
+            from src.clients.llm_client import TOOLS, execute_tool_call
+
+            class _MockFunc:
+                def __init__(self, name: str, arguments: str):
+                    self.name = name
+                    self.arguments = arguments
+
+            class _MockToolCall:
+                def __init__(self, id_str: str, name: str, arguments: str):
+                    self.id = id_str
+                    self.function = _MockFunc(name, arguments)
+
             full_answer_chunks = []
+            max_turns = 4
+            turn = 0
+            tools_enabled = True
+
             try:
-                stream_response = await client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    max_tokens=2048,
-                    temperature=0.2,
-                    stream=True,
-                    extra_body={"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}},
-                )
-                async for chunk in stream_response:
+                while turn < max_turns:
+                    turn += 1
+                    tool_calls_acc = {}
+                    turn_content_chunks = []
+
+                    create_kwargs = {
+                        "model": model_name,
+                        "messages": messages,
+                        "max_tokens": 2048,
+                        "temperature": 0.2,
+                        "stream": True,
+                        "extra_body": {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}},
+                    }
+                    # Force synthesis on final allowed turn
+                    turn_tools_enabled = tools_enabled and (turn < max_turns)
+                    if turn_tools_enabled:
+                        create_kwargs["tools"] = TOOLS
+                        create_kwargs["tool_choice"] = "auto"
+
+                    try:
+                        stream_response = await client.chat.completions.create(**create_kwargs)
+                    except Exception as stream_call_err:
+                        if tools_enabled and ("400" in str(stream_call_err) or "tool" in str(stream_call_err).lower()):
+                            tools_enabled = False
+                            create_kwargs.pop("tools", None)
+                            create_kwargs.pop("tool_choice", None)
+                            stream_response = await client.chat.completions.create(**create_kwargs)
+                        else:
+                            raise
+
+                    aiter = stream_response.__aiter__()
+                    next_chunk_task = None
+                    while True:
+                        if next_chunk_task is None:
+                            next_chunk_task = asyncio.create_task(aiter.__anext__())
+                        done, _ = await asyncio.wait([next_chunk_task], timeout=4.0)
+                        if not done:
+                            if await request.is_disconnected():
+                                next_chunk_task.cancel()
+                                break
+                            yield ": ping\n\n"
+                            continue
+                        try:
+                            chunk = next_chunk_task.result()
+                            next_chunk_task = None
+                        except StopAsyncIteration:
+                            break
+                        except (asyncio.CancelledError, GeneratorExit):
+                            break
+
+                        if await request.is_disconnected():
+                            break
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if hasattr(delta, "content") and delta.content:
+                                turn_content_chunks.append(delta.content)
+                                full_answer_chunks.append(delta.content)
+                                yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                            if hasattr(delta, "tool_calls") and delta.tool_calls:
+                                for tc in delta.tool_calls:
+                                    idx = tc.index
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {"id": tc.id or f"call_{idx}_{turn}", "name": "", "arguments": ""}
+                                    if tc.id:
+                                        tool_calls_acc[idx]["id"] = tc.id
+                                    if tc.function:
+                                        if tc.function.name:
+                                            tool_calls_acc[idx]["name"] += tc.function.name
+                                        if tc.function.arguments:
+                                            tool_calls_acc[idx]["arguments"] += tc.function.arguments
+
                     if await request.is_disconnected():
                         break
-                    if chunk.choices and len(chunk.choices) > 0:
-                        delta = chunk.choices[0].delta
-                        if hasattr(delta, "content") and delta.content:
-                            full_answer_chunks.append(delta.content)
-                            yield f"data: {json.dumps({'token': delta.content})}\n\n"
+
+                    if not tool_calls_acc:
+                        # Generation finished; no further tools needed
+                        break
+
+                    # Append assistant message with emitted tool calls
+                    turn_content = "".join(turn_content_chunks)
+                    asst_msg = {
+                        "role": "assistant",
+                        "content": turn_content if turn_content else None,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {"name": tc["name"], "arguments": tc["arguments"]}
+                            }
+                            for tc in tool_calls_acc.values()
+                        ]
+                    }
+                    messages.append(asst_msg)
+
+                    # Inform UI of active tool execution
+                    tool_names = [tc["name"] for tc in tool_calls_acc.values() if tc.get("name")]
+                    if tool_names:
+                        status_badge = f"\n\n⚙️ *Executing live tool(s): `{', '.join(tool_names)}`...*\n\n"
+                        full_answer_chunks.append(status_badge)
+                        yield f"data: {json.dumps({'token': status_badge})}\n\n"
+
+                    # Execute all tools in parallel threadpool
+                    for tc in tool_calls_acc.values():
+                        if await request.is_disconnected():
+                            break
+                        mock_tc = _MockToolCall(tc["id"], tc["name"], tc["arguments"])
+                        try:
+                            tool_res = await asyncio.to_thread(execute_tool_call, mock_tc, date_str)
+                            res_str = str(tool_res) if tool_res is not None else "No output."
+                        except Exception as ex_tool:
+                            res_str = f"Tool execution error: {ex_tool}"
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": tc["name"],
+                            "content": res_str
+                        })
 
                 complete_answer = "".join(full_answer_chunks)
                 if complete_answer and not (await request.is_disconnected()):
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", complete_answer)
 
                 yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+                yield "data: [DONE]\n\n"
             except Exception as stream_err:
                 if not (await request.is_disconnected()):
                     err_msg = f"⚠️ **Stream Error:** {stream_err}"
                     yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
+                    yield "data: [DONE]\n\n"
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", err_msg)
 
         return StreamingResponse(
@@ -2883,43 +4196,151 @@ def _extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
     """Extract structured levels and PM verdict metadata for a research report."""
     ticker_u = ticker.upper()
     rep_dir = config.BASE_DIR / "reports" / date
-    levels_file = config.BASE_DIR / "data" / "triage" / date / "force" / ticker_u / f"{ticker_u}_watch_levels.json"
-    if not levels_file.exists():
-        levels_file = config.BASE_DIR / "data" / "triage" / date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_watch_levels.json"
+
+    # 1. Search for watch_levels.json across all known locations (raw, triage, reports)
+    levels_candidates = [
+        config.BASE_DIR / "data" / "raw" / date / ticker_u / f"{ticker_u}_watch_levels.json",
+        config.BASE_DIR / "data" / "triage" / date / "force" / ticker_u / f"{ticker_u}_watch_levels.json",
+        config.BASE_DIR / "data" / "triage" / date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_watch_levels.json",
+        rep_dir / f"{ticker_u}_watch_levels.json",
+    ]
 
     levels_data = {}
-    if levels_file.exists():
-        try:
-            with open(levels_file, "r", encoding="utf-8") as f:
-                levels_data = json.load(f)
-        except Exception:
-            pass
+    for cand in levels_candidates:
+        if cand.exists():
+            try:
+                with open(cand, "r", encoding="utf-8") as f:
+                    levels_data = json.load(f)
+                    if levels_data:
+                        break
+            except Exception:
+                pass
 
-    verdict = levels_data.get("verdict", "ANALYZED")
-    conviction = levels_data.get("conviction", 5)
-    options_summary = levels_data.get("options_summary", "")
-    entry_zone = levels_data.get("entry_zone", [])
-    stop = levels_data.get("tactical_stop")
-    t1 = levels_data.get("target_1")
-    t2 = levels_data.get("target_2")
+    # 2. Check SQLite watch_targets database as fallback or complement
+    db_target = None
+    try:
+        with _get_db() as conn:
+            row = conn.cursor().execute(
+                "SELECT * FROM watch_targets WHERE ticker = ? AND (date = ? OR date LIKE ?) ORDER BY date DESC LIMIT 1",
+                (ticker_u, date, f"{date}%")
+            ).fetchone()
+            if not row:
+                row = conn.cursor().execute(
+                    "SELECT * FROM watch_targets WHERE ticker = ? ORDER BY date DESC LIMIT 1",
+                    (ticker_u,)
+                ).fetchone()
+            if row:
+                db_target = dict(row)
+    except Exception:
+        pass
 
-    # Fallback to scanning arbitration file if watch_levels not found
-    arb_file = rep_dir / f"{ticker_u}_arbitration.md"
-    if (not verdict or verdict == "ANALYZED") and arb_file.exists():
+    # 3. Fallback scan markdown files for embedded json:watch_levels if still missing
+    if not levels_data and not db_target:
+        for md_cand in [rep_dir / f"{ticker_u}_arbitration.md", rep_dir / f"{ticker_u}_summary.md"]:
+            if md_cand.exists():
+                try:
+                    txt = md_cand.read_text(encoding="utf-8")
+                    m = re.search(r'```json:watch_levels\s*(\{.*?\})\s*```', txt, re.DOTALL)
+                    if m:
+                        levels_data = json.loads(m.group(1))
+                        break
+                except Exception:
+                    pass
+
+    # 4. Extract structured fields robustly from nested plans or DB row
+    shares_plan = levels_data.get("shares_plan") or {}
+    options_plan = levels_data.get("options_plan") or {}
+    invalidation = levels_data.get("invalidation") or {}
+
+    # Entry zone [low, high]
+    ez_low = shares_plan.get("entry_zone_low")
+    ez_high = shares_plan.get("entry_zone_high")
+    if ez_low is None and db_target:
+        ez_low = db_target.get("entry_zone_low")
+    if ez_high is None and db_target:
+        ez_high = db_target.get("entry_zone_high")
+
+    if ez_low is not None and ez_high is not None:
         try:
-            txt = arb_file.read_text(encoding="utf-8")
-            if "ENTER (Options Credit)" in txt:
-                verdict = "ENTER (Credit Spread)"
-            elif "ENTER (Long Call)" in txt:
-                verdict = "ENTER (Call Debit)"
-            elif "ENTER" in txt:
-                verdict = "ENTER"
-            elif "WATCH" in txt:
-                verdict = "WATCH"
-            elif "AVOID" in txt:
-                verdict = "AVOID"
-        except Exception:
-            pass
+            entry_zone = [float(ez_low), float(ez_high)]
+        except (ValueError, TypeError):
+            entry_zone = []
+    elif levels_data.get("entry_zone"):
+        entry_zone = levels_data["entry_zone"]
+    else:
+        entry_zone = []
+
+    # Tactical stop
+    stop = (
+        shares_plan.get("tactical_stop")
+        or levels_data.get("tactical_stop")
+        or (db_target.get("tactical_stop") if db_target else None)
+        or invalidation.get("price_level")
+    )
+    if stop is not None:
+        try:
+            stop = float(stop)
+        except (ValueError, TypeError):
+            stop = None
+
+    # Targets
+    t1 = shares_plan.get("target_1") or levels_data.get("target_1") or (db_target.get("target_1") if db_target else None)
+    if t1 is not None:
+        try:
+            t1 = float(t1)
+        except (ValueError, TypeError):
+            t1 = None
+
+    t2 = shares_plan.get("target_2") or levels_data.get("target_2") or (db_target.get("target_2") if db_target else None)
+    if t2 is not None:
+        try:
+            t2 = float(t2)
+        except (ValueError, TypeError):
+            t2 = None
+
+    # Options summary
+    options_summary = (
+        options_plan.get("summary")
+        or levels_data.get("options_summary")
+        or (db_target.get("options_summary") if db_target else "")
+        or ""
+    )
+    if not options_summary and options_plan.get("structure"):
+        options_summary = f"{options_plan.get('structure')} (Exp: {options_plan.get('expiration', 'N/A')})"
+
+    # Verdict & conviction
+    verdict = levels_data.get("verdict") or (db_target.get("verdict") if db_target else None)
+    if not verdict or verdict == "ANALYZED":
+        arb_file = rep_dir / f"{ticker_u}_arbitration.md"
+        if arb_file.exists():
+            try:
+                txt = arb_file.read_text(encoding="utf-8")
+                if "ENTER (Options Credit)" in txt:
+                    verdict = "ENTER (Credit Spread)"
+                elif "ENTER (Long Call)" in txt:
+                    verdict = "ENTER (Call Debit)"
+                elif "ENTER" in txt:
+                    verdict = "ENTER"
+                elif "WATCH" in txt:
+                    verdict = "WATCH"
+                elif "AVOID" in txt:
+                    verdict = "AVOID"
+            except Exception:
+                pass
+    if not verdict:
+        verdict = "ANALYZED"
+
+    conviction = levels_data.get("conviction") or (db_target.get("conviction") if db_target else None) or 5
+
+    # Researched timestamp (mtime of report file)
+    researched_at = None
+    for cand_f in [rep_dir / f"{ticker_u}_summary.md", rep_dir / f"{ticker_u}_arbitration.md", rep_dir / f"{ticker_u}_independent.md"]:
+        if cand_f.exists():
+            try:
+                researched_at = datetime.fromtimestamp(cand_f.stat().st_mtime).isoformat()
+                break
+            except Exception:
+                pass
 
     return {
         "ticker": ticker_u,
@@ -2931,6 +4352,7 @@ def _extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
         "tactical_stop": stop,
         "target_1": t1,
         "target_2": t2,
+        "researched_at": researched_at,
         "has_summary": (rep_dir / f"{ticker_u}_summary.md").exists(),
         "has_arbitration": (rep_dir / f"{ticker_u}_arbitration.md").exists(),
         "has_independent": (rep_dir / f"{ticker_u}_independent.md").exists(),
@@ -2942,10 +4364,12 @@ def list_available_reports(date: Optional[str] = None):
     """List all available research reports grouped by date with rich summary metadata."""
     reports_dir = config.BASE_DIR / "reports"
     if not reports_dir.exists():
-        return {"dates": [], "reports_by_date": {}}
+        return {"dates": [], "reports_by_date": {}, "date_labels": {}}
 
     all_dates = []
     reports_by_date = {}
+    date_labels = {}
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
     for d in sorted(reports_dir.iterdir(), reverse=True):
         if d.is_dir():
@@ -2961,10 +4385,30 @@ def list_available_reports(date: Optional[str] = None):
                     cards = [_extract_report_card(date_str, t) for t in sorted(list(tickers))]
                     reports_by_date[date_str] = cards
 
+    # Build rich session labels for date picker
+    if all_dates:
+        latest = all_dates[0]
+        rep_d = reports_dir / latest
+        has_today = any(
+            datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d") == today_str
+            for f in rep_d.glob("*.md")
+        )
+        for d_str in all_dates:
+            if d_str == latest:
+                if has_today and latest != today_str:
+                    date_labels[d_str] = f"📅 {d_str} (Latest Session · Run Today)"
+                else:
+                    date_labels[d_str] = f"📅 {d_str} (Latest Session)"
+            elif d_str == today_str:
+                date_labels[d_str] = f"📅 {d_str} (Today)"
+            else:
+                date_labels[d_str] = f"📅 {d_str}"
+
     return {
         "dates": all_dates,
         "selected_date": date or (all_dates[0] if all_dates else None),
         "reports_by_date": reports_by_date,
+        "date_labels": date_labels,
     }
 
 
@@ -3501,6 +4945,51 @@ def get_options_flow_endpoint(ticker: str, refresh: bool = False):
         }
 
 
+@app.get("/api/schwab/portfolio/summary")
+def get_schwab_portfolio_summary_endpoint():
+    """Retrieve aggregate summary cards and account breakdown from Schwab portfolio manager."""
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_summary
+        return get_portfolio_summary()
+    except Exception as e:
+        logger.error(f"Error fetching portfolio summary: {e}")
+        return {"error": str(e), "accounts": [], "total_liquidation_value": 0.0}
+
+
+@app.get("/api/schwab/portfolio/positions")
+def get_schwab_portfolio_positions_endpoint(
+    account: Optional[str] = None,
+    asset_type: Optional[str] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
+):
+    """Retrieve filtered individual positions from Schwab portfolio manager."""
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+        positions = get_portfolio_positions(
+            account_id=account,
+            asset_type=asset_type,
+            search=search,
+            sort_by=sort,
+        )
+        return {"positions": positions, "count": len(positions)}
+    except Exception as e:
+        logger.error(f"Error fetching portfolio positions: {e}")
+        return {"positions": [], "count": 0, "error": str(e)}
+
+
+@app.post("/api/schwab/portfolio/sync")
+def sync_schwab_portfolio_endpoint():
+    """Trigger live sync of Schwab accounts and positions via Schwab API."""
+    try:
+        from src.tracking.schwab_portfolio_manager import sync_schwab_positions
+        res = sync_schwab_positions()
+        return res
+    except Exception as e:
+        logger.error(f"Error syncing Schwab portfolio: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/charts/{date}/{ticker}/{chart_type}")
 def get_chart_image(date: str, ticker: str, chart_type: str):
     """Serve chart PNG images."""
@@ -3535,29 +5024,79 @@ def _init_db():
                 mode TEXT NOT NULL,
                 pid INTEGER,
                 stage TEXT NOT NULL,
-                status TEXT NOT NULL, -- 'RUNNING', 'COMPLETED', 'FAILED', 'KILLED'
+                status TEXT NOT NULL, -- 'QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'KILLED'
                 started_at TEXT NOT NULL,
                 completed_at TEXT,
                 log_file TEXT,
-                error_message TEXT
+                error_message TEXT,
+                target_date TEXT
             )
         """)
+        try:
+            c.execute("ALTER TABLE active_research_jobs ADD COLUMN target_date TEXT")
+        except Exception:
+            pass
         conn.commit()
 
 
+def _find_live_research_pid(ticker: str, job_id: Optional[str] = None) -> Optional[int]:
+    """Fast scan of python processes only to see if a research or scrape process is actively running."""
+    import psutil
+    t_upper = ticker.strip().upper()
+    try:
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                name = (proc.info.get('name') or '').lower()
+                if not ('python' in name or 'powershell' in name):
+                    continue
+                cmdline = proc.cmdline()
+                if not cmdline:
+                    continue
+                cmd_str = " ".join(cmdline).upper()
+                if "RUN_DEEP_RESEARCH.PY" in cmd_str or "RUN_SWING_RESEARCH.PY" in cmd_str:
+                    if job_id and job_id.upper() in cmd_str:
+                        return proc.pid
+                    if f"--TICKER {t_upper}" in cmd_str or f"-T {t_upper}" in cmd_str or f" {t_upper} " in cmd_str or cmd_str.endswith(f" {t_upper}"):
+                        return proc.pid
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def _rehydrate_active_jobs():
-    """Check running jobs in DB on startup and mark dead ones."""
+    """Check running jobs in DB on startup and mark dead ones as FAILED unless reports exist or process is running."""
     import psutil
     _init_db()
     try:
         with _get_db() as conn:
             c = conn.cursor()
-            running = c.execute("SELECT job_id, ticker, pid FROM active_research_jobs WHERE status = 'RUNNING'").fetchall()
+            running = c.execute("SELECT job_id, ticker, pid, target_date, started_at FROM active_research_jobs WHERE status = 'RUNNING'").fetchall()
             for row in running:
                 jid, ticker, pid = row["job_id"], row["ticker"], row["pid"]
-                if not pid or not psutil.pid_exists(pid):
-                    c.execute("UPDATE active_research_jobs SET status = 'COMPLETED', completed_at = ? WHERE job_id = ?",
-                              (datetime.now(timezone.utc).isoformat(), jid))
+                t_date = row["target_date"] or datetime.now().strftime("%Y-%m-%d")
+                is_alive = bool(pid and psutil.pid_exists(pid))
+                if not is_alive:
+                    live_pid = _find_live_research_pid(ticker, jid)
+                    if live_pid:
+                        is_alive = True
+                        c.execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (live_pid, jid))
+                        continue
+
+                if not is_alive:
+                    rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker}_summary.md"
+                    arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker}_arbitration.md"
+                    if rep_file.exists() or arb_file.exists():
+                        new_status = "COMPLETED"
+                        err_msg = None
+                    else:
+                        new_status = "FAILED"
+                        err_msg = "Process terminated before generating report"
+                    c.execute(
+                        "UPDATE active_research_jobs SET status = ?, stage = CASE WHEN ? = 'COMPLETED' THEN 'DONE' ELSE 'ERROR' END, completed_at = ?, error_message = ? WHERE job_id = ?",
+                        (new_status, new_status, datetime.now(timezone.utc).isoformat(), err_msg, jid)
+                    )
             conn.commit()
     except Exception as e:
         logger.warning(f"Error rehydrating research jobs: {e}")
@@ -3591,23 +5130,57 @@ def get_research_jobs():
     import psutil
     with _get_db() as conn:
         c = conn.cursor()
-        jobs = c.execute("SELECT * FROM active_research_jobs ORDER BY started_at DESC LIMIT 15").fetchall()
+        jobs = c.execute("""
+            SELECT * FROM active_research_jobs 
+            ORDER BY 
+                CASE status 
+                    WHEN 'RUNNING' THEN 1 
+                    WHEN 'QUEUED' THEN 2 
+                    ELSE 3 
+                END, 
+                started_at DESC 
+            LIMIT 40
+        """).fetchall()
         jobs_list = []
         for r in jobs:
             item = dict(r)
             job_id = item.get("job_id")
             thread = ACTIVE_RESEARCH_WORKERS.get(job_id)
+            subproc = ACTIVE_RESEARCH_SUBPROCS.get(job_id)
             
-            if thread is not None:
-                is_alive = thread.is_alive()
+            if thread is not None and thread.is_alive():
+                is_alive = True
+            elif subproc is not None and subproc.poll() is None:
+                is_alive = True
             else:
                 # If server was restarted or job untracked in memory
                 if item["status"] == "RUNNING":
                     pid = item.get("pid")
                     is_alive = bool(pid and psutil.pid_exists(pid))
+                    if not is_alive:
+                        ticker_sym = item.get("ticker", "")
+                        live_pid = _find_live_research_pid(ticker_sym, job_id)
+                        if live_pid:
+                            is_alive = True
+                            item["pid"] = live_pid
+                            c.execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (live_pid, job_id))
+
                     if not is_alive and item.get("stage") not in ("SCRAPING", "STARTING"):
-                        item["status"] = "COMPLETED"
-                        c.execute("UPDATE active_research_jobs SET status = 'COMPLETED' WHERE job_id = ?", (job_id,))
+                        t_date = item.get("target_date") or datetime.now().strftime("%Y-%m-%d")
+                        ticker_sym = item.get("ticker", "")
+                        rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_summary.md"
+                        arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_arbitration.md"
+                        if rep_file.exists() or arb_file.exists():
+                            item["status"] = "COMPLETED"
+                            item["stage"] = "DONE"
+                        else:
+                            item["status"] = "FAILED"
+                            item["stage"] = "ERROR"
+                            item["error_message"] = "Process terminated before generating report"
+                        c.execute(
+                            "UPDATE active_research_jobs SET status = ?, stage = ?, error_message = ? WHERE job_id = ?",
+                            (item["status"], item["stage"], item.get("error_message"), job_id)
+                        )
                 else:
                     is_alive = False
 
@@ -3621,9 +5194,10 @@ class ResearchRequest(BaseModel):
     ticker: str
     mode: str = "full"  # "full" | "scrape_only" | "deep_only"
     date: Optional[str] = None
+    force: bool = False
 
 
-def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str] = None):
+def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str] = None, force: bool = False):
     """Worker thread running sequential research pipeline with SQLite persistence."""
     ticker_u = ticker.strip().upper()
     py_exe = sys.executable
@@ -3637,7 +5211,7 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
         except Exception:
             pass
 
-    _log_both(f"🚀 Starting Research Job {job_id} for {ticker_u} [Mode: {mode}, Date: {date or 'auto'}]")
+    _log_both(f"🚀 Starting Research Job {job_id} for {ticker_u} [Mode: {mode}, Date: {date or 'auto'}, Force: {force}]")
     current_subproc = None
 
     try:
@@ -3651,7 +5225,9 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
             if date and date.strip():
                 cmd.append(date.strip())
             cmd.extend(["--ticker", ticker_u])
-            current_subproc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if force:
+                cmd.append("--force")
+            current_subproc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
             ACTIVE_RESEARCH_SUBPROCS[job_id] = current_subproc
             with _get_db() as conn:
                 conn.cursor().execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (current_subproc.pid, job_id))
@@ -3674,6 +5250,8 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
                         if (d_cand / ticker_u).exists() or (d_cand / f"{ticker_u}_datawindow.json").exists():
                             date_to_use = d_cand.name
                             break
+        if not date_to_use:
+            date_to_use = datetime.now().strftime("%Y-%m-%d")
 
         if mode in ("full", "deep_only", "scrape_deep"):
             with _get_db() as conn:
@@ -3683,8 +5261,8 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
             cmd = [py_exe, "run_deep_research.py"]
             if date_to_use:
                 cmd.append(date_to_use)
-            cmd.extend(["--ticker", ticker_u])
-            current_subproc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            cmd.extend(["--ticker", ticker_u, "--job-id", job_id])
+            current_subproc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
             ACTIVE_RESEARCH_SUBPROCS[job_id] = current_subproc
             with _get_db() as conn:
                 conn.cursor().execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (current_subproc.pid, job_id))
@@ -3694,6 +5272,15 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
                 if l_str:
                     _log_both(l_str)
             current_subproc.wait()
+            if current_subproc.returncode != 0:
+                raise RuntimeError(f"Deep research phase failed with exit code {current_subproc.returncode}")
+
+            # Verify reports exist before declaring success
+            rep_chk_date = date_to_use or datetime.now().strftime("%Y-%m-%d")
+            rep_file = config.BASE_DIR / "reports" / rep_chk_date / f"{ticker_u}_summary.md"
+            arb_file = config.BASE_DIR / "reports" / rep_chk_date / f"{ticker_u}_arbitration.md"
+            if not rep_file.exists() and not arb_file.exists():
+                raise RuntimeError(f"Deep research completed but generated no report files in reports/{rep_chk_date}/")
 
         # Step 3: Sync Watch Alerts in Background (Targeted to ticker)
         if mode in ("full", "scrape_deep", "deep_only"):
@@ -3709,6 +5296,8 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                     )
                     for line in sync_p.stdout:
                         l = line.strip()
@@ -3731,52 +5320,209 @@ def _run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str
     except Exception as e:
         _log_both(f"❌ Exception in research worker: {e}")
         with _get_db() as conn:
-            conn.cursor().execute(
-                "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = ?, completed_at = ? WHERE job_id = ?",
-                (str(e), datetime.now(timezone.utc).isoformat(), job_id)
-            )
-            conn.commit()
+            c = conn.cursor()
+            existing = c.execute("SELECT status FROM active_research_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if existing and existing["status"] in ("KILLED", "COMPLETED"):
+                _log_both(f"Job {job_id} already marked {existing['status']}, skipping error overwrite.")
+            else:
+                c.execute(
+                    "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = ?, completed_at = ? WHERE job_id = ?",
+                    (str(e), datetime.now(timezone.utc).isoformat(), job_id)
+                )
+                conn.commit()
     finally:
         ACTIVE_RESEARCH_WORKERS.pop(job_id, None)
         ACTIVE_RESEARCH_SUBPROCS.pop(job_id, None)
+        _dispatch_next_queued_job()
+
+
+_QUEUE_DISPATCH_LOCK = threading.Lock()
+
+
+def _get_active_research_count() -> int:
+    """Accurately count active research jobs across threads, subprocesses, and running OS processes."""
+    import psutil
+    count = 0
+    with _get_db() as conn:
+        c = conn.cursor()
+        running_rows = c.execute("SELECT job_id, ticker, pid FROM active_research_jobs WHERE status = 'RUNNING'").fetchall()
+        for r in running_rows:
+            jid = r["job_id"]
+            thread = ACTIVE_RESEARCH_WORKERS.get(jid)
+            if thread is not None and thread.is_alive():
+                count += 1
+            elif jid in ACTIVE_RESEARCH_SUBPROCS and ACTIVE_RESEARCH_SUBPROCS[jid].poll() is None:
+                count += 1
+            elif r["pid"] and psutil.pid_exists(r["pid"]):
+                count += 1
+            elif _find_live_research_pid(r["ticker"], jid):
+                count += 1
+    return count
+
+
+def _dispatch_next_queued_job():
+    """Pick next QUEUED job from SQLite and run it if active slots < MAX_CONCURRENT_RESEARCH."""
+    with _QUEUE_DISPATCH_LOCK:
+        active_count = _get_active_research_count()
+        slots_available = MAX_CONCURRENT_RESEARCH - active_count
+        if slots_available <= 0:
+            return
+
+        with _get_db() as conn:
+            c = conn.cursor()
+            queued_jobs = c.execute(
+                "SELECT job_id, ticker, mode, target_date FROM active_research_jobs WHERE status = 'QUEUED' ORDER BY started_at ASC LIMIT ?",
+                (slots_available,)
+            ).fetchall()
+
+            for job in queued_jobs:
+                jid = job["job_id"]
+                tkr = job["ticker"]
+                m = job["mode"]
+                dt = job["target_date"]
+                c.execute(
+                    "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', started_at = ? WHERE job_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), jid)
+                )
+                conn.commit()
+
+                worker_thread = threading.Thread(
+                    target=_run_research_worker,
+                    args=(jid, tkr, m, dt, True),
+                    daemon=True
+                )
+                ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
+                worker_thread.start()
+                _append_log(f"⚡ [Queue Dispatcher] Dispatched queued research for {tkr} to open slot (Job ID: {jid}).")
+
+# Auto-dispatch any queued jobs asynchronously on startup/module load
+try:
+    threading.Thread(target=_dispatch_next_queued_job, daemon=True).start()
+except Exception:
+    pass
 
 
 @app.post("/api/research/run")
 def trigger_research(req: ResearchRequest):
-    """Trigger research pipeline asynchronously with max 2 concurrency check and SQLite tracking."""
+    """Trigger research pipeline asynchronously with automatic slot queueing and SQLite tracking."""
     _init_db()
 
-    # Check active running jobs count in memory & DB
-    active_count = sum(1 for t in ACTIVE_RESEARCH_WORKERS.values() if t.is_alive())
-    if active_count >= MAX_CONCURRENT_RESEARCH:
-        raise HTTPException(
-            status_code=429,
-            detail=f"VRAM / Hardware Limit: Max {MAX_CONCURRENT_RESEARCH} concurrent deep research jobs allowed. Active: {active_count}. Please wait or terminate an active job."
-        )
-
-    ticker_u = req.ticker.strip().upper()
-    if not ticker_u:
+    ticker_raw = req.ticker.strip()
+    if not ticker_raw:
         raise HTTPException(status_code=400, detail="Ticker is required")
+
+    tickers = [t.strip().upper() for t in re.split(r"[,;\s]+", ticker_raw) if t.strip()]
+    if not tickers:
+        raise HTTPException(status_code=400, detail="Ticker is required")
+
+    if len(tickers) > 1:
+        results = []
+        for t in tickers:
+            sub_req = ResearchRequest(ticker=t, mode=req.mode, date=req.date, force=req.force)
+            results.append(trigger_research(sub_req))
+        started = sum(1 for r in results if r.get("status") == "started")
+        queued = sum(1 for r in results if r.get("status") == "queued")
+        return {
+            "status": "batch_dispatched",
+            "count": len(results),
+            "started": started,
+            "queued": queued,
+            "jobs": results,
+        }
+
+    ticker_u = tickers[0]
+
+    # Prevent duplicate active or queued jobs for the same ticker
+    with _get_db() as conn:
+        c = conn.cursor()
+        existing = c.execute(
+            "SELECT job_id, status, pid FROM active_research_jobs WHERE ticker = ? AND status IN ('RUNNING', 'QUEUED')",
+            (ticker_u,)
+        ).fetchone()
+        if existing:
+            jid = existing["job_id"]
+            thread = ACTIVE_RESEARCH_WORKERS.get(jid)
+            is_alive = thread.is_alive() if thread else False
+            if not is_alive and existing.get("pid"):
+                import psutil
+                try:
+                    is_alive = psutil.pid_exists(existing["pid"])
+                except Exception:
+                    is_alive = False
+
+            if not is_alive:
+                live_pid = _find_live_research_pid(ticker_u, jid)
+                if live_pid:
+                    is_alive = True
+                    c.execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (live_pid, jid))
+                    conn.commit()
+
+            if existing["status"] == "QUEUED" or is_alive:
+                return {
+                    "status": existing["status"].lower(),
+                    "job_id": jid,
+                    "ticker": ticker_u,
+                    "mode": req.mode,
+                }
+            else:
+                # Stale zombie process: clean up and allow new job to launch
+                c.execute(
+                    "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = 'Process died unexpectedly', completed_at = ? WHERE job_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), jid)
+                )
+                conn.commit()
+
+    # Skip if ticker already has completed deep research for target date (unless force=True)
+    if not req.force and req.mode in ("full", "deep_only"):
+        from zoneinfo import ZoneInfo
+        target_date = req.date.strip() if (req.date and req.date.strip()) else datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+        report_file = config.BASE_DIR / "reports" / target_date / f"{ticker_u}_summary.md"
+        arbitration_file = config.BASE_DIR / "reports" / target_date / f"{ticker_u}_arbitration.md"
+        if report_file.exists() or arbitration_file.exists():
+            _append_log(f"⏭️ [Skip] {ticker_u} already has a completed deep research report for {target_date}. Skipping to preserve slots.")
+            return {
+                "status": "skipped",
+                "job_id": None,
+                "ticker": ticker_u,
+                "mode": req.mode,
+                "target_date": target_date,
+                "message": f"{ticker_u} already researched for {target_date}"
+            }
 
     job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ticker_u}"
     log_file = str(LOGS_DIR / f"{job_id}.log")
 
-    with _get_db() as conn:
-        conn.cursor().execute("""
-            INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file)
-            VALUES (?, ?, ?, ?, 'STARTING', 'RUNNING', ?, ?)
-        """, (job_id, ticker_u, req.mode, os.getpid(), datetime.now(timezone.utc).isoformat(), log_file))
-        conn.commit()
+    active_count = _get_active_research_count()
 
-    worker_thread = threading.Thread(target=_run_research_worker, args=(job_id, ticker_u, req.mode, req.date), daemon=True)
-    ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
-    worker_thread.start()
-    return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode}
+    if active_count < MAX_CONCURRENT_RESEARCH:
+        # Start immediately in open slot
+        with _get_db() as conn:
+            conn.cursor().execute("""
+                INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
+                VALUES (?, ?, ?, ?, 'STARTING', 'RUNNING', ?, ?, ?)
+            """, (job_id, ticker_u, req.mode, os.getpid(), datetime.now(timezone.utc).isoformat(), log_file, req.date))
+            conn.commit()
+
+        worker_thread = threading.Thread(target=_run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force), daemon=True)
+        ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
+        worker_thread.start()
+        _append_log(f"🚀 Started research for {ticker_u} in open slot (Active: {active_count + 1}/{MAX_CONCURRENT_RESEARCH}).")
+        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode}
+    else:
+        # Gracefully queue the job to run as soon as a slot opens
+        with _get_db() as conn:
+            conn.cursor().execute("""
+                INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
+                VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?)
+            """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date))
+            conn.commit()
+        _append_log(f"📥 [Queue] Concurrency slots full ({active_count}/{MAX_CONCURRENT_RESEARCH}). Queued {ticker_u} for research.")
+        return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode}
 
 
 @app.post("/api/jobs/{job_id}/kill")
 def kill_research_job_endpoint(job_id: str):
-    """Terminate a specific research job and its entire subprocess tree."""
+    """Terminate a specific research job and its entire subprocess tree, freeing slot for queue."""
     import psutil
     
     # 1. Kill active subprocess directly if tracked
@@ -3810,7 +5556,8 @@ def kill_research_job_endpoint(job_id: str):
     ACTIVE_RESEARCH_SUBPROCS.pop(job_id, None)
 
     ticker_name = job["ticker"] if job else job_id
-    _append_log(f"🛑 Terminated Research Job {job_id} ({ticker_name}) to free VRAM.")
+    _append_log(f"🛑 Terminated Research Job {job_id} ({ticker_name}) to free VRAM slot.")
+    _dispatch_next_queued_job()
     return {"success": True, "job_id": job_id}
 
 
@@ -3820,7 +5567,7 @@ def trigger_alerts_sync():
     def _sync():
         _append_log("🔄 Syncing all research levels into SQLite, Google Sheets, and Tastytrade...")
         cmd = [sys.executable, "run_watch_alerts.py", "--sync", "--once"]
-        proc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         for line in proc.stdout:
             line_str = line.strip()
             if line_str:
@@ -3830,6 +5577,246 @@ def trigger_alerts_sync():
 
     threading.Thread(target=_sync, daemon=True).start()
     return {"status": "sync_triggered"}
+
+
+# =====================================================================
+# SCHWAB 1000 PRE-MOVE SCREENER ENDPOINTS
+# =====================================================================
+
+class SchwabScanRequest(BaseModel):
+    top: int = 10
+    auto_scrape: bool = False
+    autonomous: bool = False
+    auto_max: int = 3
+    date: Optional[str] = None
+    side: str = "long"
+    headless: bool = True
+
+
+_SCHWAB_SCAN_STATE: Dict[str, Any] = {
+    "running": False,
+    "side": None,
+    "started_at": None,
+    "completed_at": None,
+    "error": None,
+}
+
+
+@app.get("/api/screener/schwab-scan-status")
+def get_schwab_scan_status():
+    """Returns whether a Schwab scan is currently running in the background."""
+    return _SCHWAB_SCAN_STATE
+
+
+@app.get("/api/screener/continuous-status")
+def get_continuous_screener_status_endpoint():
+    """Returns real-time telemetry and timing for the background Continuous Screener Daemon."""
+    try:
+        from src.screener.continuous_screener_daemon import get_continuous_screener_status
+        return get_continuous_screener_status()
+    except Exception as e:
+        return {"running": False, "error": str(e)}
+
+
+@app.post("/api/screener/continuous-scan-now")
+def trigger_continuous_screener_scan_endpoint():
+    """Force an immediate background scan cycle across Schwab 1000 with Tastytrade enrichment."""
+    try:
+        from src.screener.continuous_screener_daemon import trigger_continuous_scan_now
+        started = trigger_continuous_scan_now()
+        return {"status": "triggered" if started else "failed", "message": "Continuous scan cycle triggered"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/api/schwab/portfolio/summary")
+def get_schwab_portfolio_summary_endpoint():
+    """Retrieve aggregate summary cards, total liquidation value, and account breakdown."""
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_summary
+        return get_portfolio_summary()
+    except Exception as e:
+        logger.error(f"Error fetching Schwab portfolio summary: {e}")
+        return {"error": str(e), "total_liquidation_value": 0.0, "accounts": []}
+
+
+@app.get("/api/schwab/portfolio/positions")
+def get_schwab_portfolio_positions_endpoint(
+    account: Optional[str] = Query(None),
+    asset_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None),
+):
+    """Query Schwab positions with account, asset type, and search filtering."""
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+        positions = get_portfolio_positions(
+            account_id=account,
+            asset_type=asset_type,
+            search=search,
+            sort_by=sort,
+        )
+        return {"positions": positions, "count": len(positions)}
+    except Exception as e:
+        logger.error(f"Error fetching Schwab positions: {e}")
+        return {"positions": [], "count": 0, "error": str(e)}
+
+
+@app.post("/api/schwab/portfolio/sync")
+def sync_schwab_portfolio_endpoint():
+    """Trigger an on-demand synchronization of Schwab accounts and positions."""
+    try:
+        from src.tracking.schwab_portfolio_manager import sync_schwab_positions
+        res = sync_schwab_positions()
+        return res
+    except Exception as e:
+        logger.error(f"Error syncing Schwab portfolio: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/screener/schwab-pre-move")
+def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str = Query("long")):
+    """Fetch current coiled pre-move swing candidates (Long or Short) from schwab_survivors.json / survivors.json / short_survivors.json."""
+    raw_dir = config.BASE_DIR / "data" / "raw"
+    target_date = date
+    req_side = (side or "").lower()
+    
+    # Check dedicated files first to avoid contamination from generic research queue entries
+    if req_side == "short":
+        primary_fname = "short_survivors.json"
+        fallback_fname = None
+    else:
+        primary_fname = "schwab_survivors.json"
+        fallback_fname = "survivors.json"
+
+    if not target_date:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if (raw_dir / today_str / primary_fname).exists() or (fallback_fname and (raw_dir / today_str / fallback_fname).exists()):
+            target_date = today_str
+        else:
+            dates = sorted([d.name for d in raw_dir.glob("202*") if (d / primary_fname).exists() or (fallback_fname and (d / fallback_fname).exists())], reverse=True)
+            target_date = dates[0] if dates else today_str
+
+    survivors_file = None
+    if target_date:
+        cand_primary = raw_dir / target_date / primary_fname
+        if cand_primary.exists():
+            survivors_file = cand_primary
+        elif fallback_fname:
+            cand_fb = raw_dir / target_date / fallback_fname
+            if cand_fb.exists():
+                survivors_file = cand_fb
+
+    candidates = []
+    if survivors_file and survivors_file.exists():
+        try:
+            with open(survivors_file, "r", encoding="utf-8") as f:
+                raw_candidates = json.load(f)
+                if isinstance(raw_candidates, list):
+                    # Filter: Only keep actual screener records (drop generic/stub research queue entries with null prices)
+                    filtered = []
+                    for c in raw_candidates:
+                        if not isinstance(c, dict):
+                            continue
+                        if c.get("price") is None and c.get("support_level") is None and c.get("source") not in ("schwab_pre_move_scan", "schwab_short_scan"):
+                            continue
+                        score = float(c.get("priority_score", 0.0))
+                        stg = c.get("weinstein_stage")
+                        if req_side != "short" and stg in (3, 4):
+                            continue  # Exclude Stage 4 declining / Stage 3 distribution
+                        if req_side == "short" and stg == 2 and not c.get("is_extreme_reversal"):
+                            continue  # Exclude advancing momentum runners unless extreme blowoff
+                        if score > 0 and score < 50.0:
+                            continue  # Exclude weak setups below conviction threshold
+                        filtered.append(c)
+
+                    # Sort by priority tier and score
+                    candidates = sorted(
+                        filtered,
+                        key=lambda x: (
+                            x.get("priority_tier") == "HIGH_PRIORITY",
+                            float(x.get("priority_score", 0.0)),
+                            bool(x.get("is_extreme_reversal", False)),
+                            float(x.get("long_rr", x.get("short_rr", 0.0))),
+                        ),
+                        reverse=True,
+                    )
+        except Exception as e:
+            logger.error(f"Error reading {survivors_file}: {e}")
+
+    # Also detect if SPY market tide is bullish
+    spy_bullish = True
+    try:
+        from src.screener.schwab_pre_move_scan import check_market_tide, get_schwab_client
+        client = get_schwab_client()
+        market_tide = check_market_tide(client)
+        spy_bullish = market_tide.get("bullish", True)
+        trend_str = market_tide.get("trend_str", "BULLISH")
+    except Exception:
+        trend_str = "BULLISH (TIDE CONFIRMED)"
+
+    return {
+        "date": target_date,
+        "side": (side or "long").upper(),
+        "count": len(candidates),
+        "candidates": candidates,
+        "market_tide": {
+            "bullish": spy_bullish,
+            "trend_str": trend_str
+        }
+    }
+
+
+@app.post("/api/screener/run-schwab-scan")
+def trigger_schwab_screener_scan(req: SchwabScanRequest = SchwabScanRequest()):
+    """Run on-demand high-speed scan on 983 Schwab 1000 constituents (long, short, or both)."""
+    scan_side = (req.side or "long").lower()
+
+    if _SCHWAB_SCAN_STATE.get("running"):
+        return {"status": "already_running", "side": _SCHWAB_SCAN_STATE.get("side")}
+
+    _SCHWAB_SCAN_STATE["running"] = True
+    _SCHWAB_SCAN_STATE["side"] = scan_side
+    _SCHWAB_SCAN_STATE["started_at"] = time.time()
+    _SCHWAB_SCAN_STATE["completed_at"] = None
+    _SCHWAB_SCAN_STATE["error"] = None
+
+    def _run_scan():
+        scan_label = "AUTONOMOUS SCAN & RESEARCH" if req.autonomous else "SCAN"
+        _append_log(f"🔍 [SCHWAB SCREENER] Starting {scan_label} across 983 Schwab 1000 stocks (Side: {scan_side.upper()} | Auto-Max: {req.auto_max})...")
+        try:
+            cmd = [sys.executable, "-m", "src.screener.schwab_pre_move_scan", "--top", str(req.top), "--side", scan_side]
+            if req.autonomous:
+                cmd.extend(["--autonomous", "--auto-max", str(req.auto_max)])
+            elif req.auto_scrape:
+                cmd.append("--auto-scrape")
+            if req.headless:
+                cmd.append("--headless")
+            if req.date:
+                cmd.extend(["--date", req.date])
+            proc = subprocess.Popen(cmd, cwd=str(config.BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            for line in proc.stdout:
+                line_str = line.strip()
+                if line_str:
+                    _append_log(line_str)
+            proc.wait()
+            _append_log(f"✅ [SCHWAB SCREENER] {scan_side.upper()} {scan_label} completed.")
+            _SCHWAB_SCAN_STATE["completed_at"] = time.time()
+        except Exception as e:
+            _SCHWAB_SCAN_STATE["error"] = str(e)
+            _append_log(f"❌ [SCHWAB SCREENER] Scan error: {e}")
+        finally:
+            _SCHWAB_SCAN_STATE["running"] = False
+
+    threading.Thread(target=_run_scan, daemon=True).start()
+    return {"status": "started", "top": req.top, "side": scan_side, "autonomous": req.autonomous, "auto_max": req.auto_max}
+
+
+@app.post("/api/screener/run-autonomous-scan")
+def trigger_autonomous_screener_scan(req: SchwabScanRequest = SchwabScanRequest(autonomous=True, auto_max=3)):
+    """Run autonomous scan on Schwab 1000 stocks and auto-research top high-priority setups."""
+    req.autonomous = True
+    return trigger_schwab_screener_scan(req)
 
 
 # =====================================================================

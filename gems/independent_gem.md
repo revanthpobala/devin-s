@@ -74,7 +74,7 @@ Your output must be formatted in clean, institutional Markdown matching this exa
   * `HV20`: [X.X]% | `IV30`: [X.X]% | `IV/HV Spread`: [±X.X]%
   * `Energy State`: [Dormant / Squeeze / Warming / Expansion]
 * **Trend & Momentum:**
-  * `Moving Averages`: [Status vs 13 EMA, 50 SMA, 200 SMA]
+  * `Moving Averages`: [Status vs Sprint (EMA-5), HMA-20, 50 SMA, 200 SMA]
   * `DMI / ADX`: [ADX level, +DI vs -DI polarity]
   * `Structure & Darvas`: [Consolidation / Base Structure vs 200 SMA, Darvas Box status]
 
@@ -82,7 +82,7 @@ Your output must be formatted in clean, institutional Markdown matching this exa
 
 ## 💻 QUANTITATIVE VERIFICATION & OPTIONS MODELING
 * **Verified Price Milestones (from `df`):** [52W High $[0.00], Gap Floor $[0.00], 200 SMA $[0.00]]
-* **Monte Carlo Path Probabilities:** [P(Target 1 before Stop) across 21d/30d/60d horizons]
+* **Monte Carlo Path Probabilities:** [P(Target 1 before Stop) across 21d/30d/45d/90d horizons]
 * **Options Structure Payoff:** [Live contract verification, Delta, Net Credit/Debit, Break-even]
 
 ---
@@ -99,14 +99,23 @@ Your output must be formatted in clean, institutional Markdown matching this exa
 | **Profit Target 2** | $[Target2] | Darvas Box Top / 52W High (Runner) |
 | **Mathematical R:R** | **[X.XX]:1 (T1) / [X.XX]:1 (T2)** | Calculated against $[Entry] and $[Stop] |
 
+* **Tactical Level Map (ASCII):**
+```text
+[Target 2] ------------- $[0.00] (Runner / Box Top)
+[Target 1] ------------- $[0.00] (AVWAP / Liquidity Trim)
+[Live Spot] ------------ $[0.00]
+[Base Floor] ----------- $[0.00] (Support Shelf / 20 EMA)
+[Tactical Stop] -------- $[0.00] (Hard Structural Invalidation)
+```
+
 ### Plan B: Derivatives Execution (Actionable Right Now)
-* **Plan B-1: High-IV Credit Spread (Primary when IV Rank > 70%):**
+* **Plan B-1: Tactical Credit Spread (Primary when IV Rank ≥ 50% or IV/HV > 0; strictly mandatory if IV Rank > 70%):**
   * **Structure:** [Bull Put Spread] [Short Strike] / [Long Strike] ([DTE] DTE).
   * **Net Credit:** $[X.XX] per contract. Max Profit: $[XXX] | Max Loss: $[XXX] | Break-Even: $[XXX.XX].
   * **Edge:** Sits below structural support shelf ($[SupportShelf]); captures rich IV without needing an immediate stock rally.
 * **Plan B-2: Multi-Quarter LEAPS (90–365+ DTE):**
-  * **Structure:** [Deep ITM Call Delta 0.75-0.85] [Strike]C ([DTE] DTE).
-  * **Assessment:** [Deploy if IV Rank is reasonable; if IV Rank >70%, explicitly defer or structure as debit spread to mitigate extrinsic crush].
+  * **Structure:** [Deep ITM Call Delta 0.70–0.85] [Strike]C ([DTE] DTE).
+  * **Assessment:** [Deploy if IV Rank is reasonable (<50%); if IV Rank >70%, explicitly defer or structure as credit spread to mitigate extrinsic crush].
 
 ### Invalidation & "The ONE Thing"
 * **Binary Invalidation Condition:** Daily close below **$[StopPrice]**.

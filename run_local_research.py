@@ -89,20 +89,58 @@ def _consolidate_ledger(out_dir: Path):
 
 def _load_survivors(out_dir: Path, target_ticker: str | None = None):
     manifest = out_dir / "survivors.json"
+    
+    if target_ticker:
+        tgt_clean = target_ticker.strip().upper()
+        # 1. Check primary survivors.json if exists
+        if manifest.exists():
+            try:
+                with open(manifest, "r", encoding="utf-8") as f:
+                    survivors = json.load(f)
+                matched = [
+                    s for s in survivors
+                    if (s.get("ticker") or s.get("Ticker") or s.get("Symbol") or "").upper() == tgt_clean
+                ]
+                if matched:
+                    return matched
+            except Exception as e:
+                logger.debug(f"Could not read survivors.json: {e}")
+
+        # 2. Check alternative screener manifests (schwab_survivors.json, short_survivors.json)
+        for alt_fname in ("schwab_survivors.json", "short_survivors.json"):
+            alt_path = out_dir / alt_fname
+            if alt_path.exists():
+                try:
+                    with open(alt_path, "r", encoding="utf-8") as f:
+                        alt_cands = json.load(f)
+                    matched = [
+                        s for s in alt_cands
+                        if (s.get("ticker") or s.get("Ticker") or s.get("Symbol") or "").upper() == tgt_clean
+                    ]
+                    if matched:
+                        return matched
+                except Exception as e:
+                    logger.debug(f"Could not read {alt_fname}: {e}")
+
+        # 3. Fallback: synthesize single-ticker survivor so local research can always run on target_ticker
+        logger.info(f"Target ticker override: synthesized survivor entry for {tgt_clean}")
+        return [
+            {
+                "Ticker": tgt_clean,
+                "Symbol": tgt_clean,
+                "source": "cli_override",
+                "_sheet_type": "trades",
+            }
+        ]
+
     if not manifest.exists():
         logger.error(
             f"No survivors.json at {manifest}. Run run_swing_research.py (scrape phase) first."
         )
         return []
+
     with open(manifest, "r", encoding="utf-8") as f:
         survivors = json.load(f)
-    if target_ticker:
-        survivors = [
-            s
-            for s in survivors
-            if (s.get("ticker") or s.get("Ticker") or s.get("Symbol") or "").upper()
-            == target_ticker.upper()
-        ]
     return survivors
 
 
@@ -265,14 +303,7 @@ def run_local_research(
         all_updates = [u for u in all_updates if (u.get("ticker") or "").upper() == tgt]
 
     if all_updates:
-        logger.info(f"\n--- PHASE 2D: BATCH UPDATING SHEETS ({len(all_updates)} rows) ---")
-        try:
-            from src.tracking.sheets_tracker import SheetsTracker
-
-            tracker = SheetsTracker()
-            tracker.batch_update_swing_research(today_str, all_updates)
-        except Exception as e:
-            logger.error(f"Batch Sheets update failed: {e}")
+        logger.info(f"Phase 2D: {len(all_updates)} research decisions persisted to consolidated ledger (Sheets disabled).")
 
     # Phase 2E: Segregate tickers routed to DEEP RESEARCH.
     # The deep-research folder is the single triage output: tickers whose local

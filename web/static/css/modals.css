@@ -38,22 +38,23 @@
   position: fixed !important;
   bottom: 20px !important;
   right: 24px !important;
-  width: 440px !important;
+  width: 480px !important;
   max-width: calc(100vw - 32px) !important;
-  height: 580px !important;
+  height: 600px !important;
   min-height: 380px !important;
   max-height: calc(100vh - 40px) !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15) !important;
-  border: 1px solid var(--border-subtle) !important;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border) !important;
   border-radius: var(--radius-lg) !important;
   overflow: hidden !important;
   z-index: 99999 !important;
   background: var(--bg-surface) !important;
   display: flex !important;
   flex-direction: column !important;
+  transition: height 0.2s cubic-bezier(0.16, 1, 0.3, 1), width 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
 .modal-overlay.minimized #modal-report-pane,
+.modal-overlay.minimized #modal-positions-pane,
 .modal-overlay.minimized #modal-chat-resizer {
   display: none !important;
 }
@@ -66,20 +67,60 @@
 }
 
 .modal-overlay.minimized .modal-header {
-  padding: 10px 14px !important;
+  padding: 8px 14px !important;
   background: var(--bg-surface) !important;
   border-bottom: 1px solid var(--border) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  flex-wrap: nowrap !important;
+  height: 52px !important;
+  overflow: hidden !important;
 }
 
-/* Collapsed to bottom bar state */
+.modal-overlay.minimized #btn-toggle-positions-pane {
+  display: none !important;
+}
+
+.modal-overlay.minimized:not(.collapsed) #modal-active-chat-tabs {
+  display: none !important;
+}
+
+/* Collapsed to bottom bar dock pill state */
 .modal-overlay.minimized.collapsed .modal-content {
-  height: 50px !important;
-  min-height: 50px !important;
-  max-height: 50px !important;
+  height: 52px !important;
+  min-height: 52px !important;
+  max-height: 52px !important;
+  width: auto !important;
+  min-width: 440px !important;
+  max-width: 760px !important;
   cursor: pointer !important;
+  border-radius: 26px !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), 0 0 0 2px var(--blue) !important;
+  border: none !important;
+  overflow: hidden !important;
+  background: var(--bg-surface) !important;
 }
 
-.modal-overlay.minimized.collapsed #modal-split-container {
+.modal-overlay.minimized.collapsed #modal-split-container,
+.modal-overlay.minimized.collapsed #modal-copilot-drawer {
+  display: none !important;
+}
+
+.modal-overlay.minimized.collapsed .modal-header {
+  height: 52px !important;
+  padding: 0 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  white-space: nowrap !important;
+  flex-wrap: nowrap !important;
+  border-bottom: none !important;
+  background: var(--bg-surface) !important;
+  gap: 12px !important;
+}
+
+.modal-overlay.minimized #modal-live-quote-badge {
   display: none !important;
 }
 
@@ -261,6 +302,95 @@
   border-color: #fecaca;
 }
 
+.modal-action-btn.primary {
+  background: var(--blue) !important;
+  color: #ffffff !important;
+  border: 1px solid var(--blue) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4) !important;
+}
+
+.modal-action-btn.primary:hover {
+  background: #1d4ed8 !important;
+  border-color: #1d4ed8 !important;
+  color: #ffffff !important;
+}
+
+/* Multi-Chat Tab Styling (Max 3 Concurrent Chats) */
+.modal-active-chat-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  max-width: 480px;
+  flex-shrink: 0;
+}
+
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.chat-tab:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+  border-color: var(--border-subtle);
+}
+
+.chat-tab.active {
+  background: rgba(37, 99, 235, 0.12) !important;
+  border-color: var(--blue) !important;
+  color: var(--blue) !important;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+}
+
+.chat-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 2px;
+  line-height: 1;
+}
+
+.chat-tab-close:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.chat-tab-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
 /* Modal Draggable Chat Resizer */
 .modal-chat-resizer {
   width: 8px;
@@ -286,3 +416,326 @@
   background: var(--border-subtle);
   border-radius: var(--radius-full);
 }
+
+/* ==========================================================================
+   Alert Modal Critique Markdown Typography (#ponytail)
+   ========================================================================== */
+.critique-markdown,
+#alert-modal-lr-ponytail-text {
+  color: var(--text-main);
+  font-size: 12.5px;
+  line-height: 1.6;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  word-break: break-word;
+}
+
+.critique-markdown p,
+#alert-modal-lr-ponytail-text p {
+  margin: 0 0 10px 0;
+}
+
+.critique-markdown p:last-child,
+#alert-modal-lr-ponytail-text p:last-child {
+  margin-bottom: 0;
+}
+
+.critique-markdown strong,
+#alert-modal-lr-ponytail-text strong {
+  color: var(--text-bright, #ffffff);
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+[data-theme="light"] .critique-markdown strong,
+[data-theme="light"] #alert-modal-lr-ponytail-text strong {
+  color: #0f172a;
+}
+
+.critique-markdown em,
+#alert-modal-lr-ponytail-text em {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.critique-markdown code,
+#alert-modal-lr-ponytail-text code {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--cyan-glow, #38bdf8);
+}
+
+.critique-markdown ul,
+.critique-markdown ol,
+#alert-modal-lr-ponytail-text ul,
+#alert-modal-lr-ponytail-text ol {
+  margin: 4px 0 10px 18px;
+  padding: 0;
+}
+
+.critique-markdown li,
+#alert-modal-lr-ponytail-text li {
+  margin-bottom: 4px;
+}
+
+.critique-markdown hr,
+#alert-modal-lr-ponytail-text hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+.critique-markdown blockquote,
+#alert-modal-lr-ponytail-text blockquote {
+  border-left: 3px solid var(--cyan);
+  padding-left: 10px;
+  margin: 8px 0;
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   Intraday Alert PnL & AI Attribution Modal
+   ========================================================================== */
+.pnl-modal-container {
+  background: var(--bg-surface, #0b1120);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 12px;
+  width: 96vw;
+  max-width: 1100px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(6, 182, 212, 0.15);
+  animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pnl-modal-header {
+  padding: 14px 20px;
+  background: var(--bg-subtle, #0f172a);
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.pnl-modal-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-main, #f8fafc);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: -0.2px;
+}
+
+.pnl-modal-subtitle {
+  font-size: 11.5px;
+  color: var(--text-muted, #94a3b8);
+  font-weight: 500;
+}
+
+.pnl-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  padding: 16px 20px 10px 20px;
+}
+
+.pnl-kpi-card {
+  background: var(--bg-card, rgba(15, 23, 42, 0.6));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.pnl-kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--card-accent, rgba(6, 182, 212, 0.4));
+}
+
+.pnl-kpi-card.ai-taken { --card-accent: #10b981; }
+.pnl-kpi-card.ai-avoided { --card-accent: #06b6d4; }
+.pnl-kpi-card.tv-raw { --card-accent: #f59e0b; }
+.pnl-kpi-card.net-alpha { --card-accent: #a855f7; }
+
+.pnl-kpi-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted, #94a3b8);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pnl-kpi-value {
+  font-size: 20px;
+  font-weight: 800;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: -0.5px;
+}
+
+.pnl-kpi-sub {
+  font-size: 10.5px;
+  color: var(--text-muted, #64748b);
+  font-weight: 500;
+}
+
+.pnl-controls-bar {
+  padding: 8px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+.pnl-tab-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pnl-tab-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 6px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  color: var(--text-muted, #94a3b8);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pnl-tab-btn:hover {
+  color: var(--text-main, #f8fafc);
+  background: var(--bg-card-hover, rgba(255, 255, 255, 0.08));
+}
+
+.pnl-tab-btn.active {
+  background: var(--text-main, #f8fafc);
+  color: var(--bg-surface, #0b1120);
+  border-color: var(--text-main, #f8fafc);
+}
+
+.pnl-table-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.pnl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.pnl-table th {
+  background: var(--bg-subtle, #0f172a);
+  color: var(--text-muted, #94a3b8);
+  font-weight: 700;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.pnl-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.05));
+  vertical-align: middle;
+}
+
+.pnl-table tr:hover {
+  background: var(--bg-card-hover, rgba(255, 255, 255, 0.03));
+}
+
+.pnl-badge-pos {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  display: inline-flex;
+  align-items: center;
+}
+
+.pnl-badge-neg {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  display: inline-flex;
+  align-items: center;
+}
+
+.pnl-badge-open {
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--cyan, #06b6d4);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ==========================================================================
+   Ticker Table Card & Ticker Day Trades Modal
+   ========================================================================== */
+.ticker-table-card {
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.ticker-table-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.15);
+}
+
+.ticker-trades-modal-container {
+  animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+

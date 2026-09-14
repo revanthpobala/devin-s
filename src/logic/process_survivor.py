@@ -107,7 +107,7 @@ def _next_earnings_days(ticker: str):
 
 
 def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days: int = 90,
-                         chrome_profile: str = None, force: bool = False):
+                         chrome_profile: str = None, force: bool = False, headless: bool = False):
     ticker = survivor.get("Ticker") or survivor.get("Symbol") or survivor.get("ticker", "")
     if not ticker:
         logger.warning(f"[Scraper-{worker_id}] Survivor dict has no Ticker key: {survivor}")
@@ -126,15 +126,16 @@ def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days:
         )
         return
 
-    logger.info(f"[Scraper-{worker_id}] Scraping TradingView for {ticker} (lookback_days={lookback_days})...")
+    logger.info(f"[Scraper-{worker_id}] Scraping TradingView for {ticker} (lookback_days={lookback_days}, headless={headless})...")
     try:
         if chrome_profile:
-            scraper = TVScraper(chrome_profile=chrome_profile, target_date=today_str)
+            scraper = TVScraper(chrome_profile=chrome_profile, target_date=today_str, headless=headless)
         else:
-            scraper = TVScraper(worker_id=worker_id, target_date=today_str)
+            scraper = TVScraper(worker_id=worker_id, target_date=today_str, headless=headless)
         scraper.capture_ticker(ticker, lookback_days=lookback_days)
     except Exception as e:
         logger.error(f"[Scraper-{worker_id}] Scraper failed for {ticker}: {e}")
+        raise e
 
 
 def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_negative=False):
@@ -653,7 +654,11 @@ def generate_thesis_task(
         # Fallback for single-ticker --ticker runs that bypass the sheet cascade
         # and therefore carry no alert-side. Use the indicator's own Direction
         # Probability (bible §5.13 Group B field 14): >50 = bull, <50 = bear.
-        dir_prob = _pf.get("dir_prob") if _pf.get("dir_prob") is not None else safe_float(data_window.get("Dir Prob Pct Above 50 Bull") or data_window.get("Dir Prob % (>50 bull)"))
+        dir_prob = _pf.get("dir_prob") if _pf.get("dir_prob") is not None else safe_float(
+            data_window.get("Evidence Bias Pct Above 50 Bull")
+            or data_window.get("Dir Prob Pct Above 50 Bull")
+            or data_window.get("Dir Prob % (>50 bull)")
+        )
         if dir_prob > 0:
             side = "LONG" if dir_prob >= 50 else "SHORT"
         else:
@@ -715,10 +720,7 @@ def generate_thesis_task(
     llm_input = {
         "ticker": ticker,
         "price": current_price,
-        "buy": buy_score,
-        "sell": sell_score,
         "dir_prob": _pget("dir_prob"),
-        "stage": int(round(_pget("stage"))),
         "regime": int(round(_pget("regime"))),
         "ext_pct": _pget("ext_pct"),
         "exhaustion": _pget("exhaustion"),
@@ -735,7 +737,6 @@ def generate_thesis_task(
         "golden_cross": _pf.get("golden_cross") if _pf.get("golden_cross") is not None else safe_float(data_window.get("Golden Cross")),
         "death_cross": _pf.get("death_cross") if _pf.get("death_cross") is not None else safe_float(data_window.get("Death Cross")),
         "dominant_side": side.lower(),
-        "opposite_score": sell_score if side == "LONG" else buy_score,
         "zone_state": zone_state,
         "rr_from_current": rr_from_current,
         "rr_to_target": _pget("rr_to_target"),
@@ -789,8 +790,8 @@ Example 1 (Directional):
 Input:
 {
   "ticker": "AAPL", "price": 178.5,
-  "buy": 72, "sell": 45, "dir_prob": 61,
-  "stage": 1, "regime": 1, "ext_pct": 35, "exhaustion": 0.2,
+  "dir_prob": 61,
+  "regime": 1, "ext_pct": 35, "exhaustion": 0.2,
   "ignition_long": 0, "rev_zone_l": 8, "rev_zone_s": 2,
   "dominant_side": "long", "zone_state": "above_zone", "rr_from_current": 2.1,
   "computed_flags": ["extended"],
@@ -799,14 +800,14 @@ Input:
   "today": "2026-07-17"
 }
 Output:
-{"ticker": "AAPL", "dominant_side": "long", "entry_mode": "TREND_LONG", "rev_zone": "L:Z2", "confirm_contradict": "CONFIRMS", "catalyst": "earnings beat", "news_sentiment": "bullish", "key_flags": ["extended"], "reasoning": "TREND_LONG fires with buy=72 > 65, dir_prob=61 >= 50, stage=1 healthy. News CONFIRMS with earnings beat + upgrades. extended flag from ext_pct=35 + regime=1. PASS triage.", "triage": "PASS", "conviction": 7, "send_for_deep_research": true}
+{"ticker": "AAPL", "dominant_side": "long", "entry_mode": "TREND_LONG", "rev_zone": "L:Z2", "confirm_contradict": "CONFIRMS", "catalyst": "earnings beat", "news_sentiment": "bullish", "key_flags": ["extended"], "reasoning": "TREND_LONG fires with dir_prob=61 >= 50, upside edge confirmed by volume and moving averages. News CONFIRMS with earnings beat + upgrades. extended flag from ext_pct=35 + regime=1. PASS triage.", "triage": "PASS", "conviction": 7, "send_for_deep_research": true}
 
 Example 2 (Income / Structure):
 Input:
 {
   "ticker": "MSFT", "price": 410.0,
-  "buy": 40, "sell": 35, "dir_prob": 50,
-  "stage": 2, "regime": 0, "ext_pct": 8, "exhaustion": 0.1,
+  "dir_prob": 50,
+  "regime": 0, "ext_pct": 8, "exhaustion": 0.1,
   "income_only": false, "structure": "cash_secured_put_or_put_credit",
   "structure_strikes": {"put_1_25x": 385.0, "put_1_50x": 380.0},
   "iv_rank": 65, "screener_setup": "Put-Sell Timing (Research)",
@@ -816,7 +817,7 @@ Input:
   "today": "2026-07-17"
 }
 Output:
-{"ticker": "MSFT", "dominant_side": "long", "entry_mode": "INCOME_CSP", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "none", "news_sentiment": "neutral", "key_flags": [], "reasoning": "INCOME_CSP fires on Put-Sell Timing screener setup. Structure supports CSP/put credit at support with IV rank 65. Target 1.25x/1.50x put strikes at 385/380. PASS triage.", "triage": "PASS", "conviction": 6, "send_for_deep_research": false}
+{"ticker": "MSFT", "dominant_side": "long", "entry_mode": "INCOME_CSP", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "none", "news_sentiment": "neutral", "key_flags": [], "reasoning": "INCOME_CSP fires on Put-Sell Timing setup. Structure supports CSP/put credit at support with IV rank 65. Target 1.25x/1.50x put strikes at 385/380. PASS triage.", "triage": "PASS", "conviction": 6, "send_for_deep_research": false}
 """
 
     # Build user prompt with few-shot example for better JSON consistency
@@ -941,8 +942,7 @@ Output:
 
     _debate_data = json.dumps({
         "ticker": ticker, "price": current_price,
-        "buy": buy_score, "sell": sell_score,
-        "stage": int(round(_pget("stage"))), "regime": int(round(_pget("regime"))),
+        "regime": int(round(_pget("regime"))),
         "ext_pct": _pget("ext_pct"), "exhaustion": _pget("exhaustion"),
         "dir_prob": _pget("dir_prob"),
         "rev_zone_l": safe_float(data_window.get("Long Rev Zone")),

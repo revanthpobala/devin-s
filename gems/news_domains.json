@@ -1,5 +1,5 @@
-﻿{
-  "_comment": "news_domains.json — Default research domain configuration. Path set via NEWS_DOMAINS_CONFIG in .env. {ticker} and {ticker_lower} are replaced at runtime.",
+{
+  "_comment": "news_domains.json — Reference domain configuration for deep research link synthesis and financial domain searches. {ticker} and {ticker_lower} are replaced at runtime.",
 
   "template_urls": [
     { "url": "https://marketchameleon.com/Overview/{ticker}/OptionSummary/",         "label": "Options Summary" },
@@ -8,7 +8,7 @@
     { "url": "https://optioncharts.io/options/{ticker}/max-pain",                     "label": "Max Pain" },
     { "url": "https://unusualwhales.com/stock/{ticker}/overview?chart=options-volume","label": "Unusual Whales Options Volume" },
     { "url": "https://seekingalpha.com/symbol/{ticker}/",                             "label": "Seeking Alpha Overview" },
-    { "url": "https://www.morningstar.com/stocks/xnas/{ticker_lower}/quote",          "label": "Morningstar Quote" },
+    { "url": "https://www.morningstar.com/search?query={ticker}",                     "label": "Morningstar Quote/Search" },
     { "url": "https://public.com/stocks/{ticker_lower}/earnings",                     "label": "Public.com Earnings" }
   ],
 

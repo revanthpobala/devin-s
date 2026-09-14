@@ -197,7 +197,7 @@ Row 8 tells you the state; these four tell you whether anything is *tradeable*. 
 | callout | gate | **[M]** | note |
 |---|---|---|---|
 | **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Long In Zone` + `Long RR At Market ≥ 2` + fade off + no 🛑 | **+0.116R**, 4/4 eras, 12/12 sectors, 69.9% of 519 names, n=39,740 | fires on **2.29% of bars** — an event, not a state |
-| same, **deep teal + LARGE** | as above but `Long RR At Market ≥ 5` | **+0.252R**, 4/4 eras, both ticker halves, 60.3% of 156 names, n=3,884 | ~10% of the above |
+| same, **deep teal (#00695C, size.normal)** | as above but `Long RR At Market ≥ 5` | **+0.252R**, 4/4 eras, both ticker halves, 60.3% of 156 names, n=3,884 | ~10% of the above |
 | **🚫 DO NOT CHASE** | fade gate (`Signal Pack` bit 2 = 0) | **−0.038R** era-stable | a measured **avoid** |
 | **⚠️ CHASE · R:R `X`** | buy signal while `Long In Zone = 0` | **−0.023R** | chart label off by default; gate still in `Signal Pack` bit 0 |
 
@@ -570,11 +570,11 @@ longRRValid = longRR >= minRR
 ```
 - `rrHaircut` = 0.5 (shrinks Dir Prob toward 50 — overfit edges decay live)
 - `rrKellyBuffer` = 1.3 (fractional-Kelly cushion above break-even)
-- `rrFloor` = 0.70 (hard floor — calibrated walk-forward on 17 tickers)
+- `rrFloor` = 2.00 (hard floor — corpus-calibrated default raised from 0.70 to 2.00 in Pine:80 on 544 tickers / 1.7M trades; legacy 0.70 was 17-ticker audit)
 
-> **Verified exact.** Recomputing `Long RR Valid` offline from `Dir Prob` and `RR To Target` using
-> these three constants reproduces the exported flag on **100.000% of 1,466,095 bars**. If you ever
-> change `rrHaircut`, the Python side must change with it or this identity breaks.
+> **Verified exact.** Recomputing `Long RR Valid` offline from `Evidence Bias` and `RR To Target` using
+> these constants reproduces the exported flag. Note that current Pine code ships `rrFloor = input.float(2.00)`
+> (historical archives prior to the recalibration used 0.70). Python decoders must use 2.00 for current scrapes.
 
 ### 6.3 TOXIC RISK
 Two conditions, both required — it is not simply "wide stop":
@@ -696,7 +696,7 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 | 32 | Ext Z Self Relative | σ | Extension vs own history — **252 bars daily, 52 weekly**. Fat-tailed: observed −25.8 to +112.9, p99 only 2.4 |
 | 33 | Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz | 0–6 | Market regime — **priority enum, see §15.6** |
 | 34 | Exp Move Pct 21b | % | `HV20 × √(21/252)` — already a percent, no further scaling |
-| 35 | Dir Prob Pct Above 50 Bull | 0–100 | Evidence-spread direction. Single-name EV input only (§16.10) |
+| 35 | Evidence Bias Pct Above 50 Bull | 0–100 | Evidence-spread direction. Single-name EV input only (§16.10) |
 | 36 | Long Ignition Fresh Breakout | 0/1 | Fresh qualified breakout — descriptive tag, not a trigger (§15.7) |
 | 37 | RR To Target | ratio | Reward:risk of the **dominant side** (`buyScore >= sellScore ? longRR : shortRR`) — NOT always the long. **0 = invalid (4.5% of bars).** p99 = 7.8; still worth clamping in EV math |
 | 38 | Long RR At Market | ratio | **(Long Target − close) / (close − Long Stop Loss)** — the ratio you get buying at THIS price. **Prefer this over `RR To Target` for any "should I buy now" question.** The zone ratio overstates it on 53.7% of bars, median **+2.11 R**. `0 = invalid` |
@@ -1313,7 +1313,7 @@ which on the long lane are exactly the bullish states. There is no short-side eq
 ### 15.5 R:R Gate
 ```
 p = clamp(0.50 + (dirProb/100 - 0.50) × 0.5, 0.50, 0.95)
-minRR = max(0.70, (1-p)/p × 1.3)
+minRR = max(2.00, (1-p)/p × 1.3)
 rrValid = rr >= minRR
 ```
 

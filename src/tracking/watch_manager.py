@@ -115,6 +115,45 @@ def init_watch_db():
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS suggested_trades_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    side TEXT NOT NULL DEFAULT 'LONG',
+                    trade_type TEXT NOT NULL,
+                    trade_structure TEXT NOT NULL,
+                    trade_label TEXT NOT NULL,
+                    entry_type TEXT DEFAULT 'LIMIT',
+                    entry_price REAL,
+                    entry_zone_low REAL,
+                    entry_zone_high REAL,
+                    tactical_stop REAL,
+                    target_1 REAL,
+                    target_2 REAL,
+                    options_expiration TEXT,
+                    long_strike REAL,
+                    short_strike REAL,
+                    target_debit REAL,
+                    max_profit REAL,
+                    max_loss REAL,
+                    last_price REAL,
+                    distance_to_entry_pct REAL,
+                    status TEXT NOT NULL DEFAULT 'STALKING',
+                    dollar_pnl REAL DEFAULT 0.0,
+                    roc_pct REAL DEFAULT 0.0,
+                    is_primary INTEGER DEFAULT 1,
+                    outcome_notes TEXT,
+                    evaluated_at TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(ticker, date, trade_type, trade_structure)
+                )
+                """
+            )
+            existing_audit_cols = {col[1] for col in cursor.execute("PRAGMA table_info(suggested_trades_audit)").fetchall()}
+            if "is_primary" not in existing_audit_cols:
+                cursor.execute("ALTER TABLE suggested_trades_audit ADD COLUMN is_primary INTEGER DEFAULT 1")
             conn.commit()
 
 
@@ -355,7 +394,8 @@ def get_superforecasting_stats() -> Dict[str, Any]:
                     COUNT(*) as total_predictions,
                     COUNT(CASE WHEN actual_outcome IS NOT NULL THEN 1 END) as resolved_predictions,
                     AVG(brier_score) as mean_brier_score,
-                    AVG(CASE WHEN (predicted_probability >= 0.5 AND actual_outcome = 1) OR (predicted_probability < 0.5 AND actual_outcome = 0) THEN 1.0 ELSE 0.0 END) as directional_accuracy
+                    AVG(CASE WHEN actual_outcome IS NOT NULL THEN (CASE WHEN (predicted_probability >= 0.5 AND actual_outcome = 1) OR (predicted_probability < 0.5 AND actual_outcome = 0) THEN 1.0 ELSE 0.0 END) ELSE NULL END) as directional_accuracy,
+                    AVG(CASE WHEN actual_outcome IS NOT NULL THEN (CASE WHEN actual_outcome = 1 THEN 1.0 ELSE 0.0 END) ELSE NULL END) as actual_hit_rate
                 FROM superforecasting_audits
                 WHERE model_type = 'MODEL_A_PINE'
                 """
@@ -365,7 +405,8 @@ def get_superforecasting_stats() -> Dict[str, Any]:
                 "total": row_a["total_predictions"] if row_a else 0,
                 "resolved": row_a["resolved_predictions"] if row_a else 0,
                 "brier_score": round(row_a["mean_brier_score"], 4) if row_a and row_a["mean_brier_score"] is not None else 0.0,
-                "accuracy_pct": round((row_a["directional_accuracy"] or 0.0) * 100, 1) if row_a else 0.0,
+                "accuracy_pct": round((row_a["actual_hit_rate"] if row_a and row_a["actual_hit_rate"] is not None else (row_a["directional_accuracy"] or 0.0)) * 100, 1) if row_a else 0.0,
+                "directional_pct": round((row_a["directional_accuracy"] or 0.0) * 100, 1) if row_a else 0.0,
             }
 
             # Model B (Independent Quant) stats
@@ -375,7 +416,8 @@ def get_superforecasting_stats() -> Dict[str, Any]:
                     COUNT(*) as total_predictions,
                     COUNT(CASE WHEN actual_outcome IS NOT NULL THEN 1 END) as resolved_predictions,
                     AVG(brier_score) as mean_brier_score,
-                    AVG(CASE WHEN (predicted_probability >= 0.5 AND actual_outcome = 1) OR (predicted_probability < 0.5 AND actual_outcome = 0) THEN 1.0 ELSE 0.0 END) as directional_accuracy
+                    AVG(CASE WHEN actual_outcome IS NOT NULL THEN (CASE WHEN (predicted_probability >= 0.5 AND actual_outcome = 1) OR (predicted_probability < 0.5 AND actual_outcome = 0) THEN 1.0 ELSE 0.0 END) ELSE NULL END) as directional_accuracy,
+                    AVG(CASE WHEN actual_outcome IS NOT NULL THEN (CASE WHEN actual_outcome = 1 THEN 1.0 ELSE 0.0 END) ELSE NULL END) as actual_hit_rate
                 FROM superforecasting_audits
                 WHERE model_type = 'MODEL_B_INDEPENDENT'
                 """
@@ -385,7 +427,8 @@ def get_superforecasting_stats() -> Dict[str, Any]:
                 "total": row_b["total_predictions"] if row_b else 0,
                 "resolved": row_b["resolved_predictions"] if row_b else 0,
                 "brier_score": round(row_b["mean_brier_score"], 4) if row_b and row_b["mean_brier_score"] is not None else 0.0,
-                "accuracy_pct": round((row_b["directional_accuracy"] or 0.0) * 100, 1) if row_b else 0.0,
+                "accuracy_pct": round((row_b["actual_hit_rate"] if row_b and row_b["actual_hit_rate"] is not None else (row_b["directional_accuracy"] or 0.0)) * 100, 1) if row_b else 0.0,
+                "directional_pct": round((row_b["directional_accuracy"] or 0.0) * 100, 1) if row_b else 0.0,
             }
 
             # Recent predictions list

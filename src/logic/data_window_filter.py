@@ -74,7 +74,8 @@ HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 # 6.0 is stronger still (+0.369R) but only 33 names reach n>=10, so its breadth is unverifiable and
 # it is deliberately NOT used -- the same standard that rejected PRIME and code 20 for breadth.
 # Win rate FALLS as the ratio rises (34% at >=2, 23% at >=5): the edge is payoff, not hit rate.
-RR_MKT_PASS = 2.0
+# User specification: R:R >= 1.5 is accepted for the PASS lane.
+RR_MKT_PASS = float(os.getenv("RR_MKT_PASS", "1.5"))
 RR_MKT_STRONG = 5.0
 # Set RR_LANE_ENABLED=0 to restore code-20-only PASS behaviour for an A/B comparison.
 RR_LANE_ENABLED = os.getenv("RR_LANE_ENABLED", "1") not in ("0", "false", "False")

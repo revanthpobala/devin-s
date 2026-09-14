@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import sys
 import glob
 import json
 import logging
 import re
+import sqlite3
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -15,11 +17,9 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from src import config
-from src.clients import adanos_client, alphavantage_client, earnings_client, google_grounding_client, finnhub_client
-from src.clients.adanos_client import format_market_sentiment_block
+from src.clients import alphavantage_client, earnings_client, google_grounding_client, finnhub_client
 from src.clients.llm_client import query_local_llm
 from src.logic.thesis_drift import ThesisDriftChecker
-from src.tracking.sheets_tracker import SheetsTracker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -31,7 +31,6 @@ from datetime import datetime
 def prefetch_deep_research_context(ticker: str, date_str: str) -> dict:
     """Pre-fetch deterministic technical analytics and quantitative plugins in parallel to front-load context.
     Options chains are NOT pre-fetched blindly; the LLM explicitly requests specific expiration chains on-demand."""
-    import concurrent.futures
     from src.clients.llm_client import (
         run_quantitative_plugin_tool,
         fetch_prior_research_tool,
@@ -47,6 +46,7 @@ def prefetch_deep_research_context(ticker: str, date_str: str) -> dict:
             return key, f"Unavailable ({e})"
 
     tasks = [
+        ("monte_carlo", run_quantitative_plugin_tool, ticker, "monte_carlo", date_str),
         ("quant_plugins", run_quantitative_plugin_tool, ticker, "all", date_str),
         ("candlestick_patterns", run_quantitative_plugin_tool, ticker, "candlestick_patterns", date_str),
         ("tastytrade_volatility", run_quantitative_plugin_tool, ticker, "tastytrade_volatility", date_str),
@@ -54,8 +54,8 @@ def prefetch_deep_research_context(ticker: str, date_str: str) -> dict:
         ("historical_analytics", fetch_historical_zone_and_regime_analytics_tool, ticker, 60, date_str),
     ]
 
-    logger.info(f"[{ticker}] ⚡ Parallel front-loading deterministic quant, TA-Lib, and volatility plugins...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    logger.info(f"[{ticker}] ⚡ Parallel front-loading deterministic quant, Monte Carlo, TA-Lib, and volatility plugins on CPU...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         futures = [executor.submit(_fetch_task, t[0], t[1], *t[2:]) for t in tasks]
         for f in concurrent.futures.as_completed(futures):
             k, v = f.result()
@@ -232,7 +232,7 @@ def _format_engine_math_block(rec: dict) -> str:
         f"- Chosen side / mode: {rec.get('chosen_side') or 'n/a'} / {rec.get('mode') or 'n/a'}",
         f"- Fade Gate Status: {fade_str}",
         f"- Price vs Zone: {zone_pos}  (in_zone={in_zone}, missed={missed})",
-        f"- Long R:R at Market: {f('rr_at_market')}  (2.0+ is the verified PASS lane threshold)",
+        f"- Long R:R at Market: {f('rr_at_market')}  (1.5+ is the verified PASS lane threshold)",
         f"- Expected Value: {f('ev_r')} R   |  Win Prob: {f('win_prob')}  |  R:R used: {f('rr')}",
         f"- Structure read: {rec.get('structure') or 'none'}  |  Strikes: {rec.get('structure_strikes') or 'none'}",
         f"- IV Rank: {f('iv_rank', '{:.1f}%')}  |  Expected Move 21b: {f('exp_move_pct', '{:.2f}%')}",
@@ -561,64 +561,49 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             safe_target = single_ticker.replace(":", "_")
             tdir = _triage_subdir_for(single_ticker)
             target_file = (tdir or (raw_dir / safe_target) or raw_dir) / f"{safe_target}_chart.png"
+            dw_check = (tdir or (raw_dir / safe_target) or raw_dir) / f"{safe_target}_datawindow.json"
+
+            # Must strictly have both chart and Data Window for the target date_str
+            if not target_file.exists() or not dw_check.exists():
+                logger.info(
+                    f"[{single_ticker}] Fresh chart/DataWindow missing for {date_str}. Running targeted scrape + local research..."
+                )
+                try:
+                    base_cmd = [config.get_python_exe()]
+                    subprocess.run(
+                        base_cmd
+                        + [
+                            str(config.BASE_DIR / "run_swing_research.py"),
+                            date_str,
+                            "--ticker",
+                            single_ticker,
+                        ],
+                        check=True,
+                    )
+                    subprocess.run(
+                        base_cmd
+                        + [
+                            str(config.BASE_DIR / "run_local_research.py"),
+                            date_str,
+                            "--ticker",
+                            single_ticker,
+                        ],
+                        check=True,
+                    )
+                except Exception as e:
+                    logger.error(f"[{single_ticker}] Error running scraper: {e}")
+
+            # Re-check for target_date artifacts strictly in raw_dir or tdir
+            target_file = (tdir or (raw_dir / safe_target) or raw_dir) / f"{safe_target}_chart.png"
             if not target_file.exists():
                 target_file = raw_dir / f"{safe_target}_chart.png"
+
             if target_file.exists():
                 chart_files.append(str(target_file))
             else:
-                search_pattern = str(
-                    config.BASE_DIR / "data" / "raw" / "**" / f"{safe_target}_chart.png"
+                logger.error(
+                    f"[{single_ticker}] Target artifacts not found for date {date_str}. Aborting to avoid using stale cross-date data."
                 )
-                all_matches = glob.glob(search_pattern, recursive=True)
-                if all_matches:
-                    all_matches.sort(key=os.path.getmtime, reverse=True)
-                    chart_files.append(all_matches[0])
-                    logger.info(f"[{single_ticker}] Found existing screenshot at {all_matches[0]}")
-                else:
-                    logger.info(
-                        f"[{single_ticker}] Screenshot not found. Running scrape + local research..."
-                    )
-                    try:
-                        base_cmd = [config.get_python_exe()]
-                        subprocess.run(
-                            base_cmd
-                            + [
-                                str(config.BASE_DIR / "run_swing_research.py"),
-                                "--ticker",
-                                single_ticker,
-                            ],
-                            check=True,
-                        )
-                        subprocess.run(
-                            base_cmd
-                            + [
-                                str(config.BASE_DIR / "run_local_research.py"),
-                                "--ticker",
-                                single_ticker,
-                            ],
-                            check=True,
-                        )
-                        today_str = datetime.now().strftime("%Y-%m-%d")
-                        new_matches = glob.glob(
-                            str(
-                                config.BASE_DIR
-                                / "data"
-                                / "raw"
-                                / today_str
-                                / "**"
-                                / f"{safe_target}_chart.png"
-                            ),
-                            recursive=True,
-                        )
-                        if new_matches:
-                            new_matches.sort(key=os.path.getmtime, reverse=True)
-                            chart_files.append(new_matches[0])
-                        else:
-                            logger.error(
-                                f"[{single_ticker}] Scraper finished but failed to generate screenshot."
-                            )
-                    except Exception as e:
-                        logger.error(f"[{single_ticker}] Error running scraper: {e}")
     else:
         # Batch mode: the local-research pipeline already MOVED the
         # deep-research-flagged tickers (send_for_deep_research == True) into
@@ -760,6 +745,13 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
                 logger.warning(f"[{ticker}] Error loading data window: {e}")
         else:
             logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
+
+        if not dw_dict:
+            logger.error(
+                f"[{ticker}] No valid Data Window found on disk for {date_str} at {dw_path}. "
+                f"Aborting deep research for this ticker to prevent hallucinated thesis."
+            )
+            continue
 
         triage_record = _load_triage_record(raw_dir, deep_dir, ticker, tdir=tdir) or {}
 
@@ -910,28 +902,41 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         image_paths_model_b = [p for p in [plain_p] if p and os.path.exists(p)] or ([wide_p] if wide_p and os.path.exists(wide_p) else [])
         image_paths = image_paths_model_a
 
-        # ── FRESH, DATED NEWS (live pull so the paid pass never sees stale macro) ──
-        fresh_news = _pull_fresh_news(ticker, date_str)
+        # ── PARALLEL LIVE CONTEXT RETRIEVAL (News, AlphaVantage, Finnhub, Google Grounding) ──
+        def _fetch_safe(fn, *args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                logger.debug(f"Live fetch task failed: {e}")
+                return ""
 
-        # ── MACRO SOCIAL SENTIMENT (overall market mood from Adanos, free tier) ──
-        # Injected as context so the paid pass sees broad retail/news sentiment,
-        # not just the single-ticker read. Costs 2 quota calls/run (cached per run).
-        market_sentiment_block = format_market_sentiment_block() or (
-            "--- MACRO SOCIAL SENTIMENT ---\n(no Adanos data available)"
-        )
+        logger.info(f"[{ticker}] ⚡ Parallel live context retrieval (News, AlphaVantage, Finnhub, Google Grounding)...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            fut_news = executor.submit(_fetch_safe, _pull_fresh_news, ticker, date_str)
+            fut_av = executor.submit(_fetch_safe, alphavantage_client.format_av_block, ticker)
+            fut_inst = executor.submit(_fetch_safe, finnhub_client.format_finnhub_institutional_block, ticker)
+            fut_ground = executor.submit(
+                _fetch_safe,
+                google_grounding_client.format_grounded_block,
+                ticker,
+                f"{ticker} stock latest news, analyst rating changes, and earnings outlook this week",
+            )
+            fut_macro_ground = executor.submit(
+                _fetch_safe,
+                google_grounding_client.format_grounded_block,
+                "MACRO",
+                f"US Macroeconomic news today {date_str}, including any CPI, NFP, or FOMC data released",
+            )
 
-        av_block = alphavantage_client.format_av_block(ticker)
-        social_block = adanos_client.format_social_block(ticker)
+            fresh_news = fut_news.result() or "No fresh news could be retrieved via live search."
+            av_block = fut_av.result() or ""
+            institutional_block = fut_inst.result() or ""
+            grounded_block = fut_ground.result() or ""
+            macro_grounded_block = fut_macro_ground.result() or ""
+
+        market_sentiment_block = ""
+        social_block = ""
         earnings_fact_block = earnings_client.format_earnings_fact_block(ticker, dw=dw_dict)
-        institutional_block = finnhub_client.format_finnhub_institutional_block(ticker)
-
-        grounded_question = (
-            f"{ticker} stock latest news, analyst rating changes, and earnings outlook this week"
-        )
-        grounded_block = google_grounding_client.format_grounded_block(ticker, grounded_question)
-        
-        macro_grounded_question = f"US Macroeconomic news today {date_str}, including any CPI, NFP, or FOMC data released"
-        macro_grounded_block = google_grounding_client.format_grounded_block("MACRO", macro_grounded_question)
 
         active_pos = None
         active_pos_block = ""
@@ -1135,7 +1140,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         
         preloaded_block = f"""
         --- 2g. PRE-LOADED DETERMINISTIC QUANT, TA-LIB & VOLATILITY ANALYTICS ---
-        The following deterministic datasets have already been computed and pre-loaded for you:
+        [DETERMINISTIC CPU MONTE CARLO PROBABILITIES (20,000 PATHS), VRP & CORE MOVING AVERAGE EXTENSIONS]:
+        {pre_ctx.get('monte_carlo')}
 
         [QUANTITATIVE PLUGINS (Order Flow, Squeeze, HTF Confluence, VP Nodes)]:
         {pre_ctx.get('quant_plugins')}
@@ -1152,7 +1158,7 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         [PRIOR 14-DAY RESEARCH DOSSIER]:
         {pre_ctx.get('prior_research')}
 
-        ⚡ OPTIONS DIRECTIVE: Formulate your directional thesis and target expiration window first. Then emit tool calls (`fetch_options_chain` or `scrape_tradingview_options_finder`) to retrieve the exact strikes and expirations tailored to your trade plan.
+        ⚡ OPTIONS & QUANT DIRECTIVE: The 20,000-path Monte Carlo trajectory, IV/HV volatility risk premium, and core moving average extensions are ALREADY pre-computed above on the CPU. Formulate your directional thesis, options plan, and target expiration window directly from these deterministic probabilities. Emit tool calls (`fetch_options_chain` or `scrape_tradingview_options_finder`) to retrieve the exact strikes and expirations tailored to your trade plan.
         """
 
         # ========================================================
@@ -1180,11 +1186,8 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         --- 2b. MACRO NEWS (LIVE) ---
         {macro_news}
 
-        {market_sentiment_block}
-
-        --- 2c. FUNDAMENTAL & SOCIAL ---
+        --- 2c. FUNDAMENTAL & CATALYST INTEL ---
         {av_block}
-        {social_block}
         {grounded_block}
         {macro_grounded_block}
 
@@ -1214,8 +1217,6 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
             "Never fabricate moving average levels or invent technical indicators. Never contradict the pre-decoded Section 2d-1 engine math. "
             "Output your bear case in a concise, punchy markdown format."
         )
-
-        import concurrent.futures
 
         def _run_debate_agent(sys_prompt, u_prompt, tokens=1024):
             return query_local_llm(
@@ -1293,7 +1294,6 @@ def run_deep_research(date_str, target_ticker=None, force_local=False):
         # Query recent daily alerts & triggers for this ticker (to ground thesis in alert history)
         alerts_list = []
         try:
-            import sqlite3
             watch_db = config.BASE_DIR / "data" / "research_watch.db"
             if watch_db.exists():
                 with sqlite3.connect(str(watch_db)) as wconn:
@@ -1386,11 +1386,8 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
         --- 2b. MACRO NEWS (LIVE) ---
         {macro_news}
 
-        {market_sentiment_block}
-
-        --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL (fetched live for this ticker) ---
+        --- 2c. FUNDAMENTAL & CATALYST INTEL (fetched live for this ticker) ---
         {av_block}
-        {social_block}
         {institutional_block}
         {grounded_block}
 
@@ -1483,10 +1480,9 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
         - `fetch_finnhub_news` and `fetch_alpaca_news` for the latest ticker-specific news.
         - `search_web` for broader macro or catalyst context.
         - `fetch_options_chain` for real-time Greeks, multi-horizon strikes (both short-dated and LEAPS with min_dte=120, max_dte=365+), and exact contract quotes.
-        - `scrape_tradingview_options_finder` to dynamically search TradingView's proprietary Strategy Finder for pre-computed spreads matching your desired prediction period ('Next month', 'Next 3 months', 'Next 6 months') and expected move direction.
-        - `run_quantitative_plugin` to run specialized analytics ('candlestick_patterns', 'order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', or 'all').
+        - `run_quantitative_plugin` to run specialized analytics ('monte_carlo', 'candlestick_patterns', 'order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', or 'all').
         - `fetch_prior_research` to retrieve our most recent prior research report from reports/<date>/<ticker>_summary.md within the last 14 days. Use this to audit active stalk states, track thesis evolution, and check whether prior limit orders or triggers have played out.
-        - `execute_python_code`: Act as Lead Quantitative Trader. You MUST write and execute a Python script to run a Monte Carlo simulation (10,000 paths) using the provided IV30 and HV20 to calculate the exact mathematical probability of hitting your Profit Target vs your Stop Loss before finalizing your Options Plan. CRITICAL: Your python code MUST be concise. Use arrays and for-loops to test multiple horizons or targets. DO NOT unroll scenarios into 50+ lines of repeated code. Also formulate any other open-ended mathematical hypothesis tailored to this specific ticker and market regime (e.g., historical setup backtesting on `df`, volume absorption flow, volatility risk premium $IV - HV$, or options $EV$ / spread payoff math).
+        - `execute_python_code`: NOTE: 20,000-path Monte Carlo simulations, IV/HV volatility risk premium, and core moving average extensions are ALREADY pre-computed on the host CPU in Section 2g. Use these deterministic numbers directly. Only call `execute_python_code` if you formulate a bespoke, non-standard quantitative hypothesis tailored to this specific ticker and market regime (e.g., custom setup backtesting on `df`, custom options payoff math, or multi-factor regression). Do NOT rewrite boilerplate Monte Carlo simulations that are already computed.
 
         --- PRIOR RESEARCH & PATTERN SYNTHESIS WORKFLOW ---
         When `fetch_prior_research` is called alongside `detect_candlestick_patterns`:
@@ -1560,11 +1556,8 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
         --- 2b. MACRO NEWS (LIVE) ---
         {macro_news}
 
-        {market_sentiment_block}
-
-        --- 2c. FUNDAMENTAL & PER-TICKER SOCIAL ---
+        --- 2c. FUNDAMENTAL & CATALYST INTEL ---
         {av_block}
-        {social_block}
         {institutional_block}
         {grounded_block}
 
@@ -1586,10 +1579,10 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
 
         MANDATORY QUANTITATIVE WORKFLOW (EXECUTE BEFORE WRITING REPORT):
         1. Act as Lead Quantitative Trader & Macro Strategist operating independently.
-        2. STEP 1 (MANDATORY TOOL EXECUTION): You MUST call `execute_python_code` and `fetch_options_chain` FIRST before writing any text:
-           - In `execute_python_code`, analyze `df` to calculate exact 52W high/low, gap boundaries, 50/200 SMA levels, Volume Profile Value Area (VAH/VAL/POC), and Monte Carlo probabilities for P(Target First) vs P(Stop First).
+        2. MANDATORY TOOL EXECUTION: You MUST emit any needed tools (`fetch_options_chain`, `detect_candlestick_patterns`, and any specialized plugins or bespoke `execute_python_code`) SIMULTANEOUSLY in PARALLEL in your first response batch before writing narrative text.
+           - NOTE: 20,000-path Monte Carlo simulations, 52W High/Low, and moving average extensions are ALREADY pre-computed on the host CPU in Section 2g. Use those exact mathematical baselines directly.
            - In `fetch_options_chain`, retrieve the live options chain to price actionable calls, puts, and spreads.
-        3. STEP 2: Only after receiving and verifying the quantitative tool calculations, synthesize the macro backdrop vs micro company catalysts and output your final structured Markdown thesis following the independent format.
+        3. FINAL REPORT: Only after receiving and verifying the quantitative tool calculations, synthesize the macro backdrop vs micro company catalysts and output your final structured Markdown thesis following the independent format.
         """
 
         use_remote = not force_local
@@ -1602,11 +1595,20 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
         else:
             provider_model = "local-gpu (llama-cpp-server)"
             
-        logger.info(
-            f"[{ticker}] Pass 2 — Launching Model A (Pine Gem / Summary) and Model B (Independent Gem) CONCURRENTLY in parallel to {provider_model}..."
+        # use_remote=True means the caller didn't pass --local, but it doesn't mean
+        # a working remote key is configured. Detect actual key presence so we can
+        # correctly branch concurrent (remote) vs sequential (local GPU) execution.
+        # If no key → _run_model_a/b silently fall back to local GPU *concurrently*,
+        # splitting VRAM bandwidth and collapsing throughput from 27 t/s to 0.9 t/s.
+        _has_remote_key = bool(
+            os.getenv("META_AI_API_KEY") or os.getenv("OPENROUTER_KEY") or os.getenv("OPENROUTER_API_KEY")
         )
+        will_use_remote = use_remote and _has_remote_key
 
-        import concurrent.futures
+        logger.info(
+            f"[{ticker}] Pass 2 — Model A (Pine Gem) + Model B (Independent): "
+            f"{'remote API (' + provider_model + ')' if will_use_remote else 'Local GPU sequential (no remote key — forcing sequential to preserve bandwidth)'}"
+        )
 
         def _run_model_a():
             resp = None
@@ -1619,7 +1621,7 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                         use_openrouter=True,
                         image_paths=image_paths_model_a,
                         use_tools=True,
-                        max_tokens=8192,
+                        max_tokens=16384,
                         summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
                     )
                 except Exception as e_remote:
@@ -1636,7 +1638,7 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                     image_paths=image_paths_model_a,
                     use_tools=True,
                     disable_thinking=True,
-                    max_tokens=8192,
+                    max_tokens=16384,
                     summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
                 )
             return resp
@@ -1652,7 +1654,7 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                         use_openrouter=True,
                         image_paths=image_paths_model_b,
                         use_tools=True,
-                        max_tokens=8192,
+                        max_tokens=16384,
                         summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
                     )
                 except Exception as e_ind_remote:
@@ -1669,17 +1671,31 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                     image_paths=image_paths_model_b,
                     use_tools=True,
                     disable_thinking=True,
-                    max_tokens=8192,
+                    max_tokens=16384,
                     summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
                 )
             return resp
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                fut_a = executor.submit(_run_model_a)
-                fut_b = executor.submit(_run_model_b)
-                response = fut_a.result()
-                ind_response = fut_b.result()
+            if will_use_remote:
+                logger.info(
+                    f"[{ticker}] Pass 2 — Launching Model A (Pine Gem / Summary) and Model B (Independent Gem) "
+                    f"CONCURRENTLY in parallel (remote API: {provider_model})..."
+                )
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    fut_a = executor.submit(_run_model_a)
+                    fut_b = executor.submit(_run_model_b)
+                    response = fut_a.result()
+                    ind_response = fut_b.result()
+            else:
+                logger.info(
+                    f"[{ticker}] Pass 2 — Launching Model A (Pine Gem / Summary) sequentially on Local GPU..."
+                )
+                response = _run_model_a()
+                logger.info(
+                    f"[{ticker}] Pass 2 — Launching Model B (Independent Gem) sequentially on Local GPU..."
+                )
+                ind_response = _run_model_b()
 
             # Handle Model A (Proprietary / Pine Summary)
             clean_response = ""
@@ -1692,14 +1708,17 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                 clean_response = response.strip()
                 clean_response = re.sub(r'<tool_call>.*?</tool_call>', '', clean_response, flags=re.DOTALL).strip()
                 clean_response = re.sub(r'<function=.*?</function>', '', clean_response, flags=re.DOTALL).strip()
-                match_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_response)
+                match_header = re.search(r"(?m)^#+\s+.*", clean_response)
                 if match_header and match_header.start() > 0:
                     clean_response = clean_response[match_header.start():].strip()
 
-                if not match_header or len(clean_response) < 200:
-                    logger.warning(f"[{ticker}] Model A response did not contain a valid report structure (len={len(clean_response)}). Rejecting.")
+                if len(clean_response) < 200:
+                    logger.warning(f"[{ticker}] Model A response too short (len={len(clean_response)}). Rejecting.")
                     clean_response = ""
                 else:
+                    if not re.search(r"(?m)^#\s+", clean_response):
+                        clean_response = f"# {ticker} | RESEARCH DOSSIER & THESIS\n\n" + clean_response
+
                     with open(out_path, "w", encoding="utf-8") as f:
                         f.write(clean_response)
 
@@ -1761,8 +1780,6 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                         },
                     }
 
-                    tracker = SheetsTracker()
-                    tracker.update_deep_research(date_str, ticker, payload_dict)
                     logger.info(f"[{ticker}] Model A Summary generated successfully.")
             else:
                 logger.error(f"[{ticker}] Model A (Summary) returned empty response.")
@@ -1774,14 +1791,17 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                 clean_ind_response = ind_response.strip()
                 clean_ind_response = re.sub(r'<tool_call>.*?</tool_call>', '', clean_ind_response, flags=re.DOTALL).strip()
                 clean_ind_response = re.sub(r'<function=.*?</function>', '', clean_ind_response, flags=re.DOTALL).strip()
-                match_ind_header = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_ind_response)
+                match_ind_header = re.search(r"(?m)^#+\s+.*", clean_ind_response)
                 if match_ind_header and match_ind_header.start() > 0:
                     clean_ind_response = clean_ind_response[match_ind_header.start():].strip()
 
-                if not match_ind_header or len(clean_ind_response) < 200:
-                    logger.warning(f"[{ticker}] Model B response did not contain a valid report structure (len={len(clean_ind_response)}). Rejecting.")
+                if len(clean_ind_response) < 200:
+                    logger.warning(f"[{ticker}] Model B response too short (len={len(clean_ind_response)}). Rejecting.")
                     clean_ind_response = ""
                 else:
+                    if not re.search(r"(?m)^#\s+", clean_ind_response):
+                        clean_ind_response = f"# {ticker} | INDEPENDENT QUANTITATIVE & MACRO THESIS\n\n" + clean_ind_response
+
                     with open(ind_report_path, "w", encoding="utf-8") as f:
                         f.write(clean_ind_response)
 
@@ -1839,7 +1859,7 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                     '  "options_plan": {\n'
                     '    "actionable": true,\n'
                     '    "entry_trigger": "AT_MARKET|AT_FLOOR_LIMIT|BREAKOUT",\n'
-                    '    "structure": "BULL_CALL_SPREAD|BEAR_PUT_SPREAD|LONG_CALL|CASH_SECURED_PUT|NONE",\n'
+                    '    "structure": "BULL_CALL_SPREAD|BULL_PUT_SPREAD|BEAR_PUT_SPREAD|BEAR_CALL_SPREAD|LONG_CALL|LONG_PUT|CASH_SECURED_PUT|NONE",\n'
                     '    "expiration": "YYYY-MM-DD",\n'
                     '    "long_strike": 0.0,\n'
                     '    "short_strike": 0.0,\n'
@@ -1903,9 +1923,11 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
 
                 if judge_response:
                     clean_judge = judge_response.strip()
-                    match_judge = re.search(r"(?m)^#\s+[A-Z0-9]+(?:\s*\||\s*$)", clean_judge)
+                    match_judge = re.search(r"(?m)^#+\s+.*", clean_judge)
                     if match_judge and match_judge.start() > 0:
                         clean_judge = clean_judge[match_judge.start():].strip()
+                    if not re.search(r"(?m)^#\s+", clean_judge):
+                        clean_judge = f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n" + clean_judge
 
                     arbitration_path = reports_dir / f"{ticker}_arbitration.md"
                     with open(arbitration_path, "w", encoding="utf-8") as f:
@@ -1956,8 +1978,7 @@ Do NOT invent arbitrary prices or random numbers. Evaluate the exact mathematica
                                         "rationale": f"Options: {options_p.get('structure', '')} ({options_p.get('summary', '')})" if options_p.get("structure") else "See arbitration.",
                                     },
                                 }
-                                tracker = SheetsTracker()
-                                tracker.update_deep_research(date_str, ticker, judge_payload)
+                            logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB.")
                         except Exception as e_w:
                             logger.warning(f"[{ticker}] Failed to parse embedded watch levels JSON: {e_w}")
             else:
