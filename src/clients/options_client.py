@@ -19,13 +19,17 @@ interest inline. IV/OI are intentionally omitted from the Alpaca table; greeks
 
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Tuple
 from urllib.parse import urlencode
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Fast in-memory cache for live options chains (TTL: 120s)
+_CHAIN_MEM_CACHE: Dict[str, Tuple[float, str]] = {}
 
 # Set by the pipeline (deep_research) so the live tools can fall back to the
 # active ticker when the model omits the argument in a tool call.
@@ -122,23 +126,24 @@ def _alpaca_underlying_last(ticker: str) -> Optional[float]:
 
 def _fetch_alpaca_chain(ticker: str, intent: dict) -> Optional[str]:
     """Fetch live options chain from Alpaca's snapshot endpoint. Returns a
-    markdown table string, or None on failure."""
+    compact, high-density markdown table string (Calls + Puts unified, or single-side),
+    filtered to near-the-money liquid strikes and standard monthly expiries."""
     key, secret = _alpaca_creds()
     if not key or not secret:
         logger.warning("Alpaca options credentials missing.")
         return None
     try:
-        direction = intent.get("direction", "CALL").upper()
+        direction = str(intent.get("direction", "BOTH")).upper()
         strike_low = float(intent.get("strike_low", 0))
         strike_high = float(intent.get("strike_high", 1e9))
-        min_dte = int(intent.get("min_dte", 30))
+        min_dte = int(intent.get("min_dte", 14))
         max_dte = int(intent.get("max_dte", 120))
+        explicit_exp = intent.get("expiration")
 
         today = date.today()
-        params = {
-            "limit": 1000,
-            "type": "call" if direction == "CALL" else "put",
-        }
+        params = {"limit": 1000}
+        if direction in ("CALL", "PUT"):
+            params["type"] = "call" if direction == "CALL" else "put"
         if strike_low and strike_low > 0:
             params["strike_price_gte"] = strike_low
         if strike_high and strike_high < 1e9:
@@ -152,7 +157,7 @@ def _fetch_alpaca_chain(ticker: str, intent: dict) -> Optional[str]:
         r = requests.get(
             url,
             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
-            timeout=30,
+            timeout=15,
         )
         if r.status_code != 200:
             logger.warning(
@@ -165,65 +170,107 @@ def _fetch_alpaca_chain(ticker: str, intent: dict) -> Optional[str]:
             logger.warning(f"[{ticker}] Alpaca returned no option snapshots for the filters.")
             return None
 
-        rows = []
+        grid = {}
+        all_expiries = set()
         for symbol, snap in snapshots.items():
             root, exp_date, otype, strike = _parse_occ_symbol(symbol)
             if not exp_date or not otype:
                 continue
+            exp_str = exp_date.isoformat()
+            all_expiries.add(exp_str)
             dte = (exp_date - today).days
             q = snap.get("latestQuote", {}) or {}
             bp = _safe_float(q.get("bp"))
             ap = _safe_float(q.get("ap"))
             if bp is None and ap is None:
                 continue
-            if bp is not None and ap is not None:
-                mid = round((bp + ap) / 2, 2)
-            else:
-                mid = bp or ap
-            vol = _safe_int((snap.get("dailyBar", {}) or {}).get("v"))
+            mid = round((bp + ap) / 2, 2) if (bp is not None and ap is not None) else (bp or ap)
+            vol = _safe_int((snap.get("dailyBar", {}) or {}).get("v")) or 0
+            oi = _safe_int(snap.get("openInterest")) or 0
             g = snap.get("greeks", {}) or {}
             delta = _safe_float(g.get("delta"))
-            gamma = _safe_float(g.get("gamma"))
-            theta = _safe_float(g.get("theta"))
-            vega = _safe_float(g.get("vega"))
-            rows.append(
-                {
-                    "Expiry": exp_date.isoformat(),
-                    "DTE": dte,
-                    "Strike": strike,
-                    "Type": otype,
-                    "Bid": round(bp, 2) if bp is not None else None,
-                    "Ask": round(ap, 2) if ap is not None else None,
-                    "Mid": mid,
-                    "Vol": vol,
-                    "Delta": round(delta, 3) if delta is not None else None,
-                    "Gamma": round(gamma, 4) if gamma is not None else None,
-                    "Theta": round(theta, 3) if theta is not None else None,
-                    "Vega": round(vega, 3) if vega is not None else None,
-                }
-            )
 
-        if not rows:
+            k = (exp_str, strike)
+            if k not in grid:
+                grid[k] = {"exp": exp_str, "dte": dte, "strike": strike, "calls": None, "puts": None}
+            data_dict = {
+                "bid": round(bp, 2) if bp is not None else None,
+                "ask": round(ap, 2) if ap is not None else None,
+                "mid": mid,
+                "delta": round(delta, 3) if delta is not None else None,
+                "vol": vol,
+                "oi": oi,
+            }
+            if otype == "CALL":
+                grid[k]["calls"] = data_dict
+            else:
+                grid[k]["puts"] = data_dict
+
+        if not grid:
             logger.warning(f"[{ticker}] Alpaca chain came back empty after parsing.")
             return None
 
-        rows.sort(key=lambda r: (r["DTE"], r["Strike"]))
+        # Filter expiries: pick the front 1-2 standard expiries unless explicit_exp is given
+        sorted_exp = sorted(list(all_expiries))
+        if explicit_exp and explicit_exp in all_expiries:
+            selected_exp = [explicit_exp]
+        else:
+            selected_exp = sorted_exp[:2]
 
-        header = "| Expiry | DTE | Strike | Type | Bid | Ask | Mid | Vol | Delta | Gamma | Theta | Vega |"
-        sep = "|--------|-----|--------|------|-----|-----|-----|-----|-------|-------|-------|------|"
-        lines = [header, sep]
-        for r in rows:
+        spot = _alpaca_underlying_last(ticker)
 
-            def cell(v):
-                return "" if v is None else str(v)
+        # Build rows for selected expiries, prioritizing strikes nearest spot
+        final_rows = []
+        for exp in selected_exp:
+            exp_rows = [v for v in grid.values() if v["exp"] == exp]
+            if spot:
+                exp_rows.sort(key=lambda r: abs(r["strike"] - spot))
+            else:
+                exp_rows.sort(key=lambda r: r["strike"])
+            # Cap to top 12 most liquid/relevant strikes per expiry
+            exp_rows = exp_rows[:12]
+            exp_rows.sort(key=lambda r: r["strike"])
+            final_rows.extend(exp_rows)
 
-            lines.append(
-                f"| {r['Expiry']} | {r['DTE']} | {r['Strike']} | {r['Type']} "
-                f"| {cell(r['Bid'])} | {cell(r['Ask'])} | {r['Mid']} | {r['Vol']} "
-                f"| {cell(r['Delta'])} | {cell(r['Gamma'])} | {cell(r['Theta'])} | {cell(r['Vega'])} |"
-            )
+        if not final_rows:
+            return None
 
-        logger.info(f"[{ticker}] Alpaca options chain table: {len(rows)} rows")
+        if direction == "BOTH":
+            header = "| Expiry | DTE | Strike | Call Bid/Ask | Call Mid | Call Delta | Put Bid/Ask | Put Mid | Put Delta | Vol (C/P) |"
+            sep    = "|--------|-----|--------|--------------|----------|------------|-------------|---------|-----------|-----------|"
+            lines = [header, sep]
+            for r in final_rows:
+                c = r["calls"] or {}
+                p = r["puts"] or {}
+                c_ba = f"{c.get('bid', '-')}/{c.get('ask', '-')}" if c else "-"
+                p_ba = f"{p.get('bid', '-')}/{p.get('ask', '-')}" if p else "-"
+                c_mid = f"{c.get('mid', '-')}" if c else "-"
+                p_mid = f"{p.get('mid', '-')}" if p else "-"
+                c_d = f"{c.get('delta', '-')}" if c else "-"
+                p_d = f"{p.get('delta', '-')}" if p else "-"
+                vol_c = c.get("vol", 0)
+                vol_p = p.get("vol", 0)
+                lines.append(
+                    f"| {r['exp']} | {r['dte']} | {r['strike']} | {c_ba} | {c_mid} | {c_d} | {p_ba} | {p_mid} | {p_d} | {vol_c}/{vol_p} |"
+                )
+        else:
+            # Single-side table
+            is_call = (direction == "CALL")
+            header = f"| Expiry | DTE | Strike | {'Call' if is_call else 'Put'} Bid/Ask | Mid | Delta | Vol | OI |"
+            sep    = "|--------|-----|--------|--------------|-----|-------|-----|----|"
+            lines = [header, sep]
+            for r in final_rows:
+                side = r["calls"] if is_call else r["puts"]
+                if not side:
+                    continue
+                ba = f"{side.get('bid', '-')}/{side.get('ask', '-')}"
+                mid = side.get("mid", "-")
+                d = side.get("delta", "-")
+                vol = side.get("vol", 0)
+                oi = side.get("oi", 0)
+                lines.append(f"| {r['exp']} | {r['dte']} | {r['strike']} | {ba} | {mid} | {d} | {vol} | {oi} |")
+
+        logger.info(f"[{ticker}] Alpaca compact options chain table: {len(final_rows)} rows ({direction})")
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[{ticker}] _fetch_alpaca_chain failed: {e}")
@@ -235,14 +282,14 @@ def _fetch_alpaca_chain(ticker: str, intent: dict) -> Optional[str]:
 # ---------------------------------------------------------------------------
 def _fetch_yfinance_chain(ticker: str, intent: dict) -> Optional[str]:
     """Fetch live options chain for strikes/expiries via yfinance. Returns a
-    formatted markdown table string, or None on failure."""
+    compact, high-density markdown table string, or None on failure."""
     try:
         import yfinance as yf
 
-        direction = intent.get("direction", "CALL").upper()
+        direction = str(intent.get("direction", "BOTH")).upper()
         strike_low = float(intent.get("strike_low", 0))
         strike_high = float(intent.get("strike_high", 1e9))
-        min_dte = int(intent.get("min_dte", 30))
+        min_dte = int(intent.get("min_dte", 14))
         max_dte = int(intent.get("max_dte", 120))
 
         yf_ticker = yf.Ticker(ticker)
@@ -265,55 +312,83 @@ def _fetch_yfinance_chain(ticker: str, intent: dict) -> Optional[str]:
                 continue
 
         relevant_expiries.sort()
-        selected_expiries = relevant_expiries[:3]
+        selected_expiries = relevant_expiries[:2]
 
         if not selected_expiries:
             logger.warning(f"[{ticker}] No expiries found in {min_dte}-{max_dte} DTE window.")
             return None
 
-        rows = []
+        grid = {}
         for dte, exp_str in selected_expiries:
             try:
                 chain = yf_ticker.option_chain(exp_str)
-                df = chain.calls if direction == "CALL" else chain.puts
-                df = df[(df["strike"] >= strike_low) & (df["strike"] <= strike_high)].copy()
-                df = df[(df["openInterest"] > 0) | (df["volume"] > 0)]
-                if df.empty:
-                    continue
-                for _, row in df.iterrows():
-                    mid = round((row.get("bid", 0) + row.get("ask", 0)) / 2, 2)
-                    iv_pct = round(row.get("impliedVolatility", 0) * 100, 1)
-                    rows.append(
-                        {
-                            "Expiry": exp_str,
-                            "DTE": dte,
-                            "Strike": row["strike"],
-                            "Type": direction,
-                            "Bid": round(row.get("bid", 0), 2),
-                            "Ask": round(row.get("ask", 0), 2),
-                            "Mid": mid,
-                            "Volume": _safe_int(row.get("volume")),
-                            "OI": _safe_int(row.get("openInterest")),
-                            "IV%": iv_pct,
+                for otype, df in [("CALL", chain.calls), ("PUT", chain.puts)]:
+                    if direction in ("CALL", "PUT") and otype != direction:
+                        continue
+                    df = df[(df["strike"] >= strike_low) & (df["strike"] <= strike_high)].copy()
+                    for _, row in df.iterrows():
+                        k = (exp_str, row["strike"])
+                        if k not in grid:
+                            grid[k] = {"exp": exp_str, "dte": dte, "strike": row["strike"], "calls": None, "puts": None}
+                        mid = round((row.get("bid", 0) + row.get("ask", 0)) / 2, 2)
+                        side_dict = {
+                            "bid": round(row.get("bid", 0), 2),
+                            "ask": round(row.get("ask", 0), 2),
+                            "mid": mid,
+                            "vol": _safe_int(row.get("volume")) or 0,
+                            "oi": _safe_int(row.get("openInterest")) or 0,
+                            "iv": round(row.get("impliedVolatility", 0) * 100, 1),
                         }
-                    )
+                        if otype == "CALL":
+                            grid[k]["calls"] = side_dict
+                        else:
+                            grid[k]["puts"] = side_dict
             except Exception as e:
                 logger.warning(f"[{ticker}] Failed to fetch chain for expiry {exp_str}: {e}")
 
-        if not rows:
+        if not grid:
             logger.warning(f"[{ticker}] Options chain came back empty after filtering.")
             return None
 
-        header = "| Expiry | DTE | Strike | Type | Bid | Ask | Mid | Volume | OI | IV% |"
-        sep = "|--------|-----|--------|------|-----|-----|-----|--------|----|-----|"
-        lines = [header, sep]
-        for r in rows:
-            lines.append(
-                f"| {r['Expiry']} | {r['DTE']} | {r['Strike']} | {r['Type']} "
-                f"| {r['Bid']} | {r['Ask']} | {r['Mid']} | {r['Volume']} | {r['OI']} | {r['IV%']}% |"
-            )
+        # Sort and select top strikes
+        final_rows = []
+        for _, exp_str in selected_expiries:
+            exp_rows = [v for v in grid.values() if v["exp"] == exp_str]
+            exp_rows = exp_rows[:12]
+            exp_rows.sort(key=lambda r: r["strike"])
+            final_rows.extend(exp_rows)
 
-        logger.info(f"[{ticker}] yfinance options chain table: {len(rows)} rows")
+        if not final_rows:
+            return None
+
+        if direction == "BOTH":
+            header = "| Expiry | DTE | Strike | Call Bid/Ask | Call Mid | Put Bid/Ask | Put Mid | Vol (C/P) |"
+            sep    = "|--------|-----|--------|--------------|----------|-------------|---------|-----------|"
+            lines = [header, sep]
+            for r in final_rows:
+                c = r["calls"] or {}
+                p = r["puts"] or {}
+                c_ba = f"{c.get('bid', '-')}/{c.get('ask', '-')}" if c else "-"
+                p_ba = f"{p.get('bid', '-')}/{p.get('ask', '-')}" if p else "-"
+                c_mid = f"{c.get('mid', '-')}" if c else "-"
+                p_mid = f"{p.get('mid', '-')}" if p else "-"
+                vol_c = c.get("vol", 0)
+                vol_p = p.get("vol", 0)
+                lines.append(f"| {r['exp']} | {r['dte']} | {r['strike']} | {c_ba} | {c_mid} | {p_ba} | {p_mid} | {vol_c}/{vol_p} |")
+        else:
+            is_call = (direction == "CALL")
+            header = f"| Expiry | DTE | Strike | {'Call' if is_call else 'Put'} Bid/Ask | Mid | Volume | OI | IV% |"
+            sep    = "|--------|-----|--------|--------------|-----|--------|----|-----|"
+            lines = [header, sep]
+            for r in final_rows:
+                side = r["calls"] if is_call else r["puts"]
+                if not side:
+                    continue
+                ba = f"{side.get('bid', '-')}/{side.get('ask', '-')}"
+                mid = side.get("mid", "-")
+                lines.append(f"| {r['exp']} | {r['dte']} | {r['strike']} | {ba} | {mid} | {side.get('vol', 0)} | {side.get('oi', 0)} | {side.get('iv', 0)}% |")
+
+        logger.info(f"[{ticker}] yfinance compact options chain table: {len(final_rows)} rows")
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[{ticker}] _fetch_yfinance_chain failed: {e}")
@@ -512,21 +587,31 @@ def get_realtime_quote(ticker: str) -> Optional[str]:
 
 def fetch_options_chain_tool(
     ticker: str,
-    direction: str = "CALL",
+    direction: str = "BOTH",
     strike_low: float = None,
     strike_high: float = None,
     min_dte: int = 14,
-    max_dte: int = 1200,
+    max_dte: int = 120,
     expiration: Optional[str] = None,
     **kwargs,
 ) -> Optional[str]:
-    """LLM-facing wrapper around fetch_targeted_chain. Derives a strike range from
-    the live underlying spot (via Alpaca, Tastytrade, or yfinance) when the model does not supply one.
-    Falls back to the pipeline's active ticker when the model omits the arg."""
-    ticker = ticker or _ACTIVE_TICKER
+    """LLM-facing wrapper around fetch_targeted_chain with in-memory TTL caching (120s).
+    Derives a tight near-the-money strike range (±12%) from the live underlying spot
+    when the model does not supply one. Default direction is 'BOTH' for unified Call+Put tables."""
+    import json
+    ticker = (ticker or _ACTIVE_TICKER or "").upper()
     if not ticker:
         logger.warning("fetch_options_chain_tool called without a ticker and no active ticker set.")
         return None
+
+    direction = str(direction or "BOTH").upper()
+    cache_k = f"{ticker}_{direction}_{min_dte}_{max_dte}_{strike_low}_{strike_high}_{expiration}"
+    if cache_k in _CHAIN_MEM_CACHE:
+        cached_ts, cached_table = _CHAIN_MEM_CACHE[cache_k]
+        if time.time() - cached_ts < 120:
+            logger.info(f"[{ticker}] Options chain retrieved from fast memory cache (0ms)")
+            return cached_table
+
     if expiration:
         try:
             from datetime import datetime, date as dt_date
@@ -538,6 +623,7 @@ def fetch_options_chain_tool(
                 max_dte = dte + 5
         except Exception as e_exp:
             logger.debug(f"Could not parse expiration '{expiration}': {e_exp}")
+
     if strike_low is None or strike_high is None:
         spot = _alpaca_underlying_last(ticker)
         if not spot:
@@ -549,29 +635,32 @@ def fetch_options_chain_tool(
                 spot = None
         if spot:
             if strike_low is None:
-                strike_low = round(spot * 0.70, 2)
+                strike_low = round(spot * 0.88, 2)
             if strike_high is None:
-                strike_high = round(spot * 1.35, 2)
+                strike_high = round(spot * 1.12, 2)
+
     intent = {
         "direction": direction,
         "strike_low": strike_low if strike_low is not None else 0.0,
         "strike_high": strike_high if strike_high is not None else 1e9,
         "min_dte": min_dte,
         "max_dte": max_dte,
+        "expiration": expiration,
         "key_catalyst_date": None,
         "options_rationale": "Tool-invoked live chain request from deep research model.",
     }
     res = fetch_targeted_chain(ticker, intent)
     if res:
+        _CHAIN_MEM_CACHE[cache_k] = (time.time(), res)
         try:
             from src import config
             today_str = date.today().strftime("%Y-%m-%d")
             out_dir = config.BASE_DIR / "data" / "raw" / today_str / ticker.upper()
             out_dir.mkdir(parents=True, exist_ok=True)
-            snap_file = out_dir / f"{ticker.upper()}_options_chain_{direction.upper()}_{min_dte}_{max_dte}.json"
+            snap_file = out_dir / f"{ticker.upper()}_options_chain_{direction}_{min_dte}_{max_dte}.json"
             snap_file.write_text(json.dumps({
                 "ticker": ticker.upper(),
-                "direction": direction.upper(),
+                "direction": direction,
                 "min_dte": min_dte,
                 "max_dte": max_dte,
                 "strike_low": strike_low,

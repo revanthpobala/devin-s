@@ -260,8 +260,49 @@ window.AppChat = {
     } catch (e) {}
   },
 
+  toggleCollapse() {
+    const container = document.querySelector('.container');
+    if (!container) return;
+    const isCollapsed = container.classList.toggle('chat-collapsed');
+    try {
+      localStorage.setItem('rev_chat_collapsed', isCollapsed ? '1' : '0');
+    } catch (e) {}
+    this.updateCollapseUi(isCollapsed);
+  },
+
+  updateCollapseUi(isCollapsed) {
+    const toggleBtn = document.getElementById('btn-toggle-chat');
+    const toggleTxt = document.getElementById('txt-toggle-chat');
+    if (toggleBtn) {
+      if (isCollapsed) {
+        toggleBtn.classList.add('active');
+        toggleBtn.title = "Expand Rev Chat Sidebar";
+        if (toggleTxt) toggleTxt.innerText = "Show Chat";
+      } else {
+        toggleBtn.classList.remove('active');
+        toggleBtn.title = "Collapse Rev Chat (Full Screen Mode)";
+        if (toggleTxt) toggleTxt.innerText = "Hide Chat";
+      }
+    }
+  },
+
+  initChatCollapse() {
+    try {
+      const saved = localStorage.getItem('rev_chat_collapsed');
+      if (saved === '1') {
+        const container = document.querySelector('.container');
+        if (container) container.classList.add('chat-collapsed');
+        this.updateCollapseUi(true);
+      } else {
+        this.updateCollapseUi(false);
+      }
+    } catch (e) {}
+  },
+
   initChatResize() {
     this.initPasteListeners();
+    this.initChatInputVerticalResize();
+    this.initChatCollapse();
     try {
       const saved = parseFloat(localStorage.getItem('rev_chat_w'));
       if (saved >= 300) this.applyChatWidth(saved);
@@ -307,6 +348,7 @@ window.AppChat = {
   },
 
   initModalChatResize() {
+    this.initChatInputVerticalResize();
     try {
       const saved = parseFloat(localStorage.getItem('modal_copilot_w'));
       if (saved >= 280) this.applyModalChatWidth(saved);
@@ -345,6 +387,171 @@ window.AppChat = {
         }
       } catch (err) {}
     });
+  },
+
+  // ---- Vertical Resizing for Chat Input Area (Draggable to Top) ----
+  applyChatInputHeight(px, source = 'sidebar') {
+    const isSidebar = source === 'sidebar';
+    const containerId = isSidebar ? 'rev-chat-input-container' : 'modal-chat-input-container';
+    const container = document.getElementById(containerId);
+    if (!container) return px;
+
+    const parent = container.parentElement;
+    const parentH = parent ? parent.clientHeight : 700;
+    // Allow dragging up to 82% of the container/sidebar
+    const maxH = Math.max(160, Math.floor(parentH - (isSidebar ? 120 : 160)));
+    const clamped = Math.max(78, Math.min(px, maxH));
+
+    container.style.height = `${clamped}px`;
+    container.style.flex = 'none';
+
+    // Update expand button icon & tooltip
+    const expandBtnId = isSidebar ? 'btn-rev-chat-expand' : 'btn-modal-chat-expand';
+    const expandBtn = document.getElementById(expandBtnId);
+    if (expandBtn) {
+      if (clamped > 150) {
+        expandBtn.innerText = '⤡';
+        expandBtn.title = 'Collapse input area to compact (Double-click bar above)';
+      } else {
+        expandBtn.innerText = '⤢';
+        expandBtn.title = 'Expand input area to top (Drag bar above or click)';
+      }
+    }
+
+    try {
+      localStorage.setItem(isSidebar ? 'rev_chat_input_h' : 'modal_chat_input_h', clamped);
+    } catch (e) {}
+
+    return clamped;
+  },
+
+  toggleRevChatInputExpand() {
+    const container = document.getElementById('rev-chat-input-container');
+    if (!container) return;
+    const currentH = container.getBoundingClientRect().height;
+    if (currentH > 150) {
+      this.applyChatInputHeight(108, 'sidebar');
+    } else {
+      const parent = container.parentElement;
+      const targetH = parent ? Math.min(450, Math.round(parent.clientHeight * 0.58)) : 320;
+      this.applyChatInputHeight(targetH, 'sidebar');
+    }
+  },
+
+  toggleModalChatInputExpand() {
+    const container = document.getElementById('modal-chat-input-container');
+    if (!container) return;
+    const currentH = container.getBoundingClientRect().height;
+    if (currentH > 150) {
+      this.applyChatInputHeight(108, 'modal');
+    } else {
+      const parent = container.parentElement;
+      const targetH = parent ? Math.min(450, Math.round(parent.clientHeight * 0.58)) : 320;
+      this.applyChatInputHeight(targetH, 'modal');
+    }
+  },
+
+  initChatInputVerticalResize() {
+    const setupVResize = (resizerId, containerId, source) => {
+      const resizer = document.getElementById(resizerId);
+      const container = document.getElementById(containerId);
+      if (!resizer || !container || resizer._hasVResizeListener) return;
+      resizer._hasVResizeListener = true;
+
+      // Restore saved height
+      try {
+        const savedH = parseFloat(localStorage.getItem(source === 'sidebar' ? 'rev_chat_input_h' : 'modal_chat_input_h'));
+        if (savedH >= 80) {
+          this.applyChatInputHeight(savedH, source);
+        } else {
+          this.applyChatInputHeight(108, source);
+        }
+      } catch (e) {
+        this.applyChatInputHeight(108, source);
+      }
+
+      let dragging = false;
+      let startY = 0;
+      let startH = 0;
+
+      const onMouseDown = (e) => {
+        e.preventDefault();
+        dragging = true;
+        startY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+        startH = container.getBoundingClientRect().height;
+        resizer.classList.add('active');
+        document.body.classList.add('chat-v-resizing');
+      };
+
+      const onMouseMove = (e) => {
+        if (!dragging) return;
+        const currentY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : startY);
+        // Dragging UP means currentY < startY, so delta > 0 (expanding height upwards)
+        const delta = startY - currentY;
+        this.applyChatInputHeight(startH + delta, source);
+      };
+
+      const onMouseUp = () => {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove('active');
+        document.body.classList.remove('chat-v-resizing');
+      };
+
+      resizer.addEventListener('mousedown', onMouseDown);
+      resizer.addEventListener('touchstart', onMouseDown, { passive: false });
+
+      // Double-click resizer to toggle expand/collapse
+      resizer.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        if (source === 'sidebar') {
+          this.toggleRevChatInputExpand();
+        } else {
+          this.toggleModalChatInputExpand();
+        }
+      });
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('touchmove', onMouseMove, { passive: false });
+      window.addEventListener('mouseup', onMouseUp);
+      window.addEventListener('touchend', onMouseUp);
+    };
+
+    setupVResize('rev-chat-input-resizer', 'rev-chat-input-container', 'sidebar');
+    setupVResize('modal-chat-input-resizer', 'modal-chat-input-container', 'modal');
+  },
+
+  // ---- Collapsible Suggestions Toggle (Default Collapsed) ----
+  toggleSuggestions(source = 'sidebar') {
+    let bodyId = 'rev-chat-suggestions-body';
+    let labelId = 'rev-chat-suggestions-label';
+    let iconId = 'rev-chat-suggestions-icon';
+
+    if (source === 'modal') {
+      bodyId = 'modal-chat-suggestions-body';
+      labelId = 'modal-chat-suggestions-label';
+      iconId = 'modal-chat-suggestions-icon';
+    } else if (source === 'alert') {
+      bodyId = 'alert-chat-suggestions-body';
+      labelId = 'alert-chat-suggestions-label';
+      iconId = 'alert-chat-suggestions-icon';
+    }
+
+    const bodyEl = document.getElementById(bodyId);
+    const labelEl = document.getElementById(labelId);
+    const iconEl = document.getElementById(iconId);
+    if (!bodyEl) return;
+
+    const isHidden = bodyEl.style.display === 'none' || getComputedStyle(bodyEl).display === 'none';
+    if (isHidden) {
+      bodyEl.style.display = 'flex';
+      if (labelEl) labelEl.innerText = 'Hide';
+      if (iconEl) iconEl.classList.add('open');
+    } else {
+      bodyEl.style.display = 'none';
+      if (labelEl) labelEl.innerText = 'Show';
+      if (iconEl) iconEl.classList.remove('open');
+    }
   },
 
   // ---- 15-Day Prior Chat History & Session Selection ----
@@ -807,6 +1014,9 @@ window.AppChat = {
                 if (data.session_id) this._revSessionId = data.session_id;
                 if (data.status === 'connecting') {
                   assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div><em>Analyzing real-time market data...</em></div>`;
+                } else if (data.status === 'slot_notice' || data.notice) {
+                  const noticeMsg = data.notice || '';
+                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div style="font-size:11px; color:var(--amber-light); margin-bottom:6px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:6px; padding:6px 8px;">${this.escapeHtml(noticeMsg)}</div><div><em>Streaming response...</em></div>`;
                 } else if (data.token) {
                   fullAnswer += data.token;
                   assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
@@ -1202,6 +1412,14 @@ window.AppChat = {
                     const contentEl = document.getElementById('modal-stream-content');
                     if (contentEl && !streamObj.fullAnswer) {
                       contentEl.innerHTML = `<em>${streamObj.statusText}</em>`;
+                    }
+                  }
+                } else if (data.status === 'slot_notice' || data.notice) {
+                  streamObj.statusText = data.notice || '';
+                  if (window.AppState.activeChatTicker === sym) {
+                    const contentEl = document.getElementById('modal-stream-content');
+                    if (contentEl && !streamObj.fullAnswer) {
+                      contentEl.innerHTML = `<div style="font-size:11px; color:var(--amber-light); margin-bottom:6px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:6px; padding:6px 8px;">${this.escapeHtml(streamObj.statusText)}</div><em>Streaming response...</em>`;
                     }
                   }
                 } else if (data.token) {

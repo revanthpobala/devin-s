@@ -160,4 +160,30 @@ def test_copilot_chat_request_multimodal_fields():
     assert req.image_data.startswith("data:image/png;base64,")
 
 
+def test_unified_options_chain_and_memory_cache():
+    import time
+    from src.clients.options_client import fetch_options_chain_tool, _CHAIN_MEM_CACHE
+
+    # Clear cache for clean test
+    _CHAIN_MEM_CACHE.clear()
+
+    # Call 1: Fetches unified chain
+    t0 = time.time()
+    chain = fetch_options_chain_tool("GOOGL", direction="BOTH", min_dte=20, max_dte=50)
+    d1 = time.time() - t0
+    assert chain is not None
+    assert "Call Bid/Ask" in chain or "Call" in chain
+    assert "Put Bid/Ask" in chain or "Put" in chain
+    # Verify compact size: well under 5,000 chars (not 40k!)
+    assert len(chain) < 5000
+
+    # Call 2: In-memory cache hit (<10ms)
+    t1 = time.time()
+    cached_chain = fetch_options_chain_tool("GOOGL", direction="BOTH", min_dte=20, max_dte=50)
+    d2 = time.time() - t1
+    assert cached_chain == chain
+    assert d2 < 0.05  # Instant memory cache hit
+
+
+
 

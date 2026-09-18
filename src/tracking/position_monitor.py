@@ -23,6 +23,7 @@ import queue
 import re
 import threading
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src import config
 from src.clients.price_client import get_current_price
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
 
 
 def review_tv_exit(symbol: str, alert: dict) -> dict:
@@ -88,9 +89,39 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
         return {"action": "CONFIRM_EXIT", "reason": "Unable to verify live broker price. Honoring TV exit."}
 
     action_text = str(alert.get("action") or alert.get("event") or alert.get("act_now") or "").upper()
+    exit_why_raw = alert.get("exit_why") or alert.get("act_now") or alert.get("reason") or alert.get("why") or ""
+    if not exit_why_raw and isinstance(alert.get("raw_payload"), str):
+        try:
+            p_obj = json.loads(alert["raw_payload"])
+            exit_why_raw = p_obj.get("exit_why") or p_obj.get("act_now") or ""
+        except Exception:
+            pass
+    exit_why = str(exit_why_raw).lower()
 
-    # 1. Target hit / profit taking
-    is_tp = any(tok in action_text for tok in ("TAKE PROFIT", "TARGET", "TP", "PROFIT"))
+    # 1. Structural / Strategy Exits (bias flipped, chop stall, EOD flat, time stop, runner target, profit lock)
+    # These are deliberate market structure or time-based exits from Pine script, NEVER wick noise.
+    structural_triggers = (
+        "bias flipped",
+        "chop stall",
+        "eod flat",
+        "flat (0dte)",
+        "time stop",
+        "runner target",
+        "profit lock",
+        "catastrophe",
+        "flatten",
+    )
+    if any(st in exit_why for st in structural_triggers):
+        return {
+            "action": "CONFIRM_EXIT",
+            "reason": f"Confirmed strategic exit ({exit_why_raw or 'structural exit'}).",
+            "current_price": price,
+            "stop": stop,
+            "target": target,
+        }
+
+    # 2. Target hit / profit taking
+    is_tp = any(tok in action_text for tok in ("TAKE PROFIT", "TARGET", "TP", "PROFIT")) or "target" in exit_why
     if is_tp or (target is not None and ((side == "LONG" and price >= target) or (side == "SHORT" and price <= target))):
         return {
             "action": "CONFIRM_EXIT",
@@ -100,7 +131,7 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
             "target": target,
         }
 
-    # 2. Catastrophic risk safeguard (>2.5% drawdown from entry)
+    # 3. Catastrophic risk safeguard (>2.5% drawdown from entry)
     if entry and entry > 0:
         drawdown = (entry - price) / entry if side == "LONG" else (price - entry) / entry
         if drawdown >= 0.025:
@@ -112,7 +143,8 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
                 "drawdown": drawdown,
             }
 
-    # 3. Stop evaluation: Intra-bar wick vs confirmed breakdown
+    # 4. Stop evaluation: Intra-bar wick vs confirmed breakdown
+    # Only genuine stop events ("stopped", "runner stop", or unclassified stop exits) undergo intra-bar wick veto.
     if stop is not None:
         if side == "LONG":
             if price > stop:
@@ -222,46 +254,197 @@ class PositionMonitor(threading.Thread):
         trailed_stop = False
 
         if price is not None and isinstance(price, (int, float)):
+            # If stop or target were not set, dynamically calculate via Schwab intraday ATR
+            if (stop is None or target is None) and entry:
+                try:
+                    from src.clients.schwab_client import calculate_intraday_atr
+                    atr = calculate_intraday_atr(self.ticker)
+                except Exception:
+                    atr = None
+                if not atr or atr <= 0:
+                    atr = round(entry * 0.01, 2)
+                if stop is None:
+                    stop = round(entry - 1.25 * atr, 2) if side == "LONG" else round(entry + 1.25 * atr, 2)
+                if target is None:
+                    target = round(entry + 1.5 * atr, 2) if side == "LONG" else round(entry - 1.5 * atr, 2)
+                update_position(self.ticker, stop=stop, target=target)
+
+            # 0. EOD Force-Flat Rule (0DTE 3:45 PM ET mandatory liquidation)
+            from src.tracking.alert_db import get_eastern_now
+            now_et = get_eastern_now()
+            strat = str(rec.get("strategy") or "").lower()
+            opened_at_str = str(rec.get("opened_at") or "")
+            opened_before_eod = True
+            if opened_at_str:
+                try:
+                    op_dt = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                    if op_dt.tzinfo is None:
+                        op_dt = op_dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                    else:
+                        op_dt = op_dt.astimezone(ZoneInfo("America/New_York"))
+                    if op_dt.hour == 15 and op_dt.minute >= 45:
+                        opened_before_eod = False
+                except Exception:
+                    pass
+
+            if strat == "intraday" and opened_before_eod and now_et.weekday() < 5:
+                if now_et.hour > 15 or (now_et.hour == 15 and now_et.minute >= 45):
+                    logger.info(
+                        f"[monitor:{self.ticker}] ⏰ EOD FORCE-FLAT TRIGGERED (3:45 PM ET Rule) — closing position at ${price or entry:.2f}."
+                    )
+                    close_position(
+                        self.ticker,
+                        exit_price=price or entry,
+                        exit_reason="EOD Force-Flat (0DTE 3:45 PM ET Rule)",
+                    )
+                    self._stop.set()
+                    return
+
+            # 1. Catastrophic circuit breaker (>2.5% drawdown or 1.25x ATR loss)
+            if entry and entry > 0:
+                drawdown = (entry - price) / entry if side == "LONG" else (price - entry) / entry
+                if drawdown >= 0.025:
+                    logger.warning(
+                        f"[monitor:{self.ticker}] 🛑 CATASTROPHIC RISK SAFEGUARD TRIGGERED ({drawdown*100:.1f}% drawdown from entry ${entry:.2f}) — closing position immediately."
+                    )
+                    close_position(self.ticker, exit_price=price, exit_reason=f"Catastrophic drawdown safeguard breached ({drawdown*100:.1f}%)")
+                    self._stop.set()
+                    return
+
+            # 2. Dynamic Profit Protection & Golden Lock
+            scaled_at_t1 = rec.get("scaled_at_t1", False)
+            be_locked = rec.get("be_locked", False)
+            peak_price = float(rec.get("peak_price") or entry or price)
+            eval_reason = ""
+
+            # 2a. Track High-Water Mark (Peak Price)
             if side == "LONG":
-                # Check target hit -> trail stop to break-even (entry price)
+                if price > peak_price:
+                    peak_price = price
+                    update_position(self.ticker, peak_price=peak_price)
+            elif side == "SHORT":
+                if price < peak_price:
+                    peak_price = price
+                    update_position(self.ticker, peak_price=peak_price)
+
+            # 2b. Early Breakeven Protection (+0.5R or >= $100 Unrealized Gain)
+            # Never let a trade that achieved meaningful traction turn into a red loss.
+            if entry and entry > 0:
+                unrealized_gain = (price - entry) if side == "LONG" else (entry - price)
+                unrealized_pnl = unrealized_gain * 100.0
+                halfway_to_target = False
+                if target and entry:
+                    target_dist = abs(float(target) - float(entry))
+                    halfway_to_target = unrealized_gain >= (0.5 * target_dist)
+
+                if not be_locked and (unrealized_pnl >= 100.0 or halfway_to_target):
+                    be_stop = round(float(entry) + 0.05, 2) if side == "LONG" else round(float(entry) - 0.05, 2)
+                    should_move = (side == "LONG" and (stop is None or float(stop) < be_stop)) or \
+                                  (side == "SHORT" and (stop is None or float(stop) > be_stop))
+                    if should_move:
+                        stop = be_stop
+                        trailed_stop = True
+                        be_locked = True
+                        eval_reason = f"🛡️ Gain traction reached (+${unrealized_pnl:.2f} / 0.5R). Stop ratcheted to BE+ (${stop})."
+                        logger.info(
+                            f"[monitor:{self.ticker}] 🛡️ GAIN TRACTION TRIGGERED (+${unrealized_pnl:.2f} / 0.5R reached) — "
+                            f"AUTONOMOUSLY RATCHETED STOP TO BREAK-EVEN+ (${stop})."
+                        )
+
+            # 2c. Target 1 Reached: Golden Lock (50% scale + trail runner to BE+ 0.05)
+            if side == "LONG":
                 if target is not None and price >= float(target):
                     hit_target = True
-                    if entry is not None and stop is not None and float(stop) < float(entry):
-                        stop = float(entry)
+                    if not scaled_at_t1:
+                        from src.tracking.position_state import scale_position
+                        scale_position(self.ticker, scale_pct=0.5, fill_price=price, reason=f"Target 1 hit at ${price:.2f} — Golden Lock 50% scale")
+                        stop = round(float(entry) + 0.05, 2) if entry else stop
                         trailed_stop = True
+                        eval_reason = f"🎯 Target hit at {price}. Scaled 50%, stop trailed to BE+ (${stop})."
+                    elif entry is not None and stop is not None and float(stop) < float(entry):
+                        stop = round(float(entry) + 0.05, 2)
+                        trailed_stop = True
+                        eval_reason = f"🎯 Target hit at {price}. Stop trailed to BE+ (${stop})."
+
+                # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= $200)
+                if scaled_at_t1 and entry:
+                    peak_gain = (peak_price - entry)
+                    if peak_gain * 100.0 >= 200.0:
+                        locked_gain = peak_gain * 0.65
+                        lock_stop = round(float(entry) + locked_gain, 2)
+                        if stop is None or float(stop) < lock_stop:
+                            stop = lock_stop
+                            trailed_stop = True
+                            eval_reason = f"🔒 Runner profit locked (+${peak_gain*100:.2f} peak). Stop trailed to ${stop:.2f}."
+                            logger.info(
+                                f"[monitor:{self.ticker}] 🔒 RUNNER PROFIT PROTECTED: Trailed stop to ${stop:.2f} "
+                                f"(locking 65% of peak +${peak_gain*100:.2f} gain)."
+                            )
+
                 if stop is not None and price <= float(stop):
                     breached_stop = True
+
             elif side == "SHORT":
-                # Check target hit -> trail stop to break-even (entry price)
                 if target is not None and price <= float(target):
                     hit_target = True
-                    if entry is not None and stop is not None and float(stop) > float(entry):
-                        stop = float(entry)
+                    if not scaled_at_t1:
+                        from src.tracking.position_state import scale_position
+                        scale_position(self.ticker, scale_pct=0.5, fill_price=price, reason=f"Target 1 hit at ${price:.2f} — Golden Lock 50% scale")
+                        stop = round(float(entry) - 0.05, 2) if entry else stop
                         trailed_stop = True
+                        eval_reason = f"🎯 Target hit at {price}. Scaled 50%, stop trailed to BE+ (${stop})."
+                    elif entry is not None and stop is not None and float(stop) > float(entry):
+                        stop = round(float(entry) - 0.05, 2)
+                        trailed_stop = True
+                        eval_reason = f"🎯 Target hit at {price}. Stop trailed to BE+ (${stop})."
+
+                # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= $200)
+                if scaled_at_t1 and entry:
+                    peak_gain = (entry - peak_price)
+                    if peak_gain * 100.0 >= 200.0:
+                        locked_gain = peak_gain * 0.65
+                        lock_stop = round(float(entry) - locked_gain, 2)
+                        if stop is None or float(stop) > lock_stop:
+                            stop = lock_stop
+                            trailed_stop = True
+                            eval_reason = f"🔒 Runner profit locked (+${peak_gain*100:.2f} peak). Stop trailed to ${stop:.2f}."
+                            logger.info(
+                                f"[monitor:{self.ticker}] 🔒 RUNNER PROFIT PROTECTED: Trailed stop to ${stop:.2f} "
+                                f"(locking 65% of peak +${peak_gain*100:.2f} gain)."
+                            )
+
                 if stop is not None and price >= float(stop):
                     breached_stop = True
 
         if trailed_stop:
+            msg = eval_reason or (f"🎯 Target hit at {price}. Scaled 50%, stop trailed to BE+ (${stop})." if hit_target else f"Stop trailed to ${stop}.")
             logger.info(
-                f"[monitor:{self.ticker}] 🎯 TARGET HIT at {price} (target={target}) — "
-                f"AUTONOMOUSLY TRAILING STOP TO BREAK-EVEN ({entry})."
+                f"[monitor:{self.ticker}] {msg}"
             )
             update_position(
                 self.ticker,
                 last_price=price,
                 stop=stop,
                 breached_stop=False,
-                last_eval=f"🎯 Target hit at {price}. Stop trailed to Break-Even (${entry}).",
+                be_locked=be_locked,
+                peak_price=peak_price,
+                last_eval=msg,
                 last_eval_at=_now_iso(),
             )
         else:
-            update_position(self.ticker, last_price=price, breached_stop=breached_stop)
+            update_position(
+                self.ticker,
+                last_price=price,
+                breached_stop=breached_stop,
+                be_locked=be_locked,
+                peak_price=peak_price,
+            )
 
         if breached_stop:
             logger.warning(
                 f"[monitor:{self.ticker}] 🛑 AUTONOMOUS STOP HIT at {price} (stop={stop}) — closing position."
             )
-            close_position(self.ticker)
+            close_position(self.ticker, exit_price=price, exit_reason=f"Autonomous stop breached at ${price:.2f} (stop=${stop:.2f})")
             self._stop.set()
             return
         elif hit_target:
@@ -269,8 +452,15 @@ class PositionMonitor(threading.Thread):
 
         playbook = self._eval_playbook(rec, price)
         if playbook:
-            if trailed_stop:
-                playbook = f"🎯 Target hit at {price}. Stop trailed to Break-Even (${entry}).\n\n" + playbook
+            # Sovereign LLM Exit Directive
+            if any(term in playbook.upper() for term in ("ACTION: EXIT", "🔴 EXIT CONFIRMED", "ACTION: CLOSE", "INVALIDATED — EXIT")):
+                logger.warning(f"[monitor:{self.ticker}] 🔴 LLM SOVEREIGN EXIT DIRECTIVE TRIGGERED: closing position at ${price:.2f}.")
+                close_position(self.ticker, exit_price=price, exit_reason=f"LLM Sovereign Exit Directive: {playbook[:100]}")
+                self._stop.set()
+                return
+
+            if trailed_stop and msg:
+                playbook = f"{msg}\n\n" + playbook
             update_position(self.ticker, last_eval=playbook, last_eval_at=_now_iso())
 
     def _eval_playbook(self, rec: dict, price) -> str:
@@ -368,7 +558,7 @@ class PositionManager:
 
         decision = review_tv_exit(symbol, alert)
         if decision["action"] == "CONFIRM_EXIT":
-            closed = close_position(symbol)
+            closed = close_position(symbol, exit_price=decision.get("current_price"), exit_reason=decision.get("reason"))
             self._stop_monitor(symbol)
             if closed:
                 logger.info(f"[manager] CONFIRMED exit for {symbol} — position closed. Reason: {decision['reason']}")
@@ -433,8 +623,8 @@ class PositionManager:
         raw_side = str(alert.get("side") or "").upper().strip()
         raw_action = str(alert.get("action") or "").upper().strip()
 
-        if raw_side == "NEUTRAL" or raw_action in ("NEUTRAL", "ALERT", "NONE", "UNKNOWN", "") or bool(alert.get("setup")):
-            logger.info(f"[manager] skipping non-directional alert for {symbol} (side={raw_side}, action={raw_action}, setup={alert.get('setup')}).")
+        if raw_side == "NEUTRAL" or raw_action in ("NEUTRAL", "ALERT", "NONE", "UNKNOWN", ""):
+            logger.info(f"[manager] skipping non-directional alert for {symbol} (side={raw_side}, action={raw_action}).")
             return
 
         if any(tok in raw_action for tok in ("PUT", "SHORT", "SELL", "BEAR")) or any(tok in raw_side for tok in ("PUT", "SHORT", "SELL", "BEAR")):
@@ -454,16 +644,57 @@ class PositionManager:
             logger.info(f"[manager] skipping prior-day alert for {symbol} dated {alert_ts} (today is {today_et}).")
             return
 
-        entry = alert.get("alert_price") or alert.get("market_price")
+        # Parse raw payload if JSON to extract plan/levels
+        payload = {}
+        raw_p = alert.get("raw_payload") or alert.get("body") or ""
+        if raw_p:
+            try:
+                payload = json.loads(raw_p) if isinstance(raw_p, str) else (raw_p if isinstance(raw_p, dict) else {})
+            except Exception:
+                payload = {}
+
+        entry = alert.get("alert_price") or alert.get("market_price") or payload.get("price")
         try:
             entry = float(entry) if entry not in (None, "") else None
         except (TypeError, ValueError):
             entry = None
 
+        # Check institutional risk vetoes (Grade-A gate, Weinstein stage, time windows, max exposure)
+        from src.tracking.alert_evaluator import evaluate_risk_vetoes, get_eastern_now
+        eastern_now = get_eastern_now()
+        current_time_et = eastern_now.strftime("%I:%M %p ET")
+        try:
+            score_val = int(float(payload.get("score") or alert.get("score") or 85))
+        except (ValueError, TypeError):
+            score_val = 85
+        grade_val = str(payload.get("grade") or alert.get("grade") or "A").upper()
+        align_val = str(payload.get("align") or alert.get("align") or "")
+
+        risk_veto = evaluate_risk_vetoes(
+            symbol=symbol,
+            action=raw_action,
+            score=score_val,
+            current_time_et=current_time_et,
+            eastern_dt=eastern_now,
+            grade=grade_val,
+            align=align_val,
+        )
+        if risk_veto:
+            hdr, pb = risk_veto
+            logger.warning(f"[manager] ⛔ RISK VETO for {symbol}: {hdr} — position NOT opened.")
+            msg_id = alert.get("message_id")
+            if msg_id:
+                try:
+                    from src.tracking.alert_db import update_alert_llm
+                    update_alert_llm(msg_id, hdr, pb, status="PROCESSED")
+                except Exception:
+                    pass
+            return
+
         # Extract stop and target levels from alert or plan string (e.g. "In 165.60 · Stop 165.21 · T1 166.19")
-        stop = alert.get("stop")
-        target = alert.get("target") or alert.get("t1")
-        plan_str = str(alert.get("plan") or "")
+        stop = alert.get("stop") or payload.get("stop")
+        target = alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target")
+        plan_str = str(alert.get("plan") or payload.get("plan") or "")
         if not stop and plan_str:
             m_stop = re.search(r"\b(?:Stop|SL)\s+([0-9]+(?:\.[0-9]+)?)\b", plan_str, re.IGNORECASE)
             if m_stop:
@@ -486,6 +717,20 @@ class PositionManager:
             target = float(target) if target not in (None, "") else None
         except (ValueError, TypeError):
             target = None
+
+        # Infallible guarantee: If stop or target are missing, derive via intraday ATR
+        if (stop is None or target is None) and entry:
+            try:
+                from src.clients.schwab_client import calculate_intraday_atr
+                atr = calculate_intraday_atr(symbol)
+            except Exception:
+                atr = None
+            if not atr or atr <= 0:
+                atr = round(entry * 0.01, 2)
+            if stop is None:
+                stop = round(entry - 1.25 * atr, 2) if side == "LONG" else round(entry + 1.25 * atr, 2)
+            if target is None:
+                target = round(entry + 1.5 * atr, 2) if side == "LONG" else round(entry - 1.5 * atr, 2)
 
         open_position(
             symbol,

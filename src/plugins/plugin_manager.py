@@ -18,6 +18,7 @@ from src.plugins.tastytrade_plugin import TastytradeVolatilityPlugin
 from src.plugins.options_skew_gex_plugin import OptionsSkewGEXPlugin
 from src.plugins.conformal_prediction_plugin import ConformalPredictionPlugin
 from src.plugins.monte_carlo_plugin import MonteCarloPlugin
+from src.plugins.schwab_plugin import SchwabPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class PluginManager:
         self.register_plugin(OptionsSkewGEXPlugin())
         self.register_plugin(ConformalPredictionPlugin())
         self.register_plugin(MonteCarloPlugin())
+        self.register_plugin(SchwabPlugin())
 
     def register_plugin(self, plugin: BaseAnalyticsPlugin):
         self._plugins[plugin.name] = plugin

@@ -260,6 +260,23 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
 
                 is_options = (trade_type == "OPTIONS")
 
+                from src.tracking.execution_validator import evaluate_setup_lifecycle
+                eval_res = evaluate_setup_lifecycle(
+                    ticker=t["ticker"],
+                    setup_date=t.get("date") or "",
+                    side=side,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    stop_loss=stop,
+                    target_1=t1,
+                    target_2=float(t.get("target_2") or 0.0),
+                    live_price=spot,
+                    current_status=status,
+                )
+                status = eval_res["status"]
+                if eval_res["was_filled"] and entry <= 0:
+                    entry = eval_res["fill_price"]
+
                 # Evaluate by status
                 if status in ("TARGET_HIT", "COMPLETED"):
                     if is_options and max_prof > 0:
@@ -271,7 +288,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                         gain_per_share = (t1 - entry) if side == "LONG" else (entry - t1)
                         dollar_pnl = round(gain_per_share * 100, 2)
                         roc_pct = round((gain_per_share / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"100 shs hit Target 1 (${t1:.2f}) vs entry ${entry:.2f}"
+                        notes = f"100 shs hit Target 1 (${t1:.2f}) vs fill ${entry:.2f} (+${dollar_pnl:.2f})"
 
                 elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
                     if is_options and max_loss > 0:
@@ -316,7 +333,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                         float_gain = (spot - entry) if side == "LONG" else (entry - spot)
                         dollar_pnl = round(float_gain * 100, 2)
                         roc_pct = round((float_gain / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"100 shs active at ${spot:.2f} vs entry ${entry:.2f}"
+                        notes = f"100 shs active at ${spot:.2f} vs fill ${entry:.2f} ({eval_res['unrealized_pnl_pct']:+.1f}%)"
 
                 else:
                     # STALKING / MISSED
@@ -328,10 +345,10 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 cursor.execute(
                     """
                     UPDATE suggested_trades_audit
-                    SET dollar_pnl = ?, roc_pct = ?, outcome_notes = ?, evaluated_at = ?
+                    SET status = ?, dollar_pnl = ?, roc_pct = ?, outcome_notes = ?, evaluated_at = ?
                     WHERE id = ?
                     """,
-                    (dollar_pnl, roc_pct, notes, eval_time, row_id),
+                    (status, dollar_pnl, roc_pct, notes, eval_time, row_id),
                 )
 
             conn.commit()

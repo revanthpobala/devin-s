@@ -153,12 +153,23 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         alert_fired = None
 
         # Check conditions
+        inv_cond = str(t.get("invalidation_condition") or "DAILY_CLOSE_BELOW").upper()
         is_stop_breached = False
+        is_testing_floor = False
         if inv_price and inv_price > 0:
-            if side == "LONG" and live_price <= inv_price:
-                is_stop_breached = True
-            elif side == "SHORT" and live_price >= inv_price:
-                is_stop_breached = True
+            if side == "LONG":
+                if live_price <= inv_price:
+                    # Daily close defense: intraday probe within 1.5% is floor test, not immediate death
+                    if "CLOSE" in inv_cond and live_price > (inv_price * 0.985):
+                        is_testing_floor = True
+                    else:
+                        is_stop_breached = True
+            elif side == "SHORT":
+                if live_price >= inv_price:
+                    if "CLOSE" in inv_cond and live_price < (inv_price * 1.005):
+                        is_testing_floor = True
+                    else:
+                        is_stop_breached = True
 
         hit_t2 = False
         if target_2 and target_2 > 0:
@@ -208,6 +219,14 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                 msg = f"[{ticker}] Price ${live_price:.2f} breached invalidation level (${inv_price:.2f}). Thesis dead."
                 log_trigger_alert(ticker, alert_fired, msg, live_price)
 
+        # A2. Floor Probe / Testing Support Check (intraday wicks on DAILY_CLOSE rules)
+        elif is_testing_floor:
+            new_status = "TESTING_SUPPORT"
+            if old_status != "TESTING_SUPPORT":
+                alert_fired = "TESTING_SUPPORT"
+                msg = f"[{ticker}] Structural floor probe: Price ${live_price:.2f} testing support (${inv_price:.2f}). Invalidation requires Daily Close Below."
+                log_trigger_alert(ticker, alert_fired, msg, live_price)
+
         # B. Breakout Entry Trigger Check (Instant IN_TRADE)
         elif hit_breakout and old_status in ("STALKING", "IN_ZONE"):
             new_status = "IN_TRADE"
@@ -216,7 +235,7 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             msg = f"[{ticker}] Breakout triggered! Price ${live_price:.2f} crossed breakout level (${breakout_level:.2f}). Trade active.{stop_str}"
             log_trigger_alert(ticker, alert_fired, msg, live_price)
 
-        # C. Target Reached Check (Differentiate IN_TRADE / IN_ZONE vs STALKING)
+        # C. Target Reached Check (Differentiate IN_TRADE / IN_ZONE vs STALKING with bar verification)
         elif hit_t2:
             if old_status in ("IN_TRADE", "IN_ZONE"):
                 new_status = "TARGET_HIT"
@@ -225,12 +244,32 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                     msg = f"[{ticker}] Price ${live_price:.2f} reached Target 2 (${target_2:.2f})! Full profit target met."
                     log_trigger_alert(ticker, alert_fired, msg, live_price)
             else:
-                # Stock ran away without entry filling
-                new_status = "MISSED_RUNAWAY"
-                if old_status != "MISSED_RUNAWAY":
-                    alert_fired = "MISSED_RUNAWAY_TARGET_2"
-                    msg = f"[{ticker}] Price ${live_price:.2f} reached Target 2 (${target_2:.2f}) without entry filling! Stock ran away from stalking zone."
-                    log_trigger_alert(ticker, alert_fired, msg, live_price)
+                # Check bar extremes before declaring runaway
+                from src.tracking.execution_validator import evaluate_setup_lifecycle
+                eval_res = evaluate_setup_lifecycle(
+                    ticker=ticker,
+                    setup_date=str(t.get("date") or ""),
+                    side=side,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    stop_loss=inv_price,
+                    target_1=target_1,
+                    target_2=target_2,
+                    live_price=live_price,
+                    current_status=old_status,
+                )
+                if eval_res["was_filled"]:
+                    new_status = "TARGET_HIT"
+                    if old_status != "TARGET_HIT":
+                        alert_fired = "TARGET_2_REACHED"
+                        msg = f"[{ticker}] Price ${live_price:.2f} reached Target 2 (${target_2:.2f}) after filling entry (${eval_res['fill_price']:.2f})! Full profit target met."
+                        log_trigger_alert(ticker, alert_fired, msg, live_price)
+                else:
+                    new_status = "MISSED_RUNAWAY"
+                    if old_status != "MISSED_RUNAWAY":
+                        alert_fired = "MISSED_RUNAWAY_TARGET_2"
+                        msg = f"[{ticker}] Price ${live_price:.2f} reached Target 2 (${target_2:.2f}) without entry filling! Stock ran away from stalking zone."
+                        log_trigger_alert(ticker, alert_fired, msg, live_price)
 
         elif hit_t1:
             if old_status in ("IN_TRADE", "IN_ZONE"):
@@ -240,28 +279,55 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                     msg = f"[{ticker}] Price ${live_price:.2f} reached Target 1 (${target_1:.2f}). Consider trimming."
                     log_trigger_alert(ticker, alert_fired, msg, live_price)
             else:
-                new_status = "MISSED_RUNAWAY"
-                if old_status != "MISSED_RUNAWAY":
-                    alert_fired = "MISSED_RUNAWAY_TARGET_1"
-                    msg = f"[{ticker}] Price ${live_price:.2f} reached Target 1 (${target_1:.2f}) without entry filling! Stock ran away from stalking zone."
-                    log_trigger_alert(ticker, alert_fired, msg, live_price)
+                from src.tracking.execution_validator import evaluate_setup_lifecycle
+                eval_res = evaluate_setup_lifecycle(
+                    ticker=ticker,
+                    setup_date=str(t.get("date") or ""),
+                    side=side,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    stop_loss=inv_price,
+                    target_1=target_1,
+                    target_2=target_2,
+                    live_price=live_price,
+                    current_status=old_status,
+                )
+                if eval_res["was_filled"]:
+                    new_status = "TARGET_HIT"
+                    if old_status != "TARGET_HIT":
+                        alert_fired = "TARGET_1_REACHED"
+                        msg = f"[{ticker}] Price ${live_price:.2f} reached Target 1 (${target_1:.2f}) after filling entry (${eval_res['fill_price']:.2f}). Consider trimming."
+                        log_trigger_alert(ticker, alert_fired, msg, live_price)
+                else:
+                    new_status = "MISSED_RUNAWAY"
+                    if old_status != "MISSED_RUNAWAY":
+                        alert_fired = "MISSED_RUNAWAY_TARGET_1"
+                        msg = f"[{ticker}] Price ${live_price:.2f} reached Target 1 (${target_1:.2f}) without entry filling! Stock ran away from stalking zone."
+                        log_trigger_alert(ticker, alert_fired, msg, live_price)
 
         # D. Entry Zone Stalking Trigger Check (With 1.0% Institutional Floor Proximity Buffer)
         elif hit_in_zone:
             new_status = "IN_ZONE"
-            if old_status == "STALKING":
+            if old_status in ("STALKING", "INVALIDATED", "STOP_BREACHED"):
                 alert_fired = "ENTRY_TRIGGERED"
                 prox_tag = " [Floor Proximity Buffer]" if in_proximity_zone else ""
                 opt_str = f" | Play: {t.get('options_summary')}" if t.get("options_summary") else ""
-                msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
+                reclaim_tag = " [Support Reclaimed]" if old_status in ("INVALIDATED", "STOP_BREACHED") else ""
+                msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag}{reclaim_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
                 log_trigger_alert(ticker, alert_fired, msg, live_price)
         else:
-            if old_status == "IN_TRADE":
+            if old_status in ("IN_TRADE", "IN_ZONE"):
+                # Maintain active trade holding above stop loss
                 new_status = "IN_TRADE"
             elif old_status == "MISSED_RUNAWAY":
                 new_status = "MISSED_RUNAWAY"
             elif old_status == "INVALIDATED" and is_stop_breached:
                 new_status = "INVALIDATED"
+            elif old_status in ("INVALIDATED", "STOP_BREACHED") and not is_stop_breached:
+                new_status = "STALKING"
+                alert_fired = "SUPPORT_RECLAIMED"
+                msg = f"[{ticker}] Bullish Reclaim! Price ${live_price:.2f} dipped and recovered above support level (${inv_price:.2f}). Thesis restored."
+                log_trigger_alert(ticker, alert_fired, msg, live_price)
             else:
                 new_status = "STALKING"
 

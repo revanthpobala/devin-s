@@ -1882,6 +1882,38 @@ window.AppSwing = {
           </div>
         </div>
 
+        <!-- 3-Tiered Options Vehicle Menu (Tactical Spread vs Secular LEAPS vs Floor Income) -->
+        ${(wl.options_menu && (wl.options_menu.tactical_spread || wl.options_menu.leaps || wl.options_menu.income_or_csp)) ? `
+        <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <span style="font-size:13px; font-weight:800; color:var(--cyan-glow); text-transform:uppercase; letter-spacing:0.5px;">
+              ⚡ 3-Tiered Actionable Options Menu (Multi-Duration & Capital Postures)
+            </span>
+            <span class="pill cyan" style="font-size:10px; font-weight:800;">LIVE TOOLS SYNERGY</span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px;">
+            <!-- Tier 1: Tactical Spread -->
+            <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:12px;">
+              <div style="font-size:10.5px; font-weight:800; color:var(--blue); text-transform:uppercase; margin-bottom:4px;">1. Tactical Spread (30–45 DTE)</div>
+              <div style="font-size:12px; font-weight:700; color:var(--text-main); font-family:'JetBrains Mono',monospace;">${wl.options_menu.tactical_spread?.summary || optPlan.summary || '30-45 DTE Defined Risk'}</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Primary defined-risk directional play at floor support.</div>
+            </div>
+            <!-- Tier 2: Secular LEAPS -->
+            <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:12px;">
+              <div style="font-size:10.5px; font-weight:800; color:var(--emerald); text-transform:uppercase; margin-bottom:4px;">2. Secular Trend LEAPS (6–12 Mo)</div>
+              <div style="font-size:12px; font-weight:700; color:var(--text-main); font-family:'JetBrains Mono',monospace;">${wl.options_menu.leaps?.summary || (wl.options_menu.leaps?.long_strike ? `$${wl.options_menu.leaps.long_strike} Deep ITM Call` : 'Delta 0.75–0.85 Secular Participation')}</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Participate in macro trend with capped capital and low theta decay.</div>
+            </div>
+            <!-- Tier 3: Income / CSP -->
+            <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:12px;">
+              <div style="font-size:10.5px; font-weight:800; color:var(--amber); text-transform:uppercase; margin-bottom:4px;">3. Income / Floor Support Harvest</div>
+              <div style="font-size:12px; font-weight:700; color:var(--text-main); font-family:'JetBrains Mono',monospace;">${wl.options_menu.income_or_csp?.summary || 'Covered Call / CSP at Put Wall'}</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Yield harvest on existing shares/LEAPS, or cash-secured put at floor.</div>
+            </div>
+          </div>
+        </div>
+        ` : ''}
+
         <!-- Invalidation & Defense Rationale Box -->
         <div style="background:rgba(239, 68, 68, 0.04); border:1px solid rgba(239, 68, 68, 0.25); border-radius:8px; padding:14px 16px;">
           <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
@@ -1950,7 +1982,7 @@ window.AppSwing = {
     const data = window.AppState.currentReportData;
     const ticker = (data && data.ticker) || window.AppState.activeChatTicker || 'STOCK';
     const optPlan = data?.watch_levels?.options_plan?.summary || 'the suggested position';
-    const prompt = `What is the exact execution step for $${ticker} (${optPlan}) right now?`;
+    const prompt = `What is the exact execution step for $${ticker} (${optPlan}) right now? If the primary structure has repriced or moved, engineer 3 actionable alternative vehicles (Covered Calls/PMCC, Floor Bull Put Spread/CSP, or LEAPS/Strike Shift) using live tools.`;
 
     // 4. Send directly to Modal Copilot
     if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {

@@ -296,3 +296,83 @@ def test_research_queue_date_resolution():
     assert len(hist_res["queue"]) > 0
 
 
+def test_extract_watch_levels_options_menu(tmp_path):
+    reports_dir = tmp_path / "reports" / "2026-09-17"
+    reports_dir.mkdir(parents=True)
+    raw_dir = tmp_path / "data" / "raw" / "2026-09-17" / "AMZN"
+    raw_dir.mkdir(parents=True)
+
+    summary_file = reports_dir / "AMZN_summary.md"
+    summary_file.write_text("Bar close: $250.00\nTACTICAL ENTRY ZONE: $245.00 – $248.00\nTACTICAL STOP: $240.00\nTARGET 1: $265.00", encoding="utf-8")
+
+    arbitration_file = reports_dir / "AMZN_arbitration.md"
+    arbitration_file.write_text(
+        """# AMZN | ⚖️ SENIOR PM ARBITRATION
+```json:watch_levels
+{
+  "ticker": "AMZN",
+  "verdict": "ENTER",
+  "conviction": 8,
+  "shares_plan": {
+    "entry_type": "LIMIT",
+    "entry_zone_low": 245.0,
+    "entry_zone_high": 248.0,
+    "tactical_stop": 240.0,
+    "target_1": 265.0,
+    "target_2": 280.0
+  },
+  "options_plan": {
+    "actionable": true,
+    "entry_trigger": "AT_MARKET",
+    "structure": "BULL_CALL_SPREAD",
+    "expiration": "2026-10-16",
+    "long_strike": 245.0,
+    "short_strike": 260.0,
+    "target_debit": 3.98,
+    "max_loss": 398.0,
+    "max_profit": 1102.0,
+    "summary": "Oct 16 $245C/$260C Bull Call Spread"
+  },
+  "options_menu": {
+    "tactical_spread": {
+      "structure": "BULL_CALL_SPREAD",
+      "expiration": "2026-10-16",
+      "long_strike": 245.0,
+      "short_strike": 260.0,
+      "target_debit": 3.98,
+      "summary": "Oct 16 $245C/$260C Bull Call Spread"
+    },
+    "leaps": {
+      "structure": "LONG_CALL",
+      "expiration": "2027-06-18",
+      "long_strike": 210.0,
+      "target_debit": 48.0,
+      "summary": "Jun 2027 $210C Deep ITM LEAPS (0.80 delta)"
+    },
+    "income_or_csp": {
+      "structure": "COVERED_CALL",
+      "expiration": "2026-10-16",
+      "short_strike": 265.0,
+      "target_credit": 2.85,
+      "summary": "Oct 16 $265C Covered Call on shares"
+    }
+  }
+}
+```
+""",
+        encoding="utf-8",
+    )
+
+    with patch("src.config.BASE_DIR", tmp_path):
+        res = extract_watch_levels_from_report("AMZN", "2026-09-17")
+        assert res is not None
+        assert "options_menu" in res
+        menu = res["options_menu"]
+        assert menu["tactical_spread"]["structure"] == "BULL_CALL_SPREAD"
+        assert menu["leaps"]["structure"] == "LONG_CALL"
+        assert menu["leaps"]["long_strike"] == 210.0
+        assert menu["income_or_csp"]["structure"] == "COVERED_CALL"
+        assert menu["income_or_csp"]["short_strike"] == 265.0
+
+
+

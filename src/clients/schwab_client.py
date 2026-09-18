@@ -225,6 +225,83 @@ def get_last_price(symbol: str) -> Optional[float]:
     return None
 
 
+def get_intraday_candles(symbol: str, frequency: int = 5, lookback_bars: int = 30) -> list[dict]:
+    """
+    Fetch recent fine-grained intraday candles from Schwab API (frequency=1 for 1m, frequency=5 for 5m).
+    Returns list of candle dicts: [{"open": float, "high": float, "low": float, "close": float, "volume": int, "datetime": int}, ...]
+    Falls back to yfinance if Schwab API call encounters issues.
+    """
+    sym = str(symbol).upper().strip().replace(".", "/")
+    if not sym or sym.startswith("^"):
+        return []
+
+    try:
+        client = get_schwab_client()
+        start_dt = datetime.now() - timedelta(days=2)
+        if frequency == 1:
+            resp = client.get_price_history_every_minute(sym, start_datetime=start_dt)
+        else:
+            resp = client.get_price_history_every_five_minutes(sym, start_datetime=start_dt)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            candles = data.get("candles") or []
+            if candles:
+                return candles[-lookback_bars:]
+    except Exception as e_schwab:
+        logger.debug(f"Schwab get_intraday_candles error for {sym}: {e_schwab}")
+
+    # Fallback to yfinance
+    try:
+        import yfinance as yf
+        yf_sym = sym.replace("/", "-")
+        interval = "1m" if frequency == 1 else "5m"
+        df = yf.download(yf_sym, period="2d", interval=interval, progress=False)
+        if not df.empty:
+            candles = []
+            for idx, row in df.tail(lookback_bars).iterrows():
+                candles.append({
+                    "open": float(row["Open"].iloc[0] if hasattr(row["Open"], "iloc") else row["Open"]),
+                    "high": float(row["High"].iloc[0] if hasattr(row["High"], "iloc") else row["High"]),
+                    "low": float(row["Low"].iloc[0] if hasattr(row["Low"], "iloc") else row["Low"]),
+                    "close": float(row["Close"].iloc[0] if hasattr(row["Close"], "iloc") else row["Close"]),
+                    "volume": int(row["Volume"].iloc[0] if hasattr(row["Volume"], "iloc") else row["Volume"]),
+                    "datetime": int(idx.timestamp() * 1000) if hasattr(idx, "timestamp") else 0,
+                })
+            return candles
+    except Exception as e_yf:
+        logger.debug(f"yfinance fallback candles failed for {sym}: {e_yf}")
+
+    return []
+
+
+def calculate_intraday_atr(symbol: str, frequency: int = 5, period: int = 14) -> float:
+    """
+    Calculate recent intraday Average True Range (ATR) from Schwab broker candles.
+    Used for catastrophic stop calibration and dynamic volatility buffers.
+    """
+    candles = get_intraday_candles(symbol, frequency=frequency, lookback_bars=period + 5)
+    if not candles or len(candles) < 2:
+        return 1.5  # safe default dollar ATR
+
+    tr_list = []
+    for i in range(1, len(candles)):
+        c = candles[i]
+        prev_c = candles[i - 1]
+        high = c["high"]
+        low = c["low"]
+        prev_close = prev_c["close"]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_list.append(tr)
+
+    if not tr_list:
+        return 1.5
+
+    recent_tr = tr_list[-period:]
+    return round(sum(recent_tr) / len(recent_tr), 2)
+
+
+
 def get_unusual_options_flow(ticker: str) -> str:
     """
     Fetches the option chain for the next 90 days and scans for unusual

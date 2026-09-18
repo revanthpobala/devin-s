@@ -169,6 +169,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         auto_alerts: bool = True,
         market_hours_only: bool = False,
         auto_deep_research: Optional[bool] = None,
+        max_concurrent_slots: int = 1,
     ):
         super().__init__(name="ContinuousScreenerDaemon", daemon=True)
         self.poll_interval = max(60, poll_interval)
@@ -179,7 +180,9 @@ class ContinuousScreenerDaemon(threading.Thread):
             os.getenv("CONTINUOUS_AUTO_DEEP_RESEARCH", "1").lower() in ("1", "true", "yes")
         )
         self.max_auto_deep_per_day = int(os.getenv("CONTINUOUS_MAX_AUTO_DEEP", "3"))
-        self.min_conviction_score = float(os.getenv("CONTINUOUS_MIN_CONVICTION", "70.0"))
+        self.min_conviction_score = float(os.getenv("CONTINUOUS_MIN_CONVICTION", "60.0"))
+        self.max_concurrent_slots = max(1, int(os.getenv("CONTINUOUS_MAX_CONCURRENT_SLOTS", str(max_concurrent_slots))))
+        self._active_research_threads: List[threading.Thread] = []
         self.running = True
         self._wake_event = threading.Event()
         self._lock = threading.Lock()
@@ -436,6 +439,45 @@ class ContinuousScreenerDaemon(threading.Thread):
                 "last_dispatched_ticker": self.last_dispatched_ticker,
             }
 
+    def get_active_research_count(self) -> int:
+        """Count currently running deep research jobs across threads, SQLite, and external processes."""
+        count = 0
+        if hasattr(self, "_active_research_threads"):
+            self._active_research_threads = [t for t in self._active_research_threads if t.is_alive()]
+            count += len(self._active_research_threads)
+
+        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        if db_path.exists():
+            try:
+                import sqlite3
+                with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) FROM active_research_jobs WHERE status IN ('RUNNING', 'QUEUED')"
+                    ).fetchone()
+                    if row and row[0] > 0:
+                        count = max(count, int(row[0]))
+            except Exception:
+                pass
+
+        try:
+            import psutil
+            external_procs = 0
+            for proc in psutil.process_iter(["name", "cmdline"]):
+                cmdline = proc.info.get("cmdline") or []
+                cmd_str = " ".join(cmdline)
+                if "run_deep_research.py" in cmd_str and proc.pid != os.getpid():
+                    external_procs += 1
+            if external_procs > 0:
+                count = max(count, external_procs)
+        except Exception:
+            pass
+
+        return count
+
+    def is_slot_available(self) -> bool:
+        """Check if at least one deep research slot is free."""
+        return self.get_active_research_count() < self.max_concurrent_slots
+
     def _is_job_active_in_db(self, sym: str) -> bool:
         """Check if ticker currently has an active RUNNING or QUEUED research job in SQLite."""
         db_path = config.BASE_DIR / "data" / "research_watch.db"
@@ -453,7 +495,9 @@ class ContinuousScreenerDaemon(threading.Thread):
         except Exception:
             return False
 
-    def dispatch_candidate_research(self, sym: str, target_date: str) -> bool:
+    def dispatch_candidate_research(
+        self, sym: str, target_date: str, candidate_dict: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """Dispatch research job asynchronously via Cockpit UI slot manager or background worker."""
         import sys
         sym_u = sym.upper().strip()
@@ -468,11 +512,13 @@ class ContinuousScreenerDaemon(threading.Thread):
                 logger.warning(f"[ContinuousScreener] Could not dispatch via run_ui: {e_ui}")
 
         # Fallback to standalone background worker thread
+        cand_payload = candidate_dict or {"symbol": sym_u, "priority_tier": "HIGH_PRIORITY", "priority_score": 75.0}
+
         def _bg_worker():
             try:
                 from src.screener.schwab_pre_move_scan import run_autonomous_screener_pipeline
                 run_autonomous_screener_pipeline(
-                    [{"symbol": sym_u, "priority_tier": "HIGH_PRIORITY", "priority_score": 75.0}],
+                    [cand_payload],
                     auto_max=1,
                     run_deep=True,
                     date_str=target_date,
@@ -482,6 +528,9 @@ class ContinuousScreenerDaemon(threading.Thread):
                 logger.error(f"[ContinuousScreener] Error in background autonomous pipeline for {sym_u}: {e_bg}")
 
         t = threading.Thread(target=_bg_worker, name=f"AutoDeep_{sym_u}", daemon=True)
+        if not hasattr(self, "_active_research_threads"):
+            self._active_research_threads = []
+        self._active_research_threads.append(t)
         t.start()
         return True
 
@@ -491,8 +540,8 @@ class ContinuousScreenerDaemon(threading.Thread):
         target_date: str,
     ) -> List[str]:
         """
-        Evaluate high-priority coiled candidates and automatically dispatch up to daily limit
-        into the Deep Research pipeline with strict deduplication and zero UI blocking.
+        Evaluate high-priority coiled candidates and automatically dispatch into the
+        Deep Research pipeline (strictly 1 in the slot) when slot is free.
         """
         if not self.auto_deep_research or not candidates:
             return []
@@ -545,6 +594,15 @@ class ContinuousScreenerDaemon(threading.Thread):
         if not eligible:
             return []
 
+        # Check if research slot is free before dispatching
+        if not self.is_slot_available():
+            active_cnt = self.get_active_research_count()
+            logger.info(
+                f"⏳ [ContinuousScreener] Deep research slot is OCCUPIED ({active_cnt}/{self.max_concurrent_slots} active). "
+                f"Holding {len(eligible)} qualified candidate(s) until slot frees up."
+            )
+            return []
+
         # Sort: HIGH_PRIORITY first, highest score, highest R:R
         eligible.sort(
             key=lambda x: (
@@ -555,12 +613,14 @@ class ContinuousScreenerDaemon(threading.Thread):
             reverse=True,
         )
 
-        selected = eligible[:slots_left]
+        available_slots = max(0, self.max_concurrent_slots - self.get_active_research_count())
+        take_n = min(available_slots, slots_left)
+        selected = eligible[:take_n]
         dispatched_syms = []
 
         for p in selected:
             sym = str(p.get("symbol") or p.get("Symbol") or p.get("Ticker")).upper().strip()
-            success = self.dispatch_candidate_research(sym, target_date)
+            success = self.dispatch_candidate_research(sym, target_date, candidate_dict=p)
             if success:
                 self.auto_deep_dispatched_today.add(sym)
                 self.last_dispatched_ticker = sym
@@ -576,6 +636,7 @@ def start_continuous_screener_daemon(
     auto_alerts: bool = True,
     market_hours_only: bool = False,
     auto_deep_research: Optional[bool] = None,
+    max_concurrent_slots: int = 1,
 ) -> ContinuousScreenerDaemon:
     """Start or retrieve the singleton continuous screener daemon."""
     global _daemon_instance
@@ -586,6 +647,7 @@ def start_continuous_screener_daemon(
             auto_alerts=auto_alerts,
             market_hours_only=market_hours_only,
             auto_deep_research=auto_deep_research,
+            max_concurrent_slots=max_concurrent_slots,
         )
         _daemon_instance.start()
         logger.info("Continuous Screener Daemon successfully started.")
@@ -621,3 +683,44 @@ def get_continuous_screener_status() -> Dict[str, Any]:
         "tastytrade_connected": False,
         "scan_count": 0,
     }
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Continuous Schwab 1000 Autonomous Screener & Research Daemon")
+    parser.add_argument("--interval", type=int, default=DEFAULT_SCAN_INTERVAL, help="Scan interval in seconds (default 600)")
+    parser.add_argument("--top", type=int, default=10, help="Top N candidates to track per side")
+    parser.add_argument("--auto-deep", action="store_true", default=True, help="Automatically dispatch 1 qualified candidate into deep research when slot is free")
+    parser.add_argument("--no-auto-deep", dest="auto_deep", action="store_false", help="Disable autonomous deep research")
+    parser.add_argument("--max-deep", type=int, default=3, help="Max deep research runs per day")
+    parser.add_argument("--min-score", type=float, default=60.0, help="Minimum priority score for deep research")
+    parser.add_argument("--market-hours-only", action="store_true", help="Only scan during market hours")
+    parser.add_argument("--once", action="store_true", help="Run a single scan cycle and exit")
+    parser.add_argument("--headless", action="store_true", help="Run Playwright in headless mode")
+    args = parser.parse_args()
+
+    if args.headless:
+        os.environ["HEADLESS_SCRAPE"] = "1"
+    os.environ["CONTINUOUS_MIN_CONVICTION"] = str(args.min_score)
+    os.environ["CONTINUOUS_MAX_AUTO_DEEP"] = str(args.max_deep)
+
+    daemon = ContinuousScreenerDaemon(
+        poll_interval=args.interval,
+        top_n=args.top,
+        auto_alerts=True,
+        market_hours_only=args.market_hours_only,
+        auto_deep_research=args.auto_deep,
+        max_concurrent_slots=1,
+    )
+
+    if args.once:
+        print(">> 🔄 Running single continuous screener cycle...")
+        res = daemon.run_scan_cycle()
+        print(f">> ✅ Cycle finished: {res}")
+    else:
+        print(f">> 🚀 Starting Continuous Screener Daemon (Interval: {args.interval}s, Auto-Deep: {args.auto_deep}, Max Slots: 1)...")
+        try:
+            daemon.run()
+        except KeyboardInterrupt:
+            print("\n>> 🛑 Stopping daemon...")
+            daemon.stop()

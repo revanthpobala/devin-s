@@ -114,6 +114,54 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                     options_p["actionable"] = bool(options_p.get("structure") not in ("NONE", "", None))
                 if "entry_trigger" not in options_p:
                     options_p["entry_trigger"] = "AT_FLOOR_LIMIT" if options_p.get("actionable") else "NONE"
+                if "target_credit" not in options_p:
+                    options_p["target_credit"] = 0.0
+
+                # Ensure options_menu exists and has tiered options
+                options_menu = data.setdefault("options_menu", {})
+                if "tactical_spread" not in options_menu:
+                    options_menu["tactical_spread"] = dict(options_p)
+                combined_txt = arbitration_text + "\n" + summary_text
+                clean_txt = re.sub(r"[*_`]+", "", combined_txt)
+                if "leaps" not in options_menu:
+                    m_leaps = re.search(
+                        r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_txt, re.IGNORECASE
+                    )
+                    if m_leaps:
+                        options_menu["leaps"] = {
+                            "structure": "LONG_CALL",
+                            "long_strike": float(m_leaps.group(1)),
+                            "summary": f"${m_leaps.group(1)} Deep ITM LEAPS Call",
+                        }
+                    else:
+                        options_menu["leaps"] = {
+                            "structure": "NONE",
+                            "summary": "No specific LEAPS strike designated.",
+                        }
+                if "income_or_csp" not in options_menu:
+                    m_csp = re.search(
+                        r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_txt, re.IGNORECASE
+                    )
+                    m_cc = re.search(
+                        r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_txt, re.IGNORECASE
+                    )
+                    if m_cc:
+                        options_menu["income_or_csp"] = {
+                            "structure": "COVERED_CALL",
+                            "short_strike": float(m_cc.group(1)),
+                            "summary": f"${m_cc.group(1)} Covered Call on long shares/LEAPS",
+                        }
+                    elif m_csp:
+                        options_menu["income_or_csp"] = {
+                            "structure": "CASH_SECURED_PUT",
+                            "short_strike": float(m_csp.group(1)),
+                            "summary": f"${m_csp.group(1)} Cash-Secured Put at support floor",
+                        }
+                    else:
+                        options_menu["income_or_csp"] = {
+                            "structure": "NONE",
+                            "summary": "No income / CSP structure designated.",
+                        }
 
                 # Persist to raw folder
                 save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
@@ -362,6 +410,18 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         except Exception:
             target_debit = 0.0
 
+    target_credit = 0.0
+    m_credit = (
+        re.search(r"Net credit\s*[≈~]?\s*\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Target credit:\s*>?\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Estimated Credit:\s*[≈~]?\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+    )
+    if m_credit:
+        try:
+            target_credit = float(m_credit.group(1).rstrip("."))
+        except Exception:
+            target_credit = 0.0
+
     m_loss = re.search(r"Max Loss:?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
     if m_loss:
         try:
@@ -427,11 +487,33 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             "long_strike": long_strike,
             "short_strike": short_strike,
             "target_debit": target_debit,
+            "target_credit": target_credit,
             "max_loss": max_loss,
             "max_profit": max_profit,
             "summary": opt_summary,
             "actionable": options_struct not in ("NONE", "", None),
             "entry_trigger": "AT_FLOOR_LIMIT" if options_struct not in ("NONE", "", None) else "NONE",
+        },
+        "options_menu": {
+            "tactical_spread": {
+                "structure": options_struct,
+                "expiration": exp_date,
+                "long_strike": long_strike,
+                "short_strike": short_strike,
+                "target_debit": target_debit,
+                "target_credit": target_credit,
+                "summary": opt_summary,
+            },
+            "leaps": {
+                "structure": "LONG_CALL" if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else "NONE",
+                "long_strike": float(re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else 0.0,
+                "summary": "Deep ITM LEAPS Call" if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else "No LEAPS specified",
+            },
+            "income_or_csp": {
+                "structure": "COVERED_CALL" if re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else ("CASH_SECURED_PUT" if re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE) else "NONE"),
+                "short_strike": float(re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else (float(re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE) else 0.0),
+                "summary": "Income / Put floor structure" if (re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) or re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE)) else "No income / CSP structure specified",
+            },
         },
         "invalidation": {
             "condition": invalidation_cond,

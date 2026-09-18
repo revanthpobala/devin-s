@@ -164,7 +164,7 @@ def test_continuous_screener_module_lifecycle():
 
 
 def test_evaluate_and_dispatch_deep_research():
-    daemon = ContinuousScreenerDaemon(poll_interval=300, auto_deep_research=True)
+    daemon = ContinuousScreenerDaemon(poll_interval=300, auto_deep_research=True, max_concurrent_slots=2)
     daemon.max_auto_deep_per_day = 2
     daemon.min_conviction_score = 70.0
 
@@ -199,3 +199,104 @@ def test_evaluate_and_dispatch_deep_research():
         status = daemon.get_status()
         assert status["auto_deep_count_today"] == 2
         assert "LYB" in status["auto_deep_dispatched_today"]
+
+
+def test_synthesize_datawindow_and_pipeline_sequence(tmp_path):
+    from src.screener.schwab_pre_move_scan import (
+        synthesize_datawindow_from_screener,
+        run_autonomous_screener_pipeline,
+    )
+    from src.logic.data_window_filter import triage_ticker
+    from src.logic.process_survivor import _deep_research_gate
+
+    cand = {
+        "symbol": "ACME",
+        "side": "LONG",
+        "price": 100.0,
+        "ema20": 98.5,
+        "sma50": 95.0,
+        "sma200": 90.0,
+        "stop_level": 96.0,
+        "target_level": 110.0,
+        "priority_score": 80.0,
+        "priority_tier": "HIGH_PRIORITY",
+        "weinstein_stage": 1,
+        "long_rr": 2.5,
+        "ext_200_pct": 11.1,
+        "is_extreme_reversal": True,
+        "squeeze_on": True,
+        "nr7": True,
+    }
+
+    # 1. Verify synthesize_datawindow_from_screener creates a valid Data Window
+    dw = synthesize_datawindow_from_screener("ACME", cand, rt_quote={"price": 100.0})
+    assert dw["ticker"] == "ACME"
+    assert float(dw["close"]) == 100.0
+    assert dw["Action Long Code"] == "20"
+    assert dw["Signal Pack"] == "5"
+
+    # 2. Verify triage_ticker cleanly parses it with no bad_data
+    triage = triage_ticker("ACME", dw, fetch_news=False)
+    assert triage.get("bad_data") is not True
+    assert triage.get("triage") == "PASS"
+    assert triage.get("pursue") is True
+
+    # 3. Verify gate qualification
+    q_pass, send, rank_score, has_plan = _deep_research_gate(triage, earnings_gate="CAUTION")
+    assert q_pass is True
+    assert send is True
+    assert has_plan is True
+
+    # 4. Verify pipeline execution sequence:
+    # If local research rejects the setup, Playwright scraping is NEVER called!
+    with patch("subprocess.run") as mock_subproc, \
+         patch("src.clients.schwab_client.get_realtime_quote", return_value={"price": 100.0}), \
+         patch("src.clients.news_client.get_ticker_news", return_value={"raw_news": "ok"}):
+
+        def mock_exists(self):
+            # reports do not exist yet (no completed deep research)
+            if "reports" in str(self):
+                return False
+            if "_chart.png" in str(self) or "_chart_zoom.png" in str(self):
+                return False
+            # thesis exists after local research
+            if "_thesis.json" in str(self):
+                return True
+            return False
+
+        with patch("pathlib.Path.exists", autospec=True, side_effect=mock_exists), \
+             patch("pathlib.Path.read_text", return_value='{"send_for_deep_research": false, "triage": "CUT"}'):
+
+            run_autonomous_screener_pipeline([cand], auto_max=1, run_deep=True, date_str="2029-01-01")
+
+            # Check commands executed by subprocess.run
+            called_cmds = [call.args[0] for call in mock_subproc.call_args_list]
+
+            # Local research MUST be called
+            assert any("run_local_research.py" in str(cmd) for cmd in called_cmds)
+
+            # Playwright scraping MUST NOT be called because local research was not satisfied!
+            assert not any("run_swing_research.py" in str(cmd) for cmd in called_cmds)
+            # Deep research MUST NOT be called
+            assert not any("run_deep_research.py" in str(cmd) for cmd in called_cmds)
+
+        # Test approved setup: local research emits PASS and send_for_deep_research=True
+        mock_subproc.reset_mock()
+        with patch("pathlib.Path.exists", autospec=True, side_effect=mock_exists), \
+             patch("pathlib.Path.read_text", return_value='{"send_for_deep_research": true, "triage": "PASS"}'):
+
+            run_autonomous_screener_pipeline([cand], auto_max=1, run_deep=True, date_str="2029-01-01")
+
+            called_cmds = [call.args[0] for call in mock_subproc.call_args_list]
+
+            # 1. Local research called first
+            assert any("run_local_research.py" in str(cmd) for cmd in called_cmds)
+            # 2. Playwright scraping called ONLY AFTER local research is satisfied
+            assert any("run_swing_research.py" in str(cmd) for cmd in called_cmds)
+            # 3. Deep research dispatched in slot
+            assert any("run_deep_research.py" in str(cmd) for cmd in called_cmds)
+            # 4. Watch alerts synced
+            assert any("run_watch_alerts.py" in str(cmd) for cmd in called_cmds)
+
+
+

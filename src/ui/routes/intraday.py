@@ -120,3 +120,41 @@ def simulate_0dte_eval(req: Simulate0DTERequest):
         return {"status": "ok", "evaluation": res}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+class SaveSkillRequest(BaseModel):
+    skill_name: str
+    content: str
+
+
+@router.get("/api/skills")
+def list_skills():
+    """List all available on-demand skills from skills/."""
+    from src import config
+    skills_dir = config.BASE_DIR / "skills"
+    if not skills_dir.exists():
+        return {"skills": []}
+    skills = []
+    for f in sorted(skills_dir.glob("*.md")):
+        skills.append({
+            "name": f.stem,
+            "filename": f.name,
+            "size": f.stat().st_size,
+            "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+            "preview": f.read_text(encoding="utf-8")[:300]
+        })
+    return {"skills": skills}
+
+
+@router.post("/api/skills/save")
+def save_skill(req: SaveSkillRequest):
+    """Save or update a skill markdown file."""
+    from src import config
+    skills_dir = config.BASE_DIR / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    clean_name = req.skill_name.lower().strip().replace(".md", "")
+    target = skills_dir / f"{clean_name}.md"
+    target.write_text(req.content, encoding="utf-8")
+    append_log(f"🧠 Updated Skill: {clean_name}.md ({len(req.content)} chars)")
+    return {"status": "ok", "skill_name": clean_name, "path": str(target)}
+

@@ -789,7 +789,9 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     # Fast in-memory cache (TTL: 30s per ticker & query profile to eliminate latency on follow-up questions)
     import time
     is_leaps_req = bool(re.search(r'\b(leap|leaps|2027|2028|2029|long term|long-term|multi-year|far out)\b', question, re.IGNORECASE))
-    cache_key = f"{ticker_u}_{date_str}_{is_leaps_req}_{bool(re.findall(r'\d{2,4}', question))}"
+    is_schwab_req = bool(re.search(r'\b(schwab|holding|holdings|position|positions|shares|covered|calls|puts|portfolio)\b', question, re.IGNORECASE))
+    has_date_req = bool(re.findall(r'\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b', question))
+    cache_key = f"{ticker_u}_{date_str}_{is_leaps_req}_{is_schwab_req}_{has_date_req}"
     now_ts = time.time()
     if cache_key in _TICKER_CONTEXT_CACHE:
         cached_ts, cached_parts = _TICKER_CONTEXT_CACHE[cache_key]
@@ -1032,11 +1034,84 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
                     f"• **Kill Line / Invalidation**: {p_wrong}",
                     f"• **Tape Context**: {p_ctx}",
                 ]
+
+                # Evaluate against Exit Veto Engine (skills/exit_management_and_veto.md)
+                try:
+                    from src.tracking.position_monitor import review_tv_exit
+                    exit_decision = review_tv_exit(ticker_u, raw_alert)
+                    if exit_decision:
+                        e_act = exit_decision.get("action", "EVALUATE")
+                        e_rsn = exit_decision.get("reason", "")
+                        e_icon = "🛑" if e_act == "CONFIRM_EXIT" else ("🛡️" if e_act == "VETO_HOLD" else "⚡")
+                        pos_card.append(f"• **Exit Veto Engine State**: {e_icon} **{e_act}** — {e_rsn}")
+                except Exception as ee:
+                    logger.debug(f"Exit review check error for {ticker_u}: {ee}")
+
                 if p_eval:
                     pos_card.append(f"\n**Latest Position Monitor Evaluation & Guidance:**\n{p_eval}")
                 parts.insert(1, "\n".join(pos_card))
     except Exception as pe:
         logger.debug(f"Position check failed for {ticker_u}: {pe}")
+
+    # 1a-iii. Official Schwab Brokerage Positions & Exposure (data/schwab_portfolio.db)
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+        schwab_all = get_portfolio_positions(search=ticker_u)
+        schwab_matches = [
+            p for p in schwab_all
+            if p.get("underlying_symbol", "").upper() == ticker_u or p.get("symbol", "").upper().startswith(ticker_u)
+        ]
+        if schwab_matches:
+            pos_lines = []
+            total_mkt = sum(float(p.get("market_value") or 0.0) for p in schwab_matches)
+            total_unreal = sum(float(p.get("unrealized_profit_loss") or 0.0) for p in schwab_matches)
+            total_day = sum(float(p.get("day_profit_loss") or 0.0) for p in schwab_matches)
+            total_cost = sum(float(p.get("cost_basis") or 0.0) for p in schwab_matches)
+            unreal_pct = (total_unreal / total_cost * 100.0) if total_cost > 0 else 0.0
+
+            pos_lines.append(
+                f"• **AGGREGATE SCHWAB EXPOSURE:** Market Value: **${total_mkt:,.2f}** | Total Unrealized P&L: **${total_unreal:+,.2f} ({unreal_pct:+.2f}%)** | Day P&L: **${total_day:+,.2f}**"
+            )
+            pos_lines.append("")
+            for p in schwab_matches:
+                acct = f"{p.get('account_type', 'ACCT')} ({p.get('account_number_masked', '')})"
+                a_type = p.get("asset_type", "EQUITY")
+                qty = float(p.get("quantity") or 0.0)
+                mkt_val = float(p.get("market_value") or 0.0)
+                unreal = float(p.get("unrealized_profit_loss") or 0.0)
+                u_pct = float(p.get("unrealized_profit_loss_pct") or 0.0)
+                avg_px = float(p.get("average_price") or 0.0)
+                curr_px = float(p.get("current_price") or 0.0)
+                day_gl = float(p.get("day_profit_loss") or 0.0)
+
+                if a_type == "OPTION":
+                    desc = p.get("description") or p.get("symbol")
+                    exp = p.get("option_expiration") or "N/A"
+                    strike = p.get("option_strike") or 0
+                    o_type = p.get("option_type") or "CALL"
+                    pos_lines.append(
+                        f"• **[SCHWAB OPTION] {qty:+.0f} contract(s)**: `{ticker_u} {exp} ${strike} {o_type}` in **{acct}**\n"
+                        f"  - Description: {desc}\n"
+                        f"  - Position: {'Long' if qty > 0 else 'Short'} {abs(qty):.0f}x contract(s) | Premium Paid/Basis: **${avg_px:.2f}** | Current Mark: **${curr_px:.2f}**\n"
+                        f"  - Market Value: **${mkt_val:,.2f}** | Day P&L: **${day_gl:+,.2f}** | Total Unrealized P&L: **${unreal:+,.2f} ({u_pct:+.1f}%)**"
+                    )
+                else:
+                    pos_lines.append(
+                        f"• **[SCHWAB SHARES] {qty:.2f} shares** in **{acct}**\n"
+                        f"  - Average Cost Basis: **${avg_px:.2f}/share** | Current Price: **${curr_px:.2f}**\n"
+                        f"  - Market Value: **${mkt_val:,.2f}** | Day P&L: **${day_gl:+,.2f}** | Total Unrealized P&L: **${unreal:+,.2f} ({u_pct:+.1f}%)**"
+                    )
+
+            schwab_card = [
+                f"### 💼 USER'S ACTUAL REAL-TIME SCHWAB BROKERAGE POSITIONS ({ticker_u}):",
+                "> ⚠️ **MANDATORY BROKERAGE POSITION INTEGRATION**:",
+                f"> The user holds real live positions in **${ticker_u}** in their Schwab brokerage account(s).",
+                "> Whenever analyzing this ticker, you MUST incorporate their actual holdings, cost basis, unrealized P&L, and existing options legs into your recommendations (e.g. profit taking, stop protection, covered calls, or adding new legs).",
+                "",
+            ] + pos_lines
+            parts.insert(1, "\n".join(schwab_card))
+    except Exception as pe:
+        logger.debug(f"Schwab positions check failed for {ticker_u}: {pe}")
 
     # 1b. Live Tape & Current Events Past Prior Chat / Dossier Date
     try:
@@ -1075,25 +1150,13 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
                 exp_hint = f"{year_cand}-{mm}-{int(d_num):02d}"
 
         if is_leaps_req:
-            opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="PUT" if (is_put_req and not is_call_req) else "CALL", min_dte=90, max_dte=1200, expiration=exp_hint)
+            opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="BOTH", min_dte=180, max_dte=750, expiration=exp_hint)
             if opt_data:
                 parts.append(f"### 📈 LIVE 2027-2028 LEAPS OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
         else:
-            if is_put_req and not is_call_req:
-                opt_data_put = fetch_options_chain_tool(ticker=ticker_u, direction="PUT", min_dte=14, max_dte=120, expiration=exp_hint)
-                if opt_data_put:
-                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS (PUTS) ({ticker_u}):\n{opt_data_put}")
-            elif is_put_req and is_call_req:
-                opt_data_put = fetch_options_chain_tool(ticker=ticker_u, direction="PUT", min_dte=14, max_dte=120, expiration=exp_hint)
-                opt_data_call = fetch_options_chain_tool(ticker=ticker_u, direction="CALL", min_dte=14, max_dte=120, expiration=exp_hint)
-                if opt_data_put:
-                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS (PUTS) ({ticker_u}):\n{opt_data_put}")
-                if opt_data_call:
-                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS (CALLS) ({ticker_u}):\n{opt_data_call}")
-            else:
-                opt_data_std = fetch_options_chain_tool(ticker=ticker_u, direction="CALL", min_dte=14, max_dte=120, expiration=exp_hint)
-                if opt_data_std:
-                    parts.append(f"### 📈 LIVE REAL-TIME OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data_std}")
+            opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="BOTH", min_dte=14, max_dte=60, expiration=exp_hint)
+            if opt_data:
+                parts.append(f"### 📈 LIVE REAL-TIME UNIFIED OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
     except Exception as oe:
         logger.debug(f"Options chain fetch error for {ticker_u}: {oe}")
 
@@ -1215,51 +1278,55 @@ if not df.empty:
             except Exception as upe:
                 parts.append(f"### 🐍 USER PYTHON EXECUTION ERROR:\n{upe}")
 
-    # 4. SEC EDGAR Audit & Financial Facts
-    try:
-        from src.clients.sec_edgar_client import format_sec_report
-        sec_audit = format_sec_report(ticker_u, limit=3)
-        if sec_audit and "Error" not in sec_audit and "Could not resolve" not in sec_audit:
-            parts.append(sec_audit)
-    except Exception as se:
-        logger.debug(f"SEC EDGAR fetch error for {ticker_u}: {se}")
+    # 4. SEC EDGAR Audit & Financial Facts (On-Demand or when fundamentals asked)
+    is_fundamental_req = bool(re.search(r'\b(sec|edgar|10-k|10-q|filing|balance sheet|debt|revenue|fundamental|cash flow)\b', question, re.I))
+    if is_fundamental_req:
+        try:
+            from src.clients.sec_edgar_client import format_sec_report
+            sec_audit = format_sec_report(ticker_u, limit=3)
+            if sec_audit and "Error" not in sec_audit and "Could not resolve" not in sec_audit:
+                parts.append(sec_audit)
+        except Exception as se:
+            logger.debug(f"SEC EDGAR fetch error for {ticker_u}: {se}")
 
-    # 5. Live Breaking News & Web Search Catalysts
-    try:
-        live_news_items = []
-        from src.clients.search_client import search_web
-        search_results = search_web(f"{ticker_u} stock news earnings catalysts latest")
-        if search_results and isinstance(search_results, list):
-            for item in search_results[:3]:
-                title = item.get("title", "").strip()
-                body = item.get("body", "").strip()
-                href = item.get("href", "").strip()
-                if title:
-                    live_news_items.append(f"• **{title}**\n  {body}\n  Source: {href}")
+    # 5. Live Breaking News & Web Search Catalysts (Triggered upfront if news/catalyst queried, or via LLM search_web tool)
+    is_news_req = bool(re.search(r'\b(news|catalyst|headline|rumor|event|article|why\b|drop|rip|fell|jumped|data center|deal|partnership|earnings)\b', question, re.I))
+    if is_news_req:
+        try:
+            live_news_items = []
+            from src.clients.search_client import search_web
+            search_results = search_web(f"{ticker_u} stock news earnings catalysts latest")
+            if search_results and isinstance(search_results, list):
+                for item in search_results[:3]:
+                    title = item.get("title", "").strip()
+                    body = item.get("body", "").strip()
+                    href = item.get("href", "").strip()
+                    if title:
+                        live_news_items.append(f"• **{title}**\n  {body}\n  Source: {href}")
 
-        import yfinance as yf
-        yf_ticker = yf.Ticker(ticker_u)
-        yf_news = getattr(yf_ticker, "news", [])
-        if yf_news and isinstance(yf_news, list):
-            for item in yf_news[:4]:
-                content_obj = item.get("content", {})
-                title = content_obj.get("title") or item.get("title")
-                summary = content_obj.get("summary") or item.get("summary") or ""
-                pub_date = content_obj.get("pubDate") or item.get("providerPublishTime") or ""
-                if title and not any(title[:30].lower() in x.lower() for x in live_news_items):
-                    live_news_items.append(f"• **{title}** ({pub_date})\n  {summary[:200]}")
+            import yfinance as yf
+            yf_ticker = yf.Ticker(ticker_u)
+            yf_news = getattr(yf_ticker, "news", [])
+            if yf_news and isinstance(yf_news, list):
+                for item in yf_news[:4]:
+                    content_obj = item.get("content", {})
+                    title = content_obj.get("title") or item.get("title")
+                    summary = content_obj.get("summary") or item.get("summary") or ""
+                    pub_date = content_obj.get("pubDate") or item.get("providerPublishTime") or ""
+                    if title and not any(title[:30].lower() in x.lower() for x in live_news_items):
+                        live_news_items.append(f"• **{title}** ({pub_date})\n  {summary[:200]}")
 
-        if live_news_items:
-            calendar_now = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d %H:%M MT")
-            parts.append(
-                f"### 📰 TODAY'S REAL-TIME BREAKING NEWS ({ticker_u} — Retrieved {calendar_now}):\n"
-                f"> ⚠️ **TEMPORAL BOUNDARY**: The headlines below occurred TODAY ({calendar_now[:10]}). "
-                f"They were **NOT** available when historical dossiers (e.g. earlier dates) were compiled. "
-                f"Never claim an earlier research report 'had notice' of breaking news that was published after that report's date.\n\n"
-                + "\n\n".join(live_news_items[:5])
-            )
-    except Exception as ne:
-        logger.debug(f"Live news search fetch error for {ticker_u}: {ne}")
+            if live_news_items:
+                calendar_now = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d %H:%M MT")
+                parts.append(
+                    f"### 📰 TODAY'S REAL-TIME BREAKING NEWS ({ticker_u} — Retrieved {calendar_now}):\n"
+                    f"> ⚠️ **TEMPORAL BOUNDARY**: The headlines below occurred TODAY ({calendar_now[:10]}). "
+                    f"They were **NOT** available when historical dossiers (e.g. earlier dates) were compiled. "
+                    f"Never claim an earlier research report 'had notice' of breaking news that was published after that report's date.\n\n"
+                    + "\n\n".join(live_news_items[:5])
+                )
+        except Exception as ne:
+            logger.debug(f"Live news search fetch error for {ticker_u}: {ne}")
 
     # 5. Local Filesystem Research Reports
     try:
@@ -1609,6 +1676,16 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                     wrong_if = raw_a.get("wrong_if") or ""
                     opened = (p.get("opened_at") or "")[11:19] or "Active"
                     line = f"• **${sym}** ({side}) | Entry: **${entry:.2f}** | Spot: **${spot:.2f}** | P&L: **{pnl:+.2f}%** | Opened: {opened}"
+                    try:
+                        from src.tracking.position_monitor import review_tv_exit
+                        e_rev = review_tv_exit(sym, raw_a)
+                        if e_rev:
+                            e_act = e_rev.get("action", "")
+                            e_rsn = e_rev.get("reason", "")
+                            e_icon = "🛑" if e_act == "CONFIRM_EXIT" else ("🛡️" if e_act == "VETO_HOLD" else "⚡")
+                            line += f"\n  - Exit Veto Status: {e_icon} **{e_act}** ({e_rsn})"
+                    except Exception:
+                        pass
                     if plan:
                         line += f"\n  - Plan: {plan}"
                     if wrong_if:
@@ -1776,8 +1853,10 @@ You MUST follow this exact structure:
         symbols_list_str = "Active Desk Universe"
 
     if is_single_stock:
-        role_header = f"""You are the dedicated quantitative research and execution co-pilot for ${primary_ticker} ({company_name}) on Revanth's institutional trading desk.
-The user is actively inspecting the research dossier, options structures, and trade plan for ${primary_ticker}.
+        role_header = f"""You are REV CHAT, Senior Quantitative Portfolio Manager & Chief Risk Officer for Revanth's institutional trading desk, conducting a rigorous quantitative audit and tactical execution review for ${primary_ticker} ({company_name}).
+You operate with the disciplined mathematical standards of Citadel Tactical Trading, Millennium Management, and Jane Street.
+You enforce strict risk boundaries, 5-tier exit decision trees, exact strike geometries, and deterministic invalidation levels.
+Every statement must be grounded in exact figures, live spot quotes, Greeks, and mathematical edge.
 
 CORE DIRECTIVE:
 Every user query (including conversational queries like "thoughts for today", "what is the plan", "what should we do", "levels", "options") MUST FOCUS DIRECTLY AND SPECIFICALLY ON ${primary_ticker}:
@@ -1785,7 +1864,23 @@ Every user query (including conversational queries like "thoughts for today", "w
 2. CRITICAL LIVE PRICE RULE: The CURRENT SPOT PRICE is the live quote under '### 🚨 AUTHORITATIVE LIVE REAL-TIME MARKET QUOTE'. NEVER cite historical dossier prices as current spot!
 3. Evaluate ${primary_ticker}'s specific Suggested Trade Plan (Entry Zone, Stop Loss, Target) and Options Vehicle against the LIVE SPOT PRICE: Has the pullback already occurred? Is price in-zone or testing support?
 4. Provide actionable, concise execution advice for ${primary_ticker} right now today: Is it in-zone and buyable, stalking (awaiting fill/pullback), or invalidated?
-5. DO NOT output a broad multi-ticker desk briefing of other companies (AVGO, META, TSLA, GOOGL, etc.) unless the user explicitly asks for other tickers."""
+5. USER'S SCHWAB HOLDINGS MANDATE: If the user holds active Schwab positions in ${primary_ticker} (shown under '### 💼 USER\'S ACTUAL REAL-TIME SCHWAB BROKERAGE POSITIONS'), you MUST address their EXACT positions, contracts, strikes, and expirations. NEVER output generic hypothetical text ('If you hold shares...', 'If you hold short-dated options...'). Tell them specifically what to do with each real leg (e.g. hold LEAPS, let short call expire, roll, or trim).
+6. MANDATORY AUTONOMOUS TOOL EXECUTION & ALTERNATIVES DIRECTIVE:
+   - When the suggested trade plan's original vehicle (e.g. a 30-day vertical debit or credit spread) is invalidated, repriced, expired, or has degraded R:R (<1.5:1, debit doubled, or spot blown past entry):
+     DO NOT simply tell the user to wait, stalk, or do nothing!
+     YOU MUST ACTIVELY USE YOUR TOOLS (`fetch_options_chain`, `execute_python_code`, `scrape_tradingview_options_finder`) to re-engineer, price out, and present THREE (3) ACTIONABLE ALTERNATIVE VEHICLES on the live tape:
+     (a) INCOME ON USER'S HOLDINGS (Covered Call / Poor Man's Covered Call / PMCC):
+         - If the user holds shares (>= 100 shares), price out selling an Out-of-the-Money call (15-30 delta, 30-45 DTE) to harvest elevated implied volatility for instant cash credit.
+         - If the user holds long LEAPS (e.g. 2026/2027 calls), price out selling an OTM near-term monthly call against the LEAP as a diagonal calendar spread / PMCC.
+     (b) STRUCTURAL SUPPORT CREDIT VEHICLE (Bull Put Credit Spread or Cash-Secured Put / CSP):
+         - If the stock has rallied away and established a new support floor/shelf, DO NOT chase calls!
+         - Use `fetch_options_chain` (PUT) to structure a defined-risk Bull Put Spread (or Cash-Secured Put) below the new structural floor. Calculate exact net credit, breakeven, and win rate (>85%).
+     (c) LONG-HORIZON / STRIKE ROLL VEHICLE (LEAPS 6–12+ months or Re-Indexed Vertical Spreads):
+         - If the user wants directional upside, DO NOT stay trapped in 1-month theta decay!
+         - Use `fetch_options_chain` or `scrape_tradingview_options_finder` with multi-quarter horizons to propose 6-12 month deep ITM LEAPS (0.75-0.85 delta) or shift vertical strikes up to restore >2.5:1 R:R.
+   - For every alternative, cite exact live strikes, bid/ask, expiration, max profit, and include clickable interactive action buttons:
+     `[⚡ Sell Covered Call / PMCC @ $Strike (Collect $Credit)](action:ask?prompt=...)  [🦅 Sell Floor Put Spread $P/$P](action:ask?prompt=...)  [📈 Roll to LEAPS](action:ask?prompt=...)`
+7. DO NOT output a broad multi-ticker desk briefing of other companies (AVGO, META, TSLA, GOOGL, etc.) unless the user explicitly asks for other tickers."""
 
         desk_briefing_directive = f"""3. Ticker-Specific Analysis Directive:
    - Your response must focus 100% on ${primary_ticker} ({company_name}).
@@ -1793,8 +1888,10 @@ Every user query (including conversational queries like "thoughts for today", "w
    - Answer the user's specific question directly with actionable guidance for ${primary_ticker} today.
    - Do NOT output multi-ticker desk briefings, other pipeline runs, or unrelated tickers."""
     else:
-        role_header = f"""You are REV CHAT, the elite quantitative market co-pilot and tactical execution assistant for Revanth's institutional trading desk.
-You specialize in options structures (credit/debit spreads, iron condors, ratio spreads), 0DTE theta execution, swing stalking setups, SEC fundamental audits, and data-grounded trade arbitration."""
+        role_header = f"""You are REV CHAT, Senior Quantitative Portfolio Manager & Chief Risk Officer for Revanth's institutional trading desk.
+You operate with the disciplined mathematical execution standards of Citadel Tactical Trading, Millennium Management, and Jane Street.
+You specialize in options structures (credit/debit spreads, ratio spreads, volatility arbitrage), 0DTE theta execution, swing stalking setups, SEC fundamental audits, deterministic risk management, and quantitative trade arbitration.
+You NEVER output casual retail cliches, conversational fluff, or vague commentary. Every recommendation is anchored in exact spot prices, live Greeks, 5-tier exit hierarchy, and mathematical edge."""
 
         desk_briefing_directive = """3. Multi-Ticker Desk Briefings:
    - When NO specific ticker is being analyzed and the user asks general questions such as "what was run today", "what did we learn", "what should we do today", or requests a market overview/summary:
@@ -1854,6 +1951,32 @@ Guidelines:
    - NEVER speak of prior-day statements as future expectations (e.g. if the prior chat or dossier said 'until NFP data tomorrow' or 'at tomorrow's open', recognize that tomorrow HAS ARRIVED and is TODAY, {calendar_today}).
    - Address how current events, today's macro prints (such as NFP jobs release), breaking news, and live spot prices compare to the setup discussed in the prior chat.
    - Reference exact price changes since the prior chat (spot then vs spot now), whether price reclaimed or rejected the prior levels, and provide updated, current tactical action.
+11. User's Schwab Brokerage Holdings Integration:
+   - When the user holds active Schwab positions in the ticker (shares, LEAPS, covered calls, short options), explicitly acknowledge and reference their specific holdings, cost basis, unrealized P&L, and account exposure.
+   - Directly tie the research trade plan (entry zones, tactical stops, targets, options structures) to their existing positions (e.g. recommending whether to hold existing shares, trim at resistance, protect with a trailing stop, or sell/roll calls against their long shares/LEAPS).
+12. Intraday Trade Exit Intelligence & TV Alert Veto Protocol (skills/exit_management_and_veto.md):
+   - When the user asks about an open position, an incoming EXIT alert, or asks 'should I close / do I exit?':
+     DO NOT give a blind, generic answer. Apply the institutional 5-tier exit decision hierarchy from `skills/exit_management_and_veto.md`:
+     (1) TARGET 1 / PROFIT TAKING: If live price reached Target 1 (R >= 1.5) -> SCALE 50% IMMEDIATELY, lock realized profit, move runner stop to Break-Even + $0.05 buffer (BE+).
+     (2) TARGET 2 / FULL EXHAUSTION: If Target 2 or exhaustion reached -> CONFIRM EXIT (Lock 100%).
+     (3) CATASTROPHIC RISK CIRCUIT BREAKER: If drawdown reaches >= 1.25x 5m ATR or >= 2.5% from entry -> CONFIRM EXIT IMMEDIATELY via market order. Zero debate, zero hoping.
+     (4) INTRA-BAR WICK TAP vs CONFIRMED BREAKDOWN:
+         - If price wicks through stop but the 5-minute candle body closes ABOVE invalidation on low volume -> VETO & HOLD. Inform user this is an intra-bar liquidity sweep/wick noise; setup structure is intact. Provide hard invalidation level.
+         - If a 5-minute bar CLOSES BEYOND invalidation line -> CONFIRM EXIT. Invalidation confirmed; thesis dead.
+     (5) MIDDAY CHOP STAGNATION: If position has been open >35 min between 11:15–12:45 MT with zero expansion -> TIME STOP KILL at scratch before theta decay burns the option.
+     (6) EOD FLATTEN: At 13:45 MT / 15:45 ET (15 min before close) -> EOD FLATTEN all 0DTE positions.
+   - Always conclude your exit guidance with decisive clickable action links:
+     `[🛑 Confirm Exit & Close Now](action:ask?prompt=Close+open+position+immediately)  [🛡️ Veto Alert & Hold with Stop at $[Price]](action:ask?prompt=Keep+holding+with+hard+stop+at+$[Price])  [⚡ Scale 50% & Trail Runner](action:ask?prompt=Scale+half+position+and+trail+stop)`
+13. Desk Self-Analysis, Empirical Post-Mortem & Active Rule Formulation:
+   - When the user asks to analyze intraday trades, review session performance, or formulate rules:
+     (a) Quantitative Self-Analysis: Review session trades. Compute Expectancy E = (WinRate * AvgWin) - (LossRate * AvgLoss), Profit Factor, Max Adverse Excursion (MAE), and identify Loss Clustering (e.g. midday chop traps, widened stops, chased extensions).
+     (b) Self-Improvement & Rule Formulation: Formulate testable, concrete risk rules directly addressing the bleed (e.g. banning entries during 11:30-12:30 MT lull, capping initial stop at 1.25x ATR).
+     (c) Present the rule in a structured, actionable markdown skill format so the user can easily copy or save it into the active skills directory (`skills/`).
+14. Live Tool Execution Efficiency:
+   - Real-time market quotes, unified options chain (Calls + Puts), and Tastytrade IV Rank are already pre-loaded in your context below.
+   - If you need additional live data, emit all needed tool calls in your FIRST response so they execute concurrently in parallel.
+   - Once tool results are returned, immediately synthesize your final markdown answer without requesting further tools.
+
 
 
 ---
@@ -1879,6 +2002,17 @@ Guidelines:
             # Deduplicate if client passed current question as last history item
             if role == "user" and content == question:
                 continue
+            # Strip tool calls, parameters, and telemetry status badges from prior assistant turns
+            if role == "assistant":
+                content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
+                content = re.sub(r"<function=.*?>.*?</function>", "", content, flags=re.DOTALL)
+                content = re.sub(r"⚙️\s*\*Executing live tool.*?\(s\):.*?\*", "", content)
+                content = re.sub(r"</?[a-zA-Z0-9_]+>", "", content)
+                content = content.strip()
+                if not content or len(content) < 15:
+                    if cleaned_turns and cleaned_turns[-1]["role"] == "user":
+                        cleaned_turns.pop()  # Discard the orphaned question that had no valid answer
+                    continue  # Discard incomplete, aborted, or pure telemetry assistant turns
             cleaned_turns.append({"role": role, "content": content})
 
         for idx, turn in enumerate(cleaned_turns):

@@ -29,18 +29,26 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
         "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
         "* **Floor Defense & Proximity Rule:** [If defending an indisputable structural Put Wall, VP POC, or gap floor, DO NOT demand an exact tick fill. Expand entry_zone_high by +1.0% to catch institutional front-running (e.g. $300 Put Wall -> $300.00–$303.00 entry zone), and use a local tactical stop just below the floor to yield >4:1 R:R].\n"
-        "* **Decoupled Options Directives:** [If direct equity requires waiting for a breakout or deeper pullback, but Plan B identifies an asymmetric defined-risk options structure (e.g. Bull Call Spread with R:R ≥ 2.5:1, or Bull Put Spread at the floor), mark options_plan.actionable = true so options can be traded immediately while shares stalk].\n"
+        "* **Tiered Options Directives:** Always provide a 3-tiered options menu across durations and account structures:\n"
+        "  1. Tactical 30-45 DTE Defined Risk Spread (primary directional vehicle; mark options_plan.actionable = true if R:R >= 2.5:1 so options can be traded immediately even while shares stalk).\n"
+        "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
+        "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put / Floor Bull Put Spread below Put Wall floor).\n"
         "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / STALK / CASH_SKIP]** (Conviction: X/10)\n\n"
         "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
         "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, Breakout Trigger Level & Stop, R:R]\n"
-        "* **Options (Derivatives):** [Actionable: YES/NO, Exact Structure, Expiry, Strikes, Net Credit/Debit, Max Loss, Break-Even]\n"
+        "* **Options Directives (Tiered Menu):**\n"
+        "  - **Primary Tactical Spread (30-45 DTE):** [Structure, Expiry, Strikes, Net Debit/Credit, Max Loss, Break-Even, R:R]\n"
+        "  - **Secular Trend LEAPS (6-12 Months):** [Expiry, Deep ITM Strike (0.75-0.85 Delta), Target Debit, Rationale]\n"
+        "  - **Income / Floor Support Structure:** [Covered Call / PMCC if holding position, or CSP / Bull Put Spread below Put Wall floor]\n"
         "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n\n"
         "```json:watch_levels\n"
         "{\n"
         f'  "ticker": "{ticker}",\n'
         '  "verdict": "ENTER|STALK|CASH_SKIP|WATCH|CUT",\n'
         '  "conviction": 5,\n'
+        '  "side": "LONG|SHORT",\n'
         '  "shares_plan": {\n'
+        '    "side": "LONG|SHORT",\n'
         '    "entry_type": "LIMIT|MARKET|NO_ENTRY",\n'
         '    "entry_zone_low": 0.0,\n'
         '    "entry_zone_high": 0.0,\n'
@@ -53,14 +61,40 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         '  "options_plan": {\n'
         '    "actionable": true,\n'
         '    "entry_trigger": "AT_MARKET|AT_FLOOR_LIMIT|BREAKOUT",\n'
-        '    "structure": "BULL_CALL_SPREAD|BULL_PUT_SPREAD|BEAR_PUT_SPREAD|BEAR_CALL_SPREAD|LONG_CALL|LONG_PUT|CASH_SECURED_PUT|NONE",\n'
+        '    "structure": "BULL_CALL_SPREAD|BULL_PUT_SPREAD|BEAR_PUT_SPREAD|BEAR_CALL_SPREAD|LONG_CALL|LONG_PUT|CASH_SECURED_PUT|COVERED_CALL|NONE",\n'
         '    "expiration": "YYYY-MM-DD",\n'
         '    "long_strike": 0.0,\n'
         '    "short_strike": 0.0,\n'
         '    "target_debit": 0.0,\n'
+        '    "target_credit": 0.0,\n'
         '    "max_loss": 0.0,\n'
         '    "max_profit": 0.0,\n'
-        '    "summary": "Short description"\n'
+        '    "summary": "Short description of primary options play"\n'
+        '  },\n'
+        '  "options_menu": {\n'
+        '    "tactical_spread": {\n'
+        '      "structure": "BULL_CALL_SPREAD|BEAR_PUT_SPREAD|BULL_PUT_SPREAD|BEAR_CALL_SPREAD",\n'
+        '      "expiration": "YYYY-MM-DD",\n'
+        '      "long_strike": 0.0,\n'
+        '      "short_strike": 0.0,\n'
+        '      "target_debit": 0.0,\n'
+        '      "summary": "Tactical 30-45 DTE defined risk spread"\n'
+        '    },\n'
+        '    "leaps": {\n'
+        '      "structure": "LONG_CALL|LONG_PUT",\n'
+        '      "expiration": "YYYY-MM-DD",\n'
+        '      "long_strike": 0.0,\n'
+        '      "target_debit": 0.0,\n'
+        '      "summary": "6-12 Month Deep ITM LEAPS (0.75-0.85 delta)"\n'
+        '    },\n'
+        '    "income_or_csp": {\n'
+        '      "structure": "COVERED_CALL|CASH_SECURED_PUT|BULL_PUT_SPREAD",\n'
+        '      "expiration": "YYYY-MM-DD",\n'
+        '      "short_strike": 0.0,\n'
+        '      "long_strike": 0.0,\n'
+        '      "target_credit": 0.0,\n'
+        '      "summary": "Yield/harvest below floor or against existing position"\n'
+        '    }\n'
         '  },\n'
         '  "invalidation": {\n'
         '    "condition": "DAILY_CLOSE_BELOW|DAILY_CLOSE_ABOVE|INTRADAY_TOUCH",\n'

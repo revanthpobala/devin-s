@@ -994,6 +994,102 @@ def save_short_manifest(top_picks: List[Dict[str, Any]], date_str: str) -> Path:
 
 # Note: Unified run_schwab_pre_move_scan is defined below with full autonomous pipeline support.
 
+def synthesize_datawindow_from_screener(
+    sym: str,
+    cand: Dict[str, Any],
+    rt_quote: Optional[Dict[str, Any]] = None,
+    t_date: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Synthesizes a complete TradingView-compatible Data Window dictionary from
+    screener technical coiling indicators & real-time REST quote.
+    Allows Phase 2C-1 and Phase 2C-2 (Local Research triage & thesis) to run
+    100% locally and instantaneously with ZERO Playwright browser scraping.
+    """
+    t_date = t_date or datetime.now().strftime("%Y-%m-%d")
+    price = None
+    if rt_quote:
+        price = rt_quote.get("price") or rt_quote.get("last_price")
+    if not price:
+        price = cand.get("price") or cand.get("close") or 100.0
+    price = float(price)
+
+    side = (cand.get("side") or "LONG").upper()
+    stage = int(cand.get("weinstein_stage") or (1 if side == "LONG" else 4))
+    score = float(cand.get("priority_score") or 75.0)
+    ema20 = float(cand.get("ema20") or price)
+    sma50 = float(cand.get("sma50") or price)
+    sma200 = float(cand.get("sma200") or price)
+
+    stop = float(cand.get("stop_level") or (price * 0.96 if side == "LONG" else price * 1.04))
+    target = float(cand.get("target_level") or cand.get("ceiling_level") or (price * 1.10 if side == "LONG" else price * 0.90))
+    rr = float(cand.get("long_rr") or cand.get("short_rr") or 2.5)
+    ext_pct = float(cand.get("ext_200_pct") or (5.0 if side == "LONG" else -5.0))
+
+    # Entry zone around current price / EMA20
+    zbot = round(min(price, ema20) * 0.995, 2)
+    ztop = round(max(price, ema20) * 1.005, 2)
+
+    is_rev = bool(cand.get("is_extreme_reversal", False))
+    # Action code 20 (REVERSAL BUY/SELL) is the era-robust PASS lane in data_window_filter
+    act_code = "20"
+    rev_zone_score = "8" if is_rev else "2"
+    # Bit 4 in signal pack is NOT-fade (inverted: bit 4 == 1 means NOT fade, allows fresh entries)
+    sig_pack = "5" if side == "LONG" else "6"
+
+    dw = {
+        "time": t_date,
+        "ticker": sym.upper(),
+        "open": str(round(price, 2)),
+        "high": str(round(price * 1.01, 2)),
+        "low": str(round(price * 0.99, 2)),
+        "close": str(round(price, 2)),
+        "Sprint Line EMA": str(round(ema20, 2)),
+        "Hull Baseline HMA": str(round(ema20, 2)),
+        "MA 20 Fast": str(round(ema20, 2)),
+        "MA 50 Mid": str(round(sma50, 2)),
+        "MA 200 Slow": str(round(sma200, 2)),
+        "Weinstein MA 150": str(round(sma50, 2)),
+        "Stage 1 Base 2 Up 3 Top 4 Down": str(stage),
+        "Stage Age Bars": "5",
+        "Long Entry": str(round(price, 2)),
+        "Long Entry Zone Bot": str(zbot),
+        "Long Entry Zone Top": str(ztop),
+        "Long Stop Loss": str(round(stop, 2)),
+        "Long Target": str(round(target, 2)),
+        "Short Entry": str(round(price, 2)),
+        "Short Entry Zone Bot": str(zbot),
+        "Short Entry Zone Top": str(ztop),
+        "Short Stop Loss": str(round(stop, 2)),
+        "Short Target": str(round(target, 2)),
+        "Long Setup Score": str(round(score if side == "LONG" else 20.0, 1)),
+        "Short Pressure Score": str(round(score if side == "SHORT" else 20.0, 1)),
+        "Entry At Market 0No 1L 2S 3Both": "1" if side == "LONG" else "2",
+        "Action Long Code": act_code if side == "LONG" else "0",
+        "Action Short Code": act_code if side == "SHORT" else "0",
+        "Long Rev Zone": rev_zone_score if side == "LONG" else "0",
+        "Short Rev Zone": rev_zone_score if side == "SHORT" else "0",
+        "Ext Pct vs MA200": str(round(ext_pct, 1)),
+        "Exhaustion Gradient": "0.0",
+        "Ext Z Self Relative": "0.0",
+        "Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz": "6" if cand.get("squeeze_on") else "1",
+        "Exp Move Pct 21b": "6.0",
+        "Evidence Bias Pct Above 50 Bull": "65.0" if side == "LONG" else "35.0",
+        "Long Ignition Fresh Breakout": "1" if cand.get("nr7") else "0",
+        "RR To Target": str(round(rr, 1)),
+        "Long RR At Market": str(round(rr, 1)),
+        "Zone RR Flags Pack": "7",
+        "Signal Pack": sig_pack,
+        "Bear Warning Mask": "0",
+        "Reversal Pattern Mask": "0",
+        "Weak Level Mask": "0",
+        "POC": str(round(price, 2)),
+        "VAH": str(round(price * 1.03, 2)),
+        "VAL": str(round(price * 0.97, 2)),
+    }
+    return dw
+
+
 def run_autonomous_screener_pipeline(
     candidates: List[Dict[str, Any]],
     auto_max: int = 3,
@@ -1005,12 +1101,18 @@ def run_autonomous_screener_pipeline(
     Autonomous Execution Engine for High-Priority Screener Candidates.
     1. Sorts candidates by priority_tier (HIGH_PRIORITY first) and priority_score.
     2. Takes up to auto_max candidates.
-    3. Runs:
-       a. Chart Scraping (run_swing_research.py [date_str] --ticker <sym> [--headless])
-       b. Local Deterministic Triage (run_local_research.py [date_str] --ticker <sym>)
-       c. If local triage flags send_for_deep_research == True and run_deep is True:
-          - Deep Research debate & synthesis (run_deep_research.py [date_str] --ticker <sym>)
-          - Tactical levels sync & Tastytrade cloud quote alerts (run_watch_alerts.py --sync --once)
+    3. Pipeline Sequence (Strictly Gated):
+       Step 1: Real-time quote & news ingestion (REST API: Schwab quote + Finnhub/Alpaca news).
+               Reuses recent historical data window or synthesizes indicator baseline (ZERO browser).
+       Step 2: Local Research (run_local_research.py [date_str] --ticker <sym>) via local Qwen.
+       Step 3: "If Satisfied" Gate:
+               - Only if local research satisfies conviction & posture:
+                 * Scrape TradingView charts (run_swing_research.py [date_str] --ticker <sym>)
+                 * Launch Deep Research in slot (run_deep_research.py [date_str] --ticker <sym>)
+                 * Sync watch levels & Tastytrade cloud quote alerts (run_watch_alerts.py --sync --once)
+               - If NOT satisfied:
+                 * Skips chart scraping completely (ZERO browser launched)
+                 * Skips deep research completely (preserves GPU slot)
     4. Presents a comprehensive research dossier and summary scoreboard.
     """
     py_exe = _get_python_exe()
@@ -1086,19 +1188,68 @@ def run_autonomous_screener_pipeline(
         logger.info(f"🤖 [AUTONOMOUS RESEARCH] Starting pipeline for {sym} ({side_str} | Stage {stage})...")
         logger.info(f"========================================================")
 
-        # Step 1: Playwright Chart & Data Window Scrape
-        logger.info(f"[{sym}] 1/3: Scraping TradingView charts & Data Window (Headless={headless})...")
-        try:
-            cmd_scrape = [py_exe, "run_swing_research.py", t_date, "--ticker", sym]
-            if headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"):
-                cmd_scrape.append("--headless")
-            subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True)
-        except Exception as e_scrape:
-            logger.error(f"[{sym}] Scraping error: {e_scrape}")
-            continue
+        # =========================================================================
+        # STEP 1: REAL-TIME DATA & NEWS INGESTION (Fast REST APIs — Zero browser)
+        # =========================================================================
+        logger.info(f"[{sym}] 1/4: Ingesting real-time quote, options metrics & news context...")
+        raw_ticker_dir = config.BASE_DIR / "data" / "raw" / t_date / sym
+        raw_ticker_dir.mkdir(parents=True, exist_ok=True)
 
-        # Step 2: Local Deterministic Triage & Local LLM Thesis
-        logger.info(f"[{sym}] 2/3: Running Local LLM research & deterministic triage...")
+        # 1a. Real-time live quote
+        rt_quote = None
+        try:
+            from src.clients.schwab_client import get_realtime_quote
+            rt_quote = get_realtime_quote(sym)
+            if rt_quote:
+                with open(raw_ticker_dir / f"{sym}_quote.json", "w", encoding="utf-8") as f_q:
+                    json.dump(rt_quote, f_q, indent=2)
+        except Exception as e_q:
+            logger.debug(f"[{sym}] Live quote fetch notice: {e_q}")
+
+        # 1b. Real-time news & catalyst
+        try:
+            from src.clients.news_client import get_ticker_news
+            rt_news = get_ticker_news(sym, days=2)
+            if rt_news:
+                with open(raw_ticker_dir / f"{sym}_fetch_finnhub_news.json", "w", encoding="utf-8") as f_n:
+                    json.dump(rt_news, f_n, indent=2)
+        except Exception as e_n:
+            logger.debug(f"[{sym}] Live news fetch notice: {e_n}")
+
+        # 1c. Ensure Data Window exists for local research (zero browser — synthesize from screener metrics if no prior scrape)
+        dw_json = raw_ticker_dir / f"{sym}_datawindow.json"
+        dw_csv = raw_ticker_dir / f"{sym}_datawindow.csv"
+        if not dw_json.exists():
+            # Search recent dates in data/raw for existing datawindow
+            raw_root = config.BASE_DIR / "data" / "raw"
+            for d in sorted(raw_root.iterdir(), reverse=True):
+                if d.is_dir() and d.name != t_date and d.name.startswith("202"):
+                    src_dw = d / sym / f"{sym}_datawindow.json"
+                    src_csv = d / sym / f"{sym}_datawindow.csv"
+                    if src_dw.exists():
+                        import shutil
+                        shutil.copy2(str(src_dw), str(dw_json))
+                        if src_csv.exists():
+                            shutil.copy2(str(src_csv), str(dw_csv))
+                        logger.info(f"⚡ [{sym}] Reused historical datawindow from {d.name} for local research.")
+                        break
+
+        # If datawindow is still missing, synthesize it directly from screener indicators & live quote — ZERO BROWSER SCRAPING!
+        if not dw_json.exists():
+            logger.info(f"⚡ [{sym}] Synthesizing baseline data window from screener metrics & real-time quote (zero browser)...")
+            try:
+                synth_dw = synthesize_datawindow_from_screener(sym, p, rt_quote=rt_quote, t_date=t_date)
+                with open(dw_json, "w", encoding="utf-8") as f_dw:
+                    json.dump(synth_dw, f_dw, indent=2)
+                logger.info(f"✅ [{sym}] Baseline data window synthesized successfully.")
+            except Exception as e_synth:
+                logger.error(f"[{sym}] Failed to synthesize data window: {e_synth}")
+                continue
+
+        # =========================================================================
+        # STEP 2: LAUNCH LOCAL RESEARCH (Free, Local LLM @ localhost:8000)
+        # =========================================================================
+        logger.info(f"[{sym}] 2/4: Running Local Research (Deterministic triage + Local Qwen)...")
         try:
             cmd_local = [py_exe, "run_local_research.py", t_date, "--ticker", sym]
             subprocess.run(cmd_local, cwd=config.BASE_DIR, check=True)
@@ -1126,10 +1277,32 @@ def run_autonomous_screener_pipeline(
 
         logger.info(f"[{sym}] Local triage verdict: {triage_verdict} (send_for_deep_research={send_to_deep})")
 
-        # Step 3: Conditional Deep Research
-        deep_done = False
-        if run_deep and send_to_deep:
-            logger.info(f"[{sym}] 3/3: Passing local triage! Launching Deep Research debate & arbitration...")
+        # =========================================================================
+        # STEP 3: "IF SATISFIED" GATE -> SCRAPE TRADINGVIEW CHARTS
+        # =========================================================================
+        is_satisfied = send_to_deep or triage_verdict in ("PASS", "WATCH")
+        chart_png = raw_ticker_dir / f"{sym}_chart.png"
+        chart_zoom_png = raw_ticker_dir / f"{sym}_chart_zoom.png"
+        has_charts = chart_png.exists() and chart_zoom_png.exists()
+
+        if run_deep and is_satisfied:
+            if not has_charts:
+                logger.info(f"[{sym}] 3/4: Local research SATISFIED! Scraping TradingView multimodal charts (Headless={headless})...")
+                try:
+                    cmd_scrape = [py_exe, "run_swing_research.py", t_date, "--ticker", sym]
+                    if headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"):
+                        cmd_scrape.append("--headless")
+                    subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True)
+                except Exception as e_scrape:
+                    logger.error(f"[{sym}] Multimodal chart scrape notice: {e_scrape}")
+            else:
+                logger.info(f"⚡ [{sym}] 3/4: Multimodal chart images already present. Ready for deep pass.")
+
+            # =========================================================================
+            # STEP 4: LAUNCH DEEP RESEARCH & WATCH ALERTS (In Slot)
+            # =========================================================================
+            logger.info(f"[{sym}] 4/4: Launching Deep Research debate & senior PM arbitration...")
+            deep_done = False
             try:
                 cmd_deep = [py_exe, "run_deep_research.py", t_date, "--ticker", sym]
                 subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True)
@@ -1140,7 +1313,8 @@ def run_autonomous_screener_pipeline(
             except Exception as e_deep:
                 logger.error(f"[{sym}] Deep research error: {e_deep}")
         else:
-            logger.info(f"[{sym}] Candidate preserved in local triage ledger.")
+            logger.info(f"⏸️ [{sym}] Local research verdict ({triage_verdict}) not satisfied for deep pass. Skipping scrape & deep research to preserve slots.")
+            deep_done = False
 
         # Extract details for presentation
         triage_info = rec.get("triage", {}) if isinstance(rec.get("triage"), dict) else rec

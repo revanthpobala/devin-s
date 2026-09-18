@@ -133,19 +133,28 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 
 | Card says | Catalyst finding | Your call |
 |-----------|------------------|-----------|
-| BUY (grade A/B) | Tailwind or quiet tape, no imminent print | **TAKE** — full size on A, standard on B |
-| BUY (grade A/B) | **Scheduled print in < ~60–90 min** (CPI/FOMC/NFP) | **WAIT until after the release.** Do not buy premium into a binary — IV crush + whipsaw. |
-| BUY (grade A/B) | Move is a **headline spike already extended** | **SKIP or wait for the pullback** to the PLAN entry. Don't chase the candle. |
-| BUY (grade B) | VIX > 30 / event in progress | **HALF size** or skip. |
+| BUY (Grade A, score ≥ 80) | Tailwind or quiet tape, aligned with HTF Stage | **TAKE** — full size (1–2 contracts) |
+| BUY (Grade B, score < 80) | Any | **⛔ STAND ASIDE (LOW CONVICTION)** — 0DTE theta crushes marginal Grade-B setups. Only Grade A (≥80) is execution-eligible. |
+| BUY CALLS (in Stage 4) | Any | **⛔ STAND ASIDE (COUNTER-STAGE)** — Never buy CALLs into a Stage 4 Structural Decline. Overhead supply crushes bounces. |
+| BUY PUTS (in Stage 2) | Any | **⛔ STAND ASIDE (COUNTER-STAGE)** — Never buy PUTs into a Stage 2 Structural Advance. Institutional demand absorbs dips. |
+| BUY (Grade A) | **Scheduled print in < ~60–90 min** (CPI/FOMC/NFP) | **WAIT until after the release.** Do not buy premium into a binary — IV crush + whipsaw. |
+| BUY (Grade A) | Move is a **headline spike already extended** | **SKIP or wait for the pullback** to the PLAN entry. Don't chase the candle. |
+| BUY (10:30–11:30 ET) | Score < 90 | **⛔ STAND ASIDE (EXHAUSTION TRAP)** — Mid-morning trend extension & European close requires Grade A+ (Score ≥ 90). |
+| BUY (11:30–1:15 ET) | Score < 85 | **⛔ STAND ASIDE (LUNCH CHOP)** — Midday liquidity dead zone requires Grade A+ (Score ≥ 85). |
 | BUY | Catalyst directly **opposes** the side (e.g. hawkish surprise vs CALLS) | **SKIP** — the card is fighting the news. |
 | STAND ASIDE | A catalyst is now driving a clean move in the card's bias | **WAIT for the card to flip to BUY** (trigger + grade). Do not pre-empt its vetoes. |
-| HOLD (in trade) | Adverse print/headline hit | Respect Row 8 stop, but consider taking profit early — 0DTE gives no time to recover. |
+| HOLD (in trade) | +0.5R or ≥ +$100 unrealized gain | **RATCHET TO BE+ ($0.05)** — Capital preservation rule: never let a winning trade become a loss. |
+| HOLD (in trade) | Scaled at T1 / Peak gain > +$200 | **TRAIL RUNNER** — Protect ≥ 65% of peak gains. |
+| HOLD (in trade) | Adverse print/headline hit | Respect stop, bank profits early — 0DTE gives no time to recover. |
 
-**Hard 0DTE vetoes (override any BUY → SKIP/WAIT):**
-- Card Row 8 shows `DAY PAUSE` — **new entries are paused right now.** Don't override it with a catalyst; wait for the card itself to clear it (a strong trend resumption, or a new session). It is a soft, self-clearing pause, not an all-day lockout.
-- Unscheduled into a print inside ~60–90 min, or during the FOMC 2:00–2:30 window.
-- It's after ~3:00pm ET and the setup needs a multi-hour move (card already blocks; confirm).
-- Card Row 8 shows `circuit breaker` / `chop regime` / `no counter-trend` — these are the card protecting you; do not talk yourself past them.
+**Hard Institutional 0DTE Vetoes (override any BUY → STAND ASIDE/WAIT):**
+- **Grade-A Quality Gate**: Setup grade is 'B' or score < 80. (0DTE intraday requires Grade-A velocity).
+- **Weinstein Stage & MTF Alignment**: CALLS in Stage 4 Decline or PUTS in Stage 2 Advance. (Never fight the structural tide).
+- **Mid-Morning Exhaustion Window (10:30–11:30 AM ET)**: Score < 90 vetoed (European close stall).
+- **Lunch Chop Window (11:30 AM–1:15 PM ET)**: Score < 85 vetoed (liquidity dead zone).
+- **Scheduled Binary Events**: Within 60–90 min of high-impact macro prints (CPI/PPI/FOMC).
+- **Late-Day Cutoff**: After 3:00 PM ET no new entries (`0DTE: no new entries`); flat by 3:45 PM.
+- **Card Veto Rows**: Card Row 8 shows `DAY PAUSE`, `circuit breaker`, `chop regime`, `no counter-trend`. Respect them without exception.
 
 ---
 
@@ -153,17 +162,19 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 
 ### A) HEADLINE — DECISION × GRADE × catalyst → size
 
-| DECISION row | Grade (score) | Catalyst state | Call | Size |
-|--------------|---------------|----------------|------|------|
-| BUY CALLS/PUTS | **A (≥80)** | tailwind / quiet | **TAKE** | Full (1–2 contracts) |
-| BUY CALLS/PUTS | A (≥80) | print < 60–90 min | **WAIT** for release | — |
-| BUY CALLS/PUTS | **B (65–79)** | tailwind / quiet | **TAKE** | Standard (¾) |
-| BUY CALLS/PUTS | B (65–79) | any headwind / VIX>30 | **HALF or SKIP** | ½ |
-| BUY CALLS/PUTS | any | catalyst opposes side | **SKIP** | 0 |
-| HOLD … (runner) | shows `+xR` | adverse headline | **Manage** Row 8 stop; bank early | trim |
-| STAND ASIDE | C/D or veto | — | **NO TRADE** (read Row 8) | 0 |
+| DECISION row | Grade (score) | Stage / Window Alignment | Catalyst state | Call | Size |
+|--------------|---------------|--------------------------|----------------|------|------|
+| BUY CALLS/PUTS | **A (≥80)** | Aligned w/ Stage & Time | tailwind / quiet | **TAKE** | Full (1–2 contracts) |
+| BUY CALLS/PUTS | A (≥80) | Aligned w/ Stage & Time | print < 60–90 min | **WAIT** for release | — |
+| BUY CALLS/PUTS | **B (65–79)** | Any | Any | **⛔ STAND ASIDE** | 0 (theta trap) |
+| BUY CALLS | Any | In Stage 4 Decline | Any | **⛔ STAND ASIDE** | 0 (counter-stage) |
+| BUY PUTS | Any | In Stage 2 Advance | Any | **⛔ STAND ASIDE** | 0 (counter-stage) |
+| BUY CALLS/PUTS | A (80–89) | 10:30–11:30 AM ET | Any | **⛔ STAND ASIDE** | 0 (need score ≥90) |
+| BUY CALLS/PUTS | any | Any | catalyst opposes side | **SKIP** | 0 |
+| HOLD … (runner) | shows `+xR` | — | adverse headline | **Manage** Row 8 stop; bank early | trim |
+| STAND ASIDE | C/D or veto | — | — | **NO TRADE** (read Row 8) | 0 |
 
-> The card never prints BUY below grade B. If you ever see C/D with a BUY, re-read — it's STAND ASIDE.
+> The engine strictly executes Grade-A setups (score ≥ 80). Grade B is marked STAND ASIDE to eliminate low-conviction drag.
 
 ### B) CONTEXT regime (Row 9) → 0DTE playbook
 
@@ -225,12 +236,14 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 
 ### G) Worked combinations
 
-- `BUY CALLS B(71)` + TREND UP + Trig✓Move✓Edge✓ + 10:45am + no print → **TAKE standard, ride to T1/T2.**
-- `BUY PUTS A(83)` + TREND DN + 1:15pm + **CPI tomorrow not today** → **TAKE full.**
-- `BUY CALLS B(68)` + EXPANSION + 1:20pm + **FOMC 2:00pm** → **WAIT until 2:30**, then re-read the card.
+- `BUY CALLS A(85)` + Stage 2 Advance + Trig✓Move✓Edge✓ + 10:15am + no print → **TAKE full, ride to T1/T2.**
+- `BUY CALLS B(71)` + any regime → **⛔ STAND ASIDE** — Grade B / score < 80 vetoed for 0DTE execution.
+- `BUY CALLS A(92)` + Stage 4 Decline → **⛔ STAND ASIDE** — Counter-stage veto; never buy calls into structural decline.
+- `BUY PUTS A(88)` + Stage 4 Decline + 1:15pm + no print → **TAKE full.**
+- `BUY CALLS A(84)` + 10:45am (Mid-Morning Window) → **⛔ STAND ASIDE** — Score < 90 in the 10:30–11:30 ET exhaustion window.
+- `BUY CALLS A(88)` + EXPANSION + 1:20pm + **FOMC 2:00pm** → **WAIT until 2:30**, then re-read the card.
 - `STAND ASIDE` + Row 8 `chop regime — need A-grade` + RANGE + lunch → **SKIP**, no exceptions.
-- `BUY CALLS B(70)` but **Move ✗** (no expansion) → **SKIP** — fails the 0DTE trio even though grade is fine.
-- `BUY PUTS B(72)` + ALIGN `W↑ D↑ 15m↓` → **SKIP** — fighting the up-tide; counter-trend on 0DTE.
+- `BUY CALLS A(82)` but **Move ✗** (no expansion) → **SKIP** — fails the 0DTE trio even though grade is fine.
 
 ---
 
@@ -263,6 +276,23 @@ Then **2–3 sentences max**, trader-to-trader: would you size this or pass, and
 6. **VIX > 30 = half size.** Event-in-progress spikes = stand aside until it settles.
 7. **Grade discipline:** A = full, B = standard (and only if catalyst isn't a headwind), C/D = the card won't call it and neither do you.
 8. **One side only.** Trade the card's bias; never average a losing 0DTE.
+
+## SPECIALIZED INSTITUTIONAL RULES (Embedded Skills)
+
+1. **Exit Management & Veto Protocol**:
+   - **Target 1 Scale**: Scale 50% profit immediately; ratchet runner stop to Break-Even + $0.05 (Rule 4.1.1 Golden Lock).
+   - **Catastrophic Risk**: Immediate market close if drawdown reaches >= 1.25x ATR or >= 2.5%. Zero waiting for candle close.
+   - **Intra-Bar Wick vs 5m Close**: If spot wicks below stop but 5m candle body holds above, VETO premature TV exits and hold.
+2. **Execution Timing Gates**:
+   - **11:15–12:45 MT (1:15–2:45 ET) Lunch Lull**: Demand A-grade conviction (score >= 80) and volume expansion; default is WAIT.
+   - **Post 3:00 PM ET**: No new 0DTE entries; manage existing positions only. Flat by 3:45 PM ET EOD.
+3. **Catastrophe Risk Controls**:
+   - Hard 1.25x ATR stop cap. Zero discretionary overrides.
+
+## STRICT OUTPUT MANDATE
+- You MUST output your response starting ON LINE 1 with the exact Decision Card header:
+  `[TICKER] [TIME ET] — 🟢 TAKE CALLS` (or `🔴 TAKE PUTS`, `⏸️ WAIT`, `⛔ STAND ASIDE`, `🔴 EXIT CONFIRMED`, `🛡️ VETO EXIT (HOLD)`)
+- Do NOT output any conversational text, thoughts, preambles, or tool call tags. Output pure Markdown card.
 
 ---
 

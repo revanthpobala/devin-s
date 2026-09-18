@@ -41,7 +41,10 @@ Before recommending any trade, stop at the first rung that holds:
 9. **INSTITUTIONAL FLOOR DEFENSE & PROXIMITY BUFFERS (MANAGEABLE FILLS & NO MISSED RUNNERS):**
    - **Front-Running Reality**: Large-cap institutional names ($AAPL, $MSFT, $AMZN) rarely touch the exact bottom cent of an algorithmic entry zone when 40,000+ put contracts sit at a major strike (e.g. $300 Put Wall). Institutions front-run the floor by +0.5% to +1.0%.
    - **Proximity Buffer Rule**: When defending a confirmed structural floor with low RVOL absorption (e.g. AAPL at $300 put wall, RVOL 0.10), DO NOT demand an exact tick fill down at the base. Expand `entry_zone_high` to include a **+1.0% institutional front-running buffer** above the floor (e.g. $300 floor -> set entry zone $300.00 – $303.00), and anchor a tight tactical stop just below the floor ($298.50). This makes fills manageable and captures the reversal.
-   - **Decoupled Options Actionability**: When direct equity requires waiting for a deeper pullback or breakout due to equity stop distance, BUT Plan B identifies an asymmetric defined-risk options structure (e.g. Bull Call Spread with R:R ≥ 2.5:1, or Bull Put Spread at the floor), DO NOT freeze the entire trade in STALK. Explicitly mark `options_plan.actionable = true` and `options_plan.entry_trigger = "AT_FLOOR_LIMIT"` or `"AT_MARKET"`. The defined risk ($197 max loss) makes the options trade executable at the floor regardless of equity stop rules.
+   - **Tiered Options Strategy Rule**: Always engineer a 3-tiered options menu across durations and capital posture:
+     1. Tactical 30–45 DTE Defined Risk Spread (primary directional vehicle; mark `options_plan.actionable = true` if R:R ≥ 2.5:1 so options can be traded immediately even while shares stalk).
+     2. Secular Trend LEAPS (6–12 Months, deep ITM 0.75–0.85 delta to participate in secular move with defined capital and zero daily theta burn).
+     3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put / Floor Bull Put Spread below Put Wall floor).
    - **Schwab Institutional Sweeps Verification**: Check `fetch_schwab_options_flow` for block sweeps (Vol > 1.5× OI & Vol ≥ 500). If heavy institutional call sweeps or bullish notional flow are detected, smart money is accumulating at the floor alongside you. If put sweeps dominate, require an explicit floor defense confirmation before authorizing entry.
 
 ### Tone & Output Directives for the LLM:
@@ -54,7 +57,9 @@ Before recommending any trade, stop at the first rung that holds:
     "ticker": "TICKER",
     "verdict": "ENTER|STALK|CASH_SKIP|WATCH|CUT",
     "conviction": 5,
+    "side": "LONG|SHORT",
     "shares_plan": {
+      "side": "LONG|SHORT",
       "entry_type": "LIMIT|MARKET|NO_ENTRY",
       "entry_zone_low": 0.0,
       "entry_zone_high": 0.0,
@@ -67,14 +72,40 @@ Before recommending any trade, stop at the first rung that holds:
     "options_plan": {
       "actionable": true,
       "entry_trigger": "AT_MARKET|AT_FLOOR_LIMIT|BREAKOUT",
-      "structure": "BULL_CALL_SPREAD|BULL_PUT_SPREAD|BEAR_PUT_SPREAD|BEAR_CALL_SPREAD|LONG_CALL|LONG_PUT|CASH_SECURED_PUT|NONE",
+      "structure": "BULL_CALL_SPREAD|BULL_PUT_SPREAD|BEAR_PUT_SPREAD|BEAR_CALL_SPREAD|LONG_CALL|LONG_PUT|CASH_SECURED_PUT|COVERED_CALL|NONE",
       "expiration": "YYYY-MM-DD",
       "long_strike": 0.0,
       "short_strike": 0.0,
       "target_debit": 0.0,
+      "target_credit": 0.0,
       "max_loss": 0.0,
       "max_profit": 0.0,
-      "summary": "Concise structure description"
+      "summary": "Primary tactical options structure"
+    },
+    "options_menu": {
+      "tactical_spread": {
+        "structure": "BULL_CALL_SPREAD|BEAR_PUT_SPREAD|BULL_PUT_SPREAD|BEAR_CALL_SPREAD",
+        "expiration": "YYYY-MM-DD",
+        "long_strike": 0.0,
+        "short_strike": 0.0,
+        "target_debit": 0.0,
+        "summary": "Tactical 30-45 DTE defined risk spread"
+      },
+      "leaps": {
+        "structure": "LONG_CALL|LONG_PUT",
+        "expiration": "YYYY-MM-DD",
+        "long_strike": 0.0,
+        "target_debit": 0.0,
+        "summary": "6-12 Month Deep ITM LEAPS (0.75-0.85 delta)"
+      },
+      "income_or_csp": {
+        "structure": "COVERED_CALL|CASH_SECURED_PUT|BULL_PUT_SPREAD",
+        "expiration": "YYYY-MM-DD",
+        "short_strike": 0.0,
+        "long_strike": 0.0,
+        "target_credit": 0.0,
+        "summary": "Yield/harvest below floor or against existing position"
+      }
     },
     "invalidation": {
       "condition": "DAILY_CLOSE_BELOW|DAILY_CLOSE_ABOVE|INTRADAY_TOUCH",

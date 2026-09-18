@@ -548,9 +548,11 @@ window.AppWatchlist = {
     let statusIcon = '⏳';
     if (statusUpper === 'IN_ZONE') { statusBadgeClass = 'in_zone'; statusIcon = '🎯'; }
     else if (statusUpper === 'IN_TRADE') { statusBadgeClass = 'in_trade'; statusIcon = '🎯'; }
-    else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED') { statusBadgeClass = 'invalidated'; statusIcon = '⚠️'; }
+    else if (statusUpper === 'TESTING_SUPPORT') { statusBadgeClass = 'testing_support'; statusIcon = '⚠️'; }
+    else if (t.reclaimed) { statusBadgeClass = 'reclaimed'; statusIcon = '📈'; }
+    else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED') { statusBadgeClass = 'invalidated'; statusIcon = '🛑'; }
     else if (statusUpper === 'TARGET_HIT' || statusUpper === 'COMPLETED') { statusBadgeClass = 'target_hit'; statusIcon = '🏁'; }
-    else if (statusUpper === 'MISSED_RUNAWAY') { statusBadgeClass = 'missed_runaway'; statusIcon = '🏃'; }
+    else if (statusUpper === 'MISSED_RUNAWAY') { statusBadgeClass = 'missed_runaway'; statusIcon = '🚀'; }
 
     // Dynamic Outcome / Profit & Loss Badge by Suggested Trades
     let pnlHtml = '-';
@@ -629,31 +631,31 @@ window.AppWatchlist = {
       : '';
 
     const ideasCount = (t.trade_ideas || []).length;
-    const ideasBtnBg = isIdeasOpen ? 'background:rgba(6,182,212,0.3); border-color:var(--cyan-glow);' : 'background:rgba(6,182,212,0.12); border-color:rgba(6,182,212,0.4);';
+    const ideasBtnBg = isIdeasOpen ? 'background:rgba(6,182,212,0.25); border:1px solid var(--cyan); color:#38bdf8;' : 'background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.35); color:var(--cyan);';
 
     const drawerHtml = isIdeasOpen ? `
       <tr class="trade-ideas-row">
-        <td colspan="11" style="padding:14px 18px; background:rgba(8,13,22,0.6); border-top:1px dashed rgba(6,182,212,0.35); border-bottom:1px solid var(--border);">
+        <td colspan="11" style="padding:14px 18px; background:var(--bg-card); border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
             <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-size:15px;">💡</span>
-              <span style="font-size:13px; font-weight:800; color:var(--text-main);">Tactical Trade Ideas & Action Gameplan for ${sym}</span>
+              <span style="font-size:14px;">⚡</span>
+              <span style="font-family:'Outfit',sans-serif; font-size:13px; font-weight:800; color:var(--text-main); letter-spacing:0.2px;">Tactical Trade Ideas & Action Gameplan for ${sym}</span>
               ${isOpenPos ? `<span class="pill cyan" style="font-size:9.5px; padding:1px 6px;">💼 Active Position (${posQty} shs @ $${posAvg.toFixed(2)})</span>` : `<span class="pill green" style="font-size:9.5px; padding:1px 6px;">🎯 Stalking Setup</span>`}
             </div>
             <div style="display:flex; align-items:center; gap:8px;">
-              <button class="btn secondary" onclick="AppSwing.openPlanExecution('${sym}', '${t.date}')" style="padding:2px 8px; font-size:11px; color:var(--blue); cursor:pointer;">💬 Consult Copilot</button>
-              <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:2px 8px; font-size:11px; font-weight:700;">✕ Close</button>
+              <button class="btn secondary" onclick="AppSwing.openPlanExecution('${sym}', '${t.date}')" style="padding:3px 9px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; border-radius:2px; color:var(--blue); cursor:pointer;">💬 Consult Copilot</button>
+              <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:3px 9px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; border-radius:2px;">✕ Close</button>
             </div>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px;">
             ${(t.trade_ideas || []).map(idea => `
-              <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:10px; display:flex; flex-direction:column; gap:5px;">
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--cyan); border-radius:3px; padding:10px 12px; display:flex; flex-direction:column; gap:5px;">
                 <div style="display:flex; align-items:center; justify-content:space-between;">
-                  <span style="font-weight:700; font-size:11.5px; color:var(--text-main);">${idea.title}</span>
-                  <span class="pill ${idea.color || 'cyan'}" style="font-size:9px; padding:1px 5px; font-weight:800;">${idea.badge}</span>
+                  <span style="font-family:var(--font-sans); font-weight:800; font-size:11.5px; color:var(--text-main);">${idea.title}</span>
+                  <span class="pill ${idea.color || 'cyan'}" style="font-size:9.5px; padding:1px 5px; font-weight:800;">${idea.badge}</span>
                 </div>
                 <p style="font-size:11px; color:var(--text-muted); line-height:1.45; margin:0;">${idea.action}</p>
-                ${idea.metrics ? `<div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--cyan-glow); margin-top:2px;">${idea.metrics}</div>` : ''}
+                ${idea.metrics ? `<div style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--cyan); margin-top:2px; font-weight:700;">${idea.metrics}</div>` : ''}
               </div>
             `).join('')}
           </div>
@@ -667,24 +669,24 @@ window.AppWatchlist = {
     return `
       <tr ${isOpenPos ? 'style="background:rgba(6,182,212,0.03);"' : ''}>
         <td>
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <span class="ticker-cell-sym" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="cursor:pointer; color:#38bdf8;" title="${compTitle} ($${t.ticker}) - Click to open Dossier" data-ticker="${t.ticker}">${t.ticker}</span>
-            ${(t.side === 'SHORT' || (stop > 0 && entryHigh > 0 && stop > entryHigh)) ? `<span class="pill" style="font-size:9px; padding:1px 5px; font-weight:800; background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.5); color:#f87171;">🔴 SHORT</span>` : ''}
-            ${isOpenPos ? `<span class="pill cyan" style="font-size:9px; padding:1px 5px; font-weight:800;" title="You hold an active position in ${t.ticker}">💼 ${posQty} SHS</span>` : ''}
+            ${(t.side === 'SHORT' || (stop > 0 && entryHigh > 0 && stop > entryHigh)) ? `<span class="pill red" style="font-size:9.5px; padding:1px 5px; font-weight:800;">🔴 SHORT</span>` : ''}
+            ${isOpenPos ? `<span class="pill cyan" style="font-size:9.5px; padding:1px 5px; font-weight:800;" title="You hold an active position in ${t.ticker}">💼 ${posQty} SHS</span>` : ''}
             ${t.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${t.conviction}/10</span>` : ''}
-            <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="padding:2px 8px; font-size:11px; font-weight:700; background:rgba(6,182,212,0.15); border:1px solid rgba(6,182,212,0.4); color:var(--cyan-glow); cursor:pointer; border-radius:4px; display:inline-flex; align-items:center; gap:4px;" title="Open ${t.ticker} Research Dossier">
+            <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="padding:2px 7px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; background:rgba(6,182,212,0.1); border:1px solid rgba(6,182,212,0.4); color:var(--cyan); cursor:pointer; border-radius:2px; display:inline-flex; align-items:center; gap:4px;" title="Open ${t.ticker} Research Dossier">
               📑 Dossier
             </button>
-            <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${t.ticker}', 'D')" style="padding:2px 7px; font-size:11px; font-weight:700; cursor:pointer;" title="Open Real-Time Interactive TradingView Chart">
+            <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${t.ticker}', 'D')" style="padding:2px 7px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-main); cursor:pointer; border-radius:2px; display:inline-flex; align-items:center; gap:4px;" title="Open Real-Time Interactive TradingView Chart">
               📈 Chart
             </button>
           </div>
         </td>
         <td>
-          <span class="pill" style="font-size:11px;">${t.date || 'N/A'}</span>
+          <span class="pill" style="font-size:10.5px;">${t.date || 'N/A'}</span>
         </td>
         <td>
-          <span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--cyan-glow); font-size:13.5px;">
+          <span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--cyan); font-size:13.5px;">
             $${spot > 0 ? spot.toFixed(2) : '--.--'}
           </span>
         </td>
@@ -708,21 +710,21 @@ window.AppWatchlist = {
           <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px;">
             <span style="color:var(--emerald-light); font-weight:700;">$${t1 > 0 ? t1.toFixed(2) : '--'}</span>
             <span style="color:var(--text-muted);"> / </span>
-            <span style="color:var(--cyan-glow); font-weight:700;">$${t2 > 0 ? t2.toFixed(2) : '--'}</span>
+            <span style="color:var(--cyan); font-weight:700;">$${t2 > 0 ? t2.toFixed(2) : '--'}</span>
           </span>
         </td>
         <td>
           <span class="status-badge-lg ${statusBadgeClass}">${statusIcon} ${statusUpper}</span>
         </td>
         <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${optionsText}">
-          ${optionsBadgeHtml}<span style="font-size:11.5px; color:var(--text-muted);">${optionsText}</span>
+          ${optionsBadgeHtml}<span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${optionsText}</span>
         </td>
         <td>
           <div style="display:flex; align-items:center; gap:5px;">
-            <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${t.ticker}')" style="padding:3px 8px; font-size:11px; font-weight:700; color:var(--cyan-glow); ${ideasBtnBg}" title="View Actionable Trade Ideas for ${t.ticker}">
+            <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${t.ticker}')" style="padding:2px 7px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; border-radius:2px; ${ideasBtnBg}" title="View Actionable Trade Ideas for ${t.ticker}">
               💡 Ideas (${ideasCount})
             </button>
-            <button class="btn secondary" onclick="AppWatchlist.deleteTarget('${t.ticker}', '${t.date}')" style="padding:3px 7px; font-size:11px; background:rgba(244,63,94,0.15); border-color:rgba(244,63,94,0.4); color:var(--rose-light);" title="Untrack ${t.ticker}">
+            <button class="btn secondary" onclick="AppWatchlist.deleteTarget('${t.ticker}', '${t.date}')" style="padding:2px 6px; font-size:10.5px; border-radius:2px; background:rgba(244,63,94,0.1); border:1px solid rgba(244,63,94,0.35); color:var(--rose-light);" title="Untrack ${t.ticker}">
               🗑️
             </button>
           </div>
@@ -1364,10 +1366,19 @@ window.AppWatchlist = {
         ? `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=%5B%5D&theme=${theme}&style=1&timezone=America%2FNew_York`
         : 'about:blank';
 
+      // Check invalidation and actual stop status
+      const invPrice = Number(t.invalidation_price || t.tactical_stop || 0);
+      const isShort = (t.side || '').toUpperCase() === 'SHORT';
+      const isActuallyStopped = invPrice > 0 && spot > 0 && (
+        isShort ? (spot >= invPrice) : (spot <= invPrice)
+      );
+      const isTestingSupport = st === 'TESTING_SUPPORT';
+      const isReclaimed = Boolean(t.reclaimed) || (!isActuallyStopped && (st === 'INVALIDATED' || st === 'STOP_BREACHED') && spot > 0);
+
       // Status & Hit Outcome Badge
       let statusBadge = '';
       if (st === 'IN_ZONE') {
-        statusBadge = `<span class="badge in_zone">🎯 IN ENTRY ZONE (${distStr})</span>`;
+        statusBadge = `<span class="badge in_zone">🎯 IN ENTRY ZONE (${distStr || 'Active'})</span>`;
       } else if (st === 'IN_TRADE') {
         statusBadge = `<span class="badge in_trade" style="background:#e0e7ff; color:#3730a3; border:1px solid #c7d2fe; font-weight:800;">🎯 IN TRADE</span>`;
       } else if (st.includes('TARGET') || st === 'TARGET_HIT') {
@@ -1376,7 +1387,11 @@ window.AppWatchlist = {
       } else if (st === 'MISSED_RUNAWAY') {
         const runawaySuffix = distStr ? ` (${distStr})` : ' (Past Target)';
         statusBadge = `<span class="badge runaway">🚀 MISSED RUNAWAY${runawaySuffix}</span>`;
-      } else if (st === 'INVALIDATED' || st === 'STOP_BREACHED') {
+      } else if (isTestingSupport) {
+        statusBadge = `<span class="badge" style="background:#fef3c7; color:#92400e; border:1px solid #fde68a; font-weight:800;">⚠️ TESTING SUPPORT</span>`;
+      } else if (isReclaimed) {
+        statusBadge = `<span class="badge" style="background:#dcfce7; color:#15803d; border:1px solid #86efac; font-weight:800;">📈 RECLAIMED SUPPORT</span>`;
+      } else if ((st === 'INVALIDATED' || st === 'STOP_BREACHED') && isActuallyStopped) {
         statusBadge = `<span class="badge invalid">🛑 STOP BREACHED</span>`;
       } else {
         statusBadge = `<span class="badge stalking">⏳ STALKING (${distStr ? distStr + ' to zone' : 'Active'})</span>`;
@@ -1392,6 +1407,16 @@ window.AppWatchlist = {
             <button class="btn" onclick="AppSwing.openPlanExecution('${t.ticker}', '${t.date}')" style="padding:4px 10px; font-size:11px; font-weight:700; background:#059669; color:#ffffff; border-color:#059669; cursor:pointer;" title="Open Trade Plan & Copilot Execution">⚡ Plan Execution</button>
           </div>
         `;
+      } else if (st === 'IN_TRADE') {
+        const pnlPct = (t.unrealized_pnl_pct !== undefined && t.unrealized_pnl_pct !== null) ? Number(t.unrealized_pnl_pct) : 0;
+        const pnlColor = pnlPct >= 0 ? '#059669' : '#dc2626';
+        const pnlStr = `<span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:${pnlColor};">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span>`;
+        actionHtml = `
+          <div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:6px; padding:7px 12px; margin-top:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+            <span style="color:#3730a3; font-weight:700; font-size:12px;">💼 TAKE ACTION: Position Active (${pnlStr})! Stalking Target 1 ($${Number(t.target_1||0).toFixed(2)}). Hold and manage risk.</span>
+            <button class="btn secondary" onclick="AppSwing.openPlanExecution('${t.ticker}', '${t.date}')" style="padding:3px 9px; font-size:11px; cursor:pointer;" title="Open Trade Plan & Copilot Execution">Manage Position</button>
+          </div>
+        `;
       } else if (st.includes('TARGET') || st === 'TARGET_HIT') {
         actionHtml = `
           <div style="background:#ecfeff; border:1px solid #a5f3fc; border-radius:6px; padding:7px 12px; margin-top:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
@@ -1405,10 +1430,24 @@ window.AppWatchlist = {
             <strong>⚠️ TAKE ACTION:</strong> Stock expanded to target without filling entry. <strong>DO NOT CHASE at market.</strong> Stand aside and wait for next base.
           </div>
         `;
-      } else if (st === 'INVALIDATED' || st === 'STOP_BREACHED') {
+      } else if (isTestingSupport) {
+        actionHtml = `
+          <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:7px 12px; margin-top:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+            <span style="color:#92400e; font-weight:700; font-size:12px;">⚠️ TAKE ACTION: Structural floor probe. Spot ($${spot.toFixed(2)}) is testing support ($${invPrice.toFixed(2)}). Thesis invalidation requires Daily Close Below. Stand firm; do not panic sell intraday noise wicks.</span>
+            <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}', 'plan')" style="padding:2px 8px; font-size:11px; cursor:pointer;" title="Inspect Support & Invalidation Rules">Inspect Floor</button>
+          </div>
+        `;
+      } else if (isReclaimed) {
+        actionHtml = `
+          <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:6px; padding:7px 12px; margin-top:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+            <span style="color:#065f46; font-weight:700; font-size:12px;">📈 TAKE ACTION: Structural floor defended! Spot ($${spot.toFixed(2)}) dipped and rebounded above stop ($${invPrice.toFixed(2)}). Setup remains active—stalk entry or manage runner.</span>
+            <button class="btn" onclick="AppSwing.openPlanExecution('${t.ticker}', '${t.date}')" style="padding:4px 10px; font-size:11px; font-weight:700; background:#059669; color:#ffffff; border-color:#059669; cursor:pointer;" title="Open Trade Plan & Copilot Execution">⚡ Plan Execution</button>
+          </div>
+        `;
+      } else if ((st === 'INVALIDATED' || st === 'STOP_BREACHED') && isActuallyStopped) {
         actionHtml = `
           <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:6px; padding:6px 12px; margin-top:8px; font-size:11.5px; color:#991b1b;">
-            <strong>🛑 TAKE ACTION:</strong> Structural floor breached. Cancel all resting limit orders. Trade thesis is invalidated.
+            <strong>🛑 TAKE ACTION:</strong> Structural floor breached ($${invPrice.toFixed(2)}). Cancel resting limit orders. Trade thesis is invalidated.
           </div>
         `;
       } else {
@@ -1429,24 +1468,24 @@ window.AppWatchlist = {
 
       // Collapsible Trade Ideas Drawer HTML
       const ideasDrawerHtml = (isIdeasOpen && ideas.length > 0) ? `
-        <div id="trade-ideas-drawer-${sym}" style="margin-top:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:12px;">
+        <div id="trade-ideas-drawer-${sym}" style="margin-top:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:3px; padding:12px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
             <div style="display:flex; align-items:center; gap:6px;">
-              <span style="font-size:14px;">💡</span>
-              <strong style="font-size:12.5px; color:var(--text-main);">Tactical Trade Ideas for ${sym}</strong>
+              <span style="font-size:14px;">⚡</span>
+              <strong style="font-family:'Outfit',sans-serif; font-size:12.5px; color:var(--text-main); letter-spacing:0.2px;">Tactical Trade Ideas for ${sym}</strong>
               <span class="pill" style="font-size:9.5px; padding:1px 5px; font-weight:700;">Entry Setup</span>
             </div>
-            <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:2px 7px; font-size:10px;">✕ Close</button>
+            <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:2px 7px; font-size:10px; font-family:var(--font-mono); font-weight:700; border-radius:2px;">✕ Close</button>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:8px;">
             ${ideas.map(idea => `
-              <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:8px 10px; font-size:11.5px;">
+              <div style="background:var(--bg-surface); border:1px solid var(--border); border-left:3px solid var(--cyan); border-radius:3px; padding:8px 10px; font-size:11.5px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
-                  <strong style="color:var(--blue);">${idea.title}</strong>
+                  <strong style="font-family:var(--font-sans); color:var(--blue); font-weight:800;">${idea.title}</strong>
                   <span class="pill" style="font-size:9px; padding:1px 4px; font-weight:700;">${idea.category}</span>
                 </div>
                 <div style="color:var(--text-main); line-height:1.35; margin-bottom:4px;">${idea.action}</div>
-                ${(idea.metrics || idea.rationale) ? `<div style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--cyan-glow); margin-top:3px;">${idea.metrics || idea.rationale}</div>` : ''}
+                ${(idea.metrics || idea.rationale) ? `<div style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--cyan); margin-top:3px; font-weight:700;">${idea.metrics || idea.rationale}</div>` : ''}
               </div>
             `).join('')}
           </div>
@@ -1454,7 +1493,7 @@ window.AppWatchlist = {
       ` : '';
 
       return `
-        <div class="target-card" id="radar-card-${sym}" style="background:var(--bg-surface); border:1px solid var(--border); border-radius:10px; padding:12px 16px; margin-bottom:10px; box-shadow:var(--shadow-card);">
+        <div class="target-card" id="radar-card-${sym}" style="background:var(--bg-surface); border:1px solid var(--border); border-radius:3px; padding:12px 16px; margin-bottom:10px; box-shadow:var(--shadow-card);">
           <!-- Main Row: Left (Symbol, Time, Spot) | Center (TRADE SETUP) | Right (Status, Buttons) -->
           <div style="display:flex; align-items:center; justify-content:space-between; gap:14px;">
             
@@ -1499,6 +1538,11 @@ window.AppWatchlist = {
             <!-- Right: Status / Hit Outcome Badge & Quick Buttons -->
             <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
               ${statusBadge}
+              ${st === 'IN_TRADE' ? `
+                <button class="btn secondary" onclick="AppWatchlist.updateTargetStatus('${t.ticker}', 'STALKING')" style="padding:3px 7px; font-size:10.5px; font-weight:700; color:#4b5563; background:#f3f4f6; border:1px solid #d1d5db; cursor:pointer;" title="Reset back to Stalking">↩️ Reset</button>
+              ` : (st === 'STALKING' || st === 'IN_ZONE') ? `
+                <button class="btn secondary" onclick="AppWatchlist.updateTargetStatus('${t.ticker}', 'IN_TRADE')" style="padding:3px 7px; font-size:10.5px; font-weight:700; color:#059669; background:#ecfdf5; border:1px solid #a7f3d0; cursor:pointer;" title="Mark as Filled in Broker / Active Trade">✅ Filled</button>
+              ` : ''}
               ${ideas.length > 0 ? `
                 <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:3px 8px; font-size:11px; font-weight:700; color:#3730a3; background:#eef2ff; border-color:#c7d2fe;" title="Toggle Structured Trade Ideas">💡 Ideas (${ideas.length})</button>
               ` : ''}
@@ -1763,6 +1807,28 @@ window.AppWatchlist = {
       await this.loadWatchlist();
     } catch (e) {
       alert(`Failed to untrack ${ticker}: ${e.message}`);
+    }
+  },
+
+  async updateTargetStatus(ticker, newStatus) {
+    if (!ticker || !newStatus) return;
+    try {
+      const res = await fetch('/api/watch-targets/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, status: newStatus }),
+      });
+      const data = await res.json();
+      if (res.ok && data.status === 'ok') {
+        if (window.AppStatus && window.AppStatus.showToast) {
+          window.AppStatus.showToast(`⚡ ${ticker} status updated to ${newStatus}`);
+        }
+        await this.loadWatchlist();
+      } else {
+        alert(data.detail || data.error || 'Failed updating status');
+      }
+    } catch (e) {
+      console.error('Error updating target status:', e);
     }
   },
 

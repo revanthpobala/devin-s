@@ -92,6 +92,272 @@ def build_live_market_context(symbol: str) -> Dict[str, Any]:
     return context
 
 
+def evaluate_risk_vetoes(
+    symbol: str,
+    action: str,
+    score: int,
+    current_time_et: str,
+    eastern_dt: datetime,
+    grade: str = "A",
+    align: str = "",
+) -> Optional[Tuple[str, str]]:
+    """
+    Evaluate institutional risk gates:
+    1. Grade-A Hard Quality Gate: Veto Grade B / Score < 80 (eliminates -$1,515 historical drag).
+    2. Weinstein Stage & Multi-Timeframe Alignment: Veto counter-trend trades (never CALLS in Stage 4 Decline, never PUTS in Stage 2 Advance).
+    3. Mid-Morning Exhaustion Window (10:30 - 11:30 AM ET): Requires Score >= 90 (Grade A+ only).
+    4. Max Concurrent Correlated Exposure: Max 2 same-direction open intraday positions.
+    5. Lunch Chop Window (11:30 AM - 1:15 PM ET): Requires Score >= 85 (Grade A+).
+    6. Consecutive Losses DAY PAUSE: Enforce cooldown after 2 consecutive stops within 45m.
+    
+    Returns (header, playbook) if vetoed, or None if clear.
+    """
+    from src.tracking.position_state import list_open
+    from zoneinfo import ZoneInfo
+    from datetime import timezone
+
+    today_str = eastern_dt.strftime("%Y-%m-%d")
+    act_clean = str(action or "").upper()
+    is_call = "CALL" in act_clean
+    is_put = "PUT" in act_clean
+    side = "LONG" if is_call else ("SHORT" if is_put else None)
+
+    # 1. Grade-A Hard Quality Gate (Cut Grade B / Score < 80)
+    grade_clean = str(grade or "A").upper().strip()
+    if grade_clean == "B" or score < 80:
+        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (GRADE B / LOW CONVICTION)"
+        pb = (
+            f"{hdr}\n\n"
+            f"⛔ QUALITY VETO: Setup grade is '{grade_clean}' with score {score}/100 (< 80 threshold).\n"
+            f"Historical trade audit reveals Grade-B alerts generated a 27% win rate and net negative expectancy.\n"
+            f"0DTE intraday execution is restricted exclusively to institutional Grade-A setups."
+        )
+        return hdr, pb
+
+    # 2. Weinstein Stage & Multi-Timeframe Alignment Gate (First Principles - Never Fight Structural Trend)
+    align_clean = str(align or "").lower()
+    is_stg4 = "stg4" in align_clean or "decline" in align_clean
+    is_stg2 = "stg2" in align_clean or "advance" in align_clean
+    if side == "LONG" and is_stg4:
+        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (COUNTER-STAGE: STAGE 4 DECLINE)"
+        pb = (
+            f"{hdr}\n\n"
+            f"⛔ REGIME VETO: Counter-trend CALL entry into a Stage 4 Structural Decline ({align}).\n"
+            f"Weekly & Daily trends are declining. Counter-trend intraday bounces in Stage 4 face immediate institutional supply.\n"
+            f"Execution discipline requires aligning with the structural trend."
+        )
+        return hdr, pb
+    if side == "SHORT" and is_stg2:
+        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (COUNTER-STAGE: STAGE 2 ADVANCE)"
+        pb = (
+            f"{hdr}\n\n"
+            f"⛔ REGIME VETO: Counter-trend PUT entry into a Stage 2 Structural Advance ({align}).\n"
+            f"Weekly & Daily trends are advancing. Counter-trend pullbacks in Stage 2 get aggressively absorbed by institutional demand.\n"
+            f"Execution discipline requires aligning with the structural trend."
+        )
+        return hdr, pb
+
+    # 3. Optional Explicit Ticker Exclusion (Configurable via env, default none)
+    excluded_env = os.getenv("INTRADAY_EXCLUDED_TICKERS", "")
+    if excluded_env:
+        excluded_tickers = {t.strip().upper() for t in excluded_env.split(",") if t.strip()}
+        if symbol.upper() in excluded_tickers:
+            hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (EXCLUDED 0DTE UNIVERSE)"
+            pb = (
+                f"{hdr}\n\n"
+                f"⛔ UNIVERSE VETO: {symbol} is explicitly excluded from 0DTE intraday execution via configuration.\n"
+            )
+            return hdr, pb
+
+    # 3. Mid-Morning Exhaustion Window (10:30 – 11:30 AM ET)
+    h = eastern_dt.hour
+    m = eastern_dt.minute
+    is_mid_morning = (h == 10 and m >= 30) or (h == 11 and m < 30)
+    if is_mid_morning and score < 90:
+        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (10:30-11:30 ET EXHAUSTION TRAP)"
+        pb = (
+            f"{hdr}\n\n"
+            f"⛔ TIME-WINDOW VETO: Mid-morning trend extension & European close window (10:30–11:30 AM ET).\n"
+            f"Conviction score {score}/100 is below the required 90/100 (Grade A+) threshold for mid-morning entry.\n"
+            f"Breakouts in this window suffer from morning exhaustion and pre-lunch consolidation."
+        )
+        return hdr, pb
+
+    # 4. Max Concurrent Correlated Exposure Gate (Max 2 same-direction trades)
+    if side:
+        open_pos = list_open()
+        same_side = []
+        for sym, p in open_pos.items():
+            if not isinstance(p, dict) or sym.upper() == symbol.upper():
+                continue
+            opened_at = str(p.get("opened_at", ""))
+            strat = str(p.get("strategy", "")).lower()
+            if strat == "intraday" and opened_at.startswith(today_str):
+                p_side = str(p.get("side", "")).upper()
+                if p_side == side:
+                    same_side.append(sym)
+        if len(same_side) >= 2:
+            hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (MAX EXPOSURE)"
+            pb = (
+                f"{hdr}\n\n"
+                f"⛔ RISK VETO: Maximum concurrent {side} exposure reached ({len(same_side)} active: {', '.join(same_side)}).\n"
+                f"Further entries in {side} blocked to prevent correlated sector/beta risk clustering."
+            )
+            return hdr, pb
+
+    # 5. Lunch Chop Window Hard-Gate (11:30 AM – 1:15 PM ET)
+    is_lunch = (h == 11 and m >= 30) or (h == 12) or (h == 13 and m <= 15)
+    if is_lunch and score < 85:
+        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (LUNCH CHOP)"
+        pb = (
+            f"{hdr}\n\n"
+            f"⛔ REGIME VETO: Midday liquidity dead zone (11:30 AM – 1:15 PM ET).\n"
+            f"Conviction score {score}/100 is below the required 85/100 (Grade A+) threshold for lunch trading.\n"
+            f"Breakouts in this window frequently fail due to dried up institutional volume."
+        )
+        return hdr, pb
+
+    # 3. Consecutive Losses DAY PAUSE Circuit Breaker
+    try:
+        from src.tracking.alert_db import DB_PATH
+        import sqlite3
+        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT timestamp, raw_payload, action 
+                FROM alerts 
+                WHERE date = ? 
+                  AND strategy = 'Intraday'
+                  AND (action LIKE '%EXIT%' OR action LIKE '%STOP%' OR action LIKE '%CUT%')
+                ORDER BY timestamp DESC LIMIT 6
+            """, (today_str,))
+            recent_exits = cur.fetchall()
+
+            loss_count = 0
+            latest_loss_time = None
+            for ts_str, raw_str, act_val in recent_exits:
+                raw_json = json.loads(raw_str) if isinstance(raw_str, str) and raw_str.startswith("{") else {}
+                why = (str(raw_json.get("exit_why", "")) + " " + str(raw_json.get("act_now", ""))).lower()
+                pnl = float(raw_json.get("session_pnl", 0) or 0)
+                is_loss = "stop" in why or "loss" in why or pnl < 0
+                if is_loss:
+                    loss_count += 1
+                    if latest_loss_time is None and ts_str:
+                        try:
+                            clean_ts = ts_str.replace("Z", "+00:00")
+                            dt_parsed = datetime.fromisoformat(clean_ts)
+                            if dt_parsed.tzinfo is None:
+                                latest_loss_time = dt_parsed.replace(tzinfo=ZoneInfo("America/New_York"))
+                            else:
+                                latest_loss_time = dt_parsed.astimezone(ZoneInfo("America/New_York"))
+                        except Exception:
+                            pass
+                else:
+                    break
+
+            if loss_count >= 2 and latest_loss_time:
+                diff_sec = (eastern_dt - latest_loss_time).total_seconds()
+                if 0 <= diff_sec <= 2700:  # 45 minutes cooldown
+                    mins_ago = int(diff_sec // 60)
+                    hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (DAY PAUSE)"
+                    pb = (
+                        f"{hdr}\n\n"
+                        f"⛔ CIRCUIT BREAKER: DAY PAUSE active.\n"
+                        f"{loss_count} consecutive stopped trades observed within the last {mins_ago}m.\n"
+                        f"Autonomous cooldown engaged to protect capital against hostile regime shifts."
+                    )
+                    return hdr, pb
+    except Exception as e_db:
+        logger.debug(f"DAY PAUSE check bypassed: {e_db}")
+
+    return None
+
+
+def synthesize_deterministic_triage(
+    symbol: str,
+    action: str,
+    strategy: str,
+    current_time_et: str,
+    current_price: float,
+    vix: Any,
+    payload: Dict[str, Any],
+    alert: Dict[str, Any],
+    exit_review: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str]:
+    """
+    Deterministically synthesize an institutional 0DTE Decision Card & tactical playbook
+    directly from authoritative Pine script fields and broker context.
+    Acts as an infallible zero-lag baseline and safeguard against LLM preambles or timeouts.
+    """
+    is_exit = any(k in action.upper() for k in ("EXIT", "CLOSE", "STOP", "FLATTEN", "CUT"))
+    if is_exit:
+        if exit_review and exit_review.get("action") == "VETO_HOLD":
+            header = f"[{symbol}] [{current_time_et}] — 🛡️ VETO EXIT (HOLD)"
+            pb = (
+                f"{header}\n\n"
+                f"🛡️ VETO PREMATURE TV EXIT — HOLDING POSITION\n\n"
+                f"Reason: {exit_review.get('reason')}\n"
+                f"Live broker quote at ${current_price:.2f}. Setup structure remains intact above invalidation."
+            )
+        else:
+            header = f"[{symbol}] [{current_time_et}] — 🔴 EXIT CONFIRMED"
+            reason_str = (
+                exit_review.get("reason")
+                if exit_review
+                else (alert.get("wrong_if") or payload.get("wrong_if") or "Confirmed stop / exit signal hit")
+            )
+            pb = (
+                f"{header}\n\n"
+                f"🔴 EXIT CONFIRMED\n\n"
+                f"Reason: {reason_str}\n"
+                f"Live fill: ${current_price:.2f}. Position closed."
+            )
+        return header, pb
+
+    # ENTRY ALERT TRIAGE
+    verdict = str(payload.get("verdict") or alert.get("verdict") or "").upper()
+    grade = str(payload.get("grade") or alert.get("grade") or "B").upper()
+    score = str(payload.get("score") or alert.get("score") or "75")
+    plan = str(
+        payload.get("plan")
+        or alert.get("plan")
+        or f"In {current_price:.2f} · Stop {current_price*0.99:.2f} · T1 {current_price*1.01:.2f}"
+    )
+    why_now = str(payload.get("why_now") or alert.get("why_now") or "Breakout trigger active")
+    align = str(payload.get("align") or alert.get("align") or "W → D → 15m ↑ · Stg1 base")
+    wrong_if = str(payload.get("wrong_if") or alert.get("wrong_if") or "Exit on close beyond stop")
+    context = str(payload.get("context") or alert.get("context") or "TREND UP · Below VWAP · in OR")
+    premium = str(payload.get("premium") or alert.get("premium") or "IV NORMAL")
+
+    is_call = "CALL" in action.upper() or "BUY CALLS" in verdict
+    is_put = "PUT" in action.upper() or "BUY PUTS" in verdict
+
+    # Check for stand aside / day pause
+    if "STAND ASIDE" in verdict or "DAY PAUSE" in wrong_if.upper():
+        action_call = "⛔ STAND ASIDE"
+    elif is_call:
+        action_call = "🟢 TAKE CALLS"
+    elif is_put:
+        action_call = "🔴 TAKE PUTS"
+    else:
+        action_call = "⏸️ WAIT"
+
+    header = f"[{symbol}] [{current_time_et}] — {action_call}"
+    pb = f"""{header}
+Conviction: {score}/100 ({grade}) | Card: {verdict or action} {grade}({score}) | Regime: {context} | VIX: {vix}
+
+THE PLAY:    {symbol} 0DTE {"CALLS" if is_call else "PUTS"} ATM
+PLAN:        {plan}
+TIME-BOX:    Prime trend window (10:00–11:30 ET); flat by 3:45 PM ET EOD
+
+WHY (card):  {why_now} · Alignment: {align}
+WHY (tape):  Live price: ${current_price:.2f} · Premium: {premium} · VIX: {vix}
+KILL IT IF:  {wrong_if}
+
+Status: Verified {grade}-grade institutional setup. Execute discipline: scale 50% at T1, trail stop to BE+ 0.05."""
+    return header, pb
+
+
 def evaluate_alert_payload(
     alert: Dict[str, Any],
     use_tools: bool = True,
@@ -150,6 +416,39 @@ def evaluate_alert_payload(
         pos_rec = list_open().get(symbol)
         exit_review = review_tv_exit(symbol, alert) if is_exit else None
 
+        eastern_now = get_eastern_now()
+        try:
+            score_val = int(float(payload.get("score") or alert.get("score") or 75))
+        except (ValueError, TypeError):
+            score_val = 75
+        grade_val = str(payload.get("grade") or alert.get("grade") or "B").upper()
+        align_val = str(payload.get("align") or alert.get("align") or "")
+
+        # Hard Quantitative Risk Vetoes (Grade-A Gate, Stage Alignment, Time Windows, Exposure, Day Pause)
+        risk_veto = evaluate_risk_vetoes(
+            symbol=symbol,
+            action=action,
+            score=score_val,
+            current_time_et=current_time_et,
+            eastern_dt=eastern_now,
+            grade=grade_val,
+            align=align_val,
+        ) if not is_exit else None
+
+        if risk_veto:
+            veto_header, veto_playbook = risk_veto
+            logger.info(f"[RISK VETO] {symbol} {action} -> {veto_header}")
+            if message_id:
+                update_alert_llm(message_id, veto_header, veto_playbook, status="PROCESSED")
+            return {
+                "symbol": symbol,
+                "strategy": strategy,
+                "llm_decision": veto_header,
+                "llm_playbook": veto_playbook,
+                "verdict": "STAND ASIDE",
+                "status": "PROCESSED",
+            }
+
         system_prompt = _load_gem("revanth-0dte.md")
         if not system_prompt:
             system_prompt = (
@@ -185,6 +484,20 @@ Authoritative Alert Payload:
 
 Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO decision and tactical playbook.
 """
+        # Synthesize infallible deterministic baseline card
+        px_val = float(current_price) if current_price and current_price != "N/A" else 0.0
+        synth_header, synth_playbook = synthesize_deterministic_triage(
+            symbol=symbol,
+            action=action,
+            strategy=strategy,
+            current_time_et=current_time_et,
+            current_price=px_val,
+            vix=vix,
+            payload=payload,
+            alert=alert,
+            exit_review=exit_review,
+        )
+
         response_text = query_local_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -200,32 +513,45 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
             cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
             cleaned = re.sub(r"\n?```$", "", cleaned).strip()
 
-        lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+        # Strict regex search for decision header (NEVER plain substring check that matches 'AVGO')
+        HEADER_REGEX = re.compile(
+            r"(?:\[[A-Z0-9/.]+\].*?——?\s*)?(?:🟢\s*TAKE\s*CALLS|🔴\s*TAKE\s*PUTS|🛡️\s*VETO\s*EXIT(?:\s*\(HOLD\))?|⏸️\s*WAIT|⛔\s*STAND\s*ASIDE|🔴\s*EXIT\s*CONFIRMED|\bTAKE\s+CALLS\b|\bTAKE\s+PUTS\b|\bVETO\s+EXIT\b|\bSTAND\s+ASIDE\b|\bEXIT\s+CONFIRMED\b|\bGO\s*\(CALLS\b|\bGO\s*\(PUTS\b)",
+            re.IGNORECASE,
+        )
+
         header_line = ""
-        for l in lines:
-            if l.startswith("```") or l.startswith("---"):
+        for line in cleaned.splitlines():
+            line_str = re.sub(r"\*\*", "", line).strip()
+            # Ignore code, JSON brackets, or conversational preambles
+            if not line_str or line_str.startswith("{") or line_str.startswith("```") or line_str.startswith("---"):
                 continue
-            l_clean = re.sub(r"\*\*", "", l).strip()
-            if any(x in l_clean for x in ["🟢", "🔴", "🛡️", "🛡", "⏸️", "⏸", "⛔", "TAKE", "WAIT", "STAND", "GO", "EXIT", "VETO", "HOLD", "PASS"]):
-                header_line = l_clean
+            if '"ticker":' in line_str or '"event_type":' in line_str or line_str.lower().startswith("i'll "):
+                continue
+            m = HEADER_REGEX.search(line_str)
+            if m:
+                header_line = line_str
                 break
-        if not header_line and lines:
-            for l in lines:
-                if not l.startswith("```") and not l.startswith("---"):
-                    header_line = re.sub(r"\*\*", "", l).strip()
-                    break
 
+        # If LLM didn't produce a valid header, use the deterministic baseline header
         if not header_line:
-            if is_exit and exit_review:
-                if exit_review.get("action") == "VETO_HOLD":
-                    header_line = f"[{symbol}] [{current_time_et}] — 🛡️ VETO EXIT (HOLD)"
-                else:
-                    header_line = f"[{symbol}] [{current_time_et}] — 🔴 EXIT CONFIRMED"
-            elif alert.get("llm_decision"):
-                header_line = alert.get("llm_decision")
+            header_line = synth_header
 
-        decision = header_line or "AI EVALUATED"
-        playbook = cleaned or (exit_review.get("reason") if exit_review else "")
+        # Check if LLM response is junk/preamble/tool call JSON
+        is_junk = (
+            not cleaned
+            or cleaned.startswith("{")
+            or '"skill_name":' in cleaned
+            or (cleaned.lower().startswith("i'll ") and "THE PLAY:" not in cleaned and "PLAN:" not in cleaned)
+        )
+        if is_junk:
+            playbook = synth_playbook
+        else:
+            if header_line not in cleaned:
+                playbook = f"{header_line}\n\n{cleaned}"
+            else:
+                playbook = cleaned
+
+        decision = header_line
 
         if message_id:
             update_alert_llm(message_id, decision, playbook, status="PROCESSED")
@@ -233,7 +559,7 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
         verdict = (
             "VETO_HOLD"
             if ("🛡️" in decision or "VETO" in decision)
-            else ("GO" if ("🟢" in decision or "GO" in decision)
+            else ("GO" if ("🟢" in decision or "TAKE" in decision)
             else ("EXIT" if "EXIT" in decision
             else "STAND ASIDE"))
         )
@@ -394,9 +720,9 @@ Output strictly valid JSON matching the revanth-gem-local.md schema.
     }
 
 
-def evaluate_batch_pending(limit: int = 50, date_str: Optional[str] = None) -> Dict[str, Any]:
+def evaluate_batch_pending(limit: int = 100, date_str: Optional[str] = None, force_all: bool = False) -> Dict[str, Any]:
     """
-    Find alerts in SQLite trading_alerts.db that have not yet been evaluated,
+    Find alerts in SQLite trading_alerts.db that have not yet been evaluated or have corrupted decisions,
     and run them through evaluate_alert_payload without any chart scraping.
     """
     import sqlite3
@@ -406,10 +732,20 @@ def evaluate_batch_pending(limit: int = 50, date_str: Optional[str] = None) -> D
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    query = """
-        SELECT * FROM alerts
-        WHERE (llm_decision IS NULL OR llm_decision = '')
-    """
+    if force_all:
+        query = "SELECT * FROM alerts WHERE 1=1"
+    else:
+        query = """
+            SELECT * FROM alerts
+            WHERE (
+                llm_decision IS NULL 
+                OR llm_decision = ''
+                OR llm_decision LIKE '%"ticker"%'
+                OR llm_decision LIKE '%"event_type"%'
+                OR llm_decision LIKE 'I''ll %'
+                OR llm_decision = 'AI EVALUATED'
+            )
+        """
     params = []
     if date_str:
         query += " AND date = ?"

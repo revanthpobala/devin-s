@@ -325,6 +325,29 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
             except Exception:
                 model_name = "gpt-4"
 
+            # Fast check if local LLM port 8000 slots are under heavy prompt prefill or dual occupancy
+            slot_notice = None
+            try:
+                base_host = os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1").split("/v1")[0]
+                import urllib.request
+                with urllib.request.urlopen(f"{base_host}/slots", timeout=0.3) as s_resp:
+                    s_data = json.loads(s_resp.read().decode("utf-8"))
+                    heavy_prefill = any(
+                        s.get("is_processing") and s.get("n_prompt_tokens", 0) > 8000
+                        and s.get("n_prompt_tokens_processed", 0) < s.get("n_prompt_tokens", 0)
+                        for s in s_data
+                    )
+                    all_busy = all(s.get("is_processing") for s in s_data) if s_data else False
+                    if heavy_prefill:
+                        slot_notice = "⚡ Deep Research context ingestion active on GPU Slot 1. Your chat is assigned to Slot 0 with shared GPU compute."
+                    elif all_busy:
+                        slot_notice = "⏳ Both GPU slots active. Request queued in Slot 0 — streaming will begin shortly."
+            except Exception:
+                pass
+
+            if slot_notice:
+                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': slot_notice})}\n\n"
+
             # Multimodal Vision Payload (Qwen 27B Vision Projector)
             if req.image_data and messages:
                 if messages[-1].get("role") == "user":
@@ -348,15 +371,31 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     self.function = _MockFunc(name, arguments)
 
             full_answer_chunks = []
-            max_turns = 4
+            max_turns = 2
             turn = 0
             tools_enabled = True
+            stream_response = None
 
             try:
                 while turn < max_turns:
                     turn += 1
                     tool_calls_acc = {}
                     turn_content_chunks = []
+
+                    # Force synthesis on final allowed turn
+                    turn_tools_enabled = tools_enabled and (turn < max_turns)
+                    if not turn_tools_enabled and tools_enabled:
+                        tools_enabled = False
+                        if messages and messages[-1].get("role") != "user":
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"Data collection passes complete. Do not call any more tools or emit <tool_call> tags. "
+                                    f"Now synthesize all findings and provide your direct, final markdown answer to the user's specific question: '{question_text}'. "
+                                    f"CRITICAL: If the user holds active Schwab positions in {initial_ticker or 'this stock'}, analyze their EXACT holdings, contracts, strikes, and expirations. "
+                                    f"Never output generic hypothetical text like 'If you hold shares... If you hold options...'. Address their real legs directly."
+                                )
+                            })
 
                     create_kwargs = {
                         "model": model_name,
@@ -366,8 +405,6 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         "stream": True,
                         "extra_body": {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}},
                     }
-                    # Force synthesis on final allowed turn
-                    turn_tools_enabled = tools_enabled and (turn < max_turns)
                     if turn_tools_enabled:
                         create_kwargs["tools"] = TOOLS
                         create_kwargs["tool_choice"] = "auto"
@@ -388,12 +425,15 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     while True:
                         if next_chunk_task is None:
                             next_chunk_task = asyncio.create_task(aiter.__anext__())
-                        done, _ = await asyncio.wait([next_chunk_task], timeout=4.0)
+                        done, _ = await asyncio.wait([next_chunk_task], timeout=3.0)
                         if not done:
                             if await request.is_disconnected():
                                 next_chunk_task.cancel()
                                 break
-                            yield ": ping\n\n"
+                            if not full_answer_chunks:
+                                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⚡ Generating response on GPU Slot 0 (shared compute)...'})}\n\n"
+                            else:
+                                yield ": ping\n\n"
                             continue
                         try:
                             chunk = next_chunk_task.result()
@@ -409,8 +449,10 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             delta = chunk.choices[0].delta
                             if hasattr(delta, "content") and delta.content:
                                 turn_content_chunks.append(delta.content)
-                                full_answer_chunks.append(delta.content)
-                                yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                                # Suppress streaming raw <tool_call> XML markup to client
+                                if "<tool_call>" not in delta.content and "<function=" not in delta.content:
+                                    full_answer_chunks.append(delta.content)
+                                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
                             if hasattr(delta, "tool_calls") and delta.tool_calls:
                                 for tc in delta.tool_calls:
                                     idx = tc.index
@@ -424,8 +466,29 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                                         if tc.function.arguments:
                                             tool_calls_acc[idx]["arguments"] += tc.function.arguments
 
+                    if stream_response is not None:
+                        try:
+                            await stream_response.close()
+                        except Exception:
+                            pass
+                        stream_response = None
+
                     if await request.is_disconnected():
                         break
+
+                    # If model emitted tool calls in raw text format rather than native JSON
+                    if not tool_calls_acc and turn < max_turns:
+                        from src.clients.llm_client import _parse_text_tool_calls
+                        raw_turn_text = "".join(turn_content_chunks)
+                        text_tcs = _parse_text_tool_calls(raw_turn_text)
+                        if text_tcs:
+                            for idx, tc in enumerate(text_tcs):
+                                args_str = json.dumps(tc.function.arguments) if isinstance(tc.function.arguments, dict) else str(tc.function.arguments)
+                                tool_calls_acc[idx] = {
+                                    "id": tc.id,
+                                    "name": tc.function.name,
+                                    "arguments": args_str,
+                                }
 
                     if not tool_calls_acc:
                         # Generation finished; no further tools needed
@@ -451,29 +514,36 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     tool_names = [tc["name"] for tc in tool_calls_acc.values() if tc.get("name")]
                     if tool_names:
                         status_badge = f"\n\n⚙️ *Executing live tool(s): `{', '.join(tool_names)}`...*\n\n"
-                        full_answer_chunks.append(status_badge)
                         yield f"data: {json.dumps({'token': status_badge})}\n\n"
 
-                    # Execute all tools in parallel threadpool
-                    for tc in tool_calls_acc.values():
-                        if await request.is_disconnected():
-                            break
-                        mock_tc = _MockToolCall(tc["id"], tc["name"], tc["arguments"])
+                    # Execute all tools concurrently in parallel threadpool
+                    async def _run_single_tool(tc_dict):
+                        mock_tc = _MockToolCall(tc_dict["id"], tc_dict["name"], tc_dict["arguments"])
                         try:
                             tool_res = await asyncio.to_thread(execute_tool_call, mock_tc, date_str)
                             res_str = str(tool_res) if tool_res is not None else "No output."
                         except Exception as ex_tool:
                             res_str = f"Tool execution error: {ex_tool}"
-
-                        messages.append({
+                        return {
                             "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "name": tc["name"],
+                            "tool_call_id": tc_dict["id"],
+                            "name": tc_dict["name"],
                             "content": res_str
-                        })
+                        }
 
-                complete_answer = "".join(full_answer_chunks)
-                if complete_answer and not (await request.is_disconnected()):
+                    tool_results = await asyncio.gather(*[_run_single_tool(tc) for tc in tool_calls_acc.values()])
+                    for tr in tool_results:
+                        messages.append(tr)
+
+                import re
+                raw_full = "".join(full_answer_chunks)
+                complete_answer = re.sub(r"<tool_call>.*?</tool_call>", "", raw_full, flags=re.DOTALL)
+                complete_answer = re.sub(r"<function=.*?>.*?</function>", "", complete_answer, flags=re.DOTALL)
+                complete_answer = re.sub(r"<parameter=.*?>.*?</parameter>", "", complete_answer, flags=re.DOTALL)
+                complete_answer = re.sub(r"</?[a-zA-Z0-9_]+>", "", complete_answer)
+                complete_answer = re.sub(r"⚙️\s*\*Executing live tool.*?\(s\):.*?\*", "", complete_answer)
+                complete_answer = complete_answer.strip()
+                if complete_answer and len(complete_answer) > 20 and not (await request.is_disconnected()):
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", complete_answer)
 
                 yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
@@ -484,6 +554,16 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
                     yield "data: [DONE]\n\n"
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", err_msg)
+            finally:
+                if stream_response is not None:
+                    try:
+                        await stream_response.close()
+                    except Exception:
+                        pass
+                try:
+                    await client.close()
+                except Exception:
+                    pass
 
         return StreamingResponse(
             token_generator(),

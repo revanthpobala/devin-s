@@ -32,6 +32,7 @@ def prefetch_deep_research_context(ticker: str, date_str: str) -> dict:
         ("quant_plugins", run_quantitative_plugin_tool, ticker, "all", date_str),
         ("candlestick_patterns", run_quantitative_plugin_tool, ticker, "candlestick_patterns", date_str),
         ("tastytrade_volatility", run_quantitative_plugin_tool, ticker, "tastytrade_volatility", date_str),
+        ("schwab_analytics", run_quantitative_plugin_tool, ticker, "schwab_analytics", date_str),
         ("prior_research", fetch_prior_research_tool, ticker, 14, date_str),
         ("historical_analytics", fetch_historical_zone_and_regime_analytics_tool, ticker, 60, date_str),
     ]

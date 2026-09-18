@@ -377,8 +377,12 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
 
         # 7. Prefetch quant context
         from src.logic.deep_research.prefetch import prefetch_deep_research_context
+        from src.plugins.schwab_plugin import format_active_position_block
         pre_ctx = prefetch_deep_research_context(ticker, date_str)
         preloaded_block = build_preloaded_block(pre_ctx)
+
+        # Active broker position (Schwab / tracked portfolio)
+        active_pos_block = format_active_position_block(ticker)
 
         # 8. Multi-agent debate
         debate_payload = build_debate_payload(
@@ -389,6 +393,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             grounded_block=ctx.grounded_block, macro_grounded_block=ctx.macro_grounded_block,
             gex_block=ctx.gex_block, flags_block=flags_block, engine_math_block=engine_math_block,
             earnings_fact_block=ctx.earnings_fact_block, preloaded_block=preloaded_block,
+            active_pos_block=active_pos_block,
         )
         debate_result = run_debate(ticker, date_str, debate_payload, tdir)
         debate_block = format_debate_block(debate_result)
@@ -411,7 +416,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             debate_block=debate_block, daily_alerts_block=daily_alerts_block,
             pine_setup_benchmark_block=pine_benchmark_block,
             csv_path=paths["dw_csv"], dw_path=paths["dw_json"],
-            options_block=options_block, stale=stale,
+            options_block=options_block, active_pos_block=active_pos_block, stale=stale,
         )
 
         independent_dw_str = sanitize_dw_for_independent(dw_dict)
@@ -465,7 +470,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 earnings_fact_block=ctx.earnings_fact_block,
                 alerts_list=alerts_list, macro_news=macro_news,
                 macro_grounded_block=ctx.macro_grounded_block,
-                active_pos_block="",
+                active_pos_block=active_pos_block,
                 tdir=tdir, raw_dir=raw_dir, reports_dir=reports_dir,
             )
 

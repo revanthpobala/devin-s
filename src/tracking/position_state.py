@@ -2,10 +2,11 @@
 Single source of truth for OPEN positions.
 
 Everything else (Google Sheets, the LLM playbook, the monitor threads) reads
-from / writes to this file. An "open position" is created when a TradingView
-ENTRY alert is processed and removed when the matching EXIT alert arrives. The
-LLM never authorizes an exit — the exit is always a TradingView alert, exactly
-like the entry.
+from / writes to this file. An "open position" is created when an ENTRY alert
+is processed and managed autonomously by the PositionMonitor and Local LLM.
+TradingView EXIT alerts are secondary telemetry; our autonomous engine owns
+trade management, Target 1 50% scaling, Break-Even runner trailing, and
+hard stop/invalidation exits.
 
 Schema (data/positions.json):
 {
@@ -21,6 +22,9 @@ Schema (data/positions.json):
     "last_price": 212.4,
     "last_eval": "...playbook text...",
     "last_eval_at": "2026-07-17T10:45:00-04:00",
+    "scaled_at_t1": false,
+    "runner_stop": null,
+    "realized_pnl": 0.0,
     "breached_stop": false,
     "raw_alert": { ... }       # original alert payload, for context
   }
@@ -36,6 +40,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src import config
 
@@ -50,7 +55,7 @@ POSITIONS_FILE = config.BASE_DIR / "data" / "positions.json"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
 
 
 def load_state() -> dict:
@@ -91,7 +96,11 @@ def open_position(
     stop: float | None = None,
     target: float | None = None,
     alert_price: float | None = None,
+    scaled_at_t1: bool = False,
+    peak_price: float | None = None,
+    be_locked: bool = False,
     raw_alert: dict | None = None,
+    **extra,
 ) -> dict:
     """Create or replace the open position for `ticker`.
 
@@ -116,13 +125,19 @@ def open_position(
                 "last_price": rec.get("last_price", entry_price),
                 "last_eval": rec.get("last_eval", ""),
                 "last_eval_at": rec.get("last_eval_at", ""),
+                "scaled_at_t1": scaled_at_t1 or rec.get("scaled_at_t1", False),
+                "be_locked": be_locked or rec.get("be_locked", False),
+                "peak_price": peak_price if peak_price is not None else rec.get("peak_price", entry_price),
+                "runner_stop": rec.get("runner_stop", None),
+                "realized_pnl": rec.get("realized_pnl", 0.0),
                 "breached_stop": False,
                 "raw_alert": raw_alert or rec.get("raw_alert", {}),
             }
         )
+        rec.update(extra)
         state[ticker] = rec
         _save_state(state)
-    logger.info(f"[state] OPEN {ticker} {side} @ {entry_price} (strategy={strategy})")
+    logger.info(f"[state] OPEN {ticker} {side} @ {entry_price} (stop={stop}, target={target}, strategy={strategy})")
     try:
         from src.tracking.alert_db import sync_position
         sync_position(ticker, rec)
@@ -131,24 +146,97 @@ def open_position(
     return rec
 
 
-def close_position(ticker: str) -> dict | None:
-    """Remove `ticker` from open positions. Returns the closed record (for the
-    monitor to log to Sheets) or None if it wasn't open."""
+def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None = None, reason: str = "T1_SCALE") -> dict | None:
+    """Scale out a portion (default 50%) of the position at Target 1, realizing partial profit
+    and ratcheting runner stop to Break-Even + $0.05 buffer (Rule 4.1.1 Golden Lock)."""
     ticker = ticker.strip().upper()
+    now = _now_iso()
+    with _state_lock:
+        state = load_state()
+        rec = state.get(ticker)
+        if rec is None:
+            return None
+
+        entry = rec.get("entry_price") or 0.0
+        side = str(rec.get("side", "LONG")).upper()
+        px = fill_price if fill_price is not None else (rec.get("last_price") or entry)
+
+        # Calculate realized P&L on scaled portion (assuming standard 100 shares / 1 contract basis)
+        pts = (px - entry) if "LONG" in side else (entry - px)
+        realized_add = round(pts * 100.0 * scale_pct, 2)
+        prior_pnl = rec.get("realized_pnl", 0.0) or 0.0
+        total_realized = round(prior_pnl + realized_add, 2)
+
+        # Move runner stop to BE+ 0.05
+        runner_stop = round(entry + 0.05, 2) if "LONG" in side else round(entry - 0.05, 2)
+
+        rec["scaled_at_t1"] = True
+        rec["runner_stop"] = runner_stop
+        rec["stop"] = runner_stop
+        rec["realized_pnl"] = total_realized
+        rec["last_price"] = px
+        rec["last_eval"] = (
+            f"🎯 SCALED {int(scale_pct*100)}% at ${px:.2f} (+${realized_add:.2f}). "
+            f"Runner stop locked at BE+ (${runner_stop:.2f}). Total Realized: ${total_realized:+.2f}"
+        )
+        rec["last_eval_at"] = now
+
+        state[ticker] = rec
+        _save_state(state)
+
+    logger.info(
+        f"[state] 🎯 SCALED {ticker} {int(scale_pct*100)}% @ ${px:.2f} (+${realized_add:.2f}) — "
+        f"runner stop ratcheted to BE+ (${runner_stop:.2f})."
+    )
+    try:
+        from src.tracking.alert_db import sync_position
+        sync_position(ticker, rec)
+    except Exception as e:
+        logger.debug(f"Failed syncing scaled position to alert_db: {e}")
+    return rec
+
+
+def close_position(ticker: str, exit_price: float | None = None, exit_reason: str | None = None) -> dict | None:
+    """Remove `ticker` from open positions and record final execution metrics.
+    Returns the closed record or None if it wasn't open."""
+    ticker = ticker.strip().upper()
+    now = _now_iso()
     with _state_lock:
         state = load_state()
         rec = state.pop(ticker, None)
         if rec is None:
             logger.info(f"[state] close requested for {ticker} but not in open state.")
             return None
+
+        # Capture exit telemetry
+        entry = rec.get("entry_price") or 0.0
+        side = str(rec.get("side", "LONG")).upper()
+        px = exit_price if exit_price is not None else rec.get("last_price") or entry
+
+        rec["closed_at"] = now
+        rec["exit_price"] = px
+        rec["exit_reason"] = exit_reason or "MANUAL_CLOSE"
+
+        # Calculate final net P&L
+        pts = (px - entry) if "LONG" in side else (entry - px)
+        # If already scaled 50%, remaining runner is 50%
+        rem_mult = 50.0 if rec.get("scaled_at_t1") else 100.0
+        runner_pnl = round(pts * rem_mult, 2)
+        realized_prior = rec.get("realized_pnl", 0.0) or 0.0
+        rec["net_pnl"] = round(realized_prior + runner_pnl, 2)
+
         _save_state(state)
-    rec["closed_at"] = _now_iso()
+
     try:
         from src.tracking.alert_db import sync_position
         sync_position(ticker, rec)
     except Exception as e:
         logger.debug(f"Failed syncing closed position to alert_db: {e}")
-    logger.info(f"[state] CLOSED {ticker} (was open since {rec.get('opened_at')})")
+
+    logger.info(
+        f"[state] CLOSED {ticker} @ ${px} (Net P&L: ${rec.get('net_pnl', 0.0):+.2f}, "
+        f"Reason: {rec.get('exit_reason')}, was open since {rec.get('opened_at')})"
+    )
     return rec
 
 
@@ -195,8 +283,20 @@ def flatten_eod_intraday_positions(force: bool = False) -> list[dict]:
         for t in tickers_to_close:
             rec = state.pop(t, None)
             if rec:
+                entry = rec.get("entry_price") or 0.0
+                side = str(rec.get("side", "LONG")).upper()
+                px = rec.get("last_price") or entry
+
                 rec["closed_at"] = now_iso
+                rec["exit_price"] = px
                 rec["exit_reason"] = "EOD Flatten"
+
+                pts = (px - entry) if "LONG" in side else (entry - px)
+                rem_mult = 50.0 if rec.get("scaled_at_t1") else 100.0
+                runner_pnl = round(pts * rem_mult, 2)
+                realized_prior = rec.get("realized_pnl", 0.0) or 0.0
+                rec["net_pnl"] = round(realized_prior + runner_pnl, 2)
+
                 closed_list.append(rec)
                 try:
                     from src.tracking.alert_db import sync_position

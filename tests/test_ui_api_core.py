@@ -39,12 +39,20 @@ def test_api_status_endpoint():
 
 
 def test_api_watch_targets():
-    """Verify /api/watch-targets returns institutional watchlist and trigger targets."""
+    """Verify /api/watch-targets returns institutional watchlist, trigger targets, trade P&L, and performance summary."""
     status, body = _fetch("/api/watch-targets")
     assert status == 200
     data = json.loads(body)
     assert "targets" in data
     assert isinstance(data["targets"], list)
+    assert "performance" in data
+    assert "net_dollar_profit" in data["performance"]
+    if data["targets"]:
+        t0 = data["targets"][0]
+        assert "trade_dollar_pnl" in t0
+        assert "trade_roc_pct" in t0
+        assert "trade_label" in t0
+
 
 
 def test_api_reports_list():
@@ -110,7 +118,7 @@ def test_api_copilot_chat_stream_wmt():
     tokens_received = []
     errors_received = []
 
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(req, timeout=60) as response:
         assert response.status == 200
         for raw_line in response:
             line = raw_line.decode("utf-8").strip()

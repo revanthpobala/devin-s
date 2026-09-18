@@ -105,62 +105,245 @@ def get_watch_targets():
                         entry_high = item.get("entry_zone_high")
                         side = str(item.get("side") or "LONG").upper()
                         inv_price = item.get("invalidation_price")
+                        inv_cond = str(item.get("invalidation_condition") or "DAILY_CLOSE_BELOW").upper()
                         target_1 = item.get("target_1")
                         target_2 = item.get("target_2")
+                        old_status = str(item.get("status") or "STALKING").upper()
 
-                        is_stop_breached = False
-                        if inv_price and inv_price > 0:
-                            if side == "LONG" and live_px <= inv_price:
-                                is_stop_breached = True
-                            elif side == "SHORT" and live_px >= inv_price:
-                                is_stop_breached = True
+                        from src.tracking.execution_validator import evaluate_setup_lifecycle
 
-                        hit_target = False
-                        if target_2 and target_2 > 0:
-                            if (side == "LONG" and live_px >= target_2) or (side == "SHORT" and live_px <= target_2):
-                                hit_target = True
-                        elif target_1 and target_1 > 0:
-                            if (side == "LONG" and live_px >= target_1) or (side == "SHORT" and live_px <= target_1):
-                                hit_target = True
+                        session_low = float(q.get("low") or 0.0)
+                        session_high = float(q.get("high") or 0.0)
+                        item["session_low"] = session_low
+                        item["session_high"] = session_high
 
-                        if is_stop_breached:
-                            item["status"] = "INVALIDATED"
-                        elif hit_target and item.get("status") in ("IN_TRADE", "IN_ZONE"):
-                            item["status"] = "TARGET_HIT"
-                        elif hit_target and item.get("status") == "STALKING":
-                            item["status"] = "MISSED_RUNAWAY"
+                        entry_low = float(item.get("entry_zone_low") or 0.0)
+                        entry_high = float(item.get("entry_zone_high") or 0.0)
+                        breakout_lvl = float(item.get("breakout_level") or 0.0)
+                        side = str(item.get("side") or "LONG").upper()
+                        inv_price = float(item.get("invalidation_price") or item.get("tactical_stop") or 0.0)
+                        target_1 = float(item.get("target_1") or 0.0)
+                        target_2 = float(item.get("target_2") or 0.0)
+                        old_status = str(item.get("status") or "STALKING").upper()
+                        setup_date = str(item.get("date") or "")
 
-                        if entry_low and entry_high and entry_low > 0 and entry_high > 0:
-                            if side == "LONG":
-                                if live_px > entry_high:
-                                    item["distance_to_entry_pct"] = round(((live_px - entry_high) / entry_high) * 100, 2)
-                                    if not is_stop_breached and not hit_target and item.get("status") == "IN_ZONE":
-                                        item["status"] = "STALKING"
-                                elif live_px < entry_low:
-                                    item["distance_to_entry_pct"] = round(((live_px - entry_low) / entry_low) * 100, 2)
-                                    if not is_stop_breached and not hit_target and item.get("status") == "IN_ZONE":
-                                        item["status"] = "STALKING"
-                                else:
-                                    item["distance_to_entry_pct"] = 0.0
-                                    if not is_stop_breached and not hit_target and item.get("status") == "STALKING":
-                                        item["status"] = "IN_ZONE"
+                        # Calculate distance to entry zone %
+                        dist_pct = 0.0
+                        if entry_high > 0 and side == "LONG":
+                            if entry_low <= live_px <= entry_high:
+                                dist_pct = 0.0
+                            elif live_px > entry_high:
+                                dist_pct = round(((live_px - entry_high) / entry_high) * 100, 2)
                             else:
-                                if live_px < entry_low:
-                                    item["distance_to_entry_pct"] = round(((entry_low - live_px) / entry_low) * 100, 2)
-                                    if not is_stop_breached and not hit_target and item.get("status") == "IN_ZONE":
-                                        item["status"] = "STALKING"
-                                elif live_px > entry_high:
-                                    item["distance_to_entry_pct"] = round(((entry_high - live_px) / entry_high) * 100, 2)
-                                    if not is_stop_breached and not hit_target and item.get("status") == "IN_ZONE":
-                                        item["status"] = "STALKING"
-                                else:
-                                    item["distance_to_entry_pct"] = 0.0
-                                    if not is_stop_breached and not hit_target and item.get("status") == "STALKING":
-                                        item["status"] = "IN_ZONE"
+                                dist_pct = round(((live_px - entry_low) / entry_low) * 100, 2)
+                        elif entry_low > 0 and side == "SHORT":
+                            if entry_low <= live_px <= entry_high:
+                                dist_pct = 0.0
+                            elif live_px < entry_low:
+                                dist_pct = round(((entry_low - live_px) / entry_low) * 100, 2)
+                            else:
+                                dist_pct = round(((entry_high - live_px) / entry_high) * 100, 2)
+
+                        item["distance_to_entry_pct"] = dist_pct
+
+                        # Deterministic Bar-Based Lifecycle Evaluation
+                        eval_res = evaluate_setup_lifecycle(
+                            ticker=sym,
+                            setup_date=setup_date,
+                            side=side,
+                            entry_type=item.get("entry_type", "LIMIT"),
+                            entry_low=entry_low,
+                            entry_high=entry_high,
+                            breakout_level=breakout_lvl,
+                            stop_loss=inv_price,
+                            target_1=target_1,
+                            target_2=target_2,
+                            live_price=live_px,
+                            session_low=session_low,
+                            session_high=session_high,
+                            current_status=old_status,
+                            proximity_tolerance_pct=0.5,
+                        )
+
+                        item["status"] = eval_res["status"]
+                        item["was_filled"] = eval_res["was_filled"]
+                        item["fill_price"] = eval_res["fill_price"]
+                        item["unrealized_pnl_pct"] = eval_res["unrealized_pnl_pct"]
+                        item["reclaimed"] = (old_status in ("INVALIDATED", "STOP_BREACHED") and eval_res["status"] in ("IN_TRADE", "IN_ZONE"))
+
+                        # Update SQLite database so records reflect verified status
+                        try:
+                            from src.tracking.watch_manager import update_target_live_state
+                            update_target_live_state(
+                                ticker=sym,
+                                live_price=live_px,
+                                status=item["status"],
+                                distance_to_entry_pct=dist_pct,
+                            )
+                        except Exception as up_err:
+                            logger.debug(f"Failed updating target live state in DB: {up_err}")
             except Exception as q_err:
                 logger.debug(f"Error enriching watch targets with Schwab quotes: {q_err}")
 
-            return {"targets": targets, "count": len(targets)}
+            # Calculate Suggested Trade P&L, ROC %, and performance summary
+            won_dollars = []
+            lost_dollars = []
+            active_dollars = []
+            actionable_count = 0
+
+            for item in targets:
+                entry_low = item.get("entry_zone_low")
+                entry_high = item.get("entry_zone_high")
+                side = str(item.get("side") or "LONG").upper()
+                tactical_stop = item.get("tactical_stop") or item.get("invalidation_price")
+                target_1 = item.get("target_1")
+                target_2 = item.get("target_2")
+                live_px = item.get("last_price")
+                status = (item.get("status") or "STALKING").upper()
+                dist_pct = item.get("distance_to_entry_pct")
+                opt_act = bool(item.get("options_actionable"))
+
+                raw = item.get("parsed_json") or {}
+                op = raw.get("options_plan") or {}
+                sp = raw.get("shares_plan") or {}
+
+                struct = op.get("structure") or item.get("options_structure") or "NONE"
+                max_prof = float(op.get("max_profit") or 0.0)
+                max_loss = float(op.get("max_loss") or 0.0)
+                long_k = float(op.get("long_strike") or 0.0)
+                short_k = float(op.get("short_strike") or 0.0)
+                debit = float(op.get("target_debit") or 0.0)
+                is_options = bool(struct and struct != "NONE" and (max_prof > 0 or max_loss > 0))
+
+                trade_type = "OPTIONS" if is_options else "SHARES"
+                trade_label = struct.replace("_", " ").title() if is_options else f"Shares ({sp.get('entry_type', 'Limit')})"
+
+                entry_mid = None
+                if entry_low is not None and entry_high is not None and (entry_low > 0 or entry_high > 0):
+                    entry_mid = round((entry_low + entry_high) / 2.0, 2)
+                elif entry_low and entry_low > 0:
+                    entry_mid = entry_low
+                elif entry_high and entry_high > 0:
+                    entry_mid = entry_high
+                item["entry_midpoint"] = entry_mid
+
+                # 1. Underlying Stock Price Delta %
+                pnl_pct = None
+                if entry_mid and live_px and entry_mid > 0:
+                    if side == "SHORT":
+                        pnl_pct = round(((entry_mid - live_px) / entry_mid) * 100.0, 2)
+                    else:
+                        pnl_pct = round(((live_px - entry_mid) / entry_mid) * 100.0, 2)
+                item["pnl_pct"] = pnl_pct
+
+                # 2. SUGGESTED TRADE DOLLAR P&L & ROC %
+                trade_dollar_pnl = 0.0
+                trade_roc_pct = 0.0
+
+                if status in ("TARGET_HIT", "COMPLETED"):
+                    if is_options and max_prof > 0:
+                        trade_dollar_pnl = max_prof
+                        trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                    else:
+                        t_exit = target_2 if (target_2 and target_2 > 0) else target_1
+                        eff_entry = item.get("fill_price") or entry_mid
+                        if t_exit and eff_entry and eff_entry > 0:
+                            sh_gain = (t_exit - eff_entry) if side == "LONG" else (eff_entry - t_exit)
+                            trade_dollar_pnl = round(sh_gain * 100, 2)
+                            trade_roc_pct = round((sh_gain / eff_entry * 100), 2)
+                    won_dollars.append(trade_dollar_pnl)
+
+                elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
+                    if is_options and max_loss > 0:
+                        trade_dollar_pnl = -max_loss
+                        trade_roc_pct = -100.0
+                    else:
+                        eff_entry = item.get("fill_price") or entry_mid
+                        if tactical_stop and eff_entry and eff_entry > 0:
+                            sh_loss = (tactical_stop - eff_entry) if side == "LONG" else (eff_entry - tactical_stop)
+                            trade_dollar_pnl = round(sh_loss * 100, 2)
+                            trade_roc_pct = round((sh_loss / eff_entry * 100), 2)
+                    lost_dollars.append(trade_dollar_pnl)
+
+                elif status in ("IN_TRADE", "IN_ZONE") and live_px and live_px > 0:
+                    if is_options and (max_prof > 0 or max_loss > 0):
+                        if "PUT" in struct:
+                            if live_px >= short_k:
+                                trade_dollar_pnl = max_prof
+                                trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                            elif live_px <= long_k:
+                                trade_dollar_pnl = -max_loss
+                                trade_roc_pct = -100.0
+                            elif short_k > long_k:
+                                ratio = (live_px - long_k) / (short_k - long_k)
+                                trade_dollar_pnl = round(max_prof * ratio - max_loss * (1.0 - ratio), 2)
+                                trade_roc_pct = round((trade_dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
+                        else:
+                            if live_px >= short_k:
+                                trade_dollar_pnl = max_prof
+                                trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                            elif live_px <= long_k:
+                                trade_dollar_pnl = -max_loss
+                                trade_roc_pct = -100.0
+                            else:
+                                spread_val = (live_px - long_k) * 100.0
+                                trade_dollar_pnl = round(spread_val - (debit * 100.0), 2)
+                                trade_roc_pct = round((trade_dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
+                    else:
+                        eff_entry = item.get("fill_price") or entry_mid
+                        if eff_entry and eff_entry > 0:
+                            sh_gain = (live_px - eff_entry) if side == "LONG" else (eff_entry - live_px)
+                            trade_dollar_pnl = round(sh_gain * 100, 2)
+                            trade_roc_pct = round((sh_gain / eff_entry * 100), 2)
+                    active_dollars.append(trade_dollar_pnl)
+
+                item["trade_type"] = trade_type
+                item["trade_label"] = trade_label
+                item["trade_dollar_pnl"] = trade_dollar_pnl
+                item["trade_roc_pct"] = trade_roc_pct
+                item["trade_max_profit"] = max_prof
+                item["trade_max_loss"] = max_loss
+                item["realized_pnl_pct"] = trade_roc_pct
+
+                # Risk to Reward ratio
+                rr_ratio = None
+                if is_options and max_loss > 0:
+                    rr_ratio = round(max_prof / max_loss, 2)
+                elif entry_mid and target_1 and tactical_stop and entry_mid > 0:
+                    reward = abs(target_1 - entry_mid)
+                    risk = abs(entry_mid - tactical_stop)
+                    if risk > 0.01:
+                        rr_ratio = round(reward / risk, 2)
+                item["rr_ratio"] = rr_ratio
+
+                # Actionable flag: IN_ZONE, IN_TRADE, or distance <= 1.0%
+                is_actionable = (status in ("IN_ZONE", "IN_TRADE")) or (dist_pct is not None and abs(dist_pct) <= 1.0) or opt_act
+                item["is_actionable"] = is_actionable
+                if is_actionable:
+                    actionable_count += 1
+
+            total_resolved = len(won_dollars) + len(lost_dollars)
+            win_rate = round((len(won_dollars) / total_resolved) * 100.0, 1) if total_resolved > 0 else 0.0
+
+            total_won_dollars = round(sum(won_dollars), 2)
+            total_lost_dollars = round(sum(lost_dollars), 2)
+            total_active_dollars = round(sum(active_dollars), 2)
+            net_dollar_profit = round(total_won_dollars + total_lost_dollars + total_active_dollars, 2)
+
+            performance_summary = {
+                "total_targets": len(targets),
+                "won_count": len(won_dollars),
+                "lost_count": len(lost_dollars),
+                "active_count": len(active_dollars),
+                "actionable_count": actionable_count,
+                "win_rate": win_rate,
+                "total_won_dollars": total_won_dollars,
+                "total_lost_dollars": total_lost_dollars,
+                "total_active_dollars": total_active_dollars,
+                "net_dollar_profit": net_dollar_profit,
+            }
+
+            return {"targets": targets, "count": len(targets), "performance": performance_summary}
     except Exception as e:
         logger.error(f"Error fetching watch targets: {e}")
         return {"targets": [], "count": 0, "error": str(e)}
@@ -201,6 +384,34 @@ def poll_watch_targets():
         return {"status": "ok", "updated_count": len(updated)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@router.post("/api/watch-targets/status")
+def set_watch_target_status_endpoint(data: dict):
+    """Manually update the status of a watch target (e.g. IN_TRADE, STALKING, TARGET_HIT)."""
+    try:
+        ticker = (data.get("ticker") or "").upper().strip()
+        new_status = (data.get("status") or "").upper().strip()
+        if not ticker or not new_status:
+            raise HTTPException(status_code=400, detail="Ticker and status are required")
+        if new_status not in ("STALKING", "IN_ZONE", "IN_TRADE", "TARGET_HIT", "INVALIDATED", "MISSED_RUNAWAY"):
+            raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}")
+
+        from src.tracking.watch_manager import update_target_live_state, _get_connection, _db_lock, _now_iso
+        with _db_lock:
+            with _get_connection() as conn:
+                c = conn.cursor()
+                c.execute("UPDATE watch_targets SET status = ?, updated_at = ? WHERE ticker = ?", (new_status, _now_iso(), ticker))
+                conn.commit()
+
+        append_log(f"⚡ Watchlist target {ticker} status manually updated to {new_status}.")
+        return {"status": "ok", "ticker": ticker, "new_status": new_status}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed updating watch target status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/api/watch-alerts")

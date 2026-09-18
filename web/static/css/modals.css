@@ -725,6 +725,17 @@
 }
 
 .ticker-trades-modal-container {
+  width: 100%;
+  max-width: 900px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin-top: 20px;
+  color: var(--text-main);
   animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -738,4 +749,248 @@
     transform: scale(1) translateY(0);
   }
 }
+
+/* ==========================================================================
+   Trade Detail Intelligence Modal (.trade-detail-modal-container)
+   ========================================================================== */
+.trade-detail-modal-container {
+  width: 100%;
+  max-width: 860px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin-top: 20px;
+  color: var(--text-main);
+  animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tdm-header {
+  padding: 16px 22px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.tdm-body {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 75vh;
+  overflow-y: auto;
+  background: var(--bg-base);
+}
+
+.tdm-footer {
+  padding: 12px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+
+.tdm-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-card);
+}
+
+.tdm-card-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tdm-plan-box {
+  font-size: 11.5px;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  background: var(--bg-subtle);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+}
+
+.tdm-outcome-box {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.tdm-outcome-box.positive {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.tdm-outcome-box.negative {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+
+[data-theme="dark"] .tdm-outcome-box.positive {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #34d399;
+}
+
+[data-theme="dark"] .tdm-outcome-box.negative {
+  background: rgba(244, 63, 94, 0.12);
+  border-color: rgba(244, 63, 94, 0.35);
+  color: #fb7185;
+}
+
+.tdm-banner-taken {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-left: 4px solid var(--emerald);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-card);
+}
+
+.tdm-banner-filtered {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-left: 4px solid var(--rose);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-card);
+}
+
+[data-theme="dark"] .tdm-banner-taken {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.3);
+  border-left-color: var(--emerald);
+}
+
+[data-theme="dark"] .tdm-banner-filtered {
+  background: rgba(244, 63, 94, 0.08);
+  border-color: rgba(244, 63, 94, 0.3);
+  border-left-color: var(--rose);
+}
+
+.tdm-thesis-block {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-card);
+}
+
+.tdm-thesis-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tdm-thesis-header {
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.tdm-thesis-box {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-main);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+}
+
+.tdm-thesis-box.tech {
+  border-left: 3.5px solid var(--blue);
+}
+
+.tdm-thesis-box.tape {
+  border-left: 3.5px solid var(--amber);
+}
+
+.tdm-thesis-box.inval {
+  border-left: 3.5px solid var(--rose);
+}
+
+.tdm-thesis-box.directive {
+  border-left: 3.5px solid var(--emerald);
+}
+
+/* Day Trades Modal Elements */
+.ttm-metric-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  text-align: center;
+  min-width: 95px;
+  box-shadow: var(--shadow-card);
+}
+
+.ttm-trade-card {
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  transition: all 0.15s ease;
+}
+
+.ttm-trade-card:hover {
+  border-color: var(--border-subtle);
+}
+
+.ttm-subcard {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 

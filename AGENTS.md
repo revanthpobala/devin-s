@@ -110,18 +110,28 @@ python run_swing_research.py --spx
   - Automatically picks top high-priority setups (capped at `--auto-max 3`).
   - Sequentially runs parallel chart scraping (`run_swing_research.py --ticker <SYM>`), local triage (`run_local_research.py --ticker <SYM>`), deep research (`run_deep_research.py --ticker <SYM>`), and watch alerts synchronization (`run_watch_alerts.py --sync --once`).
   - Registers 24/7 cloud quote alerts with Tastytrade mobile push.
-- **Web UI Integration**: 1-Click "🤖 Autonomous Scan & Research" in Cockpit with live Stage, Rev Zone, and Priority badges.
+- **Continuous Autonomous Daemon & Slot Engine** (`run_continuous_screener.py`):
+  - Continuously loops through the Schwab 1000 universe every `--interval` seconds (default 600s).
+  - Enriches setups with real-time Tastytrade volatility metrics (IV Rank, IV Percentile, 30d HV, IV-HV spread) and auto-registers 24/7 cloud price alerts with mobile push notifications.
+  - **Slot-Aware Deep Research**: Checks local GPU / process slot availability and automatically dispatches exactly **1** top-conviction setup at a time into deep research when the slot is free. If a deep research pass is already running, preserves the slot and holds candidates until it frees up.
+  - One-click launch via `scripts\launchers\start_autonomous_scanner.bat`.
 
 **Usage**:
 ```bash
-# Live scan for 10 long basing setups
+# Continuous autonomous loop (scans every 10 min, runs 1 deep research in slot when qualified)
+python run_continuous_screener.py
+
+# Faster 5-minute loop with headless scraping
+python run_continuous_screener.py --interval 300 --headless
+
+# Single-pass scan, report opportunities, dispatch 1 if slot free, and exit
+python run_continuous_screener.py --once
+
+# One-shot manual scan for 10 long basing setups
 python src/screener/schwab_pre_move_scan.py --side long --top 10
 
-# Live scan for 10 prime short exhaustion setups
+# One-shot manual scan for 10 prime short exhaustion setups
 python src/screener/schwab_pre_move_scan.py --side short --top 10
-
-# Autonomous end-to-end execution: scan and deep-research top 3 setups
-python src/screener/schwab_pre_move_scan.py --autonomous --auto-max 3
 ```
 
 ---

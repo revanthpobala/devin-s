@@ -240,7 +240,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fetch_options_chain",
-            "description": "Fetches live options chain data (bid/ask, delta, gamma) to help define exact strikes and options strategies.",
+            "description": "Fetches live options chain data with unified CALL and PUT quotes, bid/ask spreads, mids, and Greeks across liquid near-the-money strikes in a single call. Default direction is 'BOTH'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -250,8 +250,8 @@ TOOLS = [
                     },
                     "direction": {
                         "type": "string",
-                        "enum": ["CALL", "PUT"],
-                        "description": "Call or Put chain",
+                        "enum": ["BOTH", "CALL", "PUT"],
+                        "description": "Chain side ('BOTH' provides a unified paired Call+Put table across active strikes).",
                     },
                     "strike_low": {
                         "type": "number",
@@ -340,7 +340,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_quantitative_plugin",
-            "description": "Runs a specialized quantitative market analytics plugin ('order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', 'candlestick_patterns', 'tastytrade_volatility', or 'all') on the trailing 1-year data and Data Window.",
+            "description": "Runs a specialized quantitative market analytics plugin ('order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', 'candlestick_patterns', 'tastytrade_volatility', 'schwab_analytics', or 'all') on the trailing 1-year data and Data Window.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -350,8 +350,8 @@ TOOLS = [
                     },
                     "plugin_name": {
                         "type": "string",
-                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility"],
-                        "description": "The specific analytics plugin to execute. Use 'tastytrade_volatility' for institutional IV Rank, HV/IV spread, borrow rates, and options liquidity ratings.",
+                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility", "schwab_analytics"],
+                        "description": "The specific analytics plugin to execute. Use 'schwab_analytics' for active broker holdings & 90d unusual options sweeps, 'tastytrade_volatility' for IV Rank and borrow rates.",
                     },
                 },
                 "required": ["ticker"],
@@ -389,6 +389,23 @@ TOOLS = [
                     },
                 },
                 "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_schwab_positions",
+            "description": "Queries the user's real-time Charles Schwab brokerage portfolio positions (equity shares, cost basis, unrealized P/L, options contracts, LEAPS, covered calls) across all linked accounts for a given ticker, or all open portfolio holdings if no ticker is specified.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Optional stock ticker symbol (e.g. 'AMZN', 'GOOGL'). If omitted, returns an executive overview of all open Schwab positions.",
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -523,6 +540,56 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_prediction_market",
+            "description": "Queries Kalshi prediction markets for implied probabilities (odds) on macro events, earnings, and other binary outcomes. Use when the user asks about market expectations, prediction market odds, or probability of macro events (e.g. Fed rate decisions, CPI, recession).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for Kalshi markets (e.g. 'Fed rate July 2026', 'CPI June', 'Apple earnings'). Matches against active market titles.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "invoke_skill",
+            "description": (
+                "Consults specialized institutional trading skill cards, execution timing gates, post-mortem empirical lessons, "
+                "options spread architecture, and catastrophe risk controls. You can invoke this tool multiple times (N times) "
+                "to retrieve specific tactical rules and historical precedents before finalizing your decision."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": (
+                            "Name of the skill to invoke. Available: "
+                            "'execution_timing_gates' (Midday lull 11:15-12:45 MT filter, power hour index momentum exception), "
+                            "'postmortem_learnings' (Empirical win/loss patterns and edge from session audits), "
+                            "'catastrophe_risk_controls' (Hard 1.25x ATR stop cap, trailing discipline, circuit breakers), "
+                            "'options_spread_architect' (IV rank mapping, debit vs credit spreads, strike geometry), "
+                            "'weinstein_stage_rules' (Stage 1-5 definitions, 20 EMA/200 SMA confluence), "
+                            "or 'list' to see all available skills."
+                        ),
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "Optional specific focus or question (e.g., '11:45 MT entry on QQQ', '1.25x ATR stop cap', 'Stage 4 declining rule').",
+                    },
+                },
+                "required": ["skill_name"],
+            },
+        },
+    },
 ]
 
 
@@ -580,6 +647,8 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
         p_key = "tastytrade_volatility"
     elif p_key in ("monte_carlo", "montecarlo", "mc", "sim", "simulation", "monte_carlo_plugin"):
         p_key = "monte_carlo"
+    elif p_key in ("schwab", "schwab_analytics", "schwab_plugin", "schwab_holdings", "schwab_flow"):
+        p_key = "schwab_analytics"
 
     if p_key == "all":
         res = plugin_manager.run_all(ticker, df, dw)
@@ -831,6 +900,93 @@ def fetch_prior_research_tool(ticker: str, lookback_days: int = 14, date_str: st
     return f"No prior research found for {ticker} in reports/ prior to {date_cutoff} (looked back {min(len(dates), lookback_days)} dates)."
 
 
+def format_schwab_positions_tool(ticker: Optional[str] = None) -> str:
+    """Format user's real Schwab brokerage portfolio positions into a structured text report for the LLM."""
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions, get_portfolio_summary
+        t_clean = (ticker or "").strip().upper()
+        if not t_clean or t_clean in ("ALL", "PORTFOLIO", "NONE", "GLOBAL"):
+            summary = get_portfolio_summary()
+            all_pos = get_portfolio_positions()
+            lines = [
+                f"### 💼 TOTAL SCHWAB PORTFOLIO SUMMARY (Synced: {summary.get('last_synced', 'Live')}):",
+                f"• Total Liquidation Value: **${summary.get('total_liquidation_value', 0.0):,.2f}**",
+                f"• Cash Balance: **${summary.get('total_cash_balance', 0.0):,.2f}** | Day P/L: **${summary.get('total_day_pnl', 0.0):+,.2f} ({summary.get('total_day_pnl_pct', 0.0):+.2f}%)**",
+                f"• Total Unrealized P/L: **${summary.get('total_unrealized_pnl', 0.0):+,.2f} ({summary.get('total_unrealized_pnl_pct', 0.0):+.2f}%)**",
+                f"• Total Positions Count: {len(all_pos)}",
+                "",
+                "#### Active Holdings by Market Value:",
+            ]
+            for p in all_pos[:20]:
+                sym = p.get("symbol", "")
+                qty = float(p.get("quantity") or 0.0)
+                mkt_val = float(p.get("market_value") or 0.0)
+                unreal = float(p.get("unrealized_profit_loss") or 0.0)
+                u_pct = float(p.get("unrealized_profit_loss_pct") or 0.0)
+                acct = f"{p.get('account_type', '')} {p.get('account_number_masked', '')}".strip()
+                lines.append(f"• **{sym}** ({acct}): {qty:+.2f} units | Mkt Val: ${mkt_val:,.2f} | P/L: ${unreal:+,.2f} ({u_pct:+.1f}%)")
+            return "\n".join(lines)
+        else:
+            schwab_all = get_portfolio_positions(search=t_clean)
+            schwab_matches = [
+                p for p in schwab_all
+                if p.get("underlying_symbol", "").upper() == t_clean or p.get("symbol", "").upper().startswith(t_clean)
+            ]
+            if not schwab_matches:
+                return f"No open Schwab brokerage positions found for {t_clean} in data/schwab_portfolio.db."
+            
+            lines = [f"### 💼 SCHWAB BROKERAGE POSITIONS FOR ${t_clean}:"]
+            total_mkt = sum(float(p.get("market_value") or 0.0) for p in schwab_matches)
+            total_unreal = sum(float(p.get("unrealized_profit_loss") or 0.0) for p in schwab_matches)
+            total_day = sum(float(p.get("day_profit_loss") or 0.0) for p in schwab_matches)
+            lines.append(f"• Total Market Value: **${total_mkt:,.2f}** | Total Unrealized P/L: **${total_unreal:+,.2f}** | Day P/L: **${total_day:+,.2f}**\n")
+            for p in schwab_matches:
+                acct = f"{p.get('account_type', 'ACCT')} ({p.get('account_number_masked', '')})"
+                qty = float(p.get("quantity") or 0.0)
+                mkt_val = float(p.get("market_value") or 0.0)
+                unreal = float(p.get("unrealized_profit_loss") or 0.0)
+                u_pct = float(p.get("unrealized_profit_loss_pct") or 0.0)
+                avg_px = float(p.get("average_price") or 0.0)
+                curr_px = float(p.get("current_price") or 0.0)
+                if p.get("asset_type") == "OPTION":
+                    desc = p.get("description") or p.get("symbol")
+                    lines.append(f"• [OPTION] {qty:+.0f}x {desc} in {acct} | Avg: ${avg_px:.2f} | Mark: ${curr_px:.2f} | Mkt Val: ${mkt_val:,.2f} | P/L: ${unreal:+,.2f} ({u_pct:+.1f}%)")
+                else:
+                    lines.append(f"• [EQUITY] {qty:.2f} shares in {acct} | Cost Basis: ${avg_px:.2f}/sh | Price: ${curr_px:.2f} | Mkt Val: ${mkt_val:,.2f} | P/L: ${unreal:+,.2f} ({u_pct:+.1f}%)")
+            return "\n".join(lines)
+    except Exception as e:
+        return f"Error retrieving Schwab positions: {e}"
+
+
+def invoke_skill(skill_name: str, topic: str = "") -> dict:
+    """Reads and returns an institutional skill card from skills/ directory."""
+    skills_dir = config.BASE_DIR / "skills"
+    s_clean = str(skill_name).lower().strip()
+    if s_clean.endswith(".md"):
+        s_clean = s_clean[:-3]
+
+    if s_clean in ("list", "all", "?", "help", ""):
+        available = [f.stem for f in sorted(skills_dir.glob("*.md"))] if skills_dir.exists() else []
+        return {"status": "ok", "skills": available, "content": f"Available Skills: {', '.join(available)}"}
+
+    skill_file = skills_dir / f"{s_clean}.md"
+    if not skill_file.exists() and skills_dir.exists():
+        for f in skills_dir.glob("*.md"):
+            if s_clean in f.stem or f.stem in s_clean:
+                skill_file = f
+                break
+
+    if not skill_file.exists():
+        available = [f.stem for f in sorted(skills_dir.glob("*.md"))] if skills_dir.exists() else []
+        return {"status": "error", "error": f"Skill '{skill_name}' not found. Available skills: {', '.join(available)}", "skills": available, "content": ""}
+
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+        return {"status": "success", "skill_name": skill_file.stem, "topic": topic, "content": content}
+    except Exception as e:
+        return {"status": "error", "error": f"Error reading skill '{skill_name}': {e}", "content": ""}
+
+
 def execute_tool_call(tool_call, date_str: str = None):
     """Executes the mapped python function for a given tool call with TTL artifact caching."""
     from src.data.artifact_cache import artifact_cache
@@ -848,7 +1004,7 @@ def execute_tool_call(tool_call, date_str: str = None):
     active_ticker = options_client._ACTIVE_TICKER
     req_ticker = (args.get("ticker") or args.get("symbol") or active_ticker or "GLOBAL").upper()
 
-    if active_ticker and req_ticker != active_ticker and function_name != "search_web":
+    if active_ticker and req_ticker != active_ticker and function_name not in ("search_web", "fetch_prediction_market"):
         logger.warning(
             f"Cross-contamination guardrail: LLM attempted tool '{function_name}' for ticker '{req_ticker}' "
             f"while researching '{active_ticker}'. Overriding to '{active_ticker}'."
@@ -872,9 +1028,9 @@ def execute_tool_call(tool_call, date_str: str = None):
         move_slug = re.sub(r'[^\w\-]', '_', str(args.get("expected_move", "5to10")).replace("%", "").replace("+", "").replace("-", "down_")).strip('_')
         cache_key = f"tv_options_{period_slug}_{move_slug}"
     elif function_name == "fetch_options_chain":
-        direction_slug = re.sub(r'[^\w\-]', '_', str(args.get("direction", "CALL")).upper()).strip('_')
-        min_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("min_dte", 30))).strip('_')
-        max_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("max_dte", 120))).strip('_')
+        direction_slug = re.sub(r'[^\w\-]', '_', str(args.get("direction", "BOTH")).upper()).strip('_')
+        min_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("min_dte", 14))).strip('_')
+        max_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("max_dte", 60))).strip('_')
         cache_key = f"options_chain_{direction_slug}_{min_dte_slug}_{max_dte_slug}"
     elif function_name == "run_quantitative_plugin":
         plugin_slug = re.sub(r'[^\w\-]', '_', str(args.get("plugin_name", "all")).lower()).strip('_')
@@ -960,6 +1116,42 @@ def execute_tool_call(tool_call, date_str: str = None):
         res_str = fetch_prediction_market(query)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
+    elif function_name == "invoke_skill":
+        skill_name = str(args.get("skill_name", "")).lower().strip()
+        topic = str(args.get("topic", "")).strip()
+        skills_dir = config.BASE_DIR / "skills"
+
+        if skill_name.endswith(".md"):
+            skill_name = skill_name[:-3]
+
+        logger.info(f"LLM executed tool: invoke_skill(skill_name='{skill_name}', topic='{topic}')")
+
+        if skill_name in ("list", "all", "?", "help", ""):
+            available = [f.stem for f in sorted(skills_dir.glob("*.md"))] if skills_dir.exists() else []
+            return f"Available Skills: {', '.join(available)}. Call invoke_skill(skill_name='<name>') to load."
+
+        skill_file = skills_dir / f"{skill_name}.md"
+        if not skill_file.exists():
+            cand = None
+            if skills_dir.exists():
+                for f in skills_dir.glob("*.md"):
+                    if skill_name in f.stem or f.stem in skill_name:
+                        cand = f
+                        break
+            if cand:
+                skill_file = cand
+            else:
+                available = [f.stem for f in sorted(skills_dir.glob("*.md"))] if skills_dir.exists() else []
+                return f"Error: Skill '{skill_name}' not found. Available skills: {', '.join(available)}"
+
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+            header = f"=== SKILL CONSULTED: {skill_file.stem} ==="
+            if topic:
+                header += f" (Focus: {topic})"
+            return f"{header}\n\n{content}"
+        except Exception as e:
+            return f"Error reading skill '{skill_name}': {e}"
     elif function_name == "fetch_historical_zone_and_regime_analytics":
         lookback = int(args.get("lookback_bars", 60))
         logger.info(f"LLM executed tool: fetch_historical_zone_and_regime_analytics(ticker='{ticker}', lookback={lookback})")
@@ -1010,6 +1202,10 @@ def execute_tool_call(tool_call, date_str: str = None):
         res_str = get_unusual_options_flow(ticker)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
+    elif function_name == "fetch_schwab_positions":
+        t_req = args.get("ticker") or ticker
+        logger.info(f"LLM executed tool: fetch_schwab_positions(ticker='{t_req}')")
+        return format_schwab_positions_tool(t_req)
     elif function_name == "fetch_sec_filings":
         from src.clients.sec_edgar_client import format_sec_report
         form_type = args.get("form_type", "ALL")
@@ -1378,7 +1574,7 @@ def query_local_llm(
                 "- `scrape_tradingview_options_finder`: Strategy Finder spread search.\n"
                 "- `fetch_sec_filings`: Official U.S. SEC EDGAR filings (10-K, 10-Q, 8-K, Form 4) and financial facts.\n"
                 "- `scrape_tradingview_chart`: Fresh Playwright chart & Data Window scrape.\n"
-                "- `fetch_earnings_calendar`, `fetch_prior_research`, and `search_web`.\n\n"
+                "- `fetch_earnings_calendar`, `fetch_prior_research`, `search_web`, and `fetch_prediction_market` (Kalshi odds).\\n\\n"
                 "MANDATE:\n"
                 "1. If you require calculations, options chains, quotes, or plugins, emit ALL tool calls immediately in PARALLEL in your first response.\n"
                 "2. CRITICAL: Do NOT output conversational planning text, thoughts, or preambles before calling tools. Emit pure tool calls directly.\n"
