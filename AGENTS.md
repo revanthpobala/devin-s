@@ -168,9 +168,21 @@ python run_local_research.py --regenerate
 
 ## Deep Research Agent
 
-**Purpose**: Agentic deep research on tickers flagged by local triage. Runs a multi-pass flow: local bull/bear debate → paid (or local-vision) dual-report synthesis → independent report → senior-PM arbitration.
+**Purpose**: Agentic deep research on tickers flagged by local triage. Runs a multi-pass flow: local bull/bear debate → paid (or local-vision) dual-report synthesis → independent report → senior-PM arbitration. Decomposed into a clean, modular 9-module package under `src/logic/deep_research/`.
 
-**Entry Point**: `run_deep_research.py` (wrapper) / `src/logic/deep_research.py:run_deep_research`
+**Entry Point**: `run_deep_research.py` (wrapper) / `src/logic/deep_research/pipeline.py:run_deep_research`
+
+**Architecture (`src/logic/deep_research/`)**:
+- `pipeline.py`: Central orchestration flow, runner dispatch, and pass lifecycle.
+- `artifact_loader.py`: Ingests naked & 90d chart screenshots, datawindow csv/json, and historical dossiers.
+- `live_fetcher.py`: Gathers live quotes, real-time news, and options market data.
+- `prefetch.py`: Prefetches all remote and local artifacts asynchronously ahead of prompt execution.
+- `context_builder.py`: Compiles debate transcripts, flags, technical context, and macro posture.
+- `debate.py`: Free local bull/bear agent clash with round-robin rebuttals cached to `<ticker>_debate_v2.json`.
+- `pass2.py`: Multimodal synthesis with vision & tool-calling loop (Meta AI / OpenRouter / local Qwen-vision).
+- `tv_strategies.py`: Ingests and formats TradingView options strategy finder setups.
+- `arbitration.py`: Senior Quantitative PM arbitration cross-examines dual reports and emits binding levels.
+- `output_writer.py`: Writes `<ticker>_summary.md`, `_independent.md`, `_arbitration.md`, and Google Sheets sync.
 
 **Capabilities**:
 - Processes tickers in `data/triage/<date>/_DEEP_RESEARCH/` (and `force/`), ranked by `rank_pass_tickers`; capped at `DEEP_RESEARCH_CAP` (0 = uncapped, rank still sets order)
@@ -194,7 +206,7 @@ python run_deep_research.py --ticker META
 python run_deep_research.py --force META,AMD
 
 # 100% local (no paid calls)
-python src/logic/deep_research.py 2026-08-22 --local
+python run_deep_research.py 2026-08-22 --local
 ```
 
 ---
@@ -235,13 +247,23 @@ python run_watch_alerts.py --sync --date 2026-08-29
 **Capabilities**:
 - `data/positions.json` is the authoritative record (ticker, side, entry, stop, target, last eval)
 - ENTRY alert → opens a position + spawns a per-ticker monitor thread
-- EXIT alert (TradingView) → closes the position + stops the thread (LLM never authorizes exits)
+- EXIT alert (TradingView) → routes through the **Institutional Exit Veto Engine** (`skills/exit_management_and_veto.md`):
+  - **Tier 1 (Scale Trim / Target Hit)**: Automatically locks profit on 50% at Target 1 ($R \ge 1.5$) and ratchets remaining stop to Break-Even + $0.05 buffer (Golden Lock rule: never turn a winning trade into a loss). Closes remainder at Target 2.
+  - **Tier 2 (Catastrophic Circuit Breaker)**: Mandatory market exit if drawdown reaches $\ge 1.25\times$ 5m ATR or 30% option premium loss.
+  - **Tier 3 (Technical Invalidation vs Wick Tap)**: Vetoes false exits if price wicks through invalidation but candle closes structurally intact above VWAP/POC. Confirms exit if 5m candle closes beyond line on volume.
+  - **Tier 4 (Midday Chop Stagnation Kill)**: Scratches stagnant positions open $\ge 35$ minutes between 11:15 MT and 12:45 MT without Target 1 to prevent theta bleed.
+  - **Tier 5 (EOD Mandatory Flatten)**: Flattens all 0DTE and intraday scalps before 13:45 MT (3:45 PM ET).
+- **Execution Validator & Bar-Based Fill Simulator** (`src/tracking/execution_validator.py`):
+  - Deterministic evaluation of trade setups against historical and live bar extremes (OHLC).
+  - Accurately audits limit fills, breakout triggers, and target hits across setup lifecycles to prevent false "MISSED RUNAWAY" alarms.
 - Each monitor polls live quotes every `POSITION_POLL_INTERVAL` sec, hard-checks stop/target deterministically (no LLM); the local LLM only writes a playbook/commentary string
 - On tracker restart, monitors are rehydrated from `data/positions.json`
 
 **Files**:
 - `src/tracking/position_state.py` — atomic load/save/upsert/close of `data/positions.json`
 - `src/tracking/position_monitor.py` — `PositionManager` (queue router) + `PositionMonitor` (per-ticker thread)
+- `src/tracking/execution_validator.py` — bar-based OHLC execution verification & lifecycle fill simulation
+- `src/tracking/alert_evaluator.py` — real-time local LLM triage & exit veto decision engine
 - `src/tracking/sheets_tracker.py` — Google Sheets mirror (Alerts, Trades, SWING-SPX sheets)
 
 **Config**:
@@ -296,6 +318,7 @@ python run_watch_alerts.py --sync --date 2026-08-29
 | HTF Confluence | `htf_confluence_plugin.py` |
 | Candlestick Patterns (pin bars, shooting stars, gap fill retests, inside days, engulfing) | `candlestick_patterns_plugin.py` |
 | Tastytrade Volatility (IV Rank, IV Percentile, 30d/60d/90d HV, IV-HV spread, liquidity stars, borrow rate) | `tastytrade_plugin.py` |
+| Schwab Portfolio & Flow (live positions, cost basis, unrealized P/L, institutional options sweeps) | `schwab_plugin.py` |
 
 **Registry**: `plugin_manager.py` — `PluginManager.run_all(ticker, df, dw)` / `enrich_datawindow_with_plugins()`.
 
@@ -456,6 +479,53 @@ python scripts/triage/watch_triggers.py 2026-08-22
 
 ---
 
+## Stock Trading Cockpit & Copilot WebUI
+
+**Purpose**: Modern, unified full-stack trading operations cockpit and interactive AI Copilot (`run_ui.py`). Modular FastAPI backend mounted under `src/ui/` with real-time SSE streaming, asynchronous research execution queues, background process supervision, and dynamic charts.
+
+**Entry Point**: `run_ui.py` (server launcher) / `src/ui/app.py:create_app`
+
+**Architecture (`src/ui/`)**:
+- `app.py`: Central FastAPI factory, CORS & Cache-Control headers, static mounts (`web/`).
+- `routes/alerts.py`: TradingView alerts history, Gmail 1-shot ingestor triggers, local triage verdicts.
+- `routes/copilot.py`: REV CHAT interactive copilot, SSE token streaming, sandbox Python execution (`/api/copilot/execute-python`), session persistence in SQLite.
+- `routes/intraday.py`: Open position state, live P&L streaming, emergency flatten commands, 0DTE trade simulator.
+- `routes/portfolio.py`: Live Schwab brokerage holdings, positions, balances, day P&L.
+- `routes/research.py`: Dossier viewing, multi-pass report tabs (`_summary.md`, `_independent.md`, `_arbitration.md`), chart image streaming, async research queue dispatch.
+- `routes/screener.py`: Live Schwab 1000 constituent scanner trigger, autonomous continuous screener status, filter overrides.
+- `routes/status.py`: Process supervisor status, port diagnostics, live system log streaming.
+- `routes/trades.py`: Daily survivor cascade rows, action codes, and trade plans.
+- `routes/watchlist.py`: Research watch targets, trigger alert rules, distance-to-entry tracking, and Tastytrade cloud alert registration.
+- `services/copilot_context.py`: Multi-modal market context compiler (ingests live Schwab holdings, 90d options sweeps, Tastytrade IV metrics, datawindows, reports, and real-time quotes).
+- `services/daemon_manager.py`: Start/stop/inspect lifecycle supervisor for background daemons (`main.py`, `continuous_screener`).
+- `services/research_queue.py`: Multi-slot research task queue manager with process/thread isolation and database rehydration.
+- `state.py`: SQLite schema migrations (`data/research_watch.db`), process maps, and shared runtime buffers.
+
+**Usage**:
+```bash
+# Launch Cockpit UI on port 8080 with auto-browser launch
+python run_ui.py
+
+# Launch on custom port
+python run_ui.py --port 8080 --no-browser
+```
+
+---
+
+## Quantitative Strategy Skills & Risk Playbooks
+
+**Purpose**: Systematic institutional knowledge base and quantitative playbooks loaded into local LLMs (`src/tracking/alert_evaluator.py`, `gems/revanth-gem-local.md`, `gems/revanth-0dte.md`).
+
+**Files** (`skills/`):
+- `exit_management_and_veto.md`: 5-Tier institutional exit hierarchy (Target 1 scale trim 50% + BE+ lock, catastrophic ATR loss cap, technical invalidation vs wick tap, midday chop stagnation kill, EOD mandatory flatten).
+- `execution_timing_gates.md`: Time-of-day execution permissions and blackouts (Midday lull gate 11:15-12:45 MT, Power Hour index trend acceleration exception for QQQ/SPY, 15m opening range filter).
+- `catastrophe_risk_controls.md`: Capital protection circuit breakers, maximum $1.25\times$ 5m ATR stop distance, 3 consecutive intraday loss day pause, slippage limits.
+- `weinstein_stage_rules.md`: Stan Weinstein 4-Stage cycle classification (Stage 1 Base, Stage 2 Markup, Stage 3 Distribution, Stage 4 Markdown, Stage 5 Recovery) and multi-timeframe moving average confluence (20 EMA, 50 SMA, 200 SMA).
+- `options_spread_architect.md`: Structure selection mapped to Tastytrade IV Rank (<30 Long Debit/Singles, 30-50 Defined-Risk Spreads, >50 Credit Spreads/Short Financing), Expected Move (EM) bounds, and strike delta selection.
+- `postmortem_learnings.md`: Empirical session audit findings (+683 capital saved by AI guardrails, lunch lull failure clustering analysis, index power hour exceptions).
+
+---
+
 ## Utility Scripts
 
 ### Email Inspector
@@ -512,3 +582,4 @@ One-off experiments and targeted tests (not part of the daily pipeline). Highlig
 ```bash
 pytest
 ```
+

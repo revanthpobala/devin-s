@@ -180,7 +180,8 @@ def test_evaluate_and_dispatch_deep_research():
     ]
 
     with patch.object(daemon, "dispatch_candidate_research", return_value=True) as mock_dispatch, \
-         patch.object(daemon, "_is_job_active_in_db", return_value=False):
+         patch.object(daemon, "_is_job_active_in_db", return_value=False), \
+         patch.object(daemon, "get_active_research_count", return_value=0):
         
         dispatched = daemon.evaluate_and_dispatch_deep_research(candidates, "2029-01-01")
 
