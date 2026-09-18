@@ -52,7 +52,7 @@ def verify_csv_integrity(df: pd.DataFrame) -> Tuple[pd.Series, Optional[str]]:
 
 
 def _format_datawindow_val(val: Any) -> Optional[str]:
-    """Format Data Window value: limit floats to 3 decimal places, keep ints clean, handle nulls."""
+    """Format Data Window value: preserve numeric precision without truncating floats, keep ints clean, handle nulls."""
     if pd.isna(val) or val is None:
         return None
     s_val = str(val).strip()
@@ -65,8 +65,8 @@ def _format_datawindow_val(val: Any) -> Optional[str]:
         # Whole integer values (e.g. 0, 1, 4, 10, 360, "0.0") -> format cleanly
         if f.is_integer() and ("." not in s_val or s_val.endswith(".0")):
             return str(int(f))
-        # Float values: round to at most 3 decimal places
-        return str(round(f, 3))
+        # Float values: preserve full string precision without truncating decimals
+        return s_val
     except (ValueError, TypeError):
         return s_val
 
@@ -89,6 +89,22 @@ def _extract_ticker_from_path(path: Optional[str]) -> Optional[str]:
     return None
 
 
+def _get_snapshot_val(snapshot: Dict[str, Any], *keys: str) -> Any:
+    """Retrieve value from snapshot with case-insensitive and prefix-tolerant matching."""
+    for k in keys:
+        if k in snapshot and snapshot[k] is not None:
+            return snapshot[k]
+    lower_map = {str(k).lower(): v for k, v in snapshot.items()}
+    for k in keys:
+        kl = str(k).lower()
+        if kl in lower_map and lower_map[kl] is not None:
+            return lower_map[kl]
+        for sk, sv in lower_map.items():
+            if (sk.endswith(f": {kl}") or sk.endswith(f":{kl}")) and sv is not None:
+                return sv
+    return None
+
+
 def decode_and_enrich_datawindow(
     snapshot: Dict[str, Any], df: pd.DataFrame, ticker: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -99,7 +115,7 @@ def decode_and_enrich_datawindow(
         snapshot["ticker"] = ticker_name
     # 1. Premove Pack decoding (Line 6531-6553)
     try:
-        p_val = int(float(snapshot.get("Premove Pack") or 0))
+        p_val = int(float(_get_snapshot_val(snapshot, "Premove Pack", "premove_pack") or 0))
         darvas_states = {0: "None", 1: "IN BOX", 2: "BREAKING", 3: "BREAKOUT", 4: "ABOVE BOX", 5: "BELOW BOX"}
         sqz_dirs = {0: "Down", 1: "None", 2: "Up"}
 
@@ -282,7 +298,7 @@ def decode_and_enrich_datawindow(
                 iv_f = float(iv30_val)
                 spread = round(iv_f - snapshot["_realvol_60d"], 2)
                 snapshot["_iv_minus_hv60_spread"] = spread
-                snapshot["_options_vol_regime"] = "IV Underpriced / Cheap Vol (Favors Long LEAPS & Debit Spreads)" if spread < -10 else "IV Overpriced / Expensive Vol (Favors Credit Spreads & Premium Selling)" if spread > 10 else "Fairly Priced Options Vol"
+                snapshot["_options_vol_regime"] = f"Synthetic Volatility Proxy (IV30: {iv_f:.1f}%, HV60: {snapshot['_realvol_60d']:.1f}%, Spread: {spread:+.1f}%)"
     except Exception:
         pass
 
@@ -337,7 +353,50 @@ def decode_and_enrich_datawindow(
     except Exception:
         pass
 
-    # 10. Execute Decoupled Analytics Plugins
+    # 10. Protocol 2 & RSI2 Event Pack Decoding
+    try:
+        proto_val = _get_snapshot_val(snapshot, "RSI2 Protocol Version", "rsi2_protocol_version", "protocol version")
+        if proto_val is not None:
+            snapshot["_protocol_version"] = int(float(proto_val))
+
+        events_pack_val = _get_snapshot_val(snapshot, "RSI2 Events Pack", "rsi2_events_pack", "events pack")
+        if events_pack_val is not None:
+            ep = int(float(events_pack_val))
+            snapshot["_rsi2_events_pack_raw"] = ep
+            snapshot["_rsi2_setup_event"] = bool(ep & 1)
+            snapshot["_rsi2_armed_event"] = bool(ep & 2)
+            snapshot["_rsi2_entry_event"] = bool(ep & 4)
+            snapshot["_rsi2_has_exit_fill"] = bool(ep & 8)
+            snapshot["_rsi2_recovery_event"] = bool(ep & 16)
+
+            exit_codes = {0: "NONE", 1: "STOP", 2: "TARGET", 3: "RECOVERY", 4: "TIME"}
+            skip_codes = {0: "NONE", 1: "INVALID_STOP_TARGET", 2: "CEILING_OR_RISK_EXCEEDED", 3: "ALREADY_ACTIVE"}
+            state_codes = {0: "WARMUP", 1: "IDLE", 2: "PENDING", 3: "ACTIVE", 4: "EXIT_DUE", 5: "NOT_DAILY"}
+
+            exit_code = (ep >> 5) & 7
+            skip_code = (ep >> 8) & 3
+            state_code = (ep >> 10) & 7
+
+            snapshot["_rsi2_exit_code"] = exit_code
+            snapshot["_rsi2_exit_name"] = exit_codes.get(exit_code, "UNKNOWN")
+            snapshot["_rsi2_skip_code"] = skip_code
+            snapshot["_rsi2_skip_name"] = skip_codes.get(skip_code, "UNKNOWN")
+            snapshot["_rsi2_state_code"] = state_code
+            snapshot["_rsi2_state_name"] = state_codes.get(state_code, "UNKNOWN")
+    except Exception:
+        pass
+
+    # 11. Context Stage Age Pack Decoding
+    try:
+        stage_pack_val = _get_snapshot_val(snapshot, "Context Stage Age Pack", "context_stage_age_pack", "stage age pack")
+        if stage_pack_val is not None:
+            sp = int(float(stage_pack_val))
+            snapshot["_weinstein_stage"] = sp % 8
+            snapshot["_stage_age_bars"] = sp // 8
+    except Exception:
+        pass
+
+    # 12. Execute Decoupled Analytics Plugins
     try:
         from src.plugins.plugin_manager import enrich_datawindow_with_plugins
         ticker_name = ticker or snapshot.get("ticker") or snapshot.get("symbol") or "UNKNOWN"

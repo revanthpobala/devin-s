@@ -243,6 +243,7 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
     from src.tracking.alert_db import (
         get_eastern_date_str,
         record_alert as _record_alert_db,
+        update_routing_stage as _update_routing_stage_db,
     )
     try:
         inserted = _record_alert_db(alert)
@@ -256,7 +257,8 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
                     pass
             return False
     except Exception as e_rec:
-        logger.warning(f"Immediate SQLite record error for {symbol}: {e_rec}")
+        logger.error(f"Immediate SQLite record error for {symbol}: {e_rec}. Ingestion aborted to prevent unaudited routing.")
+        return False
 
     # 2. Immediate Position State & Monitor Routing
     from src.tracking.position_monitor import _is_exit_event
@@ -286,12 +288,16 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
                         )
             else:
                 _position_manager.route_alert(alert)
+            if alert.get("message_id"):
+                _update_routing_stage_db(alert["message_id"], "ROUTED")
         except Exception as e:
             logger.warning(f"PositionManager routing failed for {symbol}: {e}")
     else:
         logger.debug(
             f"Skipping PositionManager routing for {symbol} (strategy={strategy}, side={raw_side}, action={raw_action}, setup={alert.get('setup')})"
         )
+        if alert.get("message_id"):
+            _update_routing_stage_db(alert["message_id"], "ROUTED")
 
     logger.info(
         f"⚡ [INGESTED] Symbol: {symbol}, Strategy: {strategy}, Action: {raw_action}, Price: {alert_price}"
@@ -307,6 +313,33 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
     # 4. Enqueue for background asynchronous enrichment
     _enrichment_queue.put(alert)
     return True
+
+
+def replay_unrouted_alerts():
+    """Recover unrouted events at startup (e.g. after crash-after-record window)."""
+    try:
+        from src.tracking.alert_db import get_unrouted_alerts, update_routing_stage
+        unrouted = get_unrouted_alerts()
+        if unrouted:
+            logger.info(f"[recovery] Found {len(unrouted)} unrouted alert(s) in SQLite. Replaying routing...")
+            for a in unrouted:
+                sym = a.get("symbol")
+                strat = a.get("strategy", "Intraday")
+                msg_id = a.get("message_id")
+                if strat == "Intraday":
+                    try:
+                        _position_manager.route_alert(a)
+                        if msg_id:
+                            update_routing_stage(msg_id, "ROUTED")
+                        logger.info(f"[recovery] Successfully recovered routing for {sym}")
+                    except Exception as e:
+                        logger.warning(f"[recovery] Failed recovering routing for {sym}: {e}")
+                else:
+                    if msg_id:
+                        update_routing_stage(msg_id, "ROUTED")
+                    logger.info(f"[recovery] Marked non-intraday alert {sym} ({strat}) as ROUTED")
+    except Exception as e_recov:
+        logger.debug(f"[recovery] Error during unrouted alerts check: {e_recov}")
 
 
 def process_alert_enrichment(alert: dict, sheets=None):
@@ -327,7 +360,7 @@ def process_alert_enrichment(alert: dict, sheets=None):
 
     from src.tracking.alert_db import (
         get_eastern_date_str,
-        update_alert_llm as _update_alert_llm_db,
+        update_routing_stage as _update_routing_stage_db,
     )
 
     # 1. Market price at processing time
@@ -363,18 +396,10 @@ def process_alert_enrichment(alert: dict, sheets=None):
         from src.tracking.alert_evaluator import evaluate_alert_payload
         eval_res = evaluate_alert_payload(alert, use_tools=False)
         llm_decision = eval_res.get("llm_decision", "")
-        llm_playbook = eval_res.get("llm_playbook", "")
-        if llm_decision or llm_playbook:
-            _update_alert_llm_db(
-                message_id=alert.get("message_id"),
-                email_id=alert.get("email_id"),
-                symbol=symbol,
-                action=action_val,
-                timestamp=timestamp_str,
-                llm_decision=llm_decision,
-                llm_playbook=llm_playbook,
-            )
+        if llm_decision:
             logger.info(f"AI decision written to SQLite for {symbol}: {llm_decision}")
+        if alert.get("message_id"):
+            _update_routing_stage_db(alert["message_id"], "COMPLETED")
     except Exception as e_eval:
         logger.warning(f"Local alert evaluation failed for {symbol}: {e_eval}")
 
@@ -477,6 +502,7 @@ def run_tracker(force_run: bool = False):
 
     logger.info("Checking for TradingView alerts (one-shot)...")
     _position_manager.start()
+    replay_unrouted_alerts()
 
     gmail = GmailClient()
     if not gmail.connect():
@@ -567,8 +593,9 @@ def main():
         logger.info(f"Running in MULTI-THREADED LOOP mode. Ingestion interval: {interval}s.")
         stop_event = threading.Event()
 
-        # 1. Start live Position Manager
+        # 1. Start live Position Manager & recover unrouted alerts
         _position_manager.start()
+        replay_unrouted_alerts()
 
         # 2. Start background enrichment workers
         start_enrichment_workers(num_workers=2, stop_event=stop_event)

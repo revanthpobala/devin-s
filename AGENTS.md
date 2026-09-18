@@ -254,15 +254,21 @@ python run_watch_alerts.py --sync --date 2026-08-29
   - **Tier 4 (Midday Chop Stagnation Kill)**: Scratches stagnant positions open $\ge 35$ minutes between 11:15 MT and 12:45 MT without Target 1 to prevent theta bleed.
   - **Tier 5 (EOD Mandatory Flatten)**: Flattens all 0DTE and intraday scalps before 13:45 MT (3:45 PM ET).
 - **Execution Validator & Bar-Based Fill Simulator** (`src/tracking/execution_validator.py`):
-  - Deterministic evaluation of trade setups against historical and live bar extremes (OHLC).
-  - Accurately audits limit fills, breakout triggers, and target hits across setup lifecycles to prevent false "MISSED RUNAWAY" alarms.
+  - Deterministic evaluation of trade setups via pure chronological bar-walking (`evaluate_setup_lifecycle_bars`).
+  - Audits exact limit fills, breakout triggers, gap-through-stop at open pricing, and stop-first conservative ambiguity resolution.
+  - Supports RSI2 opening-ceiling validation, maximum holding period time exits, and episode index tracking across setup lifecycles.
+- **Durable Alert Outbox & Schema v2 Event Accounting** (`src/tracking/alert_db.py`, `src/tracking/position_state.py`):
+  - Schema v2 with `schema_meta` migration and immutable `trade_events` audit trail.
+  - Quantity-aware position accounting (`remaining_quantity`, scale-outs, fee and slippage tracking).
+  - Durable alert routing stages (`RECEIVED` -> `ROUTED` -> `COMPLETED`) with startup outbox replay to prevent dropped alerts.
 - Each monitor polls live quotes every `POSITION_POLL_INTERVAL` sec, hard-checks stop/target deterministically (no LLM); the local LLM only writes a playbook/commentary string
 - On tracker restart, monitors are rehydrated from `data/positions.json`
 
 **Files**:
-- `src/tracking/position_state.py` — atomic load/save/upsert/close of `data/positions.json`
+- `src/tracking/position_state.py` — atomic load/save/upsert/close of `data/positions.json` with quantity-aware scaling
+- `src/tracking/alert_db.py` — SQLite database with Schema v2, immutable `trade_events`, and durable routing outbox
 - `src/tracking/position_monitor.py` — `PositionManager` (queue router) + `PositionMonitor` (per-ticker thread)
-- `src/tracking/execution_validator.py` — bar-based OHLC execution verification & lifecycle fill simulation
+- `src/tracking/execution_validator.py` — chronological OHLC execution verification & lifecycle fill simulation
 - `src/tracking/alert_evaluator.py` — real-time local LLM triage & exit veto decision engine
 - `src/tracking/sheets_tracker.py` — Google Sheets mirror (Alerts, Trades, SWING-SPX sheets)
 

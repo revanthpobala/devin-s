@@ -98,14 +98,14 @@ _FIELD_LABELS = {
     # buy/sell as None and the whole pipeline CUTs as bad_data.
     "buy": ("long setup score", "buy score",),
     "sell": ("short pressure score", "sell score",),
-    "stage": ("stage 1 base 2 up 3 top 4 down", "stage (1=", "stage 1 base", "stage 1"),
-    "stage_age_bars": ("stage age bars", "stage age",),
+    "stage": ("context stage age pack", "stage age pack", "stage 1 base 2 up 3 top 4 down", "stage (1=", "stage 1 base", "stage 1"),
+    "stage_age_bars": ("context stage age pack", "stage age bars", "stage age",),
     "long_zbot": ("long entry zone bot",),
     "long_ztop": ("long entry zone top",),
-    "long_stop_loss": ("long stop loss",),
-    "long_target": ("long target",),
+    "long_stop_loss": ("long stop loss", "rsi2 fixed stop", "rsi2 stop",),
+    "long_target": ("long target", "rsi2 fixed target", "rsi2 target",),
     "long_target_t1": ("long target t1 waypoint", "long target t1",),
-    "long_entry": ("long entry",),
+    "long_entry": ("long entry", "rsi2 entry or opening ceiling", "rsi2 entry",),
     "long_in_zone": ("long in zone",),
     "long_rr_valid": ("long rr valid", "long r:r valid",),
     "short_zbot": ("short entry zone bot",),
@@ -163,6 +163,16 @@ _FIELD_LABELS = {
     "rvol": ("rvol vs avg", "rvol (vs avg)",),
     "sprint_ema": ("sprint line ema",),
     "hull_baseline": ("hull baseline hma", "hull baseline (hma 20)", "hull baseline hma 20", "hull baseline hwa 20",),
+    "rsi2_protocol": ("rsi2 protocol version", "protocol version",),
+    "rsi2_events_pack": ("rsi2 events pack", "events pack",),
+    "rsi2_exit_fill": ("rsi2 exit fill",),
+    "rsi2_matured": ("rsi2 matured trades",),
+    "rsi2_win_pct": ("rsi2 matured win pct",),
+    "rsi2_mean_r": ("rsi2 matured mean r",),
+    "rsi2_mean_stress_r": ("rsi2 matured mean r 10bps",),
+    "rsi2_net_r": ("rsi2 exit net r",),
+    "rsi2_val": ("rsi2 rsi2", "rsi2",),
+    "rsi2_atr14": ("rsi2 atr14",),
     "golden_cross": ("golden cross",),
     "death_cross": ("death cross",),
     "zone0_long": ("zone 0 long",),
@@ -377,14 +387,41 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
     """
     f = {}
     for field, needles in _FIELD_LABELS.items():
+        val = None
         if field in raw:
-            f[field] = _num_mask(raw[field], _MAX_MASK.get(field)) if field in _MASK_CLASS_FIELDS else _num(raw[field])
-            continue
-        key = _match_label(raw, *needles)
-        if key is None:
-            f[field] = None
-        else:
-            f[field] = _num_mask(raw[key], _MAX_MASK.get(field)) if field in _MASK_CLASS_FIELDS else _num(raw[key])
+            val = _num_mask(raw[field], _MAX_MASK.get(field)) if field in _MASK_CLASS_FIELDS else _num(raw[field])
+        if val is None:
+            for needle in needles:
+                key = _match_label(raw, needle)
+                if key is not None:
+                    candidate = _num_mask(raw[key], _MAX_MASK.get(field)) if field in _MASK_CLASS_FIELDS else _num(raw[key])
+                    if candidate is not None:
+                        val = candidate
+                        break
+        f[field] = val
+
+    # Ensure RSI2 parameters override when protocol-2 is active
+    if f.get("rsi2_protocol") == 2.0 or f.get("rsi2_events_pack") is not None:
+        rsi2_stop_key = _match_label(raw, "rsi2 fixed stop", "rsi2 stop")
+        if rsi2_stop_key and raw.get(rsi2_stop_key) is not None:
+            stop_v = _num(raw[rsi2_stop_key])
+            if stop_v is not None:
+                f["long_stop_loss"] = stop_v
+                f["rsi2_fixed_stop"] = stop_v
+
+        rsi2_target_key = _match_label(raw, "rsi2 fixed target", "rsi2 target")
+        if rsi2_target_key and raw.get(rsi2_target_key) is not None:
+            tgt_v = _num(raw[rsi2_target_key])
+            if tgt_v is not None:
+                f["long_target"] = tgt_v
+                f["rsi2_fixed_target"] = tgt_v
+
+        rsi2_entry_key = _match_label(raw, "rsi2 entry or opening ceiling", "rsi2 entry")
+        if rsi2_entry_key and raw.get(rsi2_entry_key) is not None:
+            ent_v = _num(raw[rsi2_entry_key])
+            if ent_v is not None:
+                f["long_entry"] = ent_v
+                f["rsi2_entry"] = ent_v
 
     # Unpack zone_rr_flags if present and individual flag fields are missing
     flags_pack = f.get("zone_rr_flags")
@@ -398,6 +435,30 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
             f["long_rr_valid"] = 1.0 if (m & 4) else 0.0
         if f.get("short_rr_valid") is None:
             f["short_rr_valid"] = 1.0 if (m & 8) else 0.0
+
+    # Unpack Context Stage Age Pack if present
+    stage_pack_key = _match_label(raw, "context stage age pack", "stage age pack")
+    if stage_pack_key and raw.get(stage_pack_key) is not None:
+        try:
+            sp = int(round(float(raw[stage_pack_key])))
+            f["stage"] = float(sp % 8)
+            f["stage_age_bars"] = float(sp // 8)
+        except Exception:
+            pass
+
+    # Decode RSI2 events pack if present
+    events_pack = f.get("rsi2_events_pack")
+    if events_pack is not None:
+        ep = int(round(events_pack))
+        f["rsi2_setup_event"] = bool(ep & 1)
+        f["rsi2_armed_event"] = bool(ep & 2)
+        f["rsi2_entry_event"] = bool(ep & 4)
+        f["rsi2_has_exit_fill"] = bool(ep & 8)
+        f["rsi2_recovery_event"] = bool(ep & 16)
+        f["rsi2_exit_code"] = (ep >> 5) & 7
+        f["rsi2_skip_code"] = (ep >> 8) & 3
+        f["rsi2_state_code"] = (ep >> 10) & 7
+
     # Signal Pack bits: 1 strongBuy  2 strongSell  4 NOT-fade  8 isTopping  16 isBottoming.
     # BIT 2 IS INVERTED in the Pine ('not fadeZoneLong ? 4 : 0'), so bit2 == 0 means the fade /
     # DO NOT CHASE gate is ACTIVE. That state measures -0.038R era-stable, so it is an exclusion.
@@ -510,16 +571,32 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
     # the side the scores actually favour. Without it, a bar with Sell 90 > Buy 70 still produces
     # ev_r = 1.4 for the LONG side, which clears TIER_A_MIN_EV_R (0.5) and buys paid research on a
     # sell-dominant setup. The non-dominant side must return None so the EV gate ABSTAINS.
+    # NO 'rr_to_target' FALLBACK. That field is exported as
+    # `buyScore >= sellScore ? longRR : shortRR` -- the DOMINANT side's ratio, measured from the
+    # ZONE entry, not at market. It overstates the at-market ratio on 93.7% of bars (median
+    # +2.11 R; AMZN 2026-08-13 zone 4.12 vs at-market 0.59) and on a sell-dominant bar it is the
+    # SHORT ratio entirely. Since it feeds ev_r -> TIER_A_MIN_EV_R, leaving rr as None is
+    # correct: the EV gate then abstains instead of acting on the wrong side of the book.
     ev_side = "long" if ((f["buy"] or 0.0) >= (f["sell"] or 0.0)) else "short"
+
+    # Mode selection
+    if side == "long" and (f.get("rsi2_setup_event") or f.get("rsi2_armed_event") or f.get("rsi2_state_code") == 2):
+        mode = "RSI2_LONG"
+    elif rev_ok or act_code == 20:
+        mode = "REVERSION_" + side.upper()
+    elif ign == 1:
+        mode = "BREAKOUT_LONG"
+    elif dir_ok and stack_ok and (score or 0.0) >= 65:
+        mode = "TREND_" + side.upper()
+    else:
+        mode = "NONE"
+
     if side == ev_side:
-        # NO 'rr_to_target' FALLBACK. That field is exported as
-        # `buyScore >= sellScore ? longRR : shortRR` -- the DOMINANT side's ratio, measured from the
-        # ZONE entry, not at market. It overstates the at-market ratio on 93.7% of bars (median
-        # +2.11 R; AMZN 2026-08-13 zone 4.12 vs at-market 0.59) and on a sell-dominant bar it is the
-        # SHORT ratio entirely. Since it feeds ev_r -> TIER_A_MIN_EV_R, leaving rr as None is
-        # correct: the EV gate then abstains instead of acting on the wrong side of the book.
         dir_p = f.get("dir_prob")
-        if dir_p is not None:
+        if mode == "RSI2_LONG" and f.get("rsi2_win_pct") is not None:
+            win_prob = f["rsi2_win_pct"]
+            ev_r = f.get("rsi2_mean_stress_r") if f.get("rsi2_mean_stress_r") is not None else f.get("rsi2_mean_r")
+        elif dir_p is not None:
             win_prob = dir_p if side == "long" else (100.0 - dir_p)
             if rr is not None and rr > 0:
                 ev_r = ((win_prob / 100.0) * rr) - (1.0 - (win_prob / 100.0))
@@ -531,16 +608,6 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
     else:
         win_prob = None
         ev_r = None
-
-    # Mode selection
-    if rev_ok or act_code == 20:
-        mode = "REVERSION_" + side.upper()
-    elif ign == 1:
-        mode = "BREAKOUT_LONG"
-    elif dir_ok and stack_ok and (score or 0.0) >= 65:
-        mode = "TREND_" + side.upper()
-    else:
-        mode = "NONE"
 
     return {
         "side": side,
@@ -673,7 +740,12 @@ def run_data_window_filter(
     """Run the era-robust pre-filter for one ticker. Returns STEP 5 output dict."""
     f = parse_data_window(raw)
 
-    if any(f.get(field) is None for field in _CORE_FIELDS):
+    is_proto2 = (f.get("rsi2_protocol") == 2.0) or (f.get("rsi2_events_pack") is not None)
+    if is_proto2 and f.get("stage") is None:
+        f["stage"] = 1.0  # default to Stage 1 basing for Protocol 2 setups without legacy stage
+
+    core_fields_to_check = [fld for fld in _CORE_FIELDS if not (is_proto2 and fld == "stage")]
+    if any(f.get(field) is None for field in core_fields_to_check):
         logger.info(f"[{ticker}] Data Window pre-filter: CUT (bad_data) — missing core field")
         verdict = {
             "ticker": ticker,
@@ -722,22 +794,27 @@ def run_data_window_filter(
 
     # CUT MEANS "NO TRADE OF ANY KIND IS CONSTRUCTIBLE" -- it drops the name from the pipeline
     # entirely, so it is reserved for absurd/unbuildable states, NOT for merely negative ones.
-    # A small negative expectancy for BUYING (fade -0.038R, extension) is not absurd: those states
-    # are the best measured premium-SELLING context (bible §17 -- fade-on 11.0% touch at 1.5x
-    # ExpMove, Ext Z >= 2 0.0%, both the widest margins in the set). Demoting them to a
-    # structure-only WATCH keeps the name available for the trade context DOES support;
-    # CUTting them threw that away. Only geometry that cannot be built at all still CUTs.
     ext_z_self = f.get("ext_z_self") or 0.0
     rr_mkt = W["rr"]
     fade_long = f.get("fade_long")
     # No fresh LONG entry, but the name stays alive for a structure read.
     no_fresh_long = (fade_long == 1.0) or (ext_z_self >= EXT_Z_SELF_MAX) or (act_code == 17)
+    is_rsi2_setup = bool(
+        W.get("mode") == "RSI2_LONG"
+        or f.get("rsi2_setup_event")
+        or f.get("rsi2_armed_event")
+        or (f.get("rsi2_state_code") == 2 and W["side"] == "long")
+    )
+
     if act_code == 18:
         triage, reason = "CUT", "toxic_geometry"       # stop inside the noise floor: unbuildable
-    elif stage == 0:
+    elif stage == 0 and not is_rsi2_setup:
         triage, reason = "CUT", "warmup_stage_0"       # no history: nothing is computable
     elif W["target"] is None and W["chased"]:
         triage, reason = "CUT", "chasing_without_target"  # no target: no plan to construct
+    elif is_rsi2_setup:
+        triage = "PASS"
+        reason = "rsi2_setup_lane"
     elif act_code == 20:
         triage = "PASS"
         reason = "reversal_buy_lane"
@@ -822,7 +899,7 @@ def run_data_window_filter(
 
     conviction = W["score"]
     if triage == "PASS":
-        conviction_str = "HIGH" if (W["rev"] or 0.0) >= 10 else "MED"
+        conviction_str = "HIGH" if ((W["rev"] or 0.0) >= 10 or is_rsi2_setup) else "MED"
     else:
         conviction_str = "HIGH" if (conviction or 0.0) >= 75 else ("MED" if (conviction or 0.0) >= 50 else "LOW")
 
@@ -881,6 +958,10 @@ def run_data_window_filter(
         "rr_at_market": f.get("long_rr_at_market"),
         "momentum_rr": W.get("momentum_rr"),
         "tight_stop": W.get("tight_stop"),
+        "protocol_version": int(f["rsi2_protocol"]) if f.get("rsi2_protocol") is not None else 1,
+        "rsi2_events_pack": int(f["rsi2_events_pack"]) if f.get("rsi2_events_pack") is not None else None,
+        "rsi2_setup_event": f.get("rsi2_setup_event", False),
+        "rsi2_armed_event": f.get("rsi2_armed_event", False),
     }
 
     # Buy-Trigger Gap Engine: compute how far the current bar is from each

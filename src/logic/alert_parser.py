@@ -85,8 +85,10 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
     body_lower = body.lower()
     full_text = f"{subject} {body_clean}".lower()
 
-    # Classify strategy (Intraday vs. Daily)
-    if "intraday" in subject_lower or "intraday" in body_lower:
+    # Classify strategy (Intraday vs. Daily vs. RSI2)
+    if "rsi2" in subject_lower or "rsi2" in body_lower:
+        result["strategy"] = "RSI2"
+    elif "intraday" in subject_lower or "intraday" in body_lower:
         result["strategy"] = "Intraday"
     elif "screener" in subject_lower:
         result["strategy"] = "Daily"
@@ -205,6 +207,37 @@ def parse_alert(subject: str, body: str) -> Dict[str, Any]:
             if match:
                 result["symbol"] = match.group(1).upper()
                 break
+
+    # 3.5 RSI2 Plain-Text alert matching (e.g. "RSI2 SETUP: next opening <= 250.50; SL 240.20; target 265.00")
+    if "rsi2 setup" in full_text:
+        result["strategy"] = "RSI2"
+        result["action"] = "SETUP"
+        result["side"] = "LONG"
+        ceiling_m = re.search(r"next\s+opening\s*<=\s*([0-9]+(?:\.[0-9]+)?)", full_text)
+        if ceiling_m:
+            try:
+                result["opening_ceiling"] = float(ceiling_m.group(1))
+                if result["alert_price"] is None:
+                    result["alert_price"] = float(ceiling_m.group(1))
+            except (ValueError, TypeError):
+                pass
+        sl_m = re.search(r"\bsl\s*[:=-]?\s*([0-9]+(?:\.[0-9]+)?)", full_text)
+        if sl_m:
+            try:
+                result["stop_loss"] = float(sl_m.group(1))
+            except (ValueError, TypeError):
+                pass
+        target_m = re.search(r"\btarget\s*[:=-]?\s*([0-9]+(?:\.[0-9]+)?)", full_text)
+        if target_m:
+            try:
+                result["target"] = float(target_m.group(1))
+            except (ValueError, TypeError):
+                pass
+    elif "rsi2 recovery" in full_text:
+        result["strategy"] = "RSI2"
+        result["action"] = "EXIT"
+        result["exit_reason"] = "RECOVERY"
+        result["side"] = "LONG"
 
     # 4. Determine action/signal from full text if not found from JSON
     if result["action"] == "ALERT":

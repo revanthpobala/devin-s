@@ -16,14 +16,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+import os
 from src import config
 
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = config.BASE_DIR / "data" / "trading_alerts.db"
+DB_PATH = Path(os.getenv("ALERT_DB_PATH", str(config.BASE_DIR / "data" / "trading_alerts.db")))
 _db_lock = threading.Lock()
+
+
+def set_db_path(new_path: Path | str):
+    """Override database file path dynamically for testing or alternate stores."""
+    global DB_PATH
+    DB_PATH = Path(new_path)
 
 
 def get_eastern_now() -> datetime:
@@ -32,15 +39,23 @@ def get_eastern_now() -> datetime:
 
 
 def get_eastern_date_str(ts_str: Optional[str] = None) -> str:
-    """Extract or return YYYY-MM-DD strictly anchored in US Eastern Time.
+    """Extract or return YYYY-MM-DD strictly converted to US Eastern Time (America/New_York).
 
-    If ts_str is provided and starts with YYYY-MM-DD, returns that date.
-    Otherwise, returns current Eastern Time date.
+    Parses ISO timestamps (aware or naive) and converts to Eastern Time rather than
+    blindly slicing UTC strings.
     """
-    if ts_str and len(ts_str) >= 10:
-        date_part = ts_str[:10].replace("/", "-")
-        if len(date_part) == 10 and date_part[4] == "-" and date_part[7] == "-":
-            return date_part
+    if ts_str:
+        try:
+            s = str(ts_str).strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                # If naive, format date directly if in YYYY-MM-DD form
+                return dt.strftime("%Y-%m-%d")
+            eastern_dt = dt.astimezone(ZoneInfo("America/New_York"))
+            return eastern_dt.strftime("%Y-%m-%d")
+        except Exception:
+            if len(ts_str) >= 10 and ts_str[4] == "-" and ts_str[7] == "-":
+                return ts_str[:10]
     return get_eastern_now().strftime("%Y-%m-%d")
 
 
@@ -67,7 +82,7 @@ def _get_connection():
 
 
 def init_alert_db():
-    """Initialize SQLite tables for alerts, research queue, and positions."""
+    """Initialize SQLite tables for alerts, research queue, positions, and Schema v2 trade events."""
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
@@ -144,11 +159,94 @@ def init_alert_db():
                 );
                 """
             )
+
+            # Schema metadata
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+            cursor.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', '2');")
+
+            # Schema v2: Immutable Trade Events Log
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id TEXT NOT NULL,
+                    setup_id TEXT NOT NULL,
+                    strategy_id TEXT NOT NULL DEFAULT 'legacy',
+                    strategy_version TEXT DEFAULT 'v1.0',
+                    strategy_hash TEXT,
+                    source_hash TEXT,
+                    mode TEXT NOT NULL DEFAULT 'MODEL',
+                    event_type TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    price REAL,
+                    quantity REAL DEFAULT 0.0,
+                    remaining_quantity REAL DEFAULT 0.0,
+                    instrument_type TEXT DEFAULT 'EQUITY',
+                    multiplier INTEGER DEFAULT 1,
+                    fees REAL DEFAULT 0.0,
+                    slippage REAL DEFAULT 0.0,
+                    stop_level REAL,
+                    target_1 REAL,
+                    target_2 REAL,
+                    details TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_te_trade_id ON trade_events(trade_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_te_setup_id ON trade_events(setup_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol ON trade_events(symbol);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_te_timestamp ON trade_events(timestamp);")
+
+            # Additive migration for alerts table
+            cursor.execute("PRAGMA table_info(alerts);")
+            alert_cols = {r[1] for r in cursor.fetchall()}
+            if "routing_stage" not in alert_cols:
+                cursor.execute("ALTER TABLE alerts ADD COLUMN routing_stage TEXT DEFAULT 'RECORDED';")
+            if "strategy_id" not in alert_cols:
+                cursor.execute("ALTER TABLE alerts ADD COLUMN strategy_id TEXT DEFAULT 'Intraday';")
+            if "mode" not in alert_cols:
+                cursor.execute("ALTER TABLE alerts ADD COLUMN mode TEXT DEFAULT 'MODEL';")
+            if "trade_id" not in alert_cols:
+                cursor.execute("ALTER TABLE alerts ADD COLUMN trade_id TEXT;")
+
+            # Additive migration for positions table
+            cursor.execute("PRAGMA table_info(positions);")
+            pos_cols = {r[1] for r in cursor.fetchall()}
+            for col_name, col_type in [
+                ("trade_id", "TEXT"),
+                ("strategy_id", "TEXT DEFAULT 'Intraday'"),
+                ("strategy_version", "TEXT DEFAULT 'v1.0'"),
+                ("mode", "TEXT DEFAULT 'MODEL'"),
+                ("quantity", "REAL DEFAULT 100.0"),
+                ("remaining_quantity", "REAL DEFAULT 100.0"),
+                ("multiplier", "INTEGER DEFAULT 1"),
+                ("fees", "REAL DEFAULT 0.0"),
+                ("slippage", "REAL DEFAULT 0.0"),
+                ("initial_stop", "REAL"),
+                ("initial_target", "REAL"),
+                ("realized_broker_pnl", "REAL DEFAULT 0.0"),
+                ("quoted_option_mark", "REAL"),
+                ("modeled_option_payoff", "REAL"),
+            ]:
+                if col_name not in pos_cols:
+                    cursor.execute(f"ALTER TABLE positions ADD COLUMN {col_name} {col_type};")
+
             conn.commit()
 
 
-# Auto-initialize tables on module import
-init_alert_db()
+# Auto-initialize tables on module import, unless disabled or running in test runner
+if os.getenv("ALERT_DB_DISABLE_AUTO_INIT") != "1" and not os.getenv("PYTEST_CURRENT_TEST"):
+    init_alert_db()
+
 
 
 def is_alert_processed(
@@ -521,3 +619,99 @@ def sync_position(symbol: str, position_data: Dict[str, Any]):
                 ),
             )
             conn.commit()
+
+
+def record_trade_event(event: Dict[str, Any]) -> int:
+    """Record an immutable trade event into trade_events log."""
+    trade_id = event.get("trade_id") or ""
+    setup_id = event.get("setup_id") or ""
+    strategy_id = event.get("strategy_id") or "legacy"
+    strategy_version = event.get("strategy_version") or "v1.0"
+    strategy_hash = event.get("strategy_hash") or ""
+    source_hash = event.get("source_hash") or ""
+    mode = event.get("mode") or "MODEL"
+    event_type = event.get("event_type") or "SETUP"
+    symbol = (event.get("symbol") or event.get("ticker") or "").strip().upper()
+    ts = event.get("timestamp") or get_eastern_now().isoformat()
+    price = event.get("price")
+    quantity = float(event.get("quantity") or 0.0)
+    remaining_qty = float(event.get("remaining_quantity") or quantity)
+    inst_type = event.get("instrument_type") or "EQUITY"
+    multiplier = int(event.get("multiplier") or (100 if inst_type == "OPTION" else 1))
+    fees = float(event.get("fees") or 0.0)
+    slippage = float(event.get("slippage") or 0.0)
+    stop_level = event.get("stop_level")
+    target_1 = event.get("target_1")
+    target_2 = event.get("target_2")
+    details = json.dumps(event.get("details")) if isinstance(event.get("details"), (dict, list)) else event.get("details")
+    created_at = get_eastern_now().isoformat()
+
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO trade_events (
+                    trade_id, setup_id, strategy_id, strategy_version, strategy_hash,
+                    source_hash, mode, event_type, symbol, timestamp, price,
+                    quantity, remaining_quantity, instrument_type, multiplier,
+                    fees, slippage, stop_level, target_1, target_2, details, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_id, setup_id, strategy_id, strategy_version, strategy_hash,
+                    source_hash, mode, event_type, symbol, ts, price,
+                    quantity, remaining_qty, inst_type, multiplier,
+                    fees, slippage, stop_level, target_1, target_2, details, created_at
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid or 0
+
+
+def get_trade_events(trade_id: str) -> List[Dict[str, Any]]:
+    """Retrieve immutable chronological trade events for a trade_id."""
+    if not trade_id:
+        return []
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT * FROM trade_events
+                WHERE trade_id = ?
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (trade_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def update_routing_stage(message_id: str, stage: str):
+    """Update durable routing stage ('RECORDED', 'ROUTED', 'ENRICHED', 'COMPLETED')."""
+    if not message_id:
+        return
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE alerts SET routing_stage = ? WHERE message_id = ?",
+                (stage, message_id),
+            )
+            conn.commit()
+
+
+def get_unrouted_alerts() -> List[Dict[str, Any]]:
+    """Retrieve alerts that were durably recorded but not yet marked ROUTED or COMPLETED."""
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT * FROM alerts
+                WHERE (routing_stage = 'RECORDED' OR (routing_stage IS NULL AND status = 'INGESTED'))
+                ORDER BY created_at ASC
+                """
+            )
+            return [dict(r) for r in cur.fetchall()]
+

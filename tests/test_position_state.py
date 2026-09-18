@@ -37,3 +37,25 @@ def test_close_position(tmp_path):
         assert closed is not None
         assert closed["ticker"] == "TSLA"
         assert "TSLA" not in position_state.load_state()
+
+
+def test_quantity_aware_scale_position(tmp_path):
+    fake_positions = tmp_path / "positions.json"
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions):
+        # Open 200 shares
+        rec = position_state.open_position(
+            "MSFT", side="LONG", strategy="Intraday", entry_price=400.0, stop=390.0, target=420.0,
+            quantity=200.0,
+        )
+        assert rec["quantity"] == 200.0
+        assert rec["remaining_quantity"] == 200.0
+
+        # Scale 50% at 410.0
+        scaled = position_state.scale_position("MSFT", scale_pct=0.5, fill_price=410.0)
+        assert scaled is not None
+        assert scaled["scaled_at_t1"] is True
+        assert scaled["remaining_quantity"] == 100.0
+        # 100 shs * ($410 - $400) = $1,000 realized
+        assert scaled["realized_pnl"] == 1000.0
+        assert scaled["stop"] == 400.05  # BE + 0.05
+

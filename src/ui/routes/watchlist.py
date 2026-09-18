@@ -170,18 +170,6 @@ def get_watch_targets():
                         item["fill_price"] = eval_res["fill_price"]
                         item["unrealized_pnl_pct"] = eval_res["unrealized_pnl_pct"]
                         item["reclaimed"] = (old_status in ("INVALIDATED", "STOP_BREACHED") and eval_res["status"] in ("IN_TRADE", "IN_ZONE"))
-
-                        # Update SQLite database so records reflect verified status
-                        try:
-                            from src.tracking.watch_manager import update_target_live_state
-                            update_target_live_state(
-                                ticker=sym,
-                                live_price=live_px,
-                                status=item["status"],
-                                distance_to_entry_pct=dist_pct,
-                            )
-                        except Exception as up_err:
-                            logger.debug(f"Failed updating target live state in DB: {up_err}")
             except Exception as q_err:
                 logger.debug(f"Error enriching watch targets with Schwab quotes: {q_err}")
 
@@ -301,6 +289,10 @@ def get_watch_targets():
                 item["trade_label"] = trade_label
                 item["trade_dollar_pnl"] = trade_dollar_pnl
                 item["trade_roc_pct"] = trade_roc_pct
+                item["modeled_dollar_pnl"] = trade_dollar_pnl
+                item["modeled_roc_pct"] = trade_roc_pct
+                item["is_modeled"] = True
+                item["accounting_mode"] = "HYPOTHETICAL_100_SHARES_OR_SINGLE_SPREAD"
                 item["trade_max_profit"] = max_prof
                 item["trade_max_loss"] = max_loss
                 item["realized_pnl_pct"] = trade_roc_pct
@@ -310,10 +302,10 @@ def get_watch_targets():
                 if is_options and max_loss > 0:
                     rr_ratio = round(max_prof / max_loss, 2)
                 elif entry_mid and target_1 and tactical_stop and entry_mid > 0:
-                    reward = abs(target_1 - entry_mid)
-                    risk = abs(entry_mid - tactical_stop)
-                    if risk > 0.01:
-                        rr_ratio = round(reward / risk, 2)
+                    r_risk = abs(entry_mid - tactical_stop)
+                    r_rew = abs(target_1 - entry_mid)
+                    if r_risk > 0:
+                        rr_ratio = round(r_rew / r_risk, 2)
                 item["rr_ratio"] = rr_ratio
 
                 # Actionable flag: IN_ZONE, IN_TRADE, or distance <= 1.0%
@@ -341,6 +333,8 @@ def get_watch_targets():
                 "total_lost_dollars": total_lost_dollars,
                 "total_active_dollars": total_active_dollars,
                 "net_dollar_profit": net_dollar_profit,
+                "is_modeled": True,
+                "accounting_mode": "HYPOTHETICAL_100_SHARES_OR_SINGLE_SPREAD",
             }
 
             return {"targets": targets, "count": len(targets), "performance": performance_summary}

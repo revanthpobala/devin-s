@@ -102,3 +102,223 @@ def test_active_in_trade_preservation():
         assert res["hit_t1"] is False
         assert res["hit_stop"] is False
         assert res["unrealized_pnl_pct"] > 0
+
+
+def test_target_reached_before_fill_yields_missed_runaway():
+    """Verify that if target is reached on an earlier bar than entry fill, order is MISSED_RUNAWAY."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [100.0, 93.0],
+            "High": [106.0, 94.0],   # Day 1 touches Target 1 (105.0)
+            "Low": [98.0, 91.0],     # Day 1 Low never touches entry limit (92.0). Day 2 touches 91.0.
+            "Close": [104.0, 92.5],
+        },
+        index=pd.to_datetime(["2026-09-15", "2026-09-16"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="XYZ",
+            setup_date="2026-09-15",
+            side="LONG",
+            entry_type="LIMIT",
+            entry_low=90.0,
+            entry_high=92.0,
+            stop_loss=85.0,
+            target_1=105.0,
+            target_2=110.0,
+            live_price=92.5,
+            current_status="STALKING",
+        )
+
+        # In old code: min_low was 91.0 (filled), hit_t1 was True -> erroneously reported TARGET_HIT.
+        # In chronological code: Target reached on 2026-09-15 before fill -> correctly MISSED_RUNAWAY.
+        assert res["status"] == "MISSED_RUNAWAY"
+        assert res["was_filled"] is False
+        assert res["hit_t1"] is True
+
+
+def test_stop_breached_before_target_yields_stop_breached():
+    """Verify that if stop is hit on Day 2 and target on Day 3, the stopped trade is not rewritten as TARGET_HIT."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [100.0, 95.0, 90.0],
+            "High": [101.0, 96.0, 115.0],   # Day 3 reaches target 110.0
+            "Low": [91.0, 84.0, 89.0],      # Day 1 fills at 92.0. Day 2 breaches stop at 85.0.
+            "Close": [95.0, 88.0, 114.0],
+        },
+        index=pd.to_datetime(["2026-09-15", "2026-09-16", "2026-09-17"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="XYZ",
+            setup_date="2026-09-15",
+            side="LONG",
+            entry_type="LIMIT",
+            entry_low=90.0,
+            entry_high=92.0,
+            stop_loss=85.0,
+            target_1=110.0,
+            target_2=115.0,
+            live_price=114.0,
+            current_status="STALKING",
+        )
+
+        assert res["status"] == "STOP_BREACHED"
+        assert res["was_filled"] is True
+        assert res["hit_stop"] is True
+        assert res["exit_date"] == "2026-09-16"
+        assert res["exit_price"] == 85.0
+
+
+def test_same_bar_stop_target_ambiguity_resolves_to_stop_first():
+    """Verify conservative stop-first resolution when both stop and target are breached in the same bar."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [100.0, 95.0],
+            "High": [101.0, 115.0],   # Day 2 reaches target 110.0
+            "Low": [91.0, 80.0],      # Day 1 fills at 92.0. Day 2 touches 80.0 (below stop 85.0)
+            "Close": [95.0, 105.0],
+        },
+        index=pd.to_datetime(["2026-09-15", "2026-09-16"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="XYZ",
+            setup_date="2026-09-15",
+            side="LONG",
+            entry_type="LIMIT",
+            entry_low=90.0,
+            entry_high=92.0,
+            stop_loss=85.0,
+            target_1=110.0,
+            target_2=115.0,
+            live_price=105.0,
+            current_status="STALKING",
+        )
+
+        assert res["status"] == "STOP_BREACHED"
+        assert res["hit_stop"] is True
+        assert res["exit_price"] == 85.0
+
+
+def test_gap_through_stop_prices_at_gap_open():
+    """Verify that a gap down through stop prices execution at the opening price, not the stop limit."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [100.0, 82.0],   # Day 2 gaps down to 82.0 (stop is 85.0)
+            "High": [101.0, 84.0],
+            "Low": [91.0, 80.0],
+            "Close": [95.0, 81.0],
+        },
+        index=pd.to_datetime(["2026-09-15", "2026-09-16"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="XYZ",
+            setup_date="2026-09-15",
+            side="LONG",
+            entry_type="LIMIT",
+            entry_low=90.0,
+            entry_high=92.0,
+            stop_loss=85.0,
+            target_1=110.0,
+            target_2=115.0,
+            live_price=81.0,
+            current_status="STALKING",
+        )
+
+        assert res["status"] == "STOP_BREACHED"
+        assert res["exit_price"] == 82.0  # Gap open price, not 85.0
+
+
+def test_cache_earlier_start_date_coverage():
+    """Verify that get_bars_since_date does not use cached bars that start after the requested start_date."""
+    import time
+    from src.tracking import execution_validator
+
+    # Populate cache with data starting from 2026-09-10
+    cached_df = pd.DataFrame(
+        {"Open": [100.0], "High": [105.0], "Low": [99.0], "Close": [104.0]},
+        index=pd.to_datetime(["2026-09-10"]),
+    )
+    execution_validator._BARS_CACHE["TEST_SYM"] = (time.time(), cached_df)
+
+    with patch("yfinance.download") as mock_yf:
+        # Request with earlier start date: 2026-08-01
+        fresh_df = pd.DataFrame(
+            {"Open": [90.0, 100.0], "High": [95.0, 105.0], "Low": [89.0, 99.0], "Close": [94.0, 104.0]},
+            index=pd.to_datetime(["2026-08-01", "2026-09-10"]),
+        )
+        mock_yf.return_value = fresh_df
+
+        bars = execution_validator.get_bars_since_date("TEST_SYM", "2026-08-01")
+        assert mock_yf.called
+        assert len(bars) == 2
+
+
+def test_rsi2_opening_ceiling_gap_skip():
+    """Verify RSI2 next-open gap skip when market opens above opening ceiling."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [155.0],   # Opened above ceiling of 150.0
+            "High": [160.0],
+            "Low": [154.0],
+            "Close": [159.0],
+        },
+        index=pd.to_datetime(["2026-09-15"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="RSI2_TEST",
+            setup_date="2026-09-15",
+            side="LONG",
+            entry_type="RSI2",
+            opening_ceiling=150.0,
+            stop_loss=140.0,
+            target_1=165.0,
+            live_price=159.0,
+            current_status="STALKING",
+        )
+
+        assert res["was_filled"] is False
+        assert res["status"] == "STALKING"
+
+
+def test_time_exit_after_max_holding_bars():
+    """Verify time exit triggers after max holding bars elapsed."""
+    # 3 bars where price holds between stop and target
+    mock_df = pd.DataFrame(
+        {
+            "Open": [100.0, 100.5, 101.0],
+            "High": [102.0, 102.0, 102.0],
+            "Low": [98.0, 99.0, 99.5],
+            "Close": [101.0, 101.0, 101.5],
+        },
+        index=pd.to_datetime(["2026-09-15", "2026-09-16", "2026-09-17"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="TIME_TEST",
+            setup_date="2026-09-15",
+            side="LONG",
+            entry_type="LIMIT",
+            entry_low=98.0,
+            entry_high=100.0,
+            stop_loss=95.0,
+            target_1=110.0,
+            live_price=101.5,
+            current_status="STALKING",
+            max_holding_bars=3,
+        )
+
+        assert res["was_filled"] is True
+        assert res["status"] == "TIME_EXIT"
+        assert res["exit_date"] == "2026-09-17"
+        assert res["exit_price"] == 101.5
+

@@ -63,6 +63,7 @@ _TRIAGE_SCHEMA = {
                 "INCOME_CSP",
                 "INCOME_CC",
                 "INCOME_STRUCTURE",
+                "RSI2_LONG",
                 "NONE",
             ],
         },
@@ -196,10 +197,13 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     plan = (
         triage.get("long_plan") if triage.get("chosen_side") == "long" else triage.get("short_plan")
     )
+    is_rsi2_setup = (triage.get("mode") == "RSI2_LONG") or bool(triage.get("rsi2_setup_event"))
     has_plan = bool(
         plan
-        and plan.get("zone")
-        and all(v is not None for v in plan["zone"])
+        and (
+            (plan.get("zone") and all(v is not None for v in plan["zone"]))
+            or is_rsi2_setup
+        )
         and plan.get("stop") is not None
         and plan.get("target") is not None
     )

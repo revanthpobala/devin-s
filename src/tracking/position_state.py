@@ -109,6 +109,10 @@ def open_position(
     be stopped by the caller."""
     ticker = ticker.strip().upper()
     now = _now_iso()
+    qty = float(extra.get("quantity") or 100.0)
+    rem_qty = float(extra.get("remaining_quantity") or qty)
+    mult = int(extra.get("multiplier") or (100 if extra.get("instrument_type") == "OPTION" else 1))
+
     with _state_lock:
         state = load_state()
         rec = state.get(ticker, {})
@@ -120,6 +124,8 @@ def open_position(
                 "entry_price": entry_price if entry_price is not None else rec.get("entry_price"),
                 "stop": stop if stop is not None else rec.get("stop"),
                 "target": target if target is not None else rec.get("target"),
+                "initial_stop": stop if stop is not None else rec.get("initial_stop", stop),
+                "initial_target": target if target is not None else rec.get("initial_target", target),
                 "alert_price": alert_price if alert_price is not None else rec.get("alert_price"),
                 "opened_at": rec.get("opened_at", now),
                 "last_price": rec.get("last_price", entry_price),
@@ -130,7 +136,14 @@ def open_position(
                 "peak_price": peak_price if peak_price is not None else rec.get("peak_price", entry_price),
                 "runner_stop": rec.get("runner_stop", None),
                 "realized_pnl": rec.get("realized_pnl", 0.0),
+                "realized_broker_pnl": rec.get("realized_broker_pnl", 0.0),
                 "breached_stop": False,
+                "quantity": qty,
+                "remaining_quantity": rem_qty,
+                "multiplier": mult,
+                "instrument_type": extra.get("instrument_type", "EQUITY"),
+                "mode": extra.get("mode", "MODEL"),
+                "trade_id": extra.get("trade_id") or rec.get("trade_id"),
                 "raw_alert": raw_alert or rec.get("raw_alert", {}),
             }
         )
@@ -161,9 +174,15 @@ def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None
         side = str(rec.get("side", "LONG")).upper()
         px = fill_price if fill_price is not None else (rec.get("last_price") or entry)
 
-        # Calculate realized P&L on scaled portion (assuming standard 100 shares / 1 contract basis)
+        # Quantity-aware scaling
+        cur_qty = float(rec.get("remaining_quantity") or rec.get("quantity") or 100.0)
+        scale_qty = round(cur_qty * scale_pct, 2)
+        rem_qty = round(cur_qty - scale_qty, 2)
+        mult = int(rec.get("multiplier") or 1)
+
+        # Calculate realized P&L on scaled portion
         pts = (px - entry) if "LONG" in side else (entry - px)
-        realized_add = round(pts * 100.0 * scale_pct, 2)
+        realized_add = round(pts * scale_qty * mult, 2)
         prior_pnl = rec.get("realized_pnl", 0.0) or 0.0
         total_realized = round(prior_pnl + realized_add, 2)
 
@@ -171,12 +190,13 @@ def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None
         runner_stop = round(entry + 0.05, 2) if "LONG" in side else round(entry - 0.05, 2)
 
         rec["scaled_at_t1"] = True
+        rec["remaining_quantity"] = rem_qty
         rec["runner_stop"] = runner_stop
         rec["stop"] = runner_stop
         rec["realized_pnl"] = total_realized
         rec["last_price"] = px
         rec["last_eval"] = (
-            f"🎯 SCALED {int(scale_pct*100)}% at ${px:.2f} (+${realized_add:.2f}). "
+            f"🎯 SCALED {int(scale_pct*100)}% ({scale_qty} units) at ${px:.2f} (+${realized_add:.2f}). "
             f"Runner stop locked at BE+ (${runner_stop:.2f}). Total Realized: ${total_realized:+.2f}"
         )
         rec["last_eval_at"] = now

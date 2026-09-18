@@ -282,24 +282,24 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                     if is_options and max_prof > 0:
                         dollar_pnl = max_prof
                         roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
-                        notes = f"Max profit captured on {struct}"
+                        notes = f"Target reached: theoretical max payoff ${max_prof:.2f} on {struct} (modeled)"
                     else:
-                        # 100 shares default standard
+                        # 100 shares hypothetical standard
                         gain_per_share = (t1 - entry) if side == "LONG" else (entry - t1)
                         dollar_pnl = round(gain_per_share * 100, 2)
                         roc_pct = round((gain_per_share / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"100 shs hit Target 1 (${t1:.2f}) vs fill ${entry:.2f} (+${dollar_pnl:.2f})"
+                        notes = f"Hypothetical 100 shs hit Target 1 (${t1:.2f}) vs fill ${entry:.2f} (+${dollar_pnl:.2f})"
 
                 elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
                     if is_options and max_loss > 0:
                         dollar_pnl = -max_loss
                         roc_pct = -100.0
-                        notes = f"Max loss breached on {struct}"
+                        notes = f"Stop breached: theoretical max loss -${max_loss:.2f} on {struct} (modeled)"
                     else:
                         loss_per_share = (stop - entry) if side == "LONG" else (entry - stop)
                         dollar_pnl = round(loss_per_share * 100, 2)
                         roc_pct = round((loss_per_share / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"100 shs stopped at ${stop:.2f} vs entry ${entry:.2f}"
+                        notes = f"Hypothetical 100 shs stopped at ${stop:.2f} vs entry ${entry:.2f}"
 
                 elif status in ("IN_TRADE", "IN_ZONE"):
                     if is_options:
@@ -315,7 +315,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                                 ratio = (spot - long_k) / (short_k - long_k) if (short_k > long_k) else 0.5
                                 dollar_pnl = round(max_prof * ratio - max_loss * (1 - ratio), 2)
                                 roc_pct = round((dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
-                            notes = f"Spot ${spot:.2f} vs short {short_k} / long {long_k}"
+                            notes = f"Modeled: Spot ${spot:.2f} vs short {short_k} / long {long_k} (unquoted option mark)"
                         else:
                             # Debit call spread
                             if spot >= short_k:
@@ -328,12 +328,12 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                                 spread_val = (spot - long_k) * 100
                                 dollar_pnl = round(spread_val - (debit * 100), 2)
                                 roc_pct = round((dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
-                            notes = f"Spot ${spot:.2f} vs strikes {long_k}/{short_k}"
+                            notes = f"Modeled: Spot ${spot:.2f} vs strikes {long_k}/{short_k} (unquoted option mark)"
                     else:
                         float_gain = (spot - entry) if side == "LONG" else (entry - spot)
                         dollar_pnl = round(float_gain * 100, 2)
                         roc_pct = round((float_gain / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"100 shs active at ${spot:.2f} vs fill ${entry:.2f} ({eval_res['unrealized_pnl_pct']:+.1f}%)"
+                        notes = f"Hypothetical 100 shs active at ${spot:.2f} vs fill ${entry:.2f} ({eval_res['unrealized_pnl_pct']:+.1f}%)"
 
                 else:
                     # STALKING / MISSED

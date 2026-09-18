@@ -187,6 +187,64 @@ def test_eastern_date_anchor():
     # Explicit ISO timestamp
     assert alert_db.get_eastern_date_str("2026-09-09 16:01:28") == "2026-09-09"
     assert alert_db.get_eastern_date_str("2026-09-10T09:30:00-04:00") == "2026-09-10"
+    # UTC aware timestamp conversion: 2026-09-16T01:30:00+00:00 is 2026-09-15 21:30:00 EDT
+    assert alert_db.get_eastern_date_str("2026-09-16T01:30:00Z") == "2026-09-15"
     # Fallback to current ET date
     now_et = alert_db.get_eastern_now().strftime("%Y-%m-%d")
     assert alert_db.get_eastern_date_str(None) == now_et
+
+
+def test_schema_v2_trade_events_and_outbox(temp_db):
+    with patch.object(alert_db, "DB_PATH", temp_db):
+        # 1. Verify schema_version in schema_meta
+        conn = sqlite3.connect(str(temp_db))
+        ver = conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
+        conn.close()
+        assert ver == "2"
+
+        # 2. Record trade event
+        row_id = alert_db.record_trade_event({
+            "trade_id": "TRADE-CAT-001",
+            "setup_id": "SETUP-CAT-20260915",
+            "strategy_id": "rsi2_pullback",
+            "strategy_version": "v2.0",
+            "mode": "MODEL",
+            "event_type": "ENTRY_FILL",
+            "symbol": "CAT",
+            "price": 822.50,
+            "quantity": 100.0,
+            "instrument_type": "EQUITY",
+            "stop_level": 810.0,
+            "target_1": 840.0,
+            "details": {"source": "next_open"},
+        })
+        assert row_id > 0
+
+        # Retrieve events
+        events = alert_db.get_trade_events("TRADE-CAT-001")
+        assert len(events) == 1
+        assert events[0]["symbol"] == "CAT"
+        assert events[0]["strategy_id"] == "rsi2_pullback"
+        assert events[0]["event_type"] == "ENTRY_FILL"
+
+        # 3. Test routing stage updates and get_unrouted_alerts
+        alert = {
+            "message_id": "outbox-test-1",
+            "email_id": "2001",
+            "timestamp": "2026-09-15 09:30:00",
+            "symbol": "AAPL",
+            "action": "CALLS",
+            "strategy": "Intraday",
+            "alert_price": 225.0,
+        }
+        alert_db.record_alert(alert)
+
+        # Should be unrouted
+        unrouted = alert_db.get_unrouted_alerts()
+        assert any(a["message_id"] == "outbox-test-1" for a in unrouted)
+
+        # Update stage to ROUTED
+        alert_db.update_routing_stage("outbox-test-1", "ROUTED")
+        unrouted_after = alert_db.get_unrouted_alerts()
+        assert not any(a["message_id"] == "outbox-test-1" for a in unrouted_after)
+
