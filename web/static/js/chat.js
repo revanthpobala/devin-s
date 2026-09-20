@@ -597,7 +597,7 @@ window.AppChat = {
 
     listEl.innerHTML = sessions.map(s => {
       const isCurrent = (isModal && s.session_id === this._modalSessionId) || (!isModal && s.session_id === this._revSessionId);
-      const activeBorder = isCurrent ? 'border:1px solid var(--cyan-glow); background:rgba(6,182,212,0.14);' : 'border:1px solid rgba(51,65,85,0.4); background:rgba(15,23,42,0.7);';
+      const activeBorder = isCurrent ? 'border:1px solid var(--cyan-glow); background:rgba(6,182,212,0.14);' : 'border:1px solid var(--border); background:var(--bg-subtle);';
       const promptSnippet = (s.first_prompt || '').replace(/</g, '&lt;').slice(0, 75);
       const timeStr = this.formatRelativeTime(s.updated_at || s.created_at);
 

@@ -822,19 +822,19 @@
             <span class="pill green" id="intraday-regime-pill"><span class="dot pulse"></span><span id="intraday-regime-txt">Regime: Loading…</span></span>
           </div>
           <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
-            <div style="background:rgba(8,13,22,0.5); padding:12px 16px; border-radius:10px; border:1px solid rgba(51,65,85,0.3);">
+            <div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
               <div style="font-size:11px; color:var(--text-muted); font-weight:700;">VIX VOLATILITY</div>
               <div style="font-size:18px; font-weight:700; color:#34d399; margin-top:4px;" id="val-vix">--.-- (loading)</div>
             </div>
-            <div style="background:rgba(8,13,22,0.5); padding:12px 16px; border-radius:10px; border:1px solid rgba(51,65,85,0.3);">
+            <div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
               <div style="font-size:11px; color:var(--text-muted); font-weight:700;">NEW YORK SESSION TIME</div>
               <div style="font-size:18px; font-weight:700; color:#38bdf8; margin-top:4px;" id="val-et-clock">--:-- ET</div>
             </div>
-            <div style="background:rgba(8,13,22,0.5); padding:12px 16px; border-radius:10px; border:1px solid rgba(51,65,85,0.3);">
+            <div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
               <div style="font-size:11px; color:var(--text-muted); font-weight:700;">0DTE THETA WINDOW</div>
               <div style="font-size:18px; font-weight:700; color:#fbbf24; margin-top:4px;" id="val-theta-window">Prime (9:45 - 11:30 ET)</div>
             </div>
-            <div style="background:rgba(8,13,22,0.5); padding:12px 16px; border-radius:10px; border:1px solid rgba(51,65,85,0.3);">
+            <div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
               <div style="font-size:11px; color:var(--text-muted); font-weight:700;">GMAIL INGESTOR DAEMON</div>
               <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
                 <span style="font-size:13px; font-weight:700; color:var(--text-main);" id="val-ingestor-txt">main.py --loop</span>
@@ -909,7 +909,7 @@
               <button class="btn" onclick="AppIntraday.runSimulate0DTE()" style="justify-content:center; padding:10px; font-size:13px; font-weight:700;">⚡ Test 0DTE Decision Under 2 Sec</button>
 
               <!-- 0DTE Output Box -->
-              <div id="sim-output-box" style="display:none; background:rgba(8,13,22,0.6); border:1px solid rgba(6,182,212,0.4); border-radius:8px; padding:14px; font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.5;">
+              <div id="sim-output-box" style="display:none; background:var(--bg-subtle); border:1px solid rgba(6,182,212,0.4); border-radius:8px; padding:14px; font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.5;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                   <span style="font-weight:700; color:#38bdf8;" id="sim-res-decision">GO — ENTER CALLS</span>
                   <span class="pill green" style="font-size:10px;">LLM Verified</span>
@@ -926,13 +926,13 @@
               <span class="pill amber">Strict Risk Gate</span>
             </div>
             <div style="font-size:12px; color:var(--text-muted); line-height:1.6; display:flex; flex-direction:column; gap:10px;">
-              <div style="background:rgba(8,13,22,0.4); padding:10px 12px; border-radius:8px; border-left:3px solid var(--cyan);">
+              <div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border-left:3px solid var(--cyan);">
                 <strong style="color:var(--text-main);">Validated Universe:</strong> SPY, SPX, QQQ, IWM, DIA + Mega-caps (AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, AMD).
               </div>
-              <div style="background:rgba(8,13,22,0.4); padding:10px 12px; border-radius:8px; border-left:3px solid var(--amber);">
+              <div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border-left:3px solid var(--amber);">
                 <strong style="color:var(--text-main);">Timing & Theta Rules:</strong> Speed and timing outrank everything. Optimal entries fire 9:45 - 11:30 ET or 14:00 - 15:15 ET. Never enter into flat lunchtime chop (12:00 - 13:30 ET).
               </div>
-              <div style="background:rgba(8,13,22,0.4); padding:10px 12px; border-radius:8px; border-left:3px solid var(--emerald);">
+              <div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border-left:3px solid var(--emerald);">
                 <strong style="color:var(--text-main);">Scale-Out Ladder:</strong> Take 50% profit at Target 1, move Stop to Breakeven (+0.05c), let runners ride to Target 2. Hard exit EOD (15:55 ET).
               </div>
             </div>
@@ -1338,12 +1338,15 @@
   </div>
 
   <!-- TradingView Alert Details & JSON Modal -->
-  <div class="modal-overlay" id="tv-alert-detail-modal" style="display:none; align-items:center; justify-content:center; z-index:1050;" onclick="if(event.target===this) AppAlerts.closeAlertModal()">
+  <div class="modal-overlay" id="tv-alert-detail-modal" style="display:none; align-items:center; justify-content:center; z-index:1280;" onclick="if(event.target===this) AppAlerts.closeAlertModal()">
     <div class="modal-content" id="alert-modal-content-container" style="max-width:960px; width:92vw; height:92vh; display:flex; flex-direction:column; border-radius:12px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.6); background:var(--bg-surface); border:1px solid var(--border); transition: max-width 0.25s cubic-bezier(0.16, 1, 0.3, 1), width 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
       
       <!-- Modal Header -->
       <div class="modal-header" style="padding:14px 20px; background:var(--bg-subtle); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button id="alert-modal-btn-back" class="btn secondary" onclick="AppAlerts.closeAlertModal(true)" style="display:none; align-items:center; gap:6px; padding:4px 10px; font-size:11.5px; font-weight:700; border-color:var(--cyan-glow, #06b6d4); color:var(--cyan, #06b6d4);" title="Return to previous screen">
+            <span id="alert-modal-btn-back-label">← Back</span>
+          </button>
           <span style="font-family:'Outfit',sans-serif; font-size:20px; font-weight:800; color:var(--text-main);" id="alert-modal-ticker">BEN</span>
           <span style="font-size:13px; color:var(--text-muted); font-weight:500;" id="alert-modal-company">Franklin Resources Inc.</span>
           <span class="pill" id="alert-modal-action-badge" style="font-size:12px; font-weight:800; padding:3px 10px;">⚡ NEUTRAL</span>
@@ -2314,6 +2317,9 @@
         </div>
 
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button class="btn secondary" id="pnl-btn-back" onclick="AppAlerts.closePnlModal(true)" style="display:none; padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+            ← Back
+          </button>
           <button class="btn secondary" onclick="AppAlerts.refreshPnlModal()" style="padding:4px 10px; font-size:11.5px; font-weight:700;" title="Recalculate with latest spot prices and alerts">
             🔄 Refresh
           </button>
@@ -2433,6 +2439,9 @@
           <span class="pill" id="ttm-alert-count" style="font-size:11px;">0 Alerts</span>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn secondary" id="ttm-btn-back" onclick="AppAlerts.closeTickerTradesModal(true)" style="display:none; padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+            ← Back
+          </button>
           <button class="btn secondary" id="ttm-btn-chart" onclick="AppAlerts.openChartFromTickerModal()" style="padding:4px 10px; font-size:11.5px; font-weight:700;">
             📈 Chart
           </button>
@@ -2483,6 +2492,9 @@
             </div>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
+            <button class="btn secondary" id="pm-btn-back" onclick="AppAlerts.closePostMortemModal(true)" style="display:none; padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+              ← Back
+            </button>
             <button class="btn secondary" onclick="AppAlerts.copyPostMortemMarkdown()" style="padding:4px 10px; font-size:11px; font-weight:700;" title="Copy Full Post-Mortem to Clipboard">📋 Copy Report</button>
             <button class="btn secondary" onclick="AppAlerts.downloadPostMortemJson()" style="padding:4px 10px; font-size:11px; font-weight:700;" title="Download Attribution Dataset JSON">📥 Export JSON</button>
             <button class="btn secondary" onclick="AppAlerts.closePostMortemModal()" style="padding:4px 10px; font-size:12px; font-weight:800; border-radius:var(--radius-sm);" title="Close Modal">✕</button>
@@ -2546,9 +2558,14 @@
       <div class="tdm-header" style="flex-direction:column; align-items:stretch; gap:10px;">
         <!-- Top Row: Ticker Info & Close Button -->
         <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div style="display:flex; align-items:baseline; gap:10px;">
-            <span style="font-family:'Outfit',sans-serif; font-size:24px; font-weight:900; color:var(--text-main); letter-spacing:-0.3px;" id="tdm-ticker-sym">COST</span>
-            <span style="font-size:13px; color:var(--text-muted); font-weight:500;" id="tdm-ticker-name">Costco Wholesale Corp</span>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button id="tdm-btn-back" class="btn secondary" onclick="AppAlerts.closeTradeDetailModal(true)" style="display:none; align-items:center; gap:6px; padding:4px 10px; font-size:11.5px; font-weight:700; border-color:var(--cyan-glow, #06b6d4); color:var(--cyan, #06b6d4);" title="Return to previous screen">
+              <span id="tdm-btn-back-label">← Back</span>
+            </button>
+            <div style="display:flex; align-items:baseline; gap:10px;">
+              <span style="font-family:'Outfit',sans-serif; font-size:24px; font-weight:900; color:var(--text-main); letter-spacing:-0.3px;" id="tdm-ticker-sym">COST</span>
+              <span style="font-size:13px; color:var(--text-muted); font-weight:500;" id="tdm-ticker-name">Costco Wholesale Corp</span>
+            </div>
           </div>
           <div style="display:flex; align-items:center; gap:12px;">
             <div id="tdm-pnl-strip" style="font-family:var(--font-mono); font-size:16px; font-weight:900;">
@@ -2577,6 +2594,9 @@
           <!-- Injected buttons (e.g. Inspect Entry Alert, Inspect Exit Alert) -->
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn secondary" id="tdm-btn-footer-back" onclick="AppAlerts.closeTradeDetailModal(true)" style="display:none; padding:5px 12px; font-size:11px; font-weight:700; color:var(--cyan, #06b6d4); border-color:var(--cyan, #06b6d4);">
+            <span id="tdm-btn-footer-back-label">← Back</span>
+          </button>
           <button class="btn secondary" id="tdm-btn-chart" style="padding:5px 12px; font-size:11px; font-weight:700;">
             📈 Open Chart
           </button>
@@ -2607,7 +2627,7 @@
   <script src="/static/js/state.js?v=76"></script>
   <script src="/static/js/utils.js?v=76"></script>
   <script src="/static/js/api.js?v=76"></script>
-  <script src="/static/js/status.js?v=76"></script>
+  <script src="/static/js/status.js?v=78"></script>
   <script src="/static/js/swing.js?v=76"></script>
   <script src="/static/js/watchlist.js?v=76"></script>
   <script src="/static/js/trades.js?v=76"></script>

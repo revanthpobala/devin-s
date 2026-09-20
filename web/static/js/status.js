@@ -197,6 +197,10 @@ window.AppStatus = {
 
   async loadJobs() {
     try {
+      // Escape helpers for safe interpolation into HTML attributes and JS strings
+      const escHtml = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const escJsAttr = (s) => String(s ?? '').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
       const data = await window.AppApi.getJobs();
       const targets = [
         document.getElementById('active-procs-container'),
@@ -226,16 +230,18 @@ window.AppStatus = {
           const elapsedSec = Math.floor(((new Date() - startDt) % 60000) / 1000);
           const timeStr = `${elapsedMin}m ${elapsedSec}s`;
           const compActive = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+          const stageLabel = j.stage_detail ? `${j.stage} — ${j.stage_detail}` : j.stage;
 
           html += `
             <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px solid var(--border); padding:8px 12px; border-radius:8px; font-family:'JetBrains Mono', monospace; font-size:12px; margin-bottom:6px;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <span class="pill green pulse" style="font-size:10px; padding:2px 6px;">ACTIVE</span>
                 <strong style="font-weight:700; color:var(--blue); cursor:help;" title="${String(compActive).replace(/"/g, '&quot;')}" data-ticker="${j.ticker || ''}">$${j.ticker || ''}</strong>
-                <span style="color:var(--text-muted); font-size:11px;">(${j.stage})</span>
+                <span style="color:var(--text-muted); font-size:11px;">(${stageLabel})</span>
               </div>
-              <div style="display:flex; align-items:center; gap:10px;">
+              <div style="display:flex; align-items:center; gap:8px;">
                 <span style="color:var(--amber); font-size:11px;">⏳ ${timeStr}</span>
+                <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker || '')}', null)" title="View live log stream" style="padding:2px 8px; font-size:10.5px;">📋 Log</button>
                 <button class="btn danger" onclick="AppStatus.killJob('${j.job_id}')" style="padding:2px 8px; font-size:11px;">🛑 Kill</button>
               </div>
             </div>
@@ -280,28 +286,45 @@ window.AppStatus = {
 
           const restartBtn = isFailed ? `
             <button class="btn primary"
-                    onclick="event.stopPropagation(); AppStatus.restartResearch('${j.ticker}', '${j.mode || 'full'}', '${j.target_date || ''}')"
-                    title="Retry deep research for ${j.ticker} (forces fresh run)"
+                    onclick="event.stopPropagation(); AppStatus.restartResearch('${escJsAttr(j.ticker)}', '${escJsAttr(j.mode || 'full')}', '${escJsAttr(j.target_date || '')}')"
+                    title="Retry deep research for ${escHtml(j.ticker)} (forces fresh run)"
                     style="padding:2px 8px; font-size:10.5px; font-weight:700; display:inline-flex; align-items:center; gap:3px; background:linear-gradient(135deg, #2563eb, #1d4ed8); border:none; color:#fff; border-radius:4px; box-shadow:0 1px 4px rgba(37,99,235,0.4); cursor:pointer;">
               🔄 Restart
             </button>
           ` : '';
 
+          const errFirstLine = isFailed && j.error_message
+            ? escHtml(j.error_message.split('\n')[0])
+            : '';
+
+          const rowOnclick = isFailed
+            ? `AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', ${JSON.stringify(escHtml(j.error_message || ''))})`
+            : `AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(rawTime)}')`;
+          const rowTitle = isFailed
+            ? `Click to view ${escHtml(j.ticker)} failure logs`
+            : `Click to open ${escHtml(j.ticker)} (${compTitle}) research dossier`;
+          const rightAction = isFailed
+            ? `<button class="view-logs-btn" data-job-id="${escHtml(j.job_id)}" data-ticker="${escHtml(j.ticker)}" data-error="${escHtml(j.error_message || '')}" style="color:var(--red-light,#f87171); font-size:11px; font-weight:700; white-space:nowrap; background:none; border:none; cursor:pointer; padding:2px 4px; font-family:'JetBrains Mono',monospace;">📋 View Logs</button>`
+            : `<span style="color:var(--blue); font-size:11px; font-weight:700; display:inline-flex; align-items:center; gap:3px; white-space:nowrap;">📖 Dossier ↗</span>`;
+
           html += `
             <div class="recent-job-row"
-                 onclick="AppStatus.openResearchDossier('${j.ticker}', '${rawTime}')"
-                 title="Click to open ${j.ticker} (${compTitle}) research dossier"
-                 style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px solid var(--border); padding:7px 12px; border-radius:6px; font-family:'JetBrains Mono', monospace; font-size:11px; margin-bottom:5px; cursor:pointer; transition:all 0.15s ease;">
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span class="pill ${stColor}" style="font-size:9px; padding:2px 6px; cursor:help;"${pillTitle}>${j.status}${j.error_message ? ' ⚠️' : ''}</span>
-                <strong style="font-weight:700; font-size:12.5px; color:var(--text-main); cursor:help;" title="${compTitle}" data-ticker="${j.ticker}">$${j.ticker}</strong>
-                <span style="color:var(--text-muted); font-size:10.5px;">[${j.mode}]</span>
+                 onclick="${rowOnclick}"
+                 title="${rowTitle}"
+                 style="background:var(--bg-subtle); border:1px solid var(--border); padding:7px 12px; border-radius:6px; font-family:'JetBrains Mono', monospace; font-size:11px; margin-bottom:5px; cursor:pointer; transition:all 0.15s ease;">
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="pill ${stColor}" style="font-size:9px; padding:2px 6px; cursor:help;"${pillTitle}>${j.status}${j.error_message ? ' ⚠️' : ''}</span>
+                  <strong style="font-weight:700; font-size:12.5px; color:var(--text-main); cursor:help;" title="${compTitle}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                  <span style="color:var(--text-muted); font-size:10.5px;">[${j.mode}]</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="color:var(--text-muted); font-size:11px; font-weight:600; white-space:nowrap;" title="${rawTime}">${timeDisplay}</span>
+                  ${restartBtn}
+                  ${rightAction}
+                </div>
               </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span style="color:var(--text-muted); font-size:11px; font-weight:600; white-space:nowrap;" title="${rawTime}">${timeDisplay}</span>
-                ${restartBtn}
-                <span style="color:var(--blue); font-size:11px; font-weight:700; display:inline-flex; align-items:center; gap:3px; white-space:nowrap;">📖 Dossier ↗</span>
-              </div>
+              ${errFirstLine ? `<div style="margin-top:4px; padding:3px 8px; background:rgba(239,68,68,0.08); border-left:2px solid rgba(239,68,68,0.5); border-radius:3px; font-size:10.5px; color:#fca5a5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${errReason}">${errFirstLine}</div>` : ''}
             </div>
           `;
         });
@@ -312,6 +335,18 @@ window.AppStatus = {
         if (window.AppUtils && window.AppUtils.decorateTickerTooltips) {
           window.AppUtils.decorateTickerTooltips(c);
         }
+
+        // Bind View Logs buttons via event delegation
+        c.querySelectorAll('.view-logs-btn').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const jobId = btn.dataset.jobId;
+            const ticker = btn.dataset.ticker;
+            const error = btn.dataset.error || '';
+            console.log('[AppStatus] View Logs clicked:', jobId, ticker);
+            AppStatus.showJobLogModal(jobId, ticker, error);
+          });
+        });
       });
     } catch (e) {
       console.error('Failed loading jobs', e);
@@ -344,6 +379,128 @@ window.AppStatus = {
     } catch (e) {
       alert(`Kill Job Error: ${e.message}`);
     }
+  },
+
+  _logPollTimer: null,
+
+  _stopLogPoll() {
+    if (this._logPollTimer) {
+      clearInterval(this._logPollTimer);
+      this._logPollTimer = null;
+    }
+  },
+
+  async showJobLogModal(jobId, ticker, errorMsg) {
+    this._stopLogPoll();
+    const escHtml = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    let modal = document.getElementById('job-log-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'job-log-modal';
+      modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px);';
+      modal.onclick = (e) => { if (e.target === modal) { modal.style.display = 'none'; AppStatus._stopLogPoll(); } };
+      document.body.appendChild(modal);
+    }
+    modal.style.display = 'flex';
+    console.log('[AppStatus] showJobLogModal opened for', jobId, ticker);
+
+    const errHtml = errorMsg
+      ? `<div style="background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:6px; padding:10px 14px; margin-bottom:12px;">
+           <div style="font-size:10px; color:#f87171; font-weight:800; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">❌ Failure Reason</div>
+           <div style="font-size:12.5px; color:#fecaca; font-family:'JetBrains Mono',monospace; white-space:pre-wrap;">${escHtml(errorMsg)}</div>
+         </div>`
+      : '';
+
+    const liveDot = `<span id="job-log-live-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#22c55e;margin-right:4px;animation:pulse 1.5s infinite;"></span>`;
+
+    modal.innerHTML = `
+      <div style="background:var(--bg-surface,#1e222d); border:1px solid var(--border,#2a2e39); border-radius:12px; width:85%; max-width:760px; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 16px 48px rgba(0,0,0,0.6); color:var(--text-main,#d1d4dc); font-family:'Inter',sans-serif;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border,#2a2e39); flex-shrink:0;">
+          <div>
+            <div style="font-size:13px; font-weight:800; color:var(--text-main);">${liveDot}📋 Job Log — $${escHtml(ticker)}</div>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:2px;">
+              <span id="job-log-stage" style="font-size:10.5px; color:var(--cyan,#38bdf8); font-family:'JetBrains Mono',monospace; font-weight:700;"></span>
+              <span style="font-size:10.5px; color:var(--text-muted,#6b7280); font-family:'JetBrains Mono',monospace;">${escHtml(jobId)}</span>
+              <a href="/api/logs/raw/${encodeURIComponent(jobId)}" target="_blank" rel="noopener"
+                 style="font-size:10.5px; color:#60a5fa; text-decoration:none; font-weight:600; display:inline-flex; align-items:center; gap:3px;"
+                 title="Open full log file in new tab">
+                📄 Open Full File ↗
+              </a>
+            </div>
+          </div>
+          <button onclick="document.getElementById('job-log-modal').style.display='none'; AppStatus._stopLogPoll()" style="background:none; border:none; color:var(--text-muted); font-size:18px; cursor:pointer; padding:4px 8px; border-radius:4px;">✕</button>
+        </div>
+        <div id="job-log-scroll" style="padding:14px 18px; overflow-y:auto; flex:1;">
+          ${errHtml}
+          <div id="job-log-banner"></div>
+          <pre id="job-log-pre" style="background:#0a0e17; border:1px solid var(--border,#2a2e39); border-radius:8px; padding:14px; font-size:11.5px; line-height:1.65; font-family:'JetBrains Mono',monospace; color:#a5f3fc; white-space:pre-wrap; word-break:break-all;">⏳ Loading log…</pre>
+        </div>
+      </div>
+    `;
+
+    let prevLineCount = 0;
+    const pollInterval = 2500; // refresh every 2.5s while open
+
+    const doPoll = async () => {
+      try {
+        const data = await window.AppApi.getLogs('all', jobId);
+        const pre = document.getElementById('job-log-pre');
+        if (!pre) return this._stopLogPoll();
+        const lines = (data.logs || []);
+        const newContent = lines.length > 0 ? lines.join('\n') : '(No log content recorded for this job.)';
+
+        // Update stage indicator in header
+        const stageEl = document.getElementById('job-log-stage');
+        if (stageEl && data.job) {
+          const stage = data.job.stage || 'UNKNOWN';
+          const detail = data.job.stage_detail ? ` — ${data.job.stage_detail}` : '';
+          stageEl.innerText = `Stage: ${stage}${detail}`;
+        }
+
+        // If we have a job status, stop polling when it's no longer RUNNING
+        if (data.job && data.job.status !== 'RUNNING') {
+          pre.innerText = newContent;
+          const dot = document.getElementById('job-log-live-dot');
+          if (dot) dot.style.display = 'none';
+
+          // Show a status banner for non-running jobs so the user knows why it stopped
+          const banner = document.getElementById('job-log-banner');
+          if (banner) {
+            const status = data.job.status;
+            if (status === 'KILLED') {
+              banner.innerHTML = '<div style="background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.4); border-radius:6px; padding:10px 14px; margin-bottom:12px; font-size:12px; color:#fbbf24; font-weight:700;">🛑 JOB KILLED — Terminated by user via UI. Output below was captured before termination.</div>';
+            } else if (status === 'FAILED') {
+              banner.innerHTML = '<div style="background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); border-radius:6px; padding:10px 14px; margin-bottom:12px; font-size:12px; color:#fca5a5; font-weight:700;">❌ JOB FAILED — ' + escHtml(data.job.error_message || 'Process terminated before generating report') + '</div>';
+            } else if (status === 'COMPLETED') {
+              banner.innerHTML = '<div style="background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.4); border-radius:6px; padding:10px 14px; margin-bottom:12px; font-size:12px; color:#34d399; font-weight:700;">✅ JOB COMPLETED — Research finished successfully.</div>';
+            }
+          }
+          this._stopLogPoll();
+          return;
+        }
+
+        // Append only new lines to avoid scroll jump
+        if (lines.length > prevLineCount && prevLineCount > 0) {
+          const newLines = lines.slice(prevLineCount).join('\n');
+          pre.innerText += '\n' + newLines;
+        } else {
+          pre.innerText = newContent;
+        }
+        prevLineCount = lines.length;
+
+        // Auto-scroll if user is near the bottom
+        const scrollEl = document.getElementById('job-log-scroll');
+        if (scrollEl) {
+          const nearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
+          if (nearBottom) scrollEl.scrollTop = scrollEl.scrollHeight;
+        }
+      } catch (e) {
+        // Network hiccup — keep polling
+      }
+    };
+
+    await doPoll(); // initial load
+    this._logPollTimer = setInterval(doPoll, pollInterval);
   },
 
   async killProcess(pid) {

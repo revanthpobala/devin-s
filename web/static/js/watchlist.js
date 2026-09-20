@@ -1300,7 +1300,7 @@ window.AppWatchlist = {
 
     if (targets.length === 0) {
       radarEl.innerHTML = `
-        <div style="color:var(--text-muted); font-size:12.5px; text-align:center; padding:24px; background:rgba(8,13,22,0.4); border-radius:8px; border:1px dashed var(--border-subtle);">
+        <div style="color:var(--text-muted); font-size:12.5px; text-align:center; padding:24px; background:var(--bg-subtle); border-radius:8px; border:1px dashed var(--border-subtle);">
           🔍 No targets matching active filter (<strong>${this._radarFilter}</strong>) or search "<strong>${this._radarSearchQuery || ''}</strong>".
         </div>
       `;

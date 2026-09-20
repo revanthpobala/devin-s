@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
+import sqlite3
+
 import psutil
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -646,14 +648,69 @@ def get_report_bundle(date: str, ticker: str):
         if "Vehicle" in verdict_str or "Actionable Setup" in verdict_str:
             verdict_str = "STALK"
 
+        # Look for the executive 2-sentence thesis across summary, gemini, or arbitration docs
+        summary_cand = None
+        for s_cand in [t_rep / f"{ticker_u}_summary.md", t_raw / f"{ticker_u}_summary.md", t_raw / f"{ticker_u}_gemini_thesis.md"]:
+            if s_cand.exists() and s_cand.stat().st_size > 200:
+                summary_cand = s_cand
+                break
+
         preview_text = None
-        m_th = re.search(r'\*\*(?:The\s+)?Thesis in 2 Sentences:\*\*\s*([^\n\r]+(?:\n[^\n\r#]+)?)', txt)
-        if m_th:
-            preview_text = m_th.group(1).replace("**", "").strip()[:240]
-        else:
-            paragraphs = [p.strip() for p in txt.split('\n\n') if p.strip() and not p.strip().startswith('#') and not p.strip().startswith('<tool_call>')]
-            if paragraphs:
-                preview_text = paragraphs[0][:220]
+        text_sources = [txt]
+        if summary_cand and summary_cand != chosen_doc:
+            try:
+                text_sources.insert(0, summary_cand.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        for src in text_sources:
+            m_th = re.search(r'\*\*(?:The\s+)?Thesis in 2 Sentences:\*\*\s*([^\n\r]+(?:\n[^\n\r#]+)?)', src)
+            if m_th:
+                cand_th = m_th.group(1)
+                cand_th = re.sub(r'```[a-zA-Z0-9_:]*[\s\S]*?```', '', cand_th)
+                cand_th = cand_th.replace("**", "").replace("__", "").replace("`", "").strip()
+                cand_th = re.sub(r'^\s*[\*\-\•]\s*', '', cand_th)
+                if len(cand_th) > 20:
+                    preview_text = cand_th[:260] + ('...' if len(cand_th) > 260 else '')
+                    break
+
+        if not preview_text:
+            for src in text_sources:
+                src_no_code = re.sub(r'```[a-zA-Z0-9_:]*[\s\S]*?```', '', src)
+                m_judge = re.search(r'##\s*[^\n]*?(?:JUDGE|RULING|EXECUTIVE|DIRECTIVE|CASE FOR)[^\n]*\n([\s\S]+?)(?=\n##|\Z)', src_no_code, re.IGNORECASE)
+                if m_judge:
+                    raw_block = m_judge.group(1)
+                    raw_block = re.sub(r'^\s*#+\s*.*$', '', raw_block, flags=re.MULTILINE)
+                    raw_block = re.sub(r'^\s*[\*\-\•]\s+', '', raw_block, flags=re.MULTILINE)
+                    raw_block = raw_block.replace("**", "").replace("__", "").replace("`", "")
+                    lines = [l.strip() for l in raw_block.split('\n') if l.strip() and not l.strip().startswith('{') and not l.strip().startswith('}') and not l.strip().startswith('|')]
+                    if lines:
+                        cand_block = ' '.join(lines)
+                        if len(cand_block) > 20:
+                            preview_text = cand_block[:260] + ('...' if len(cand_block) > 260 else '')
+                            break
+
+        if not preview_text:
+            for src in text_sources:
+                src_clean = re.sub(r'```[a-zA-Z0-9_:]*[\s\S]*?```', '', src)
+                src_clean = re.sub(r'<tool_call>[\s\S]*?</tool_call>', '', src_clean)
+                src_clean = re.sub(r'\{[^\}]+\}', '', src_clean)
+                paras = [p.strip() for p in src_clean.split('\n\n') if p.strip()]
+                for p in paras:
+                    if p.startswith('#') or p.startswith('|') or p.startswith('{'):
+                        continue
+                    p_clean = re.sub(r'^\s*[\*\-\•]\s+', '', p, flags=re.MULTILINE)
+                    p_clean = p_clean.replace("**", "").replace("__", "").replace("`", "").strip()
+                    lines = [l.strip() for l in p_clean.split('\n') if l.strip() and not l.strip().startswith('#') and not l.strip().startswith('|')]
+                    cand = ' '.join(lines)
+                    if len(cand) > 25:
+                        preview_text = cand[:260] + ('...' if len(cand) > 260 else '')
+                        break
+                if preview_text:
+                    break
+
+        if preview_text:
+            preview_text = preview_text.replace("\ufffd", "–").replace("Â", "").strip()
 
         timeline.append({
             "date": d_str,
@@ -1061,27 +1118,49 @@ def trigger_research(req: ResearchRequest):
     active_count = get_active_research_count()
 
     if active_count < MAX_CONCURRENT_RESEARCH:
-        with get_db() as conn:
-            conn.cursor().execute("""
-                INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
-                VALUES (?, ?, ?, ?, 'STARTING', 'RUNNING', ?, ?, ?)
-            """, (job_id, ticker_u, req.mode, os.getpid(), datetime.now(timezone.utc).isoformat(), log_file, req.date))
-            conn.commit()
+        try:
+            with get_db() as conn:
+                conn.cursor().execute("""
+                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
+                    VALUES (?, ?, ?, ?, 'STARTING', 'RUNNING', ?, ?, ?)
+                """, (job_id, ticker_u, req.mode, os.getpid(), datetime.now(timezone.utc).isoformat(), log_file, req.date))
+                conn.commit()
+        except sqlite3.IntegrityError:
+            # Duplicate active job for this ticker — return the existing one
+            with get_db() as conn:
+                row = conn.cursor().execute(
+                    "SELECT job_id FROM active_research_jobs WHERE ticker = ? AND status IN ('RUNNING','QUEUED')",
+                    (ticker_u,),
+                ).fetchone()
+            if row:
+                return {"status": "running", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode}
+            raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
         worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force), daemon=True)
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
         append_log(f"🚀 Started research for {ticker_u} in open slot (Active: {active_count + 1}/{MAX_CONCURRENT_RESEARCH}).")
-        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode}
+        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": "STARTING", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
     else:
-        with get_db() as conn:
-            conn.cursor().execute("""
-                INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
-                VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?)
-            """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date))
-            conn.commit()
+        try:
+            with get_db() as conn:
+                conn.cursor().execute("""
+                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
+                    VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?)
+                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date))
+                conn.commit()
+        except sqlite3.IntegrityError:
+            with get_db() as conn:
+                row = conn.cursor().execute(
+                    "SELECT job_id FROM active_research_jobs WHERE ticker = ? AND status IN ('RUNNING','QUEUED')",
+                    (ticker_u,),
+                ).fetchone()
+            if row:
+                return {"status": "queued", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode}
+            raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
+
         append_log(f"📥 [Queue] Concurrency slots full ({active_count}/{MAX_CONCURRENT_RESEARCH}). Queued {ticker_u} for research.")
-        return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode}
+        return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": "QUEUED", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
 
 
 @router.post("/api/jobs/{job_id}/kill")
@@ -1118,6 +1197,16 @@ def kill_research_job_endpoint(job_id: str):
     ACTIVE_RESEARCH_SUBPROCS.pop(job_id, None)
 
     ticker_name = job["ticker"] if job else job_id
-    append_log(f"🛑 Terminated Research Job {job_id} ({ticker_name}) to free VRAM slot.")
+    kill_msg = f"🛑 Terminated Research Job {job_id} ({ticker_name}) to free VRAM slot."
+    append_log(kill_msg)
+
+    # Write kill marker to the job log file so the log viewer shows why it stopped
+    try:
+        log_file = LOGS_DIR / f"{job_id}.log"
+        with open(log_file, "a", encoding="utf-8") as lf:
+            lf.write(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Job killed by user via UI. Process tree terminated.\n")
+    except Exception:
+        pass
+
     dispatch_next_queued_job()
     return {"status": "killed", "job_id": job_id}
