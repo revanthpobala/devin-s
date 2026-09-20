@@ -92,8 +92,19 @@ def init_db():
                 target_date TEXT
             )
         """)
+        for col in ("target_date", "stage_detail"):
+            try:
+                c.execute(f"ALTER TABLE active_research_jobs ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
+        # Partial unique index: only one active (RUNNING/QUEUED) job per ticker.
+        # Prevents duplicate-job race without blocking completed/failed history rows.
         try:
-            c.execute("ALTER TABLE active_research_jobs ADD COLUMN target_date TEXT")
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_per_ticker
+                ON active_research_jobs(ticker)
+                WHERE status IN ('RUNNING', 'QUEUED')
+            """)
         except Exception:
             pass
         conn.commit()

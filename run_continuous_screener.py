@@ -64,7 +64,7 @@ def main():
         "--interval",
         type=int,
         default=DEFAULT_SCAN_INTERVAL,
-        help="Scan interval in seconds (default: 600s / 10m)",
+        help="Scan interval in seconds (default: 300s / 5m)",
     )
     parser.add_argument(
         "--top",
@@ -96,11 +96,24 @@ def main():
         default=60.0,
         help="Minimum priority score to qualify for deep research (default: 60.0)",
     )
-    parser.add_argument(
+    # Tri-state: None (unset) -> use centralized config.SCREENER_MARKET_HOURS_ONLY;
+    # --market-hours-only forces True; --always-scan forces False (24/7).
+    mho = parser.add_mutually_exclusive_group()
+    mho.add_argument(
         "--market-hours-only",
-        action="store_true",
-        help="Only run scan cycles during active market hours",
+        dest="market_hours_only",
+        action="store_const",
+        const=True,
+        help="Only run scan cycles during active market hours (overrides config)",
     )
+    mho.add_argument(
+        "--always-scan",
+        dest="market_hours_only",
+        action="store_const",
+        const=False,
+        help="Run scan cycles 24/7 including weekends (overrides config)",
+    )
+    parser.set_defaults(market_hours_only=None)
     parser.add_argument(
         "--once",
         action="store_true",

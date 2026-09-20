@@ -13,6 +13,26 @@ from src.logic.data_window_filter import normalize_number_str
 logger = logging.getLogger(__name__)
 
 
+def _parse_json_lenient(raw):
+    """Parse an LLM JSON response tolerating code fences / surrounding prose. Returns dict or None."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, dict) else None
+    except (ValueError, TypeError):
+        pass
+    start, end = s.find("{"), s.rfind("}")
+    if 0 <= start < end:
+        try:
+            v = json.loads(s[start : end + 1])
+            return v if isinstance(v, dict) else None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _find_artifact(out_dir: Path, filename: str) -> Path:
     """Finds an artifact in out_dir/<ticker>/, out_dir/, or the triage segregation folders if it was moved."""
     ticker = filename.split("_")[0]
@@ -477,6 +497,209 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     }
 
 
+def _screener_payload_verdict(ticker, safe_ticker, survivor, payload, thesis_json_path, out_dir, worker_id, today_str):
+    """Consume a typed SCHWAB_SCAN feature payload WITHOUT a TradingView Data Window.
+
+    The deterministic filter's measured PASS lanes (Code 20 / RSI2 / RR-at-market) are built
+    on real indicator cohorts and must never fire on scan metrics — so this lane emits an
+    explicit WATCH verdict from the candidate's OWN observed levels, then lets the free local
+    LLM + news decide whether it is worth paid deep research. No Data Window is fabricated.
+    """
+    side = str(payload.get("side") or "LONG").upper()
+    chosen = "long" if side == "LONG" else "short"
+
+    def _lvl(key):
+        v = payload.get(key)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    price = _lvl("price")
+    stop = _lvl("stop_level")
+    target = _lvl("target_level")
+    zone_bot = _lvl("support_level") if chosen == "long" else _lvl("ceiling_level")
+    zone_top = _lvl("entry_level") if chosen == "long" else price
+
+    plan = {"zone": [zone_bot, zone_top], "stop": stop, "target": target}
+    has_plan = bool(
+        (plan["zone"] and all(v is not None for v in plan["zone"]))
+        and plan["stop"] is not None
+        and plan["target"] is not None
+    )
+
+    # Free local news synthesis — the same source of directional context a Data Window run gets.
+    contradicts = False
+    news_negative = False
+    try:
+        from src.clients.news_researcher import run_news_research
+
+        sentinel_triage = {"triage": "WATCH"}
+        _, contradicts, news_sent = run_news_research(ticker, today_str, out_dir, sentinel_triage)
+        news_negative = news_sent == "BEARISH"
+    except Exception as e:
+        logger.debug(f"[ThesisWorker-{worker_id}] News synthesis for screener payload {ticker}: {e}")
+
+    # Lane-aware earnings gate (lane-aware policy per implementation plan): swing basing uses a
+    # 14d blackout; a directional options setup would use 48h. This lane is always swing-family.
+    earnings_days = _next_earnings_days(ticker)
+    if earnings_days is None:
+        earnings_gate = "UNKNOWN"
+    elif earnings_days < 3:
+        earnings_gate = "FAIL"
+    elif earnings_days < 14:
+        earnings_gate = "CAUTION"
+    else:
+        earnings_gate = "PASS"
+
+    # The free local LLM judges the OBSERVED thesis (levels + news), never a fabricated window.
+    llm_conviction = None
+    send_for_deep_research = False
+    try:
+        from src.clients.llm_client import query_local_llm
+
+        obs = {
+            "ticker": ticker,
+            "side": side,
+            "price": price,
+            "weinstein_stage": payload.get("weinstein_stage"),
+            "entry_zone": plan["zone"],
+            "stop": stop,
+            "target": target,
+            "rr": payload.get("long_rr") if chosen == "long" else payload.get("short_rr"),
+            "ext_200_pct": payload.get("ext_200_pct"),
+            "is_extreme_reversal": payload.get("is_extreme_reversal"),
+            "squeeze_on": payload.get("squeeze_on"),
+            "priority_score": payload.get("priority_score"),
+            "iv_rank": payload.get("iv_rank"),
+        }
+        system_prompt = (
+            "You are a swing-trade triage gate. You receive ONLY observed Schwab screener metrics — "
+            "this candidate has NO TradingView Data Window, so every Pine indicator field is unavailable. "
+            "Do NOT assume an entry signal exists. Respond with JSON only: "
+            '{"conviction": <0-100 or null>, "send_for_deep_research": <true|false>, "reasoning": "<= 25 words>'
+        )
+        user_prompt = (
+            f"OBSERVED: {json.dumps(obs, default=str)}\n"
+            f"News bearish: {news_negative} | News contradicts thesis: {contradicts} | Earnings gate: {earnings_gate}"
+        )
+        raw = query_local_llm(system_prompt, user_prompt=user_prompt, json_mode=True, use_openrouter=False)
+        parsed = _parse_json_lenient(raw) if isinstance(raw, str) else None
+        if isinstance(parsed, dict):
+            c = parsed.get("conviction")
+            try:
+                llm_conviction = float(c) if c is not None else None
+            except (TypeError, ValueError):
+                llm_conviction = None
+            send_for_deep_research = bool(parsed.get("send_for_deep_research"))
+    except Exception as e:
+        logger.debug(f"[ThesisWorker-{worker_id}] Local LLM triage for screener payload {ticker}: {e}")
+
+    # Deterministic floor: a candidate without a verified Data Window is never auto-PASS.
+    # It reaches paid deep research only if the free LLM explicitly endorses it AND the gates hold.
+    quality_pass = True  # WATCH-quality; promotion is decided by send_for_deep_research below
+    send = bool(
+        has_plan
+        and earnings_gate != "FAIL"
+        and not news_negative
+        and not contradicts
+        and (llm_conviction is None or float(llm_conviction) >= 50.0)
+        and send_for_deep_research
+    )
+
+    triage = {
+        "ticker": ticker,
+        "bar_date": None,
+        "chosen_side": chosen,
+        "mode": "SCHWAB_SCAN_" + ("LONG" if chosen == "long" else "SHORT"),
+        "triage": "WATCH",
+        "reason": "screener_feature_payload",
+        "conviction": llm_conviction,
+        "conviction_str": None,
+        "rev": None,
+        "rr": payload.get("long_rr") if chosen == "long" else payload.get("short_rr"),
+        "ev_r": None,
+        "win_prob": None,
+        "in_zone": None,
+        "missed": None,
+        "dir_prob": None,
+        "regime": None,
+        "flags": ["screener_feature_payload", "no_data_window"],
+        "long_plan": plan if chosen == "long" else {"zone": [None, None], "stop": None, "target": None},
+        "short_plan": plan if chosen == "short" else {"zone": [None, None], "stop": None, "target": None},
+        "action_long": None,
+        "action_short": None,
+        "action": None,
+        "action_actionable": False,
+        "mtf_long": None,
+        "mtf_short": None,
+        "ext_pct": payload.get("ext_200_pct"),
+        "rank_model_score": None,
+        "bad_data": False,
+        "no_fresh_long": False,
+        "structure": None,
+        "structure_strikes": None,
+        "iv_rank": payload.get("iv_rank"),
+        "exp_move_pct": None,
+        "rr_at_market": None,
+        "pursue": True,
+        "pursue_reason": "screener_feature_payload",
+        "news_negative": news_negative,
+    }
+
+    compact = {
+        "triage": "WATCH",
+        "chosen_side": chosen,
+        "mode": triage["mode"],
+        "reason": "screener_feature_payload",
+        "conviction": llm_conviction,
+        "rr": triage["rr"],
+        "in_zone": None,
+        "flags": ["screener_feature_payload", "no_data_window"],
+        "send_for_deep_research": send,
+        "pursue": True,
+        "pursue_reason": "screener_feature_payload",
+        "news_negative": news_negative,
+        "sentiment": "bearish" if news_negative else "neutral",
+        "sentiment_summary": "",
+        "screener_setup": survivor.get("screener_setup") or payload.get("setup_family"),
+        "income_only": False,
+        "structure": None,
+        "structure_strikes": None,
+        "iv_rank": payload.get("iv_rank"),
+        "triggers": None,
+    }
+
+    result_dict = {
+        "ticker": safe_ticker,
+        "trade_id": survivor.get("Trade ID") or survivor.get("trade_id") or "",
+        "row_index": survivor.get("_row_index"),
+        "researched_at": datetime.now().isoformat(timespec="seconds"),
+        "llm_data": compact,
+        "av_sentiment": {},
+        "av_earnings": {},
+        "triage": triage,
+        "social_sentiment": {},
+        "thesis_json": str(thesis_json_path),
+    }
+    try:
+        with open(thesis_json_path, "w", encoding="utf-8") as f:
+            json.dump(result_dict, f, indent=4)
+        triage_json_path = out_dir / f"{safe_ticker}_triage.json"
+        with open(triage_json_path, "w", encoding="utf-8") as f:
+            json.dump(triage, f, indent=4)
+    except Exception as e:
+        logger.error(f"[ThesisWorker-{worker_id}] Failed to cache screener-payload thesis for {ticker}: {e}")
+    _update_research_ledger(out_dir, result_dict)
+
+    logger.info(
+        f"[ThesisWorker-{worker_id}] {ticker}: SCHWAB_SCAN payload lane "
+        f"side={side} watch=True send_for_deep_research={send} llm_conviction={llm_conviction} "
+        f"news_neg={news_negative} earnings_gate={earnings_gate}"
+    )
+    return result_dict
+
+
 def generate_thesis_task(
     survivor, out_dir, today_str, worker_id, regenerate: bool = False, enrich: bool = False
 ):
@@ -529,6 +752,29 @@ def generate_thesis_task(
             logger.error(
                 f"[ThesisWorker-{worker_id}] Failed to read datawindow JSON for {ticker}: {e}"
             )
+
+    # ------------------------------------------------------------------
+    # TYPED SCREENER FEATURE PAYLOAD LANE (source="SCHWAB_SCAN")
+    # A candidate dispatched by the Schwab screener without a fresh TradingView
+    # scrape has NO real Data Window. We do NOT fabricate one: the deterministic
+    # Code-20 / RSI2 / RR lanes are measured on real indicator cohorts and must
+    # never fire on scan metrics. Instead we consume the typed payload directly —
+    # its OBSERVED levels (support/ceiling, stop, target) + news + local LLM —
+    # and emit an explicit WATCH verdict that can be promoted to deep research.
+    # ------------------------------------------------------------------
+    if not data_window:
+        payload_path = _find_artifact(out_dir, f"{safe_ticker}_screener_payload.json")
+        if payload_path.exists():
+            try:
+                with open(payload_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception as e:
+                logger.error(
+                    f"[ThesisWorker-{worker_id}] Failed to read screener payload for {ticker}: {e}"
+                )
+                payload = None
+            if isinstance(payload, dict) and payload.get("datawindow_source") == "SCHWAB_SCAN":
+                return _screener_payload_verdict(ticker, safe_ticker, survivor, payload, thesis_json_path, out_dir, worker_id, today_str)
 
     if not data_window:
         logger.warning(

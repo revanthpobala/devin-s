@@ -25,7 +25,7 @@ from src.ui.routes import (
     watchlist,
 )
 from src.ui.services.daemon_manager import start_all_daemons, stop_all_daemons
-from src.ui.services.research_queue import rehydrate_active_jobs
+from src.ui.services.research_queue import dispatch_next_queued_job, rehydrate_active_jobs
 from src.ui.state import init_db
 
 logger = logging.getLogger("ui_server")
@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
     def on_startup():
         init_db()
         rehydrate_active_jobs()
+        dispatch_next_queued_job()
         start_all_daemons()
 
     @app.on_event("shutdown")

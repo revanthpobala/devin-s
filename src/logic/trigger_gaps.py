@@ -16,14 +16,14 @@ Design principles (from the plan):
      a real price-event or a named catalyst, and is capped by the conviction
      ladder.
 
-Feature-flagged via TRIGGERS_ENABLED env (mirrors RANK_MODEL_ENABLED).
+Feature-flagged via TRIGGERS_ENABLED env.
 """
 
 import os
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
-# Feature flag (mirrors RANK_MODEL_ENABLED pattern in watch_ranker.py)
+# Feature flag
 # ---------------------------------------------------------------------------
 TRIGGERS_ENABLED = os.getenv("TRIGGERS_ENABLED", "1").lower() not in ("0", "false", "no")
 

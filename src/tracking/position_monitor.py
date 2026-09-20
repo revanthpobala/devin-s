@@ -73,7 +73,7 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
     # Fetch live broker/market quote
     price = None
     try:
-        price = get_current_price(symbol)
+        price = get_current_price(symbol, context="execution")
     except Exception as e:
         logger.debug(f"[review_tv_exit:{symbol}] price fetch failed: {e}")
 
@@ -148,6 +148,18 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
     if stop is not None:
         if side == "LONG":
             if price > stop:
+                try:
+                    from src.plugins.order_flow_plugin import read_tape
+                    tape_verdict = str(read_tape(symbol).get("verdict", "")).lower()
+                    if "aggressive selling" in tape_verdict or ("volume accelerating" in tape_verdict and "selling" in tape_verdict):
+                        return {
+                            "action": "CONFIRM_EXIT",
+                            "reason": f"Tape override: aggressive selling with accelerating volume despite price holding above stop. Real distribution, not a wick tap.",
+                            "current_price": price,
+                            "stop": stop,
+                        }
+                except Exception as e:
+                    logger.debug(f"[review_tv_exit:{symbol}] tape read failed, holding veto: {e}")
                 return {
                     "action": "VETO_HOLD",
                     "reason": f"Intra-bar wick noise. Live price ${price:.2f} is holding above stop ${stop:.2f}. Setup structure intact.",
@@ -163,6 +175,18 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
                 }
         elif side == "SHORT":
             if price < stop:
+                try:
+                    from src.plugins.order_flow_plugin import read_tape
+                    tape_verdict = str(read_tape(symbol).get("verdict", "")).lower()
+                    if "aggressive buying" in tape_verdict or ("volume accelerating" in tape_verdict and "buying" in tape_verdict):
+                        return {
+                            "action": "CONFIRM_EXIT",
+                            "reason": f"Tape override: aggressive buying with accelerating volume despite price holding below stop. Real accumulation, not a wick tap.",
+                            "current_price": price,
+                            "stop": stop,
+                        }
+                except Exception as e:
+                    logger.debug(f"[review_tv_exit:{symbol}] tape read failed, holding veto: {e}")
                 return {
                     "action": "VETO_HOLD",
                     "reason": f"Intra-bar wick noise. Live price ${price:.2f} is holding below stop ${stop:.2f}. Setup structure intact.",
@@ -244,7 +268,7 @@ class PositionMonitor(threading.Thread):
         entry = rec.get("entry_price")
 
         try:
-            price = get_current_price(self.ticker)
+            price = get_current_price(self.ticker, context="execution")
         except Exception as e:
             logger.warning(f"[monitor:{self.ticker}] price fetch failed: {e}")
             price = None

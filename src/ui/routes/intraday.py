@@ -49,7 +49,7 @@ def get_positions():
 
                 entry = item.get("entry_price") or item.get("alert_price") or 0.0
                 try:
-                    spot = get_current_price(sym)
+                    spot = get_current_price(sym, context="execution")
                     if isinstance(spot, (int, float)) and spot > 0:
                         item["current_price"] = spot
                         side = item.get("side", "LONG").upper()

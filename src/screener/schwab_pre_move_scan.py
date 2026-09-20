@@ -257,7 +257,7 @@ def fetch_all_quotes_batch(client, tickers: List[str]) -> Dict[str, Dict[str, An
     """Fetch comprehensive quote + fundamental data for all tickers in chunks of 50."""
     results = {}
     total = len(tickers)
-    chunk_size = 50
+    chunk_size = 500
 
     logger.info(f"Fetching Schwab batch quotes for {total} constituents in chunks of {chunk_size}...")
     t0 = time.time()
@@ -283,26 +283,31 @@ def fetch_all_quotes_batch(client, tickers: List[str]) -> Dict[str, Dict[str, An
     return results
 
 
-def stage1_fast_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[str]) -> List[Dict[str, Any]]:
+def stage1_fast_filter(
+    raw_quotes: Dict[str, Dict[str, Any]],
+    biotech_set: set[str],
+    funnel_tracker: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """
-    Stage 1 Filter:
-      - Price >= $15.00
-      - 10-day Average Volume >= 800,000 shares
-      - Relative Strength: Price >= 0.80 * 52-Week High
-      - Orderly daily action: Net % change between -4.5% and +1.5%
-      - Volume Dry-Up: Today's Vol <= 0.85 * 10-day Avg Vol
-      - Gate 3: Exclude clinical-stage biotechs
+    Stage 1 Filter across the universe with multi-lane discovery:
+      - Common: Price >= $15.00, 10d Vol >= 800k, non-clinical biotech.
+      - Lane A (Basing): pos_52w between 18% and 68%, headroom_52w >= 15%, -4.5% <= pct_chg <= 2.0%
+      - Lane B (Continuation): pos_52w > 68%, headroom_52w < 15% (near-high leaders), -4.5% <= pct_chg <= 3.5%
     """
     candidates = []
 
     for sym, val in raw_quotes.items():
         clean_sym = sym.replace("/", ".")
         if clean_sym in biotech_set:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
 
         ref = val.get("reference") or {}
         desc = str(ref.get("description", "")).lower()
         if "biotech" in desc or "therapeutics" in desc:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
 
         quote = val.get("quote") or {}
@@ -315,43 +320,55 @@ def stage1_fast_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[s
             or 0.0
         )
         if last_px < 15.0:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["price_under_15"] = funnel_tracker["rejections"].get("price_under_15", 0) + 1
             continue
 
         high_52 = quote.get("52WeekHigh") or 0.0
         low_52 = quote.get("52WeekLow") or 0.0
         if high_52 <= 0 or low_52 <= 0 or high_52 <= low_52:
-            continue
-
-        # 1. Ground-Floor Basing Gate:
-        # Require at least 15% upside runway to 52-week high (prevents picking stocks already at 52w ceiling)
-        headroom_52w = (high_52 - last_px) / last_px * 100
-        if headroom_52w < 15.0:
-            continue  # Exclude stocks riding at all-time highs with depleted swing runway
-
-        # 2. 52-Week Range Position:
-        # Require price to be in the 18% to 68% sweet spot of its 52-week range.
-        # Excludes over-extended tops (>68%) and freefalling knives (<18%).
-        range_span_52w = high_52 - low_52
-        pos_52w = ((last_px - low_52) / range_span_52w) * 100
-        if pos_52w > 68.0 or pos_52w < 18.0:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["missing_52w_data"] = funnel_tracker["rejections"].get("missing_52w_data", 0) + 1
             continue
 
         avg_10d_vol = fund.get("avg10DaysVolume") or fund.get("avg1YearVolume") or 0.0
         if avg_10d_vol < 800_000:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["low_volume"] = funnel_tracker["rejections"].get("low_volume", 0) + 1
             continue
 
         tot_vol = quote.get("totalVolume") or 0
         pct_chg = quote.get("netPercentChange") or 0.0
 
-        if pct_chg > 2.0 or pct_chg < -4.5:
+        range_span_52w = high_52 - low_52
+        pos_52w = ((last_px - low_52) / range_span_52w) * 100
+        headroom_52w = (high_52 - last_px) / last_px * 100
+        vol_ratio = tot_vol / avg_10d_vol if avg_10d_vol > 0 else 1.0
+
+        lane = None
+        if headroom_52w >= 15.0 and 18.0 <= pos_52w <= 68.0:
+            if -4.5 <= pct_chg <= 2.0:
+                lane = "BASING"
+        elif pos_52w > 68.0 and headroom_52w < 15.0:
+            if -4.5 <= pct_chg <= 3.5:
+                lane = "CONTINUATION"
+
+        if not lane:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["out_of_bounds_or_excess_chg"] = funnel_tracker["rejections"].get("out_of_bounds_or_excess_chg", 0) + 1
             continue
 
-        vol_ratio = tot_vol / avg_10d_vol if avg_10d_vol > 0 else 1.0
+        if funnel_tracker:
+            lane_key = lane.lower()
+            funnel_tracker["stage1_passed"][lane_key] = funnel_tracker["stage1_passed"].get(lane_key, 0) + 1
 
         candidates.append(
             {
                 "symbol": clean_sym,
                 "schwab_symbol": sym,
+                "side": "LONG",
+                "lane": lane,
+                "screener_setup": "Ground-Floor Base" if lane == "BASING" else "Trend Continuation Leader",
                 "price": round(float(last_px), 2),
                 "52w_high": round(float(high_52), 2),
                 "52w_low": round(float(low_52), 2),
@@ -366,11 +383,15 @@ def stage1_fast_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[s
             }
         )
 
-    logger.info(f"Stage 1 filter complete: {len(candidates)} candidates passed ground-floor basing, liquidity, and biotech exclusions.")
+    logger.info(f"Stage 1 filter complete: {len(candidates)} candidates passed multi-lane liquidity, and biotech exclusions.")
     return candidates
 
 
-def stage1_short_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[str]) -> List[Dict[str, Any]]:
+def stage1_short_filter(
+    raw_quotes: Dict[str, Dict[str, Any]],
+    biotech_set: set[str],
+    funnel_tracker: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """
     Stage 1 Filter for Prime Short Candidates:
       - Price >= $15.00
@@ -385,11 +406,15 @@ def stage1_short_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[
     for sym, val in raw_quotes.items():
         clean_sym = sym.replace("/", ".")
         if clean_sym in biotech_set:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
 
         ref = val.get("reference") or {}
         desc = str(ref.get("description", "")).lower()
         if "biotech" in desc or "therapeutics" in desc:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
 
         quote = val.get("quote") or {}
@@ -402,37 +427,55 @@ def stage1_short_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[
             or 0.0
         )
         if last_px < 15.0:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["price_under_15"] = funnel_tracker["rejections"].get("price_under_15", 0) + 1
             continue
 
         high_52 = quote.get("52WeekHigh") or 0.0
         low_52 = quote.get("52WeekLow") or 0.0
         if high_52 <= 0 or low_52 <= 0 or high_52 <= low_52:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["missing_52w_data"] = funnel_tracker["rejections"].get("missing_52w_data", 0) + 1
             continue
 
         headroom_52w = (high_52 - last_px) / last_px * 100
         if headroom_52w > 4.5:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["short_headroom_too_wide"] = funnel_tracker["rejections"].get("short_headroom_too_wide", 0) + 1
             continue  # Must be bumping against ceiling (< 4.5% headroom)
 
         range_span_52w = high_52 - low_52
         pos_52w = ((last_px - low_52) / range_span_52w) * 100
         if pos_52w < 88.0:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["short_pos_52w_too_low"] = funnel_tracker["rejections"].get("short_pos_52w_too_low", 0) + 1
             continue  # Must be in the top 12% of 52w range
 
         downside_air_52w = (last_px - low_52) / last_px * 100
         if downside_air_52w < 25.0:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["short_insufficient_downside_air"] = funnel_tracker["rejections"].get("short_insufficient_downside_air", 0) + 1
             continue
 
         avg_10d_vol = fund.get("avg10DaysVolume") or fund.get("avg1YearVolume") or 0.0
         if avg_10d_vol < 800_000:
+            if funnel_tracker:
+                funnel_tracker["rejections"]["low_volume"] = funnel_tracker["rejections"].get("low_volume", 0) + 1
             continue
 
         tot_vol = quote.get("totalVolume") or 0
         pct_chg = quote.get("netPercentChange") or 0.0
 
+        if funnel_tracker:
+            funnel_tracker["stage1_passed"]["short"] = funnel_tracker["stage1_passed"].get("short", 0) + 1
+
         candidates.append(
             {
                 "symbol": clean_sym,
                 "schwab_symbol": sym,
+                "side": "SHORT",
+                "lane": "SHORT_EXHAUSTION",
+                "screener_setup": "Ceiling Rejection Exhaustion",
                 "price": round(float(last_px), 2),
                 "52w_high": round(float(high_52), 2),
                 "52w_low": round(float(low_52), 2),
@@ -450,8 +493,12 @@ def stage1_short_filter(raw_quotes: Dict[str, Dict[str, Any]], biotech_set: set[
     return candidates
 
 
-def evaluate_technical_coiling(candles: List[Dict[str, Any]], spy_20d_return: float) -> Optional[Dict[str, Any]]:
-    """Evaluates 60-200 daily OHLCV bars for Pre-Move Coiling & Relative Strength vs SPY."""
+def evaluate_technical_coiling(
+    candles: List[Dict[str, Any]],
+    spy_20d_return: float,
+    lane: str = "BASING",
+) -> Optional[Dict[str, Any]]:
+    """Evaluates 60-200 daily OHLCV bars for Pre-Move Coiling & Relative Strength vs SPY across Basing or Continuation lanes."""
     if len(candles) < 50:
         return None
 
@@ -496,22 +543,25 @@ def evaluate_technical_coiling(candles: List[Dict[str, Any]], spy_20d_return: fl
     if sma50 < (sma200 * 0.98):
         return None
 
-    # Disqualify extended runners (> 25% above 200 SMA, per EXT_MAX era-robust limit)
+    # Extension limits (25% for basing, up to 35% for continuation leaders)
     ext_200_pct = (last_close - sma200) / sma200 * 100
-    if ext_200_pct > 25.0:
+    max_ext = 35.0 if lane == "CONTINUATION" else 25.0
+    if ext_200_pct > max_ext:
         return None
 
     # 2. Gate 2: Relative Strength vs SPY over 20 days
     ticker_20d_return = (last_close - float(closes.iloc[-21])) / float(closes.iloc[-21]) if len(closes) >= 21 else 0.0
     relative_strength = ticker_20d_return - spy_20d_return  # Excess return vs SPY
-    if relative_strength < -0.05:
+    min_rs = 0.0 if lane == "CONTINUATION" else -0.05
+    if relative_strength < min_rs:
         return None
 
-    # 3. Support Proximity: Within 2.5% of EMA 20 or SMA 50 (holding support from ABOVE)
+    # 3. Support Proximity: Within 2.5% (3.5% for continuation) of EMA 20 or SMA 50
     dist_ema20_pct = abs(last_close - ema20) / last_close * 100
     dist_sma50_pct = abs(last_close - sma50) / last_close * 100
-    near_ema20 = dist_ema20_pct <= 2.5 and last_close >= (ema20 * 0.985)
-    near_sma50 = dist_sma50_pct <= 2.5 and last_close >= (sma50 * 0.985)
+    max_dist = 3.5 if lane == "CONTINUATION" else 2.5
+    near_ema20 = dist_ema20_pct <= max_dist and last_close >= (ema20 * 0.985)
+    near_sma50 = dist_sma50_pct <= max_dist and last_close >= (sma50 * 0.985)
 
     if not (near_ema20 or near_sma50):
         return None
@@ -550,27 +600,25 @@ def evaluate_technical_coiling(candles: List[Dict[str, Any]], spy_20d_return: fl
     range_span_60d = high_60d - low_60d
     range_pos_pct = ((last_close - low_60d) / range_span_60d * 100) if range_span_60d > 0 else 50.0
 
-    # Disqualify low R:R ceiling traps (< 6.0% headroom to 60-day resistance)
-    if headroom_pct < 6.0:
+    # For basing lane, require at least 6.0% headroom to prior 60d resistance
+    if lane == "BASING" and headroom_pct < 6.0:
         return None
 
     # 8. Revanth Proxy R:R (rev-screener.pine):
-    # stop = 10-bar lowest low (structural swing low)
-    # target = 60-bar highest high (prior range high)
-    # rr = (target - close) / (close - stop)
-    # atrs_up = (close - stop) / atr20
     swing_lo = float(lows.iloc[-10:].min()) if len(lows) >= 10 else float(lows.min())
-    range_hi = high_60d
+    target_hi = round(high_60d * 1.08, 2) if lane == "CONTINUATION" else high_60d
     long_risk = last_close - swing_lo
-    long_reward = range_hi - last_close
+    long_reward = target_hi - last_close
     long_rr = round(long_reward / long_risk, 1) if long_risk > 0 and long_reward > 0 else 0.0
     atrs_up = round(long_risk / atr20, 2) if atr20 > 0 else 0.0
 
-    # Gate: R:R >= 1.5 (per user instruction, R:R 2.0 is not strictly required; 1.5 is acceptable)
     if long_rr < 1.5:
         return None
 
-    setup_posture = "Open Runway (Dip Buy)" if headroom_pct >= 12.0 else "Mid-Base Coil (Pullback)"
+    if lane == "CONTINUATION":
+        setup_posture = "Trend Continuation (20 EMA Pullback Stalking)"
+    else:
+        setup_posture = "Open Runway (Dip Buy)" if headroom_pct >= 12.0 else "Mid-Base Coil (Pullback)"
     atr_pct = (atr20 / last_close) * 100
 
     # 9. Candlestick Pattern Recognition via TA-Lib (Bullish at Support)
@@ -589,12 +637,10 @@ def evaluate_technical_coiling(candles: List[Dict[str, Any]], spy_20d_return: fl
         pine_metrics = {}
 
     # Strict Quality Gate for Long Basing Setups:
-    # 1. Weinstein Stage: Disqualify Stage 4 (Declining) and Stage 3 (Distribution)
     stage = pine_metrics.get("weinstein_stage")
     if stage is not None and stage in (3, 4):
         return None  # Stage 4 is a declining falling knife; Stage 3 is topping distribution.
 
-    # 2. Priority Score: Disqualify low-score uncoiled noise (< 50.0)
     score = pine_metrics.get("priority_score")
     if score is not None and score < 50.0:
         return None  # Weak setup below conviction threshold.
@@ -624,6 +670,8 @@ def evaluate_technical_coiling(candles: List[Dict[str, Any]], spy_20d_return: fl
         "atr_pct": round(float(atr_pct), 2),
         "support_level": round(float(ema20 if near_ema20 else sma50), 2),
         "support_type": "20 EMA" if near_ema20 else "50 SMA",
+        "side": "LONG",
+        "lane": lane,
     }
     res.update(pine_metrics)
     return res
@@ -653,6 +701,7 @@ def run_stage2_technical_scan(
     def _eval_ticker(cand):
         schwab_sym = cand["schwab_symbol"]
         clean_sym = cand["symbol"]
+        cand_lane = cand.get("lane", "BASING")
         for attempt in range(2):
             try:
                 r = client.get_price_history_every_day(schwab_sym)
@@ -662,13 +711,15 @@ def run_stage2_technical_scan(
                 if r.status_code == 200:
                     data = r.json()
                     candles = data.get("candles") or []
-                    metrics = evaluate_technical_coiling(candles, spy_20d_return)
+                    metrics = evaluate_technical_coiling(candles, spy_20d_return, lane=cand_lane)
                     if metrics:
                         # Check 14-day earnings blackout gate
                         if not check_earnings_blackout(clean_sym):
                             return None
                         cand_copy = dict(cand)
                         cand_copy.update(metrics)
+                        cand_copy["side"] = "LONG"
+                        cand_copy["lane"] = cand_lane
                         return cand_copy
                     break
             except Exception as e:
@@ -699,6 +750,16 @@ def run_stage2_technical_scan(
     return survivors
 
 
+def save_scan_funnel(funnel_data: Dict[str, Any], date_str: str) -> Path:
+    """Saves complete screening funnel audit to data/raw/<date_str>/scan_funnel.json."""
+    out_dir = config.BASE_DIR / "data" / "raw" / date_str
+    out_dir.mkdir(parents=True, exist_ok=True)
+    funnel_file = out_dir / "scan_funnel.json"
+    funnel_file.write_text(json.dumps(funnel_data, indent=2), encoding="utf-8")
+    logger.info(f"Screening funnel recorded to {funnel_file}")
+    return funnel_file
+
+
 def save_survivors_manifest(top_picks: List[Dict[str, Any]], date_str: str) -> Path:
     """Saves qualified survivors into data/raw/<date_str>/survivors.json for UI & pipeline consumption."""
     out_dir = config.BASE_DIR / "data" / "raw" / date_str
@@ -713,8 +774,9 @@ def save_survivors_manifest(top_picks: List[Dict[str, Any]], date_str: str) -> P
                 "Symbol": str(p["symbol"]),
                 "symbol": str(p["symbol"]),
                 "source": "schwab_pre_move_scan",
-                "side": "LONG",
-                "screener_setup": str(p.get("setup_posture") or f"Pre-Move Compression ({p['support_type']})"),
+                "side": str(p.get("side", "LONG")),
+                "lane": str(p.get("lane", "BASING")),
+                "screener_setup": str(p.get("setup_posture") or f"Pre-Move Compression ({p.get('support_type', '20 EMA')})"),
                 "setup_posture": str(p.get("setup_posture", "Pullback")),
                 "support_level": float(p["support_level"]),
                 "stop_level": float(p.get("stop_level", p["support_level"])),
@@ -994,100 +1056,96 @@ def save_short_manifest(top_picks: List[Dict[str, Any]], date_str: str) -> Path:
 
 # Note: Unified run_schwab_pre_move_scan is defined below with full autonomous pipeline support.
 
-def synthesize_datawindow_from_screener(
+def create_screener_feature_payload(
     sym: str,
     cand: Dict[str, Any],
     rt_quote: Optional[Dict[str, Any]] = None,
     t_date: Optional[str] = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
-    Synthesizes a complete TradingView-compatible Data Window dictionary from
-    screener technical coiling indicators & real-time REST quote.
-    Allows Phase 2C-1 and Phase 2C-2 (Local Research triage & thesis) to run
-    100% locally and instantaneously with ZERO Playwright browser scraping.
+    Typed screener feature payload for a candidate WITHOUT a fresh TradingView scrape.
+
+    Provenance contract (see implementation plan, Batch A — "No Synthetic Indicator
+    Fabrication"): this is NOT a TradingView Data Window and must never be read as one.
+    It carries only OBSERVED Schwab scan metrics with explicit source="SCHWAB_SCAN".
+    Unavailable Pine fields are None — never fabricated. The deterministic filter treats
+    this payload as research-interested (WATCH) and NEVER fires its measured PASS lanes
+    (Code 20 / RSI2 / RR-at-market) on it.
     """
     t_date = t_date or datetime.now().strftime("%Y-%m-%d")
+
+    def _obs(key: str, default=None):
+        v = cand.get(key)
+        return v if v is not None else default
+
     price = None
     if rt_quote:
         price = rt_quote.get("price") or rt_quote.get("last_price")
-    if not price:
-        price = cand.get("price") or cand.get("close") or 100.0
-    price = float(price)
+    if price is None:
+        price = _obs("price") or _obs("close")
+    try:
+        price = float(price) if price is not None else None
+    except (TypeError, ValueError):
+        price = None
 
-    side = (cand.get("side") or "LONG").upper()
-    stage = int(cand.get("weinstein_stage") or (1 if side == "LONG" else 4))
-    score = float(cand.get("priority_score") or 75.0)
-    ema20 = float(cand.get("ema20") or price)
-    sma50 = float(cand.get("sma50") or price)
-    sma200 = float(cand.get("sma200") or price)
+    side = str(_obs("side", "LONG")).upper()
 
-    stop = float(cand.get("stop_level") or (price * 0.96 if side == "LONG" else price * 1.04))
-    target = float(cand.get("target_level") or cand.get("ceiling_level") or (price * 1.10 if side == "LONG" else price * 0.90))
-    rr = float(cand.get("long_rr") or cand.get("short_rr") or 2.5)
-    ext_pct = float(cand.get("ext_200_pct") or (5.0 if side == "LONG" else -5.0))
+    def _level(key: str):
+        v = _obs(key)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
 
-    # Entry zone around current price / EMA20
-    zbot = round(min(price, ema20) * 0.995, 2)
-    ztop = round(max(price, ema20) * 1.005, 2)
+    tt = cand.get("tastytrade") or {}
 
-    is_rev = bool(cand.get("is_extreme_reversal", False))
-    # Action code 20 (REVERSAL BUY/SELL) is the era-robust PASS lane in data_window_filter
-    act_code = "20"
-    rev_zone_score = "8" if is_rev else "2"
-    # Bit 4 in signal pack is NOT-fade (inverted: bit 4 == 1 means NOT fade, allows fresh entries)
-    sig_pack = "5" if side == "LONG" else "6"
-
-    dw = {
-        "time": t_date,
+    payload = {
+        # Provenance — the single source of truth that this is NOT a Data Window.
+        "datawindow_source": "SCHWAB_SCAN",
+        "source": "SCHWAB_SCAN",
         "ticker": sym.upper(),
-        "open": str(round(price, 2)),
-        "high": str(round(price * 1.01, 2)),
-        "low": str(round(price * 0.99, 2)),
-        "close": str(round(price, 2)),
-        "Sprint Line EMA": str(round(ema20, 2)),
-        "Hull Baseline HMA": str(round(ema20, 2)),
-        "MA 20 Fast": str(round(ema20, 2)),
-        "MA 50 Mid": str(round(sma50, 2)),
-        "MA 200 Slow": str(round(sma200, 2)),
-        "Weinstein MA 150": str(round(sma50, 2)),
-        "Stage 1 Base 2 Up 3 Top 4 Down": str(stage),
-        "Stage Age Bars": "5",
-        "Long Entry": str(round(price, 2)),
-        "Long Entry Zone Bot": str(zbot),
-        "Long Entry Zone Top": str(ztop),
-        "Long Stop Loss": str(round(stop, 2)),
-        "Long Target": str(round(target, 2)),
-        "Short Entry": str(round(price, 2)),
-        "Short Entry Zone Bot": str(zbot),
-        "Short Entry Zone Top": str(ztop),
-        "Short Stop Loss": str(round(stop, 2)),
-        "Short Target": str(round(target, 2)),
-        "Long Setup Score": str(round(score if side == "LONG" else 20.0, 1)),
-        "Short Pressure Score": str(round(score if side == "SHORT" else 20.0, 1)),
-        "Entry At Market 0No 1L 2S 3Both": "1" if side == "LONG" else "2",
-        "Action Long Code": act_code if side == "LONG" else "0",
-        "Action Short Code": act_code if side == "SHORT" else "0",
-        "Long Rev Zone": rev_zone_score if side == "LONG" else "0",
-        "Short Rev Zone": rev_zone_score if side == "SHORT" else "0",
-        "Ext Pct vs MA200": str(round(ext_pct, 1)),
-        "Exhaustion Gradient": "0.0",
-        "Ext Z Self Relative": "0.0",
-        "Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz": "6" if cand.get("squeeze_on") else "1",
-        "Exp Move Pct 21b": "6.0",
-        "Evidence Bias Pct Above 50 Bull": "65.0" if side == "LONG" else "35.0",
-        "Long Ignition Fresh Breakout": "1" if cand.get("nr7") else "0",
-        "RR To Target": str(round(rr, 1)),
-        "Long RR At Market": str(round(rr, 1)),
-        "Zone RR Flags Pack": "7",
-        "Signal Pack": sig_pack,
-        "Bear Warning Mask": "0",
-        "Reversal Pattern Mask": "0",
-        "Weak Level Mask": "0",
-        "POC": str(round(price, 2)),
-        "VAH": str(round(price * 1.03, 2)),
-        "VAL": str(round(price * 0.97, 2)),
+        "time": t_date,
+        "generated_at": datetime.now(ZoneInfo("America/Denver")).isoformat(timespec="seconds"),
+        # Side identity — bound at candidate creation; direction-sensitive consumers must reject ambiguity.
+        "side": side,
+        "setup_family": "EXHAUSTION_SHORT" if side == "SHORT" else "STAGE1_BASING",
+        # Observed quote (real-time REST + stage-2 history). None when unavailable.
+        "price": price,
+        "ema20": _level("ema20"),
+        "sma50": _level("sma50"),
+        "sma200": _level("sma200"),
+        # Observed technical state (Pine screener engine / stage-2 math).
+        "weinstein_stage": _obs("weinstein_stage"),
+        "is_extreme_reversal": bool(_obs("is_extreme_reversal", False)),
+        "squeeze_on": bool(_obs("squeeze_on", False)),
+        "nr7": bool(_obs("nr7", False)),
+        "ext_200_pct": _level("ext_200_pct"),
+        # Observed levels produced by the scan itself (not Pine indicator exports).
+        "support_level": _level("support_level"),
+        "entry_level": _level("entry_level"),
+        "ceiling_level": _level("ceiling_level"),
+        "stop_level": _level("stop_level"),
+        "target_level": _level("target_level"),
+        "long_rr": _level("long_rr"),
+        "short_rr": _level("short_rr"),
+        # Observed scan conviction.
+        "priority_score": _level("priority_score"),
+        "priority_tier": _obs("priority_tier"),
+        # Observed Tastytrade institutional metrics (None when enrichment unavailable).
+        "iv_rank": tt.get("iv_rank"),
+        "iv_percentile": tt.get("iv_percentile"),
+        "hv30": tt.get("hv30"),
+        "iv_hv_diff": tt.get("iv_hv_diff"),
+        "liquidity_rating": tt.get("liquidity_rating"),
+        # Explicitly UNAVAILABLE Pine indicator exports — None, never fabricated.
+        "poc": None,
+        "vah": None,
+        "val": None,
+        "action_long_code": None,
+        "action_short_code": None,
+        "rsi2_state": None,
     }
-    return dw
+    return payload
 
 
 def run_autonomous_screener_pipeline(
@@ -1120,16 +1178,18 @@ def run_autonomous_screener_pipeline(
     t_date = date_str or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
     # Strict Quality Gate for Autonomous Dispatch:
-    # Only dispatch candidates that are HIGH_PRIORITY or top MEDIUM_PRIORITY (score >= 60.0)
+    # Only dispatch candidates that are HIGH_PRIORITY or top MEDIUM_PRIORITY (score >= min conviction).
+    # Shares config.SCREENER_MIN_CONVICTION with the daemon gate so the two can never drift.
+    min_conv = config.SCREENER_MIN_CONVICTION
     high_priority_picks = [
         c for c in candidates
-        if (c.get("priority_tier") == "HIGH_PRIORITY" or float(c.get("priority_score", 0.0)) >= 60.0)
+        if (c.get("priority_tier") == "HIGH_PRIORITY" or float(c.get("priority_score", 0.0)) >= min_conv)
     ]
     if not high_priority_picks:
-        logger.info("🤖 [AUTONOMOUS ENGINE] No high-priority setups met conviction threshold (score >= 60) today.")
+        logger.info(f"🤖 [AUTONOMOUS ENGINE] No high-priority setups met conviction threshold (score >= {min_conv:.1f}) today.")
         logger.info("🛡️ Preserving system resources & GPU bandwidth — 0 junk tickers dispatched.")
         print("\n" + "=" * 115)
-        print(">> 🤖 AUTONOMOUS SCREENER: 0 High-Conviction Setups Met Conviction Bar (Score >= 60).")
+        print(f">> 🤖 AUTONOMOUS SCREENER: 0 High-Conviction Setups Met Conviction Bar (Score >= {min_conv:.1f}).")
         print(">> Preserving GPU bandwidth & system resources — 0 junk tickers dispatched.")
         print("=" * 115 + "\n")
         return {"count": 0, "researched": []}
@@ -1234,16 +1294,20 @@ def run_autonomous_screener_pipeline(
                         logger.info(f"⚡ [{sym}] Reused historical datawindow from {d.name} for local research.")
                         break
 
-        # If datawindow is still missing, synthesize it directly from screener indicators & live quote — ZERO BROWSER SCRAPING!
+        # If no real TradingView Data Window exists, write a TYPED screener feature payload
+        # (observed Schwab metrics, source="SCHWAB_SCAN"). We deliberately do NOT fabricate a
+        # Data Window: the deterministic filter treats this as research-interested (WATCH) and
+        # never fires its measured PASS lanes on it. A fresh scrape in Step 3 supersedes it.
         if not dw_json.exists():
-            logger.info(f"⚡ [{sym}] Synthesizing baseline data window from screener metrics & real-time quote (zero browser)...")
+            payload_path = raw_ticker_dir / f"{sym}_screener_payload.json"
+            logger.info(f"⚡ [{sym}] No TradingView data window — writing typed screener feature payload (zero fabrication)...")
             try:
-                synth_dw = synthesize_datawindow_from_screener(sym, p, rt_quote=rt_quote, t_date=t_date)
-                with open(dw_json, "w", encoding="utf-8") as f_dw:
-                    json.dump(synth_dw, f_dw, indent=2)
-                logger.info(f"✅ [{sym}] Baseline data window synthesized successfully.")
+                payload = create_screener_feature_payload(sym, p, rt_quote=rt_quote, t_date=t_date)
+                with open(payload_path, "w", encoding="utf-8") as f_dw:
+                    json.dump(payload, f_dw, indent=2)
+                logger.info(f"✅ [{sym}] Screener feature payload written (source=SCHWAB_SCAN).")
             except Exception as e_synth:
-                logger.error(f"[{sym}] Failed to synthesize data window: {e_synth}")
+                logger.error(f"[{sym}] Failed to write screener feature payload: {e_synth}")
                 continue
 
         # =========================================================================
@@ -1435,11 +1499,19 @@ def run_schwab_pre_move_scan(
     long_top_picks = []
     short_top_picks = []
 
+    funnel_tracker = {
+        "date": date_str,
+        "scan_mode": scan_mode,
+        "total_quotes": len(raw_quotes),
+        "rejections": {},
+        "stage1_passed": {"basing": 0, "continuation": 0, "short": 0},
+    }
+
     # =========================================================================
-    # LONG BASING SCAN
+    # LONG BASING & CONTINUATION SCAN
     # =========================================================================
     if scan_mode in ("long", "both"):
-        stage1_survivors = stage1_fast_filter(raw_quotes, biotech_set)
+        stage1_survivors = stage1_fast_filter(raw_quotes, biotech_set, funnel_tracker=funnel_tracker)
         final_survivors = run_stage2_technical_scan(client, stage1_survivors, spy_20d_return)
         
         # Quality Gate: Never pad with junk or declining tickers
@@ -1451,33 +1523,33 @@ def run_schwab_pre_move_scan(
         filtered_out = len(final_survivors) - len(qualified_longs)
 
         print("\n" + "=" * 135)
-        print(f">> 🎯 TOP {len(long_top_picks)} PRE-MOVE GROUND-FLOOR SWING SETUPS (Schwab 1000 Index / SCHK)")
+        print(f">> 🎯 TOP {len(long_top_picks)} PRE-MOVE SWING SETUPS (Schwab 1000 Index / SCHK)")
         if filtered_out > 0:
             print(f">> Filtered out {filtered_out} low-conviction/declining tickers. Showing best setups tight.")
         print(f">> Market Tide: {market_tide.get('trend_str')} (SPY ${market_tide.get('last_px'):.2f})")
         print("=" * 135)
-        header = f"{'Rank':<4} | {'Ticker':<7} | {'Price':<8} | {'Stage':<11} | {'Priority':<16} | {'Long R:R':<8} | {'RevZone':<8} | {'Support / Stop':<24} | {'Posture':<24} | {'SQZ':<5}"
+        header = f"{'Rank':<4} | {'Ticker':<7} | {'Lane':<12} | {'Price':<8} | {'Stage':<11} | {'Priority':<16} | {'Long R:R':<8} | {'Support / Stop':<24} | {'Posture':<24}"
         print(header)
         print("-" * len(header))
 
         for idx, p in enumerate(long_top_picks, 1):
-            sqz = "YES" if p["squeeze_on"] else "NO"
             posture = p.get("setup_posture", "Normal")[:24]
             stage_num = p.get("weinstein_stage", 1)
             stage_lbl = "Base" if stage_num == 1 else "Adv" if stage_num == 2 else "Rec"
             stage_str = f"Stg {stage_num} ({stage_lbl})"
-            rev_str = f"{p.get('rev_zone_long', 0.0):.1f}"
             prio_tier = p.get("priority_tier", "MED")
             prio_str = f"{p.get('priority_score', 0.0):.1f} ({prio_tier[:4]})"
             sup_stop = f"${p.get('support_level', 0.0):.2f} / ${p.get('stop_level', 0.0):.2f}"
-            row = f"{idx:<4} | {p['symbol']:<7} | ${p['price']:<7.2f} | {stage_str:<11} | {prio_str:<16} | {p.get('long_rr', 0.0):<8.1f} | {rev_str:<8} | {sup_stop:<24} | {posture:<24} | {sqz:<5}"
+            row = f"{idx:<4} | {p['symbol']:<7} | {p.get('lane', 'BASING'):<12} | ${p['price']:<7.2f} | {stage_str:<11} | {prio_str:<16} | {p.get('long_rr', 0.0):<8.1f} | {sup_stop:<24} | {posture:<24}"
             print(row)
         print("=" * 135 + "\n")
 
-        # Enrich with Tastytrade institutional metrics & 24/7 cloud price alerts
+        # Enrich with Tastytrade institutional metrics only.
+        # Cloud quote alerts are registered exclusively by the continuous screener
+        # daemon (single owner). Manual scans must not create cloud alerts.
         try:
             from src.screener.continuous_screener_daemon import enrich_candidates_with_tastytrade
-            enrich_candidates_with_tastytrade(long_top_picks, auto_alerts=True)
+            enrich_candidates_with_tastytrade(long_top_picks, auto_alerts=False)
         except Exception as e_tt:
             logger.debug(f"Tastytrade enrichment notice: {e_tt}")
 
@@ -1487,7 +1559,7 @@ def run_schwab_pre_move_scan(
     # PRIME SHORT SCAN
     # =========================================================================
     if scan_mode in ("short", "both"):
-        short_stage1 = stage1_short_filter(raw_quotes, biotech_set)
+        short_stage1 = stage1_short_filter(raw_quotes, biotech_set, funnel_tracker=funnel_tracker)
         short_survivors = run_stage2_short_scan(client, short_stage1)
         
         # Quality Gate: Never pad with junk or advancing momentum runners
@@ -1520,14 +1592,19 @@ def run_schwab_pre_move_scan(
             print(row)
         print("=" * 135 + "\n")
 
-        # Enrich with Tastytrade institutional metrics & 24/7 cloud price alerts
+        # Enrich with Tastytrade institutional metrics only.
+        # Cloud quote alerts are registered exclusively by the continuous screener
+        # daemon (single owner). Manual scans must not create cloud alerts.
         try:
             from src.screener.continuous_screener_daemon import enrich_candidates_with_tastytrade
-            enrich_candidates_with_tastytrade(short_top_picks, auto_alerts=True)
+            enrich_candidates_with_tastytrade(short_top_picks, auto_alerts=False)
         except Exception as e_tt:
             logger.debug(f"Tastytrade enrichment notice: {e_tt}")
 
         save_short_manifest(short_top_picks, date_str)
+
+    # Record scan funnel audit
+    save_scan_funnel(funnel_tracker, date_str)
 
     # Autonomous Execution Pathway
     if autonomous:

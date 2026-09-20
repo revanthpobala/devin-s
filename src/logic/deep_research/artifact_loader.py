@@ -35,7 +35,24 @@ def load_triage_record(
         for fname in (f"{safe}_thesis.json", f"{safe}_triage.json"):
             p = d / fname
             if p.exists():
+                # Check for stale cache against refreshed datawindow or chart artifacts
                 try:
+                    p_mtime = p.stat().st_mtime
+                    is_stale = False
+                    for check_dir in search_dirs:
+                        for art_name in (f"{safe}_datawindow.json", f"{safe}_datawindow.csv", f"{safe}_chart.png"):
+                            art_file = check_dir / art_name
+                            if art_file.exists() and art_file.stat().st_mtime > p_mtime:
+                                logger.info(
+                                    f"[{ticker}] Stale cached triage at {p.name} (older than {art_file.name}). Recomputing triage."
+                                )
+                                is_stale = True
+                                break
+                        if is_stale:
+                            break
+                    if is_stale:
+                        continue
+
                     data = json.loads(p.read_text(encoding="utf-8"))
                     # _thesis.json wraps the record; _triage.json is flat.
                     rec = data.get("triage") or data.get("llm_data") or data

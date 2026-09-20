@@ -17,3 +17,12 @@
    - The LLM should evaluate whether the stock's regime, IV Rank, and fundamental outlook favor a tactical swing, a multi-quarter / LEAPS structure, or selling credit / skipping:
      - **Plan B-1: Tactical Swing (21–45 DTE)**: Defined-risk vertical spreads (e.g. Bull Call / Bull Put) capturing near-term technical levels or support defense.
      - **Plan B-2: Multi-Quarter / LEAPS (120–500+ DTE)**: If fundamental compounding and long-term re-rating warrant a multi-quarter horizon, evaluate Deep ITM Calls (Delta 0.70–0.85) or Long Diagonals. If the setup does not justify buying multi-year premium (e.g. extreme IV Rank >80 or Stage 4 distribution where credit selling or skipping is superior), state why clearly.
+9. **RSI2 Mean Reversion Setup Parity & Fixed Level Preservation:**
+   - If analyzing an RSI2 setup, its levels (`visibleEntry`, `visibleStop`, `visibleTarget`, `opening_ceiling`) are mathematically fixed. **Do NOT silently overwrite or mutate fixed RSI2 exits** with generic Plan A discretionary trailing stops.
+   - **Single Next-Open Rule**: RSI2 entries execute exclusively at the immediate next open. If the stock opened above `opening_ceiling` on that bar, the setup is **EXPIRED_CEILING**; do not recommend chasing at market.
+   - **Recovery Exit**: If price closes above the 5-day EMA, an EMA5 recovery exit is queued for the following bar's open.
+10. **Handling Unknown Earnings & Missing Option Data:**
+   - If next earnings date is unknown, explicitly state "Earnings Date: UNKNOWN / VERIFY" rather than inventing a date.
+   - If live options chains are unavailable, evaluate delta/strike geometry based on synthetic historical pricing or recommend equity shares (Plan A); never fabricate bid/ask option quotes.
+11. **Report-Level Extraction Integrity:**
+   - Always preserve the standard structured section headers and tactical table rows (`Entry Zone`, `Stop Loss`, `Target 1`, `Target 2`, `Tactical R:R`, `Mathematical R:R`) so downstream parsers and watch alert engines extract valid numbers without fallback regex errors.

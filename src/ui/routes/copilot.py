@@ -221,7 +221,7 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
                     messages=messages,
                     use_tools=True,
                     use_openrouter=False,
-                    max_tokens=2048,
+                    max_tokens=4096,
                 )
             except Exception as llm_err:
                 response_text = f"⚠️ **LLM Inference Error:** {llm_err}"
@@ -400,7 +400,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     create_kwargs = {
                         "model": model_name,
                         "messages": messages,
-                        "max_tokens": 2048,
+                        "max_tokens": 4096,
                         "temperature": 0.2,
                         "stream": True,
                         "extra_body": {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}},

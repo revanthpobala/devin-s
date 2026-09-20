@@ -239,11 +239,16 @@ def test_schema_v2_trade_events_and_outbox(temp_db):
         }
         alert_db.record_alert(alert)
 
-        # Should be unrouted
+        # Should be unrouted (RECORDED default)
         unrouted = alert_db.get_unrouted_alerts()
         assert any(a["message_id"] == "outbox-test-1" for a in unrouted)
 
-        # Update stage to ROUTED
+        # ENQUEUED stage is also recoverable (crash between handoff and ROUTED)
+        alert_db.update_routing_stage("outbox-test-1", "ENQUEUED")
+        unrouted_enq = alert_db.get_unrouted_alerts()
+        assert any(a["message_id"] == "outbox-test-1" for a in unrouted_enq)
+
+        # Update stage to ROUTED — now fully routed, no longer recoverable
         alert_db.update_routing_stage("outbox-test-1", "ROUTED")
         unrouted_after = alert_db.get_unrouted_alerts()
         assert not any(a["message_id"] == "outbox-test-1" for a in unrouted_after)

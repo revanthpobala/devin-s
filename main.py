@@ -230,7 +230,7 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
     alert_price = alert.get("alert_price")
     email_id = alert.get("email_id")
 
-    if not symbol or strategy not in ["Intraday", "Daily"]:
+    if not symbol or strategy not in ["Intraday", "Daily", "RSI2"]:
         logger.info(f"Skipping alert for {symbol} as strategy is {strategy}.")
         if email_id and gmail:
             try:
@@ -260,7 +260,13 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
         logger.error(f"Immediate SQLite record error for {symbol}: {e_rec}. Ingestion aborted to prevent unaudited routing.")
         return False
 
-    # 2. Immediate Position State & Monitor Routing
+    # 2. Durable ENQUEUED stage: alert is recorded and about to be handed to the
+    #    PositionManager. Crash between ENQUEUED and ROUTED is recoverable via
+    #    replay_unrouted_alerts() (which picks up both RECORDED and ENQUEUED).
+    if alert.get("message_id"):
+        _update_routing_stage_db(alert["message_id"], "ENQUEUED")
+
+    # 3. Immediate Position State & Monitor Routing
     from src.tracking.position_monitor import _is_exit_event
 
     raw_action = str(alert.get("action", "")).upper().strip()
@@ -303,14 +309,14 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
         f"⚡ [INGESTED] Symbol: {symbol}, Strategy: {strategy}, Action: {raw_action}, Price: {alert_price}"
     )
 
-    # 3. Mark email as read in Gmail immediately
+    # 4. Mark email as read in Gmail immediately
     if email_id and gmail:
         try:
             gmail.mark_as_read(email_id)
         except Exception as e_mark:
             logger.debug(f"Failed to mark email {email_id} as read: {e_mark}")
 
-    # 4. Enqueue for background asynchronous enrichment
+    # 5. Enqueue for background asynchronous enrichment
     _enrichment_queue.put(alert)
     return True
 

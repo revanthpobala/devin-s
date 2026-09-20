@@ -89,6 +89,14 @@ def build_live_market_context(symbol: str) -> Dict[str, Any]:
     except Exception as e:
         logger.debug(f"Options fetch bypassed for {symbol}: {e}")
 
+    # 4. Real-time tape signal (1m candle order flow)
+    try:
+        from src.plugins.order_flow_plugin import read_tape
+        context["tape"] = read_tape(symbol)
+    except Exception as e:
+        logger.debug(f"Tape fetch bypassed for {symbol}: {e}")
+        context["tape"] = {"verdict": "unavailable"}
+
     return context
 
 
@@ -391,7 +399,9 @@ def evaluate_alert_payload(
     current_price = alert.get("alert_price") or payload.get("price")
     if not current_price or current_price == "N/A":
         try:
-            current_price = get_current_price(symbol)
+            current_price = get_current_price(
+                symbol, context="execution" if strategy == "Intraday" else "surveillance"
+            )
         except Exception:
             current_price = 0.0
 
@@ -476,6 +486,7 @@ def evaluate_alert_payload(
 - Setup / Alignment: {alert.get('setup') or payload.get('setup') or 'None'} | {alert.get('align') or payload.get('align') or '--'}
 - Invalidation (Wrong If): {alert.get('wrong_if') or payload.get('wrong_if') or '--'}{exit_context_str}
 - Live Volatility (Tastytrade): {json.dumps(live_ctx.get('volatility'))}
+- Live Tape (1m order flow): {live_ctx.get('tape', {}).get('verdict', 'unavailable')}
 - Recent Breaking News:
 {chr(10).join(live_ctx.get('news', [])[:2]) or 'None reported'}
 

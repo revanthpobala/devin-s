@@ -16,8 +16,80 @@ import numpy as np
 import pandas as pd
 
 from src.plugins.base_plugin import BaseAnalyticsPlugin
+from src.clients.schwab_client import get_intraday_candles
 
 logger = logging.getLogger(__name__)
+
+
+def read_tape(ticker: str) -> Dict[str, Any]:
+    """Compute real-time tape signal from the last ~15 one-minute candles.
+
+    Returns dict with:
+      - pressure: float  (0.0-1.0, >0.5 = buying, <0.5 = selling)
+      - vol_accel: float (current 3-min vol / prior 12-min per-min avg; >1.5 = accelerating, <0.7 = fading)
+      - verdict: str    (one-line human-readable summary)
+    Returns {"verdict": "unavailable"} on failure (never raises).
+    """
+    try:
+        candles = get_intraday_candles(ticker, frequency=1, lookback_bars=15)
+        if not candles or len(candles) < 5:
+            return {"verdict": "insufficient data"}
+
+        # Drop the in-flight (incomplete) candle: its partial low/high skews pressure.
+        try:
+            from datetime import datetime, timezone
+            last_ts = int(candles[-1].get("datetime") or 0) // 60000
+            now_min = int(datetime.now(timezone.utc).timestamp()) // 60000
+            if abs(now_min - last_ts) <= 2:
+                candles = candles[:-1]
+        except Exception:
+            pass
+        if len(candles) < 5:
+            return {"verdict": "insufficient data"}
+
+        # Pressure: average of (close - low) / (high - low) across candles with a range
+        pressures = []
+        for c in candles:
+            try:
+                h = float(c.get("high") or 0)
+                l = float(c.get("low") or 0)
+                cl = float(c.get("close") or 0)
+            except (ValueError, TypeError):
+                continue
+            if h > l:
+                pressures.append((cl - l) / (h - l))
+        pressure = round(sum(pressures) / len(pressures), 3) if pressures else 0.5
+
+        # Volume acceleration: last 3 candles vs prior 12 per-min average
+        vols = []
+        for c in candles:
+            try:
+                v = float(c.get("volume") or 0)
+            except (ValueError, TypeError):
+                v = 0.0
+            vols.append(v)
+
+        recent = vols[-3:]
+        baseline = vols[:-3] if len(vols) > 3 else []
+        base_per_min = sum(baseline) / len(baseline) if baseline else 0.0
+        vol_accel = (sum(recent) / (base_per_min * 3)) if base_per_min > 0 else 1.0
+        vol_accel = round(vol_accel, 3)
+
+        if pressure > 0.6 and vol_accel > 1.5:
+            verdict = "aggressive buying, volume accelerating"
+        elif pressure < 0.4 and vol_accel > 1.5:
+            verdict = "aggressive selling, volume accelerating"
+        elif pressure > 0.6 and vol_accel < 0.7:
+            verdict = "buying pressure but volume fading (exhaustion risk)"
+        elif pressure < 0.4 and vol_accel < 0.7:
+            verdict = "selling pressure but volume fading (potential bottom)"
+        else:
+            verdict = "balanced tape, low conviction"
+
+        return {"pressure": pressure, "vol_accel": vol_accel, "verdict": verdict}
+    except Exception as e:
+        logger.debug(f"[read_tape:{ticker}] failed: {e}")
+        return {"verdict": f"error: {e}"}
 
 
 def _safe_float(val: Any) -> float | None:
@@ -176,7 +248,7 @@ class OrderFlowPlugin(BaseAnalyticsPlugin):
 
         # Summary Synthesis Line
         summary_verdict = (
-            f"Institutional {results.get('_institutional_flow_bias', 'Flow')} "
+            f"{results.get('_institutional_flow_bias', 'Balanced Flow')} "
             f"[CMF: {results.get('_chaikin_money_flow_20d', 0.0):+.3f}, "
             f"60d AccRatio: {results.get('_volume_acc_dist_ratio_60d', 1.0):.2f}x]"
         )

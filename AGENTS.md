@@ -111,18 +111,18 @@ python run_swing_research.py --spx
   - Sequentially runs parallel chart scraping (`run_swing_research.py --ticker <SYM>`), local triage (`run_local_research.py --ticker <SYM>`), deep research (`run_deep_research.py --ticker <SYM>`), and watch alerts synchronization (`run_watch_alerts.py --sync --once`).
   - Registers 24/7 cloud quote alerts with Tastytrade mobile push.
 - **Continuous Autonomous Daemon & Slot Engine** (`run_continuous_screener.py`):
-  - Continuously loops through the Schwab 1000 universe every `--interval` seconds (default 600s).
+  - Continuously loops through the Schwab 1000 universe every `--interval` seconds (default 300s / 5 min).
   - Enriches setups with real-time Tastytrade volatility metrics (IV Rank, IV Percentile, 30d HV, IV-HV spread) and auto-registers 24/7 cloud price alerts with mobile push notifications.
   - **Slot-Aware Deep Research**: Checks local GPU / process slot availability and automatically dispatches exactly **1** top-conviction setup at a time into deep research when the slot is free. If a deep research pass is already running, preserves the slot and holds candidates until it frees up.
   - One-click launch via `scripts\launchers\start_autonomous_scanner.bat`.
 
 **Usage**:
 ```bash
-# Continuous autonomous loop (scans every 10 min, runs 1 deep research in slot when qualified)
+# Continuous autonomous loop (scans every 5 min, runs 1 deep research in slot when qualified)
 python run_continuous_screener.py
 
-# Faster 5-minute loop with headless scraping
-python run_continuous_screener.py --interval 300 --headless
+# Run with headless scraping
+python run_continuous_screener.py --headless
 
 # Single-pass scan, report opportunities, dispatch 1 if slot free, and exit
 python run_continuous_screener.py --once
@@ -306,7 +306,6 @@ python run_watch_alerts.py --sync --date 2026-08-29
 - Structured output: `json_schema` (GBNF-compiled on the local server) and `json_mode`
 - Local concurrency throttled by `LLM_LOCAL_CONCURRENCY` semaphore
 - **Tool-calling loop** (`use_tools=True`) with these tools: `fetch_earnings_calendar`, `search_web` (Brave+DDG+Parallel), `fetch_finnhub_news`, `fetch_alpaca_news`, `get_realtime_quote`, `fetch_options_chain`, `scrape_tradingview_options_finder` (TV Strategy Finder + volume charts), `fetch_historical_zone_and_regime_analytics`, `fetch_tastytrade_volatility_and_options` (IV Rank, HV/IV spread, option liquidity rating, short borrow rate), `run_quantitative_plugin`, `execute_python_code` (sandboxed: pre-loaded `df` 300 bars × 85 indicators, `dw`, numpy/pandas/scipy), `fetch_prior_research`, `detect_candlestick_patterns`
-- `query_qwen()` (`src/clients/qwen_client.py`) — DashScope Qwen API (cloud, optional vision)
 
 ---
 
@@ -343,13 +342,11 @@ python run_watch_alerts.py --sync --date 2026-08-29
 - `google_grounding_client.py` — Google Grounding (Gemini + web search)
 - `finnhub_client.py` — Finnhub API (macro, earnings)
 - `alphavantage_client.py` — Alpha Vantage (technical data)
-- `adanos_client.py` — Adanos API (social sentiment; 250 req/month free tier)
 - `earnings_client.py` — Earnings data
 - `macro_client.py` — Macro context builder
 - `options_client.py` — Live options chains (Alpaca snapshot, yfinance fallback) + quote tools for the deep-research LLM
 - `schwab_client.py` — Schwab API (unusual options flow scan); first-time auth via `setup_schwab.py`
 - `kalshi_client.py` — Kalshi prediction markets (RSA-signed requests; key at `kalshi/tradingview.txt`)
-- `qwen_client.py` — DashScope Qwen cloud API
 
 ---
 
@@ -384,7 +381,7 @@ python src/data/import_all_history.py
 - `data_window_filter.py` — Revanth Data Window pre-filter: parses the TV scrape, decodes action codes/masks, emits PASS/WATCH/CUT + long & short trade plans; `deep_research_sort_key` / `rank_pass_tickers` rank candidates
 - `trigger_gaps.py` — Buy-trigger gap engine: deterministic distance-to-buy per gate (feature flag `TRIGGERS_ENABLED`)
 - `scenario_model.py` — One-step scenario projection (zone/stop/target per candidate price)
-- `watch_ranker.py` — Learned (LightGBM) ordering for WATCH candidates competing for paid slots (flag `RANK_MODEL_ENABLED`; never affects PASS/WATCH/CUT)
+- `watch_ranker.py` — Ordering hook for the `rank_model_score` field; the learned LightGBM path was removed, so `score_data_window()` returns None and callers fall back to deterministic ordering
 - `response_model.py` — Historical state-response lookup (edge vs baseline buckets)
 - `buy_precedent.py` — Last Code-20 (REVERSAL BUY) performance for a ticker
 - `strike_validator.py` — Deterministic option-structure geometry validation (kills naked-leg/ITM-credit rationalizations)
@@ -400,13 +397,10 @@ python src/data/import_all_history.py
 
 **Purpose**: Offline trained models used by the deterministic layer.
 
-**Artifacts**: `data/models/` (`watch_ranker.txt` LightGBM + feature manifest, `state_response.json`)
+**Artifacts**: `data/models/` (`state_response.json`)
 
 **Commands** (`scripts/ml/`):
 ```bash
-# Train the Watch Ranker (requires the full_v2 corpus checkout)
-CORPUS=full_v2 python scripts/ml/train_watch_ranker.py --out-dir data/models
-
 # Build the state-response model buckets
 python scripts/ml/build_state_response.py
 ```

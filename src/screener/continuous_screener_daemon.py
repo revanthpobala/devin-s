@@ -25,8 +25,8 @@ from src.clients.tastytrade_client import TastytradeClient
 
 logger = logging.getLogger("continuous_screener")
 
-# Default scan interval in seconds (default 10 minutes)
-DEFAULT_SCAN_INTERVAL = int(os.getenv("CONTINUOUS_SCREENER_INTERVAL", "600"))
+# Default scan interval in seconds (default 5 minutes)
+DEFAULT_SCAN_INTERVAL = int(os.getenv("CONTINUOUS_SCREENER_INTERVAL", "300"))
 
 _daemon_instance: Optional[ContinuousScreenerDaemon] = None
 
@@ -57,6 +57,9 @@ def enrich_candidates_with_tastytrade(
             metrics_by_sym[sym.upper()] = m
 
     alerts_created = 0
+    # Fetched lazily (once per pass) only when auto_alerts is enabled.
+    _existing_alerts: List[Dict[str, Any]] = []
+    _existing_alerts_fetched = False
 
     for p in candidates:
         sym = str(p.get("symbol") or p.get("Symbol") or p.get("Ticker")).upper()
@@ -96,7 +99,10 @@ def enrich_candidates_with_tastytrade(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Auto-Register 24/7 Tastytrade Cloud Quote Alerts for High/Medium Priority Setups
+        # Auto-Register 24/7 Tastytrade Cloud Quote Alerts for High/Medium Priority Setups.
+        # Idempotent: existing cloud alerts are checked first so repeated scans do not
+        # duplicate registrations, and `tastytrade_alert_active` is only set when at
+        # least one alert was actually created or already exists on the cloud.
         if auto_alerts:
             prio_score = float(p.get("priority_score", 0.0))
             prio_tier = str(p.get("priority_tier", "MONITOR"))
@@ -105,53 +111,67 @@ def enrich_candidates_with_tastytrade(
             if is_qualified:
                 side = str(p.get("side", "LONG")).upper()
                 try:
+                    # Build the desired alert set for this candidate (dedup key: symbol+op+threshold)
+                    desired: List[Dict[str, Any]] = []
                     if side == "LONG":
                         sup = float(p.get("support_level", 0.0))
                         if sup > 0:
-                            tt_client.create_quote_alert(
-                                symbol=sym,
-                                threshold=sup,
-                                operator="<=",
-                                field="Last",
-                                expires_days=30,
-                            )
-                            alerts_created += 1
-
+                            desired.append({"symbol": sym, "operator": "<=", "threshold": round(sup, 2)})
                         tgt = float(p.get("target_level", 0.0))
                         if tgt > 0:
-                            tt_client.create_quote_alert(
-                                symbol=sym,
-                                threshold=tgt,
-                                operator=">=",
-                                field="Last",
-                                expires_days=30,
-                            )
-                            alerts_created += 1
-
+                            desired.append({"symbol": sym, "operator": ">=", "threshold": round(tgt, 2)})
                     else:  # SHORT
                         ceil_lvl = float(p.get("ceiling_level", 0.0))
                         if ceil_lvl > 0:
-                            tt_client.create_quote_alert(
-                                symbol=sym,
-                                threshold=ceil_lvl,
-                                operator=">=",
-                                field="Last",
-                                expires_days=30,
-                            )
-                            alerts_created += 1
-
+                            desired.append({"symbol": sym, "operator": ">=", "threshold": round(ceil_lvl, 2)})
                         tgt = float(p.get("target_level", 0.0))
                         if tgt > 0:
-                            tt_client.create_quote_alert(
-                                symbol=sym,
-                                threshold=tgt,
-                                operator="<=",
-                                field="Last",
-                                expires_days=30,
-                            )
-                            alerts_created += 1
+                            desired.append({"symbol": sym, "operator": "<=", "threshold": round(tgt, 2)})
 
-                    p["tastytrade_alert_active"] = True
+                    # Fetch existing cloud alerts once per enrichment pass (cached)
+                    if not _existing_alerts_fetched:
+                        try:
+                            _existing_alerts.extend(tt_client.get_quote_alerts())
+                        except Exception as e_fetch:
+                            logger.warning(f"[ContinuousScreener] Could not fetch existing Tastytrade alerts: {e_fetch}")
+                        finally:
+                            _existing_alerts_fetched = True
+
+                    existing_keys = set()
+                    for a in _existing_alerts:
+                        a_sym = str(a.get("symbol") or "").upper()
+                        a_op = str(a.get("operator") or "")
+                        if a_op == "<":
+                            a_op = "<="
+                        elif a_op == ">":
+                            a_op = ">="
+                        try:
+                            a_thr = round(float(a.get("threshold", 0.0)), 2)
+                        except (ValueError, TypeError):
+                            a_thr = 0.0
+                        existing_keys.add((a_sym, a_op, a_thr))
+
+                    created_here = 0
+                    for d in desired:
+                        key = (d["symbol"], d["operator"], d["threshold"])
+                        if key in existing_keys:
+                            continue  # already registered on the cloud — skip (idempotent)
+                        alert = tt_client.create_quote_alert(
+                            symbol=d["symbol"],
+                            threshold=d["threshold"],
+                            operator=d["operator"],
+                            field="Last",
+                            expires_days=30,
+                        )
+                        if alert:
+                            created_here += 1
+                            alerts_created += 1
+                            # Track it so later candidates in the same pass don't double-create
+                            existing_keys.add(key)
+
+                    p["tastytrade_alert_active"] = created_here > 0 or any(
+                        (d["symbol"], d["operator"], d["threshold"]) in existing_keys for d in desired
+                    )
                 except Exception as e_alert:
                     logger.error(f"[ContinuousScreener] Error creating Tastytrade alert for {sym}: {e_alert}")
                     p["tastytrade_alert_active"] = False
@@ -167,7 +187,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         poll_interval: int = DEFAULT_SCAN_INTERVAL,
         top_n: int = 10,
         auto_alerts: bool = True,
-        market_hours_only: bool = False,
+        market_hours_only: Optional[bool] = None,
         auto_deep_research: Optional[bool] = None,
         max_concurrent_slots: int = 1,
     ):
@@ -175,12 +195,16 @@ class ContinuousScreenerDaemon(threading.Thread):
         self.poll_interval = max(60, poll_interval)
         self.top_n = top_n
         self.auto_alerts = auto_alerts
-        self.market_hours_only = market_hours_only
+        # Centralized scheduling: default to config, allow per-run CLI override.
+        self.market_hours_only = (
+            config.SCREENER_MARKET_HOURS_ONLY if market_hours_only is None else market_hours_only
+        )
         self.auto_deep_research = auto_deep_research if auto_deep_research is not None else (
             os.getenv("CONTINUOUS_AUTO_DEEP_RESEARCH", "1").lower() in ("1", "true", "yes")
         )
         self.max_auto_deep_per_day = int(os.getenv("CONTINUOUS_MAX_AUTO_DEEP", "3"))
-        self.min_conviction_score = float(os.getenv("CONTINUOUS_MIN_CONVICTION", "60.0"))
+        # Shared with run_autonomous_screener_pipeline via config so both gates agree.
+        self.min_conviction_score = config.SCREENER_MIN_CONVICTION
         self.max_concurrent_slots = max(1, int(os.getenv("CONTINUOUS_MAX_CONCURRENT_SLOTS", str(max_concurrent_slots))))
         self._active_research_threads: List[threading.Thread] = []
         self.running = True
@@ -355,10 +379,13 @@ class ContinuousScreenerDaemon(threading.Thread):
     def run(self):
         """Continuous background thread execution loop."""
         logger.info(f"🚀 [ContinuousScreener] Background daemon started (Interval: {self.poll_interval}s).")
-        date_str = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
-        # Step 1: Initial scan if today's files are missing or stale
-        if self.should_run_initial_scan(date_str):
+        # Step 1: Initial scan if today's files are missing or stale.
+        # Gated on market hours so a weekend/after-hours start does NOT fire a wasted
+        # full-universe sweep; the loop's gate below catches it and idles instead.
+        date_str = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+        in_hours = not self.market_hours_only or self.is_market_hours()
+        if in_hours and self.should_run_initial_scan(date_str):
             logger.info("[ContinuousScreener] Today's screener results missing or empty. Running immediate initial scan...")
             self.run_scan_cycle()
 
@@ -366,8 +393,11 @@ class ContinuousScreenerDaemon(threading.Thread):
         while self.running:
             # Check market hours gating if enabled
             if self.market_hours_only and not self.is_market_hours():
+                # Drop any stale next_scan_time so we don't resume on a misaligned
+                # (already-past) cadence; the first in-hours scan re-establishes it.
                 with self._lock:
                     self.last_status = "Idling outside market hours (Resumes at 7:15 AM MT)"
+                    self.next_scan_time = None
                 self._wake_event.wait(timeout=60)
                 continue
 

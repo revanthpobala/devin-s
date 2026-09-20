@@ -108,11 +108,6 @@ LLM_MAX_TOKENS_REMOTE = int(os.getenv("LLM_MAX_TOKENS_REMOTE", "120000"))
 # Live position monitoring (data/positions.json state + per-ticker poll threads)
 POSITION_POLL_INTERVAL = int(os.getenv("POSITION_POLL_INTERVAL", "60"))
 
-# Adanos Market Sentiment API (free tier: 250 req/month). Provides news + Reddit
-# retail sentiment/buzz per ticker. Key goes in .env as ADANOS_SOCIAL_SENTIMENT_API_KEY.
-ADANOS_API_KEY = os.getenv("ADANOS_SOCIAL_SENTIMENT_API_KEY", "")
-ADANOS_BASE_URL = os.getenv("ADANOS_BASE_URL", "https://api.adanos.org")
-
 # Market Hours Settings (Mountain Time)
 # Regular Trading Hours: 7:30 AM MT - 2:00 PM MT (9:30 AM ET - 4:00 PM ET)
 # Orchestrator warm-up begins at 7:15 AM MT (9:15 AM ET) and settles at 2:30 PM MT (4:30 PM ET)
@@ -120,6 +115,19 @@ MARKET_OPEN_HOUR = int(os.getenv("MARKET_OPEN_HOUR", "7"))
 MARKET_OPEN_MINUTE = int(os.getenv("MARKET_OPEN_MINUTE", "15"))
 MARKET_CLOSE_HOUR = int(os.getenv("MARKET_CLOSE_HOUR", "14"))  # 2:30 PM MT (4:30 PM ET)
 MARKET_CLOSE_MINUTE = int(os.getenv("MARKET_CLOSE_MINUTE", "30"))
+
+# Continuous screener scheduling (single source of truth).
+# When True, the autonomous screener only runs scan cycles inside market hours and
+# idles (60s wake-checks, no API calls) otherwise — including weekends. This stops it
+# burning Schwab/Tastytrade rate limits on flat weekend data. Set False in .env to run 24/7.
+# A per-process --market-hours-only CLI flag can still override this for one-off runs.
+SCREENER_MARKET_HOURS_ONLY = os.getenv("SCREENER_MARKET_HOURS_ONLY", "true").lower() in ("1", "true", "yes")
+
+# Minimum priority_score (0-100) a non-HIGH_PRIORITY screener candidate needs to be
+# eligible for autonomous dispatch. Single source of truth shared by the daemon gate
+# (continuous_screener_daemon) and the pipeline quality gate (run_autonomous_screener_pipeline)
+# so the two can never drift apart. Set via CONTINUOUS_MIN_CONVICTION in .env.
+SCREENER_MIN_CONVICTION = float(os.getenv("CONTINUOUS_MIN_CONVICTION", "60.0"))
 
 
 def validate_config():

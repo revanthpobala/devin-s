@@ -593,6 +593,78 @@ TOOLS = [
 ]
 
 
+def _fetch_ohlc_df_fallback(ticker: str) -> "tuple[pd.DataFrame, Dict[str, Any]]":
+    """Fetch ~1y daily OHLCV when no on-disk datawindow exists.
+
+    Uses yfinance. (Tastytrade's Open API exposes live quotes + market-metrics but has
+    NO historical-candles endpoint — the old /prices/{symbol}/candles path is decommissioned.)
+
+    Returns (df, dw). df has a `time` column plus Open/High/Low/Close/Volume.
+    dw is a minimal on-the-fly snapshot {"close","price"} = last close (spot) so plugins
+    that read either key work. Volume Profile / AVWAP / gamma-wall sections are skipped
+    because those require a TradingView datawindow (not computable from OHLCV alone).
+    Raises on failure; caller must catch and surface the error to the LLM.
+    """
+    import pandas as pd
+
+    try:
+        import yfinance as yf
+
+        raw = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=False)
+        if raw is None or raw.empty:
+            raise RuntimeError("no data")
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        raw = raw.rename_axis("time").reset_index()
+        keep = [c for c in ["time", "Open", "High", "Low", "Close", "Volume"] if c in raw.columns]
+        df = raw[keep].copy()
+    except Exception as e_yf:
+        logger.debug(f"[plugin-fallback:{ticker}] yfinance failed: {e_yf}")
+        raise RuntimeError(f"Could not fetch OHLCV for {ticker} (no on-disk datawindow; yfinance failed).")
+
+    if df.empty or "Close" not in df.columns:
+        raise RuntimeError(f"Empty OHLCV frame for {ticker}")
+
+    # Minimal on-the-fly dw: spot price under both keys plugins read.
+    last_close = float(df["Close"].iloc[-1])
+    dw: Dict[str, Any] = {}
+    if last_close > 0:
+        dw["close"] = last_close
+        dw["price"] = last_close
+
+    # Enrich with live Tastytrade IV/volatility so the Monte Carlo baseline and
+    # skew/GEX plugins see real implied vol on a no-datawindow run (otherwise they
+    # degrade to HISTORICAL_ONLY). Best-effort: any failure is ignored.
+    try:
+        from src.clients.tastytrade_client import TastytradeClient
+
+        metrics = TastytradeClient().get_market_metrics(ticker)
+        if metrics:
+            m = metrics[0]
+            iv_rank_raw = m.get("tos-implied-volatility-index-rank") or m.get("implied-volatility-index-rank")
+            if iv_rank_raw is not None:
+                dw["tastytrade_iv_rank"] = round(float(iv_rank_raw) * 100, 2)
+            iv_pct_raw = m.get("implied-volatility-percentile")
+            if iv_pct_raw is not None:
+                dw["tastytrade_iv_percentile"] = round(float(iv_pct_raw) * 100, 2)
+            iv30 = float(m.get("implied-volatility-30-day") or 0.0)
+            if iv30 > 0:
+                dw["tastytrade_iv_30d"] = iv30
+                dw["Energy IV30 Ann Pct"] = iv30  # Monte Carlo baseline primary key
+                dw["IV30"] = iv30
+            hv20 = float(m.get("historical-volatility-30-day") or 0.0)
+            if hv20 > 0:
+                dw["tastytrade_hv_30d"] = hv20
+            spread = float(m.get("iv-hv-30-day-difference") or 0.0)
+            if spread:
+                dw["tastytrade_iv_hv_spread"] = spread
+            logger.debug(f"[plugin-fallback:{ticker}] injected Tastytrade IV (IV30={iv30}, rank={dw.get('tastytrade_iv_rank')})")
+    except Exception as e_tt:
+        logger.debug(f"[plugin-fallback:{ticker}] Tastytrade IV enrichment skipped: {e_tt}")
+
+    return df, dw
+
+
 def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str: str = None) -> str:
     """Executes quantitative analytics plugins on demand for the LLM."""
     import pandas as pd
@@ -627,10 +699,15 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
                     break
 
     if not csv_path.exists():
-        return f"Error: No historical datawindow.csv found for {ticker}."
-
-    df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
-    dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
+        # No on-disk datawindow: fetch OHLCV live (Tastytrade -> yfinance) and build a minimal dw.
+        try:
+            df, dw = _fetch_ohlc_df_fallback(ticker)
+            logger.info(f"[run_quantitative_plugin:{ticker}] no datawindow on disk; using live OHLCV fallback ({len(df)} bars).")
+        except Exception as e_fb:
+            return f"Error: No historical datawindow.csv found for {ticker}, and live OHLCV fetch failed: {e_fb}"
+    else:
+        df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
+        dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
 
     p_key = plugin_name.lower().strip().replace("-", "_").replace(" ", "_")
     if p_key in ("orderflow", "order_flow_plugin"):
@@ -1220,22 +1297,59 @@ def execute_tool_call(tool_call, date_str: str = None):
         logger.info(f"LLM executed tool: scrape_tradingview_chart(ticker='{ticker}', lookback_days={lookback}, force={force_flag})")
         out_raw = config.BASE_DIR / "data" / "raw" / date_str
         out_raw.mkdir(parents=True, exist_ok=True)
+
+        # Pick a Chrome profile that is NOT currently in use by another scraper,
+        # so we never collide on the Singleton lock with a running batch scrape.
+        chrome_profile = None
+        try:
+            import psutil
+
+            profiles = sorted(p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()) or ["tv_chrome_profile_1"]
+
+            def _locked(p_name: str) -> bool:
+                for proc in psutil.process_iter(["name", "cmdline"]):
+                    try:
+                        if "chrome" in (proc.name() or "").lower():
+                            if p_name in " ".join(proc.cmdline() or []):
+                                return True
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                return False
+
+            free = [p for p in profiles if not _locked(p)]
+            chrome_profile = (free or profiles)[0]
+            logger.info(f"[scrape_tradingview_chart:{ticker}] using Chrome profile '{chrome_profile}' (free={bool(free)})")
+        except Exception as e_prof:
+            logger.debug(f"[scrape_tradingview_chart:{ticker}] profile selection failed, defaulting: {e_prof}")
+
         try:
             from src.data.tv_scraper import TVScraper
-            scraper = TVScraper(worker_id=1, target_date=date_str)
+            scraper = TVScraper(chrome_profile=chrome_profile, target_date=date_str)
             scraper.capture_ticker(ticker, lookback_days=lookback)
-            
+
             json_p = out_raw / ticker / f"{ticker}_datawindow.json"
             if not json_p.exists():
                 json_p = out_raw / f"{ticker}_datawindow.json"
-                
+
             if json_p.exists():
                 dw = json.loads(json_p.read_text(encoding="utf-8"))
                 c = dw.get("close", "N/A")
                 score = dw.get("Long Buy Score", "N/A")
-                res_str = f"✅ TradingView chart & Data Window scrape complete for {ticker} (Date: {date_str}). Latest Close: ${c}, Long Buy Score: {score}. Artifacts updated in data/raw/{date_str}/{ticker}/."
+                res_str = (
+                    f"✅ TradingView chart & Data Window scrape complete for {ticker} (Date: {date_str}). "
+                    f"Latest Close: ${c}, Long Buy Score: {score}. "
+                    f"Artifacts updated in data/raw/{date_str}/{ticker}/."
+                )
             else:
                 res_str = f"TradingView scrape complete for {ticker} (Date: {date_str})."
+
+            # Auto re-run the quantitative plugins now that a real datawindow exists,
+            # so the LLM gets full VP/AVWAP/gamma results in one tool call.
+            try:
+                plugin_res = run_quantitative_plugin_tool(ticker, plugin_name="all", date_str=date_str)
+                res_str += "\n\n" + plugin_res
+            except Exception as e_pr:
+                logger.debug(f"[scrape_tradingview_chart:{ticker}] post-scrape plugin re-run failed: {e_pr}")
         except Exception as e:
             logger.error(f"TradingView chart scrape failed for {ticker}: {e}", exc_info=True)
             res_str = f"TradingView scrape failed for {ticker}: {str(e)}"

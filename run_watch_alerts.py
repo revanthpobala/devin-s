@@ -92,15 +92,14 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
     logger.info(f"Evaluating {len(targets)} active watch target(s)...")
     updated_targets = []
 
-    prices: Dict[str, float] = {}
-    for t in targets:
-        sym = t["ticker"]
-        try:
-            p = get_current_price(sym)
-            if p and p > 0:
-                prices[sym] = float(p)
-        except Exception as e:
-            logger.warning(f"[{sym}] Price fetch error: {e}")
+    target_syms = [t["ticker"] for t in targets if t.get("ticker")]
+    from src.clients.quote_router import quote_router
+
+    # Offload watchlist stalking to Surveillance Channel (Yahoo Direct REST / Alpaca) - zero Schwab calls
+    q_batch = quote_router.get_watchlist_quotes_batch(target_syms)
+    prices: Dict[str, float] = {
+        sym: qd.last_price for sym, qd in q_batch.items() if qd and qd.last_price > 0
+    }
 
     for t in targets:
         ticker = t["ticker"]

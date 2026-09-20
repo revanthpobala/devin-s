@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -143,7 +144,7 @@ def open_position(
                 "multiplier": mult,
                 "instrument_type": extra.get("instrument_type", "EQUITY"),
                 "mode": extra.get("mode", "MODEL"),
-                "trade_id": extra.get("trade_id") or rec.get("trade_id"),
+                "trade_id": extra.get("trade_id") or rec.get("trade_id") or f"{ticker}_{int(time.time())}",
                 "raw_alert": raw_alert or rec.get("raw_alert", {}),
             }
         )
@@ -152,10 +153,26 @@ def open_position(
         _save_state(state)
     logger.info(f"[state] OPEN {ticker} {side} @ {entry_price} (stop={stop}, target={target}, strategy={strategy})")
     try:
-        from src.tracking.alert_db import sync_position
+        from src.tracking.alert_db import sync_position, record_trade_event
         sync_position(ticker, rec)
+        record_trade_event({
+            "trade_id": rec.get("trade_id"),
+            "setup_id": rec.get("setup_id", rec.get("trade_id")),
+            "strategy_id": strategy,
+            "mode": rec.get("mode", "MODEL"),
+            "event_type": "ENTRY",
+            "symbol": ticker,
+            "price": entry_price,
+            "quantity": qty,
+            "remaining_quantity": rem_qty,
+            "instrument_type": rec.get("instrument_type", "EQUITY"),
+            "multiplier": mult,
+            "stop_level": stop,
+            "target_1": target,
+            "details": {"strategy": strategy, "side": side},
+        })
     except Exception as e:
-        logger.debug(f"Failed syncing position to alert_db: {e}")
+        logger.debug(f"Failed syncing position / event to alert_db: {e}")
     return rec
 
 
@@ -209,10 +226,25 @@ def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None
         f"runner stop ratcheted to BE+ (${runner_stop:.2f})."
     )
     try:
-        from src.tracking.alert_db import sync_position
+        from src.tracking.alert_db import sync_position, record_trade_event
         sync_position(ticker, rec)
+        record_trade_event({
+            "trade_id": rec.get("trade_id") or f"{ticker}_trade",
+            "setup_id": rec.get("setup_id", rec.get("trade_id")),
+            "strategy_id": rec.get("strategy", "Intraday"),
+            "mode": rec.get("mode", "MODEL"),
+            "event_type": "SCALE_OUT",
+            "symbol": ticker,
+            "price": px,
+            "quantity": scale_qty,
+            "remaining_quantity": rem_qty,
+            "instrument_type": rec.get("instrument_type", "EQUITY"),
+            "multiplier": mult,
+            "stop_level": runner_stop,
+            "details": {"scale_pct": scale_pct, "realized_add": realized_add, "reason": reason},
+        })
     except Exception as e:
-        logger.debug(f"Failed syncing scaled position to alert_db: {e}")
+        logger.debug(f"Failed syncing scaled position / event to alert_db: {e}")
     return rec
 
 
@@ -237,21 +269,42 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
         rec["exit_price"] = px
         rec["exit_reason"] = exit_reason or "MANUAL_CLOSE"
 
-        # Calculate final net P&L
+        # Calculate final net P&L with quantity, multiplier, fees, and slippage
+        rem_qty = float(rec.get("remaining_quantity") or rec.get("quantity") or 100.0)
+        mult = int(rec.get("multiplier") or 1)
+        fees = float(rec.get("fees") or 0.0)
+        slippage = float(rec.get("slippage") or 0.0)
+
         pts = (px - entry) if "LONG" in side else (entry - px)
-        # If already scaled 50%, remaining runner is 50%
-        rem_mult = 50.0 if rec.get("scaled_at_t1") else 100.0
-        runner_pnl = round(pts * rem_mult, 2)
+        runner_pnl = round(pts * rem_qty * mult, 2)
         realized_prior = rec.get("realized_pnl", 0.0) or 0.0
-        rec["net_pnl"] = round(realized_prior + runner_pnl, 2)
+        total_pnl = round(realized_prior + runner_pnl - fees - slippage, 2)
+        rec["remaining_quantity"] = 0.0
+        rec["net_pnl"] = total_pnl
 
         _save_state(state)
 
     try:
-        from src.tracking.alert_db import sync_position
+        from src.tracking.alert_db import sync_position, record_trade_event
         sync_position(ticker, rec)
+        record_trade_event({
+            "trade_id": rec.get("trade_id") or f"{ticker}_trade",
+            "setup_id": rec.get("setup_id", rec.get("trade_id")),
+            "strategy_id": rec.get("strategy", "Intraday"),
+            "mode": rec.get("mode", "MODEL"),
+            "event_type": "EXIT",
+            "symbol": ticker,
+            "price": px,
+            "quantity": rem_qty,
+            "remaining_quantity": 0.0,
+            "instrument_type": rec.get("instrument_type", "EQUITY"),
+            "multiplier": mult,
+            "stop_level": rec.get("stop"),
+            "target_level": rec.get("target"),
+            "details": {"exit_reason": rec["exit_reason"], "net_pnl": total_pnl, "runner_pnl": runner_pnl, "fees": fees, "slippage": slippage},
+        })
     except Exception as e:
-        logger.debug(f"Failed syncing closed position to alert_db: {e}")
+        logger.debug(f"Failed syncing closed position / event to alert_db: {e}")
 
     logger.info(
         f"[state] CLOSED {ticker} @ ${px} (Net P&L: ${rec.get('net_pnl', 0.0):+.2f}, "
@@ -311,18 +364,37 @@ def flatten_eod_intraday_positions(force: bool = False) -> list[dict]:
                 rec["exit_price"] = px
                 rec["exit_reason"] = "EOD Flatten"
 
+                rem_qty = float(rec.get("remaining_quantity") or rec.get("quantity") or 100.0)
+                mult = int(rec.get("multiplier") or 1)
+                fees = float(rec.get("fees") or 0.0)
+                slippage = float(rec.get("slippage") or 0.0)
                 pts = (px - entry) if "LONG" in side else (entry - px)
-                rem_mult = 50.0 if rec.get("scaled_at_t1") else 100.0
-                runner_pnl = round(pts * rem_mult, 2)
+                runner_pnl = round(pts * rem_qty * mult, 2)
                 realized_prior = rec.get("realized_pnl", 0.0) or 0.0
-                rec["net_pnl"] = round(realized_prior + runner_pnl, 2)
+                total_pnl = round(realized_prior + runner_pnl - fees - slippage, 2)
+                rec["remaining_quantity"] = 0.0
+                rec["net_pnl"] = total_pnl
 
                 closed_list.append(rec)
                 try:
-                    from src.tracking.alert_db import sync_position
+                    from src.tracking.alert_db import sync_position, record_trade_event
                     sync_position(t, rec)
+                    record_trade_event({
+                        "trade_id": rec.get("trade_id") or f"{t}_trade",
+                        "setup_id": rec.get("setup_id", rec.get("trade_id")),
+                        "strategy_id": rec.get("strategy", "Intraday"),
+                        "mode": rec.get("mode", "MODEL"),
+                        "event_type": "EOD_FLATTEN",
+                        "symbol": t,
+                        "price": px,
+                        "quantity": rem_qty,
+                        "remaining_quantity": 0.0,
+                        "instrument_type": rec.get("instrument_type", "EQUITY"),
+                        "multiplier": mult,
+                        "details": {"exit_reason": "EOD Flatten", "net_pnl": total_pnl},
+                    })
                 except Exception as e:
-                    logger.debug(f"Failed syncing EOD flattened position to alert_db: {e}")
+                    logger.debug(f"Failed syncing EOD flattened position / event to alert_db: {e}")
         if tickers_to_close:
             _save_state(state)
             logger.info(f"[state] EOD Flattened {len(closed_list)} intraday position(s): {tickers_to_close}")

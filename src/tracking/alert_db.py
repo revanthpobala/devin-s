@@ -688,7 +688,7 @@ def get_trade_events(trade_id: str) -> List[Dict[str, Any]]:
 
 
 def update_routing_stage(message_id: str, stage: str):
-    """Update durable routing stage ('RECORDED', 'ROUTED', 'ENRICHED', 'COMPLETED')."""
+    """Update durable routing stage ('RECORDED', 'ENQUEUED', 'ROUTED', 'COMPLETED')."""
     if not message_id:
         return
     with _db_lock:
@@ -702,14 +702,19 @@ def update_routing_stage(message_id: str, stage: str):
 
 
 def get_unrouted_alerts() -> List[Dict[str, Any]]:
-    """Retrieve alerts that were durably recorded but not yet marked ROUTED or COMPLETED."""
+    """Retrieve alerts that were durably recorded but not yet marked ROUTED or COMPLETED.
+
+    Covers both RECORDED (crash before routing began) and ENQUEUED (crash between
+    handoff to PositionManager and the ROUTED commit) so replay is idempotent.
+    """
     with _db_lock:
         with _get_connection() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
                 SELECT * FROM alerts
-                WHERE (routing_stage = 'RECORDED' OR (routing_stage IS NULL AND status = 'INGESTED'))
+                WHERE (routing_stage IN ('RECORDED', 'ENQUEUED')
+                       OR (routing_stage IS NULL AND status = 'INGESTED'))
                 ORDER BY created_at ASC
                 """
             )

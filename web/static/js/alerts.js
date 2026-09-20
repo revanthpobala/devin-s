@@ -53,6 +53,8 @@ window.AppAlerts = {
   _pmCurrentSession: null,
   _pmCurrentTab: 'summary',
   _pmData: null,
+  _modalParentId: null,
+  _alertParentId: null,
 
   async loadReportsIndex() {
     try {
@@ -133,6 +135,9 @@ window.AppAlerts = {
     const killMatch = pb.match(/(?:KILL IT IF:|\*\*KILL IT IF:\*\*)\s*([\s\S]+?)(?=(?:\n\s*(?:\*\*Trader'?s? Notes?:?\*\*|Trader'?s? Notes?:?))|$)/i);
     const noteMatch = pb.match(/(?:\*\*Trader'?s? Notes?:?\*\*|Trader'?s? Notes?:?)\s*([\s\S]+?)$/i);
 
+    // Capture explicit Veto blocks (e.g. QUALITY VETO: ... or REGIME VETO: ...)
+    const vetoMatch = pb.match(/(?:(?:🛡️|🚫|🛑)?\s*(?:QUALITY|REGIME|CONVICTION|STAGE)?\s*VETO:)\s*([\s\S]+?)(?=(?:\n\s*(?:WHY|KILL|Trader|\*\*Trader))|$)/i);
+
     let noteText = '';
     if (noteMatch && noteMatch[1]) {
       noteText = noteMatch[1].trim();
@@ -143,6 +148,13 @@ window.AppAlerts = {
       }
     }
 
+    // Residual clean reasoning (stripping redundant [SYM] [TIME] headers)
+    let residualText = pb
+      .replace(/^\[[A-Z0-9]+\]\s*\[[^\]]+\]\s*—\s*[^\n]+\n*/i, '')
+      .replace(/^[A-Z0-9]+\s+[0-9:]+\s+(?:AM|PM)\s+ET\s+[^\n]+\n*/i, '')
+      .replace(/Conviction:[^\n|]+\|\s*Card:[^\n]+\n*/i, '')
+      .trim();
+
     return {
       conviction: convMatch ? convMatch[1].trim() : '',
       regime: regimeMatch ? regimeMatch[1].trim() : '',
@@ -151,7 +163,9 @@ window.AppAlerts = {
       whyCard: whyCardMatch ? whyCardMatch[1].trim().replace(/\*\*/g, '') : '',
       whyTape: whyTapeMatch ? whyTapeMatch[1].trim().replace(/\*\*/g, '') : '',
       killItIf: killMatch ? killMatch[1].trim().replace(/\*\*/g, '') : '',
-      traderNote: noteText ? noteText.replace(/\*\*/g, '') : ''
+      traderNote: noteText ? noteText.replace(/\*\*/g, '') : '',
+      vetoRationale: vetoMatch ? vetoMatch[0].trim().replace(/\*\*/g, '') : '',
+      residualText: residualText.replace(/\*\*/g, '')
     };
   },
 
@@ -947,6 +961,8 @@ window.AppAlerts = {
     let totalAvoided = 0;
     let totalAiWins = 0;
     let totalAiLosses = 0;
+    let totalRawWins = 0;
+    let totalRawLosses = 0;
     let totalCompletedTrades = 0;
 
     tickerData.forEach(d => {
@@ -958,12 +974,19 @@ window.AppAlerts = {
       totalAvoided += d.summary.avoidedLosses;
       totalAiWins += d.summary.aiWins;
       totalAiLosses += d.summary.aiLosses;
+      totalRawWins += (d.summary.rawWins || 0);
+      totalRawLosses += (d.summary.rawLosses || 0);
       totalCompletedTrades += d.summary.totalCompleted;
     });
 
     const netPnlSign = totalNetPnl >= 0 ? '+' : '';
     const netPnlColor = totalNetPnl >= 0 ? '#10b981' : '#ef4444';
-    const totalWinRate = (totalAiWins + totalAiLosses) > 0 ? Math.round((totalAiWins / (totalAiWins + totalAiLosses)) * 1000) / 10 : 0;
+    const totalAiTrades = totalAiWins + totalAiLosses;
+    const totalAiWinRate = totalAiTrades > 0 ? Math.round((totalAiWins / totalAiTrades) * 1000) / 10 : 0;
+    const totalRawTrades = totalRawWins + totalRawLosses;
+    const totalRawWinRate = totalRawTrades > 0 ? Math.round((totalRawWins / totalRawTrades) * 1000) / 10 : 0;
+    const hasAiTradesOverall = totalAiTrades > 0;
+    const displayWinRate = hasAiTradesOverall ? totalAiWinRate : totalRawWinRate;
 
     // Filter List
     let filteredList = [...tickerData];
@@ -1011,15 +1034,19 @@ window.AppAlerts = {
         // Alphabetical Z to A
         return b.symbol.localeCompare(a.symbol);
       } else if (sortMode === 'PNL_DESC') {
-        // Highest Net P&L
-        if (b.summary.aiPnL !== a.summary.aiPnL) {
-          return b.summary.aiPnL - a.summary.aiPnL;
+        // Highest Net P&L (use AI PnL if AI took trades, else raw session PnL)
+        const pnlA = a.summary.aiTradesCount > 0 ? a.summary.aiPnL : a.summary.rawTvPnL;
+        const pnlB = b.summary.aiTradesCount > 0 ? b.summary.aiPnL : b.summary.rawTvPnL;
+        if (pnlB !== pnlA) {
+          return pnlB - pnlA;
         }
         return b.completedTrades.length - a.completedTrades.length;
       } else if (sortMode === 'PNL_ASC') {
         // Lowest Net P&L
-        if (a.summary.aiPnL !== b.summary.aiPnL) {
-          return a.summary.aiPnL - b.summary.aiPnL;
+        const pnlA = a.summary.aiTradesCount > 0 ? a.summary.aiPnL : a.summary.rawTvPnL;
+        const pnlB = b.summary.aiTradesCount > 0 ? b.summary.aiPnL : b.summary.rawTvPnL;
+        if (pnlA !== pnlB) {
+          return pnlA - pnlB;
         }
         return b.completedTrades.length - a.completedTrades.length;
       } else if (sortMode === 'TRADES_DESC') {
@@ -1027,11 +1054,15 @@ window.AppAlerts = {
         if (b.completedTrades.length !== a.completedTrades.length) {
           return b.completedTrades.length - a.completedTrades.length;
         }
-        return b.summary.aiPnL - a.summary.aiPnL;
+        const pnlA = a.summary.aiTradesCount > 0 ? a.summary.aiPnL : a.summary.rawTvPnL;
+        const pnlB = b.summary.aiTradesCount > 0 ? b.summary.aiPnL : b.summary.rawTvPnL;
+        return pnlB - pnlA;
       } else if (sortMode === 'WINRATE_DESC') {
         // Highest Win Rate % First
-        if (b.summary.aiWinRate !== a.summary.aiWinRate) {
-          return b.summary.aiWinRate - a.summary.aiWinRate;
+        const wrA = a.summary.aiTradesCount > 0 ? a.summary.aiWinRate : (a.summary.rawWinRate || 0);
+        const wrB = b.summary.aiTradesCount > 0 ? b.summary.aiWinRate : (b.summary.rawWinRate || 0);
+        if (wrB !== wrA) {
+          return wrB - wrA;
         }
         return b.completedTrades.length - a.completedTrades.length;
       }
@@ -1048,8 +1079,9 @@ window.AppAlerts = {
     let tickerPillsHtml = '';
     sortedChipsList.forEach(t => {
       const isSelected = this._intradayTickerFilter === t.symbol;
-      let dotColor = t.status === 'IN_TRADE' ? '#10b981' : (t.summary.aiPnL >= 0 ? '#10b981' : '#ef4444');
-      let title = `${t.symbol}: ${t.completedTrades.length} trades (${t.summary.aiPnL >= 0 ? '+' : ''}$${t.summary.aiPnL.toFixed(2)}) · Last: ${t.latestTimeDisplay}`;
+      const tPnL = t.summary.aiTradesCount > 0 ? t.summary.aiPnL : t.summary.rawTvPnL;
+      let dotColor = t.status === 'IN_TRADE' ? '#10b981' : (tPnL >= 0 ? '#10b981' : '#ef4444');
+      let title = `${t.symbol}: ${t.completedTrades.length} trades (${tPnL >= 0 ? '+' : ''}$${tPnL.toFixed(2)}) · Last: ${t.latestTimeDisplay}`;
 
       tickerPillsHtml += `
         <button class="intraday-ticker-chip-btn ${isSelected ? 'active' : ''}" 
@@ -1075,8 +1107,9 @@ window.AppAlerts = {
           <div style="display:flex; gap:14px; font-family:var(--font-mono); font-size:11.5px; align-items:center; flex-wrap:wrap;">
             <div><span style="color:var(--text-muted); font-size:9.5px;">IN TRADE:</span> <strong style="color:var(--emerald);">${inTradeCount}</strong></div>
             <div><span style="color:var(--text-muted); font-size:9.5px;">TRADED:</span> <strong style="color:var(--text-main);">${tradedCount} tickers</strong></div>
-            <div><span style="color:var(--text-muted); font-size:9.5px;">COMPLETED:</span> <strong>${totalCompletedTrades} trades (${totalWinRate}% AI Win Rate)</strong></div>
-            <div><span style="color:var(--text-muted); font-size:9.5px;">NET AI P&amp;L:</span> <strong style="color:${netPnlColor}; font-size:13px;">${netPnlSign}$${Math.abs(totalNetPnl).toFixed(2)}</strong></div>
+            <div><span style="color:var(--text-muted); font-size:9.5px;">COMPLETED:</span> <strong>${totalCompletedTrades} trades (${displayWinRate}% ${hasAiTradesOverall ? 'AI ' : ''}Win Rate)</strong></div>
+            <div><span style="color:var(--text-muted); font-size:9.5px;">SESSION P&amp;L:</span> <strong style="color:${totalTvPnl >= 0 ? '#10b981' : '#ef4444'}; font-size:13px;">${totalTvPnl >= 0 ? '+' : ''}$${totalTvPnl.toFixed(2)}</strong></div>
+            ${hasAiTradesOverall ? `<div><span style="color:var(--text-muted); font-size:9.5px;">NET AI P&amp;L:</span> <strong style="color:${netPnlColor}; font-size:13px;">${netPnlSign}$${Math.abs(totalNetPnl).toFixed(2)}</strong></div>` : ''}
             <div><span style="color:var(--text-muted); font-size:9.5px;">LOSSES SAVED:</span> <strong style="color:var(--cyan); font-weight:800;">+$${totalAvoided.toFixed(2)}</strong></div>
           </div>
         </div>
@@ -1371,10 +1404,16 @@ window.AppAlerts = {
         ? this._intradayExpandedTickers[d.symbol]
         : true;
 
+      const hasAiTrades = d.summary.aiTradesCount > 0;
+      const displayPnL = hasAiTrades ? d.summary.aiPnL : d.summary.rawTvPnL;
+      const displayWins = hasAiTrades ? d.summary.aiWins : (d.summary.rawWins || 0);
+      const displayLosses = hasAiTrades ? d.summary.aiLosses : (d.summary.rawLosses || 0);
+      const displayWinRate = hasAiTrades ? d.summary.aiWinRate : (d.summary.rawWinRate || 0);
+
       const cardClasses = [
         'intraday-ticker-card',
         d.status === 'IN_TRADE' ? 'in-trade' : '',
-        d.summary.aiPnL > 0 ? 'has-win' : (d.summary.aiPnL < 0 ? 'has-loss' : ''),
+        displayPnL > 0 ? 'has-win' : (displayPnL < 0 ? 'has-loss' : ''),
         isExpanded ? 'expanded' : ''
       ].filter(Boolean).join(' ');
 
@@ -1417,12 +1456,12 @@ window.AppAlerts = {
       }
 
       // Performance tags
-      const pSign = d.summary.aiPnL >= 0 ? '+' : '';
-      const pColor = d.summary.aiPnL >= 0 ? '#10b981' : '#ef4444';
+      const pSign = displayPnL >= 0 ? '+' : '';
+      const pColor = displayPnL >= 0 ? '#10b981' : '#ef4444';
       const pnlHtml = (d.completedTrades.length > 0 || d.openTrade)
         ? `<div style="text-align:right;">
-             <div style="font-family:var(--font-mono); font-size:13px; font-weight:900; color:${pColor};">${pSign}$${d.summary.aiPnL.toFixed(2)}</div>
-             <div style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">${d.summary.aiWins}W / ${d.summary.aiLosses}L (${d.summary.aiWinRate}%)</div>
+             <div style="font-family:var(--font-mono); font-size:13px; font-weight:900; color:${pColor};">${pSign}$${displayPnL.toFixed(2)}</div>
+             <div style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">${displayWins}W / ${displayLosses}L (${displayWinRate}%)</div>
            </div>`
         : `<div style="font-family:var(--font-mono); font-size:12px; color:var(--text-muted);">--</div>`;
 
@@ -1460,7 +1499,7 @@ window.AppAlerts = {
             <!-- Right: P&L + Actions -->
             <div style="display:flex; align-items:center; gap:12px;">
               ${pnlHtml}
-              <button class="btn secondary" style="padding:3px 9px; font-size:11px; font-weight:700;" onclick="event.stopPropagation(); AppAlerts.openTickerTradesModal('${d.symbol}')">
+              <button class="btn secondary" style="padding:3px 9px; font-size:11px; font-weight:700;" onclick="event.stopPropagation(); AppAlerts.openTickerTradesModal('${d.symbol}', '${targetDate}')">
                 📊 Trades
               </button>
               <button class="btn secondary" style="padding:3px 7px; font-size:11px;" onclick="event.stopPropagation(); AppAlerts.openChart('${d.symbol}')" title="Open TradingView Chart">
@@ -2766,6 +2805,23 @@ window.AppAlerts = {
   },
 
   openAlertModal(id) {
+    // Stack-awareness: if opened from modal-trade-detail or another modal, hide that caller modal
+    const tradeDetailModal = document.getElementById('modal-trade-detail');
+    if (tradeDetailModal && (tradeDetailModal.style.display === 'flex' || tradeDetailModal.style.display === 'block')) {
+      this._alertParentId = 'modal-trade-detail';
+      tradeDetailModal.style.display = 'none';
+      const backBtn = document.getElementById('alert-modal-btn-back');
+      const backLbl = document.getElementById('alert-modal-btn-back-label');
+      if (backBtn && backLbl) {
+        backLbl.innerText = '← Back to Trade Detail';
+        backBtn.style.display = 'inline-flex';
+      }
+    } else {
+      this._alertParentId = null;
+      const backBtn = document.getElementById('alert-modal-btn-back');
+      if (backBtn) backBtn.style.display = 'none';
+    }
+
     const a = (this._rawAlerts || []).find((item, idx) => {
       return (item.message_id && item.message_id === id) ||
              (item.email_id && String(item.email_id) === String(id)) ||
@@ -3035,12 +3091,20 @@ window.AppAlerts = {
     if (modal) modal.style.display = 'flex';
   },
 
-  closeAlertModal() {
+  closeAlertModal(restoreParent = true) {
     this.stopAlertCopilotStream();
     const modal = document.getElementById('tv-alert-detail-modal');
     if (modal) {
       modal.style.display = 'none';
       modal.classList.remove('active');
+    }
+
+    if (restoreParent && this._alertParentId) {
+      const parentEl = document.getElementById(this._alertParentId);
+      if (parentEl) {
+        parentEl.style.display = 'flex';
+      }
+      this._alertParentId = null;
     }
   },
 
@@ -3977,6 +4041,22 @@ window.AppAlerts = {
     const modal = document.getElementById('modal-alerts-pnl');
     if (!modal) return;
 
+    // Modal stack coordination: check if opened from post-mortem
+    const pmEl = document.getElementById('modal-intraday-postmortem');
+    if (pmEl && (pmEl.style.display === 'flex' || pmEl.style.display === 'block')) {
+      this._pnlParentId = 'modal-intraday-postmortem';
+      pmEl.style.display = 'none';
+      const backBtn = document.getElementById('pnl-btn-back');
+      if (backBtn) {
+        backBtn.style.display = 'inline-flex';
+        backBtn.innerText = '← Back to Post-Mortem';
+      }
+    } else {
+      this._pnlParentId = null;
+      const backBtn = document.getElementById('pnl-btn-back');
+      if (backBtn) backBtn.style.display = 'none';
+    }
+
     const distinctDates = this.getAvailableSessionDates();
     if (dateStr) {
       this._pnlCurrentSession = dateStr;
@@ -3999,9 +4079,14 @@ window.AppAlerts = {
     modal.style.display = 'flex';
   },
 
-  closePnlModal() {
+  closePnlModal(restoreParent = true) {
     const modal = document.getElementById('modal-alerts-pnl');
     if (modal) modal.style.display = 'none';
+    if (restoreParent && this._pnlParentId) {
+      const parentEl = document.getElementById(this._pnlParentId);
+      if (parentEl) parentEl.style.display = 'flex';
+      this._pnlParentId = null;
+    }
   },
 
   refreshPnlModal() {
@@ -4139,22 +4224,27 @@ window.AppAlerts = {
         tickerRows = tickerRows.filter(r => r.symbol.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
       }
 
-      // Sort: completed trades count descending, then AI PnL descending
+      // Sort: completed trades count descending, then PnL descending
       tickerRows.sort((a, b) => {
         if (b.summary.totalCompleted !== a.summary.totalCompleted) {
           return b.summary.totalCompleted - a.summary.totalCompleted;
         }
-        return b.summary.aiPnL - a.summary.aiPnL;
+        const pnlA = a.summary.aiTradesCount > 0 ? a.summary.aiPnL : a.summary.rawTvPnL;
+        const pnlB = b.summary.aiTradesCount > 0 ? b.summary.aiPnL : b.summary.rawTvPnL;
+        return pnlB - pnlA;
       });
 
       let rowsHtml = '';
       let sumTrades = 0, sumWins = 0, sumLosses = 0, sumTvPnl = 0, sumAiPnl = 0, sumAvoided = 0;
+      let sumRawWins = 0, sumRawLosses = 0;
 
       tickerRows.forEach(r => {
         const s = r.summary;
         sumTrades += s.totalCompleted;
         sumWins += s.aiWins;
         sumLosses += s.aiLosses;
+        sumRawWins += (s.rawWins || 0);
+        sumRawLosses += (s.rawLosses || 0);
         sumTvPnl += s.rawTvPnL;
         sumAiPnl += s.aiPnL;
         sumAvoided += s.avoidedLosses;
@@ -4178,10 +4268,10 @@ window.AppAlerts = {
             </td>
             <td style="text-align:center;">${typeBadge}</td>
             <td style="text-align:center; font-family:var(--font-mono); font-size:12px;">
-              ${s.totalCompleted > 0 ? `<strong>${s.totalCompleted}</strong> <span style="font-size:10.5px; color:var(--text-muted);">(${s.aiWins}W / ${s.aiLosses}L)</span>` : '<span style="color:var(--text-muted);">0 (Stalking)</span>'}
+              ${s.totalCompleted > 0 ? `<strong>${s.totalCompleted}</strong> <span style="font-size:10.5px; color:var(--text-muted);">(${s.aiTradesCount > 0 ? `${s.aiWins}W / ${s.aiLosses}L` : `${s.rawWins || 0}W / ${s.rawLosses || 0}L`})</span>` : '<span style="color:var(--text-muted);">0 (Stalking)</span>'}
             </td>
-            <td style="text-align:right; font-family:var(--font-mono); font-size:12px; font-weight:700; color:${s.aiWinRate >= 60 ? '#10b981' : (s.aiWinRate > 0 ? '#f59e0b' : 'var(--text-muted)')};">
-              ${(s.aiWins + s.aiLosses) > 0 ? `${s.aiWinRate}%` : '--'}
+            <td style="text-align:right; font-family:var(--font-mono); font-size:12px; font-weight:700; color:${(s.aiTradesCount > 0 ? s.aiWinRate : (s.rawWinRate || 0)) >= 60 ? '#10b981' : ((s.aiTradesCount > 0 ? s.aiWinRate : (s.rawWinRate || 0)) > 0 ? '#f59e0b' : 'var(--text-muted)')};">
+              ${s.aiTradesCount > 0 ? `${s.aiWinRate}%` : ((s.rawWins || 0) + (s.rawLosses || 0) > 0 ? `${s.rawWinRate}%` : '--')}
             </td>
             <td style="text-align:right; font-family:var(--font-mono); font-size:12px; font-weight:700; color:${tvColor};">
               ${s.totalCompleted > 0 ? `${tvSign}$${s.rawTvPnL.toFixed(2)}` : '--'}
@@ -4193,7 +4283,7 @@ window.AppAlerts = {
               ${s.avoidedLosses > 0 ? `+$${s.avoidedLosses.toFixed(2)}` : '--'}
             </td>
             <td style="text-align:center;">
-              <button class="btn secondary" style="padding:3px 8px; font-size:10.5px; font-weight:700;" onclick="AppAlerts.openTickerTradesModal('${r.symbol}')">
+              <button class="btn secondary" style="padding:3px 8px; font-size:10.5px; font-weight:700;" onclick="AppAlerts.openTickerTradesModal('${r.symbol}', '${this._pnlCurrentSession}')">
                 📊 Trades
               </button>
             </td>
@@ -4206,7 +4296,12 @@ window.AppAlerts = {
       const totTvColor = sumTvPnl >= 0 ? '#10b981' : '#ef4444';
       const totAiSign = sumAiPnl >= 0 ? '+' : '';
       const totAiColor = sumAiPnl >= 0 ? '#10b981' : '#ef4444';
-      const totWinRate = (sumWins + sumLosses) > 0 ? Math.round((sumWins / (sumWins + sumLosses)) * 1000) / 10 : 0;
+      const hasAiTradesAny = (sumWins + sumLosses) > 0;
+      const totWinRate = hasAiTradesAny
+        ? Math.round((sumWins / (sumWins + sumLosses)) * 1000) / 10
+        : ((sumRawWins + sumRawLosses) > 0 ? Math.round((sumRawWins / (sumRawWins + sumRawLosses)) * 1000) / 10 : 0);
+      const displayTotWins = hasAiTradesAny ? sumWins : sumRawWins;
+      const displayTotLosses = hasAiTradesAny ? sumLosses : sumRawLosses;
 
       rowsHtml += `
         <tr style="background:rgba(255,255,255,0.03); border-top:2px solid var(--border); font-weight:800;">
@@ -4214,7 +4309,7 @@ window.AppAlerts = {
             TOTAL (${tickerRows.length} INTRADAY TICKERS)
           </td>
           <td style="text-align:center; font-family:var(--font-mono); font-size:12px;">
-            ${sumTrades} trades (${sumWins}W / ${sumLosses}L)
+            ${sumTrades} trades (${displayTotWins}W / ${displayTotLosses}L)
           </td>
           <td style="text-align:right; font-family:var(--font-mono); font-size:12px; color:#10b981;">
             ${totWinRate}%
@@ -4519,12 +4614,16 @@ window.AppAlerts = {
     let avoidedLosses = 0;
     let avoidedCount = 0;
     let rawTvPnL = 0;
+    let rawWins = 0;
+    let rawLosses = 0;
     let totalCompleted = 0;
 
     for (const t of trades) {
       if (t.status === 'CLOSED') {
         totalCompleted++;
         rawTvPnL += t.pnl100;
+        if (t.pnl100 > 0) rawWins++;
+        else if (t.pnl100 < 0) rawLosses++;
 
         if (t.isAiTaken) {
           aiPnL += t.pnl100;
@@ -4545,6 +4644,7 @@ window.AppAlerts = {
     }
 
     const aiWinRate = (aiWins + aiLosses) > 0 ? Math.round((aiWins / (aiWins + aiLosses)) * 1000) / 10 : 0;
+    const rawWinRate = (rawWins + rawLosses) > 0 ? Math.round((rawWins / (rawWins + rawLosses)) * 1000) / 10 : 0;
     const alpha = aiPnL - rawTvPnL;
 
     return {
@@ -4558,6 +4658,9 @@ window.AppAlerts = {
         aiLosses,
         aiTradesCount,
         aiWinRate,
+        rawWins,
+        rawLosses,
+        rawWinRate,
         avoidedLosses: Math.round(avoidedLosses * 100) / 100,
         avoidedCount,
         rawTvPnL: Math.round(rawTvPnL * 100) / 100,
@@ -4780,7 +4883,10 @@ window.AppAlerts = {
             ${pnlSign}$${sum.aiPnL.toFixed(2)}
           </div>
           <div style="font-size:11px; color:var(--text-muted);">
-            Calculated <strong style="color:var(--text-main);">on AI-suggested trades only</strong> (${sum.aiTradesCount} taken · ${sum.aiWins}W / ${sum.aiLosses}L · ${sum.aiWinRate}% WR). Filtered alerts are excluded.
+            ${sum.aiTradesCount > 0
+              ? `Calculated <strong style="color:var(--text-main);">on AI-suggested trades only</strong> (${sum.aiTradesCount} taken · ${sum.aiWins}W / ${sum.aiLosses}L · ${sum.aiWinRate}% WR). Filtered alerts are excluded.`
+              : `AI took 0 trades today (<strong style="color:var(--text-main);">${sum.totalCompleted} trades filtered by AI risk triage</strong>). Raw TV P&amp;L is ${tvSign}$${sum.rawTvPnL.toFixed(2)}.`
+            }
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
@@ -4808,10 +4914,38 @@ window.AppAlerts = {
 
     const targetDate = (dateKey && dateKey !== 'undefined')
       ? dateKey
-      : (this._dateFilter && this._dateFilter !== 'ALL' ? this._dateFilter : (this._availableDates && this._availableDates.length > 0 ? this._availableDates[0] : '2026-09-16'));
+      : (this._pnlCurrentSession && this._pnlCurrentSession !== 'ALL' ? this._pnlCurrentSession : (this._dateFilter && this._dateFilter !== 'ALL' ? this._dateFilter : (this._availableDates && this._availableDates.length > 0 ? this._availableDates[0] : '2026-09-16')));
 
     this._currentTickerTradesSymbol = sym;
     this._currentTickerTradesDate = targetDate;
+
+    // Modal stack coordination:
+    const candidateParents = [
+      { id: 'modal-alerts-pnl', label: 'Session P&L' },
+      { id: 'modal-intraday-postmortem', label: 'Post-Mortem' }
+    ];
+    let parentFound = null;
+    for (const p of candidateParents) {
+      const el = document.getElementById(p.id);
+      if (el && (el.style.display === 'flex' || el.style.display === 'block')) {
+        parentFound = p;
+        break;
+      }
+    }
+    if (parentFound) {
+      this._tickerTradesParentId = parentFound.id;
+      const parentEl = document.getElementById(parentFound.id);
+      if (parentEl) parentEl.style.display = 'none';
+      const backBtn = document.getElementById('ttm-btn-back');
+      if (backBtn) {
+        backBtn.style.display = 'inline-flex';
+        backBtn.innerText = `← Back to ${parentFound.label}`;
+      }
+    } else {
+      this._tickerTradesParentId = null;
+      const backBtn = document.getElementById('ttm-btn-back');
+      if (backBtn) backBtn.style.display = 'none';
+    }
 
     const modal = document.getElementById('modal-ticker-day-trades');
     const symEl = document.getElementById('ttm-ticker-sym');
@@ -4846,7 +4980,10 @@ window.AppAlerts = {
               ${pnlSign}$${sum.aiPnL.toFixed(2)}
             </div>
             <div style="font-size:12px; color:var(--text-muted); font-weight:500; margin-top:2px;">
-              Calculated <strong style="color:var(--text-main);">strictly on AI suggested trades</strong> (${sum.aiTradesCount} taken · ${sum.aiWins}W / ${sum.aiLosses}L · ${sum.aiWinRate}% Win Rate). Filtered alerts are excluded.
+              ${sum.aiTradesCount > 0
+                ? `Calculated <strong style="color:var(--text-main);">strictly on AI suggested trades</strong> (${sum.aiTradesCount} taken · ${sum.aiWins}W / ${sum.aiLosses}L · ${sum.aiWinRate}% Win Rate). Filtered alerts are excluded.`
+                : `AI took 0 trades today (<strong style="color:var(--text-main);">${sum.totalCompleted} trades filtered by AI risk triage</strong>). Raw TV P&amp;L is ${tvSign}$${sum.rawTvPnL.toFixed(2)}.`
+              }
             </div>
           </div>
 
@@ -5020,14 +5157,20 @@ window.AppAlerts = {
                   </div>
                 ` : ''}
 
+                ${parsedPb && parsedPb.vetoRationale ? `
+                  <div style="font-size:11.5px; line-height:1.5; color:var(--rose); background:rgba(244,63,94,0.08); border-left:3px solid var(--rose); padding:6px 10px; border-radius:4px; margin-top:4px;">
+                    ${parsedPb.vetoRationale}
+                  </div>
+                ` : ''}
+
                 ${parsedPb && parsedPb.traderNote ? `
                   <div class="ai-trader-note-callout" style="border-left-color:${t.isAiTaken ? 'var(--emerald)' : (t.isAiFiltered ? 'var(--rose)' : 'var(--cyan)')};">
                     <strong style="color:var(--text-muted); font-size:10px; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:2px;">📝 Trader's Note:</strong>
                     ${parsedPb.traderNote}
                   </div>
-                ` : (!parsedPb && rawPb ? `
+                ` : (!parsedPb?.whyCard && !parsedPb?.whyTape && !parsedPb?.killItIf && !parsedPb?.vetoRationale && rawPb ? `
                   <div style="font-size:11px; color:var(--text-muted); line-height:1.4;">
-                    ${rawPb.substring(0, 300)}...
+                    ${(parsedPb?.residualText || rawPb).substring(0, 300)}...
                   </div>
                 ` : '')}
               </div>
@@ -5044,10 +5187,17 @@ window.AppAlerts = {
     }
   },
 
-  closeTickerTradesModal() {
+  closeTickerTradesModal(restoreParent = true) {
     const modal = document.getElementById('modal-ticker-day-trades');
     if (modal) {
       modal.style.display = 'none';
+    }
+    if (restoreParent && this._tickerTradesParentId) {
+      const parentEl = document.getElementById(this._tickerTradesParentId);
+      if (parentEl) {
+        parentEl.style.display = 'flex';
+      }
+      this._tickerTradesParentId = null;
     }
   },
 
@@ -5055,9 +5205,16 @@ window.AppAlerts = {
     const sym = (symbol || '').toUpperCase().trim();
     if (!sym) return;
 
+    // Defensive parameter-inversion auto-detection in case caller passes (symbol, tradeIndex, dateKey)
+    if (typeof dateKey === 'number' && typeof tradeIndex === 'string' && (tradeIndex.includes('-') || tradeIndex === 'ALL')) {
+      const tmp = dateKey;
+      dateKey = tradeIndex;
+      tradeIndex = tmp;
+    }
+
     const targetDate = (dateKey && dateKey !== 'undefined')
       ? dateKey
-      : (this._dateFilter && this._dateFilter !== 'ALL' ? this._dateFilter : (this._availableDates && this._availableDates.length > 0 ? this._availableDates[0] : '2026-09-16'));
+      : (this._pnlCurrentSession && this._pnlCurrentSession !== 'ALL' ? this._pnlCurrentSession : (this._dateFilter && this._dateFilter !== 'ALL' ? this._dateFilter : (this._availableDates && this._availableDates.length > 0 ? this._availableDates[0] : '2026-09-16')));
 
     let t = tradeObj;
     if (!t) {
@@ -5070,6 +5227,48 @@ window.AppAlerts = {
       if (!t && res.trades.length > 0) t = res.trades[0];
     }
     if (!t) return;
+
+    // Modal stack coordination:
+    // If opened from an active parent modal (Session P&L, Day Trades, Post-Mortem),
+    // cleanly hide the parent modal and show prominent back navigation.
+    const candidateParents = [
+      { id: 'modal-alerts-pnl', label: 'Session P&L' },
+      { id: 'modal-ticker-day-trades', label: 'Day Trades' },
+      { id: 'modal-intraday-postmortem', label: 'Post-Mortem' }
+    ];
+    let parentFound = null;
+    for (const p of candidateParents) {
+      const el = document.getElementById(p.id);
+      if (el && (el.style.display === 'flex' || el.style.display === 'block')) {
+        parentFound = p;
+        break;
+      }
+    }
+
+    if (parentFound) {
+      this._modalParentId = parentFound.id;
+      const parentEl = document.getElementById(parentFound.id);
+      if (parentEl) parentEl.style.display = 'none';
+
+      const backBtn = document.getElementById('tdm-btn-back');
+      const backLbl = document.getElementById('tdm-btn-back-label');
+      const footerBackBtn = document.getElementById('tdm-btn-footer-back');
+      const footerBackLbl = document.getElementById('tdm-btn-footer-back-label');
+      if (backBtn && backLbl) {
+        backLbl.innerText = `← Back to ${parentFound.label}`;
+        backBtn.style.display = 'inline-flex';
+      }
+      if (footerBackBtn && footerBackLbl) {
+        footerBackLbl.innerText = `← Back to ${parentFound.label}`;
+        footerBackBtn.style.display = 'inline-flex';
+      }
+    } else {
+      this._modalParentId = null;
+      const backBtn = document.getElementById('tdm-btn-back');
+      const footerBackBtn = document.getElementById('tdm-btn-footer-back');
+      if (backBtn) backBtn.style.display = 'none';
+      if (footerBackBtn) footerBackBtn.style.display = 'none';
+    }
 
     const modal = document.getElementById('modal-trade-detail');
     const symEl = document.getElementById('tdm-ticker-sym');
@@ -5230,11 +5429,50 @@ window.AppAlerts = {
                 ${parsedPb.traderNote}
               </div>
             </div>
-          ` : (!parsedPb && rawPb ? `
-            <div style="font-size:12px; color:var(--text-muted); line-height:1.6; white-space:pre-wrap;">
-              ${rawPb}
+          ` : ''}
+
+          <!-- Veto Rationale (Quality / Regime / Expectancy Veto) -->
+          ${parsedPb && parsedPb.vetoRationale ? `
+            <div class="tdm-thesis-item">
+              <div class="tdm-thesis-header" style="color:var(--rose);">
+                <span>🛡️</span> AI VETO &amp; RISK RATIONALE:
+              </div>
+              <div class="tdm-thesis-box inval" style="line-height:1.6; font-size:12.5px;">
+                ${parsedPb.vetoRationale}
+              </div>
             </div>
-          ` : '')}
+          ` : ''}
+
+          <!-- Fallback: Unstructured Playbook or Residual Text -->
+          ${(!parsedPb || (!parsedPb.whyCard && !parsedPb.whyTape && !parsedPb.killItIf && !parsedPb.traderNote && !parsedPb.vetoRationale)) && (parsedPb && parsedPb.residualText ? parsedPb.residualText : rawPb) ? `
+            <div class="tdm-thesis-item">
+              <div class="tdm-thesis-header" style="color:var(--cyan);">
+                <span>🧠</span> AI DECISION PLAYBOOK &amp; CONTEXT:
+              </div>
+              <div class="tdm-thesis-box tech" style="white-space:pre-wrap; line-height:1.6; font-size:12.5px;">
+                ${parsedPb && parsedPb.residualText ? parsedPb.residualText : rawPb}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Tactical Plan Fallback if Playbook Empty -->
+          ${!rawPb && t.plan ? `
+            <div class="tdm-thesis-item">
+              <div class="tdm-thesis-header" style="color:var(--amber);">
+                <span>🎯</span> TACTICAL EXECUTION PLAN:
+              </div>
+              <div class="tdm-thesis-box tape" style="font-family:var(--font-mono); font-size:12px;">
+                ${t.plan}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Graceful note if completely empty -->
+          ${!rawPb && !t.plan ? `
+            <div style="font-size:12px; color:var(--text-muted); font-style:italic; padding:6px 0;">
+              ℹ️ Standard quantitative execution — no discretionary LLM veto or custom playbook notes were emitted for this trade.
+            </div>
+          ` : ''}
         </div>
       `;
     }
@@ -5255,10 +5493,18 @@ window.AppAlerts = {
     }
   },
 
-  closeTradeDetailModal() {
+  closeTradeDetailModal(restoreParent = true) {
     const modal = document.getElementById('modal-trade-detail');
     if (modal) {
       modal.style.display = 'none';
+    }
+
+    if (restoreParent && this._modalParentId) {
+      const parentEl = document.getElementById(this._modalParentId);
+      if (parentEl) {
+        parentEl.style.display = 'flex';
+      }
+      this._modalParentId = null;
     }
   },
 
@@ -5322,6 +5568,34 @@ window.AppAlerts = {
       }
     }
 
+    // Modal stack coordination:
+    const candidateParents = [
+      { id: 'modal-alerts-pnl', label: 'Session P&L' },
+      { id: 'modal-ticker-day-trades', label: 'Day Trades' }
+    ];
+    let parentFound = null;
+    for (const p of candidateParents) {
+      const el = document.getElementById(p.id);
+      if (el && (el.style.display === 'flex' || el.style.display === 'block')) {
+        parentFound = p;
+        break;
+      }
+    }
+    if (parentFound) {
+      this._postMortemParentId = parentFound.id;
+      const parentEl = document.getElementById(parentFound.id);
+      if (parentEl) parentEl.style.display = 'none';
+      const backBtn = document.getElementById('pm-btn-back');
+      if (backBtn) {
+        backBtn.style.display = 'inline-flex';
+        backBtn.innerText = `← Back to ${parentFound.label}`;
+      }
+    } else {
+      this._postMortemParentId = null;
+      const backBtn = document.getElementById('pm-btn-back');
+      if (backBtn) backBtn.style.display = 'none';
+    }
+
     this._currentPostMortemData = this.analyzeSessionPostMortem(d);
     this._currentPostMortemTab = 'summary';
     this.updatePostMortemDatePills(d);
@@ -5332,10 +5606,17 @@ window.AppAlerts = {
     }
   },
 
-  closePostMortemModal() {
+  closePostMortemModal(restoreParent = true) {
     const modal = document.getElementById('modal-intraday-postmortem');
     if (modal) {
       modal.style.display = 'none';
+    }
+    if (restoreParent && this._postMortemParentId) {
+      const parentEl = document.getElementById(this._postMortemParentId);
+      if (parentEl) {
+        parentEl.style.display = 'flex';
+      }
+      this._postMortemParentId = null;
     }
   },
 
@@ -5653,7 +5934,7 @@ window.AppAlerts = {
         : `<span class="badge danger" style="font-size:9.5px; padding:1px 5px;">PUT</span>`;
 
       return `
-        <div class="pm-trade-row" onclick="AppAlerts.openTradeDetailModal('${t.symbol}', ${t.origIdx || 0}, '${d.dateKey}')" title="Click to open trade intelligence modal">
+        <div class="pm-trade-row" onclick="AppAlerts.openTradeDetailModal('${t.symbol}', '${d.dateKey}', ${t.origIdx || 0})" title="Click to open trade intelligence modal">
           <div style="display:flex; align-items:center; gap:8px;">
             <strong style="color:var(--text-main); font-size:12px; font-family:var(--font-mono);">${t.symbol}</strong>
             ${sideBadge}
@@ -6003,6 +6284,42 @@ document.addEventListener('click', (e) => {
   if (wrapper && popover && popover.style.display !== 'none') {
     if (!wrapper.contains(e.target)) {
       popover.style.display = 'none';
+    }
+  }
+});
+
+// Global Escape key handler for Intraday & Alert modals (reverse stack order)
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    // 1. Highest z-index: Alert Detail modal (1280)
+    const alertModal = document.getElementById('tv-alert-detail-modal');
+    if (alertModal && alertModal.style.display !== 'none' && alertModal.style.display !== '') {
+      AppAlerts.closeAlertModal(true);
+      return;
+    }
+    // 2. Trade Detail modal (1270)
+    const tradeDetailModal = document.getElementById('modal-trade-detail');
+    if (tradeDetailModal && tradeDetailModal.style.display !== 'none' && tradeDetailModal.style.display !== '') {
+      AppAlerts.closeTradeDetailModal(true);
+      return;
+    }
+    // 3. Ticker Day Trades modal (1260)
+    const tickerTradesModal = document.getElementById('modal-ticker-day-trades');
+    if (tickerTradesModal && tickerTradesModal.style.display !== 'none' && tickerTradesModal.style.display !== '') {
+      AppAlerts.closeTickerTradesModal(true);
+      return;
+    }
+    // 4. Intraday Post-Mortem modal (1260)
+    const postMortemModal = document.getElementById('modal-intraday-postmortem');
+    if (postMortemModal && postMortemModal.style.display !== 'none' && postMortemModal.style.display !== '') {
+      AppAlerts.closePostMortemModal(true);
+      return;
+    }
+    // 5. Session P&L modal (1250)
+    const pnlModal = document.getElementById('modal-alerts-pnl');
+    if (pnlModal && pnlModal.style.display !== 'none' && pnlModal.style.display !== '') {
+      AppAlerts.closePnlModal(true);
+      return;
     }
   }
 });

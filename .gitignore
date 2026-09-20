@@ -41,14 +41,15 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
-.kilo/*
+
+# --- Kilo Agent Manager (worktrees, sessions) ---
+.kilo/
 
 # --- Temporary/Scratch Scripts ---
 /scratch/
 pine-script-indicators/*
 .playwright/*
 .playwright-*
-.kilo/*
 reports/*
 .tv-state.json
 kalshi/*

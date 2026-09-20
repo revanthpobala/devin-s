@@ -175,6 +175,20 @@ def evaluate_setup_lifecycle_bars(
     status = curr_st
     notes = ""
 
+    # Pre-compute EMA5 across bar records for RSI2 recovery detection
+    multiplier_5 = 2.0 / (5.0 + 1.0)
+    cur_ema5 = None
+    for b in bar_records:
+        c_val = b["close"]
+        if cur_ema5 is None:
+            cur_ema5 = c_val
+        else:
+            cur_ema5 = (c_val - cur_ema5) * multiplier_5 + cur_ema5
+        b["ema5"] = cur_ema5
+
+    is_next_open_model = entry_type in ("NEXT_OPEN", "RSI2") or (strategy_id or "").upper() in ("RSI2", "RSI2_PULLBACK")
+    recovery_due = False
+
     # 2. Chronological bar walk
     for bar in bar_records:
         b_date = bar["date"]
@@ -196,21 +210,29 @@ def evaluate_setup_lifecycle_bars(
             eligible_for_fill = False
             pot_fill = 0.0
 
-            if entry_type == "BREAKOUT" and breakout_lvl > 0:
+            if is_next_open_model:
+                if setup_date and b_date <= setup_date:
+                    # Setup bar forming/closing; eligible opening is strictly the next session
+                    continue
+                # Single next-open execution: must fill at open, or expire if ceiling exceeded
+                if opening_ceiling and opening_ceiling > 0 and b_open > opening_ceiling:
+                    status = "EXPIRED_CEILING"
+                    is_terminal = True
+                    notes = f"Expired: Next open (${b_open:.2f}) on {b_date} exceeded opening ceiling (${opening_ceiling:.2f})"
+                    continue
+                else:
+                    eligible_for_fill = True
+                    pot_fill = b_open
+            elif entry_type == "BREAKOUT" and breakout_lvl > 0:
                 if side == "LONG" and b_high >= breakout_lvl:
                     eligible_for_fill = True
                     pot_fill = max(b_open, breakout_lvl)
                 elif side == "SHORT" and b_low <= breakout_lvl:
                     eligible_for_fill = True
                     pot_fill = min(b_open, breakout_lvl)
-            elif entry_type in ("NEXT_OPEN", "MARKET", "RSI2"):
-                # Next-open entry rule (e.g. RSI2 daily pullback)
-                if opening_ceiling and opening_ceiling > 0 and b_open > opening_ceiling:
-                    # Gap skip: price opened above ceiling, no fill
-                    eligible_for_fill = False
-                else:
-                    eligible_for_fill = True
-                    pot_fill = b_open
+            elif entry_type == "MARKET":
+                eligible_for_fill = True
+                pot_fill = b_open
             else:
                 # LIMIT / Dip buy (strict eligibility: price must reach limit level)
                 if side == "LONG":
@@ -315,8 +337,31 @@ def evaluate_setup_lifecycle_bars(
                     notes = f"Target {hit_target_level} reached on entry bar {b_date}"
                     continue
 
+                if is_next_open_model and bar.get("ema5") is not None and b_close > bar["ema5"]:
+                    recovery_due = True
+
         else:
             # Active in trade from a prior bar
+            # Check for queued recovery exit from prior bar's close > EMA5
+            if recovery_due:
+                if stop_loss > 0 and ((side == "LONG" and b_open <= stop_loss) or (side == "SHORT" and b_open >= stop_loss)):
+                    status = "STOP_BREACHED"
+                    hit_stop = True
+                    is_terminal = True
+                    exit_date = b_date
+                    exit_price = b_open
+                    notes = f"Stop breached on gap open (${b_open:.2f}) before recovery exit on {b_date}"
+                    continue
+                else:
+                    status = "TARGET_HIT"
+                    hit_t1 = True
+                    hit_target_level = "RECOVERY"
+                    is_terminal = True
+                    exit_date = b_date
+                    exit_price = b_open
+                    notes = f"Recovery exit on next open (${b_open:.2f}) following close above EMA5 on {b_date}"
+                    continue
+
             bars_held += 1
 
             # Check stop loss (including gap-through-stop)
@@ -383,6 +428,10 @@ def evaluate_setup_lifecycle_bars(
                 exit_price = b_close
                 notes = f"Time exit reached ({max_holding_bars} bars held) on {b_date}"
                 continue
+
+            # Queue recovery exit if active position closed above EMA5
+            if is_next_open_model and bar.get("ema5") is not None and b_close > bar["ema5"]:
+                recovery_due = True
 
     # 3. Post-walk status resolution if still non-terminal
     if not is_terminal:

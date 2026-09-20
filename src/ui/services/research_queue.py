@@ -5,12 +5,14 @@ Manages concurrency slots (MAX=2), FIFO queueing, and live process inspection.
 
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import re
 import subprocess
 import sys
 import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -154,19 +156,135 @@ def dispatch_next_queued_job():
                 append_log(f"⚡ [Queue Dispatcher] Dispatched queued research for {tkr} to open slot (Job ID: {jid}).")
 
 
+# Sub-stage markers we watch for in the deep-research subprocess stream
+_STAGE_MARKERS = [
+    (re.compile(r"\[Debate\]|debate|Bull.*Bear", re.I), "Debate"),
+    (re.compile(r"Pass 2|pass2|Gemini|Pine Gem|Model A", re.I), "Pass 2 — Pine Gem"),
+    (re.compile(r"Independent|independent_gem|Model B|IND", re.I), "Pass 2-IND — Independent"),
+    (re.compile(r"Arbitration|arbitration|PM.*Judge|Ponytail", re.I), "Arbitration — PM Judge"),
+    (re.compile(r"Watch.*sync|watch_alerts|Tastytrade.*alert", re.I), "Watch Sync"),
+]
+
+
+def _detect_stage_detail(line: str) -> Optional[str]:
+    for pattern, label in _STAGE_MARKERS:
+        if pattern.search(line):
+            return label
+    return None
+
+
 def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str] = None, force: bool = False):
     """Worker thread running sequential research pipeline with SQLite persistence and memory-leak protection."""
+    init_db()
     ticker_u = ticker.strip().upper()
     py_exe = sys.executable
     log_file_path = LOGS_DIR / f"{job_id}.log"
+    recent_lines: collections.deque[str] = collections.deque(maxlen=25)
 
     def _log_both(msg: str):
         append_log(f"[{ticker_u}] {msg}")
+        recent_lines.append(msg)
         try:
             with open(log_file_path, "a", encoding="utf-8") as lf:
                 lf.write(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
         except Exception:
             pass
+
+    def _set_stage_detail(detail: str):
+        try:
+            with get_db() as conn:
+                conn.cursor().execute(
+                    "UPDATE active_research_jobs SET stage_detail = ? WHERE job_id = ?",
+                    (detail, job_id),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    # Idle timeout: no output for this many seconds → kill (Playwright/LLM hang guard)
+    IDLE_TIMEOUT_SEC = 600  # 10 min
+
+    def _run_subproc(cmd: list[str], phase_label: str) -> None:
+        """Run a subprocess, stream output to log, track sub-stages, raise with tail on failure.
+        Uses a reader thread + Event so we can detect hangs on Windows (no select on pipes)."""
+        import time as _time
+        import queue as _queue
+        nonlocal current_subproc
+        current_subproc = subprocess.Popen(
+            cmd,
+            cwd=str(config.BASE_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        ACTIVE_RESEARCH_SUBPROCS[job_id] = current_subproc
+        with get_db() as conn:
+            conn.cursor().execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (current_subproc.pid, job_id))
+            conn.commit()
+
+        line_q: _queue.Queue = _queue.Queue()
+        last_detail = None
+
+        def _reader():
+            try:
+                for ln in current_subproc.stdout:
+                    line_q.put(ln)
+            except Exception:
+                pass
+            finally:
+                line_q.put(None)  # sentinel
+
+        reader_t = threading.Thread(target=_reader, daemon=True)
+        reader_t.start()
+
+        last_output_ts = _time.monotonic()
+        while True:
+            try:
+                ln = line_q.get(timeout=30)
+            except _queue.Empty:
+                # No line for 30s — check if process is still alive and if we've hit idle timeout
+                if current_subproc.poll() is not None:
+                    break  # process exited, drain remaining
+                elapsed_idle = _time.monotonic() - last_output_ts
+                if elapsed_idle >= IDLE_TIMEOUT_SEC:
+                    current_subproc.kill()
+                    current_subproc.wait()
+                    tail = "\n".join(list(recent_lines)[-20:])
+                    raise RuntimeError(
+                        f"{phase_label} timed out after {IDLE_TIMEOUT_SEC // 60} min with no output.\n"
+                        f"Process killed. Last 20 lines before hang:\n{tail}"
+                    )
+                continue
+
+            if ln is None:
+                break  # reader thread finished (pipe closed)
+            last_output_ts = _time.monotonic()
+            l_str = ln.strip()
+            if not l_str:
+                continue
+            _log_both(l_str)
+            detail = _detect_stage_detail(l_str)
+            if detail and detail != last_detail:
+                last_detail = detail
+                _set_stage_detail(detail)
+
+        # Drain any remaining lines in the queue
+        while not line_q.empty():
+            ln = line_q.get_nowait()
+            if ln is None:
+                break
+            l_str = ln.strip()
+            if l_str:
+                _log_both(l_str)
+
+        current_subproc.wait()
+        if current_subproc.returncode != 0:
+            tail = "\n".join(list(recent_lines)[-20:])
+            raise RuntimeError(
+                f"{phase_label} failed with exit code {current_subproc.returncode}\n--- last 20 lines ---\n{tail}"
+            )
 
     _log_both(f"🚀 Starting Research Job {job_id} for {ticker_u} [Mode: {mode}, Date: {date or 'auto'}, Force: {force}]")
     current_subproc = None
@@ -175,7 +293,10 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         # Step 1: Scrape
         if mode in ("full", "scrape_only", "scrape_deep"):
             with get_db() as conn:
-                conn.cursor().execute("UPDATE active_research_jobs SET stage = 'SCRAPING', status = 'RUNNING' WHERE job_id = ?", (job_id,))
+                conn.cursor().execute(
+                    "UPDATE active_research_jobs SET stage = 'SCRAPING', status = 'RUNNING', stage_detail = 'Scraping TradingView' WHERE job_id = ?",
+                    (job_id,),
+                )
                 conn.commit()
             _log_both(f"📸 [1/3] Scraping TradingView Charts & Data Window...")
             cmd = [py_exe, "run_swing_research.py"]
@@ -184,26 +305,7 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             cmd.extend(["--ticker", ticker_u])
             if force:
                 cmd.append("--force")
-            current_subproc = subprocess.Popen(
-                cmd,
-                cwd=str(config.BASE_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            ACTIVE_RESEARCH_SUBPROCS[job_id] = current_subproc
-            with get_db() as conn:
-                conn.cursor().execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (current_subproc.pid, job_id))
-                conn.commit()
-            for line in current_subproc.stdout:
-                l_str = line.strip()
-                if l_str:
-                    _log_both(l_str)
-            current_subproc.wait()
-            if current_subproc.returncode != 0:
-                raise RuntimeError(f"Scrape phase failed with exit code {current_subproc.returncode}")
+            _run_subproc(cmd, "Scrape phase")
 
         # Step 2: Deep Research (Model A & Model B Parallel + PM Arbitration)
         date_to_use = date.strip() if (date and date.strip()) else None
@@ -220,33 +322,17 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
 
         if mode in ("full", "deep_only", "scrape_deep"):
             with get_db() as conn:
-                conn.cursor().execute("UPDATE active_research_jobs SET stage = 'DEEP_RESEARCH', status = 'RUNNING' WHERE job_id = ?", (job_id,))
+                conn.cursor().execute(
+                    "UPDATE active_research_jobs SET stage = 'DEEP_RESEARCH', status = 'RUNNING', stage_detail = 'Starting' WHERE job_id = ?",
+                    (job_id,),
+                )
                 conn.commit()
             _log_both(f"🔬 [2/3] Running Agentic Deep Research (Pine Gem + Independent Gem + PM Arbitration)...")
             cmd = [py_exe, "run_deep_research.py"]
             if date_to_use:
                 cmd.append(date_to_use)
             cmd.extend(["--ticker", ticker_u, "--job-id", job_id])
-            current_subproc = subprocess.Popen(
-                cmd,
-                cwd=str(config.BASE_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            ACTIVE_RESEARCH_SUBPROCS[job_id] = current_subproc
-            with get_db() as conn:
-                conn.cursor().execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (current_subproc.pid, job_id))
-                conn.commit()
-            for line in current_subproc.stdout:
-                l_str = line.strip()
-                if l_str:
-                    _log_both(l_str)
-            current_subproc.wait()
-            if current_subproc.returncode != 0:
-                raise RuntimeError(f"Deep research phase failed with exit code {current_subproc.returncode}")
+            _run_subproc(cmd, "Deep research phase")
 
             # Verify reports exist before declaring success
             rep_chk_date = date_to_use or datetime.now().strftime("%Y-%m-%d")
@@ -258,6 +344,7 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         # Step 3: Sync Watch Alerts in Background (Targeted to ticker)
         if mode in ("full", "scrape_deep", "deep_only"):
             _log_both(f"🔔 [3/3] Syncing Watch Levels & Tastytrade Cloud Alerts for {ticker_u}...")
+
             def _bg_watch_sync(t_sym, d_sync):
                 try:
                     sync_cmd = [py_exe, "run_watch_alerts.py", "--sync", "--once", "--ticker", t_sym]
@@ -277,21 +364,25 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                         if l:
                             _log_both(l)
                     sync_p.wait()
+                    if sync_p.returncode != 0:
+                        _log_both(f"⚠️ Watch sync exited with code {sync_p.returncode} — Tastytrade alerts may not have registered.")
                 except Exception as e_w:
-                    _log_both(f"Watch sync background notice: {e_w}")
+                    _log_both(f"⚠️ Watch sync error: {e_w}")
 
             threading.Thread(target=_bg_watch_sync, args=(ticker_u, date_to_use), daemon=True).start()
 
         with get_db() as conn:
             conn.cursor().execute(
-                "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'DONE', completed_at = ? WHERE job_id = ?",
+                "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'DONE', stage_detail = NULL, completed_at = ? WHERE job_id = ?",
                 (datetime.now(timezone.utc).isoformat(), job_id)
             )
             conn.commit()
         _log_both(f"✅ Deep Research Complete for {ticker_u}!")
 
     except Exception as e:
+        tb_str = traceback.format_exc()
         _log_both(f"❌ Exception in research worker: {e}")
+        _log_both(tb_str)
         with get_db() as conn:
             c = conn.cursor()
             existing = c.execute("SELECT status FROM active_research_jobs WHERE job_id = ?", (job_id,)).fetchone()
@@ -300,7 +391,7 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             else:
                 c.execute(
                     "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = ?, completed_at = ? WHERE job_id = ?",
-                    (str(e), datetime.now(timezone.utc).isoformat(), job_id)
+                    (f"{str(e)}\n{tb_str}", datetime.now(timezone.utc).isoformat(), job_id)
                 )
                 conn.commit()
     finally:

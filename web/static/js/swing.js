@@ -2326,6 +2326,7 @@ window.AppSwing = {
         : '<em>No independent report found.</em>';
       bodyEl.innerHTML = bannerHtml + reportHtml;
     } else if (tab === 'history') {
+      this.togglePositionsPane(false);
       const timeline = data.historical_timeline || [];
       const ticker = data.ticker || 'STOCK';
       const curDate = data.date;
@@ -2344,11 +2345,51 @@ window.AppSwing = {
               ? 'color:#92400e; border-color:#fde68a; background:#fffbeb;'
               : 'color:#1d4ed8; border-color:#bfdbfe; background:#eff6ff;'));
         
-        const rowBg = isCurrent ? 'background:#eff6ff;' : '';
-        const badge = isCurrent ? '<span class="pill blue" style="font-size:9.5px; padding:1px 5px; margin-left:4px;">CURRENT</span>' : '';
+        const rowBg = isCurrent ? 'background:rgba(59,130,246,0.08);' : '';
+        const badge = isCurrent ? '<span class="pill blue" style="font-size:9.5px; padding:1px 6px; margin-left:4px; font-weight:800;">CURRENT</span>' : '';
+
+        let cleanPreview = (item.preview || '')
+          .replace(/```[a-zA-Z0-9_:]*/g, '')
+          .replace(/```/g, '')
+          .trim();
+
+        // If preview is a raw JSON block (e.g. from legacy watch_levels block)
+        if (cleanPreview.startsWith('{') || cleanPreview.includes('"shares_plan"') || cleanPreview.includes('"ticker":')) {
+          const mEzLow = cleanPreview.match(/"entry_zone_low":\s*([0-9.]+)/);
+          const mEzHigh = cleanPreview.match(/"entry_zone_high":\s*([0-9.]+)/);
+          const mStop = cleanPreview.match(/"tactical_stop":\s*([0-9.]+)/);
+          const mT1 = cleanPreview.match(/"target_1":\s*([0-9.]+)/);
+          const mT2 = cleanPreview.match(/"target_2":\s*([0-9.]+)/);
+          const mOpt = cleanPreview.match(/"structure":\s*"([^"]+)"/);
+          const mBreak = cleanPreview.match(/"breakout_level":\s*([0-9.]+)/);
+
+          const parts = [];
+          if (mEzLow && mEzHigh) parts.push(`🎯 Entry Limit: $${mEzLow[1]} – $${mEzHigh[1]}`);
+          else if (mEzLow) parts.push(`🎯 Entry Limit: $${mEzLow[1]}`);
+          if (mStop) parts.push(`🛑 Stop: $${mStop[1]}`);
+          if (mT1) parts.push(`🏁 T1: $${mT1[1]}`);
+          if (mT2) parts.push(`🏁 T2: $${mT2[1]}`);
+          if (mBreak) parts.push(`🚀 Breakout: $${mBreak[1]}`);
+          if (mOpt) parts.push(`⚡ Options: ${mOpt[1]}`);
+          if (parts.length > 0) {
+            cleanPreview = parts.join(' · ');
+          } else {
+            cleanPreview = cleanPreview.replace(/[{}\"\':]/g, ' ').replace(/\s+/g, ' ').trim();
+          }
+        }
+
+        // Clean out any raw markdown formatting, bullets, asterisks, brackets
+        cleanPreview = cleanPreview
+          .replace(/\*\*/g, '')
+          .replace(/__+/g, '')
+          .replace(/^\s*[\*\-\•]\s*/, '')
+          .replace(/\s+[\*\-\•]\s+/g, ' · ')
+          .replace(/\s*\*\s*/g, ' · ')
+          .replace(/\[\s*([^\]]+)\s*\]/g, '$1')
+          .trim();
 
         return `
-          <tr style="${rowBg}">
+          <tr style="${rowBg} cursor:pointer;" onclick="AppSwing.switchReportDate('${item.date}')" title="Click to view full research report for ${item.date}">
             <td style="font-family:'JetBrains Mono',monospace; font-weight:700; white-space:nowrap;">
               <span style="color:var(--text-main); font-size:13px;">${item.date}</span> ${badge}
             </td>
@@ -2358,11 +2399,11 @@ window.AppSwing = {
             <td>
               <span class="pill ${vClass}" style="font-size:10.5px; padding:3px 8px; font-weight:700; white-space:nowrap; ${vStyle}">${item.verdict}</span>
             </td>
-            <td style="font-size:12px; color:var(--text-muted); line-height:1.4;">
-              ${item.preview}
+            <td style="font-size:12.5px; color:var(--text-main); line-height:1.55; white-space:normal; min-width:320px; max-width:600px; word-break:break-word;">
+              ${cleanPreview}
             </td>
             <td>
-              <button class="btn secondary" onclick="AppSwing.switchReportDate('${item.date}')" style="padding:3px 9px; font-size:11px; white-space:nowrap; ${isCurrent ? 'opacity:0.5;' : ''}" ${isCurrent ? 'disabled' : ''}>
+              <button class="btn secondary" onclick="event.stopPropagation(); AppSwing.switchReportDate('${item.date}')" style="padding:4px 10px; font-size:11px; white-space:nowrap; ${isCurrent ? 'opacity:0.6;' : ''}" ${isCurrent ? 'disabled' : ''}>
                 ${isCurrent ? 'Active Date' : '📖 View Report'}
               </button>
             </td>
@@ -2377,11 +2418,11 @@ window.AppSwing = {
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <span style="font-size:18px;">📜</span>
-                <span style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--text-main);">${ticker} Research History & Thesis Drift</span>
+                <span style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--text-main);">${ticker} Research History &amp; Thesis Drift</span>
                 <span class="pill blue" style="font-size:11px; padding:2px 8px;">${timeline.length} Total Dates</span>
               </div>
               <button class="btn secondary" onclick="AppChat.sendModalCopilotMsg('Compare today to prior research dates for ${ticker}. What changed, what was the price then vs now, and was the earlier analysis right or wrong?')" style="font-size:11.5px; padding:5px 12px; cursor:pointer;">
-                💬 Ask Copilot: What Changed & Was the AI Right?
+                💬 Ask Copilot: What Changed &amp; Was the AI Right?
               </button>
             </div>
             <p style="font-size:12.5px; color:var(--text-muted); margin:0; line-height:1.5;">
@@ -2396,9 +2437,9 @@ window.AppSwing = {
               <thead>
                 <tr>
                   <th style="width:160px;">RESEARCH DATE</th>
-                  <th style="width:120px;">SPOT PRICE</th>
+                  <th style="width:110px;">SPOT PRICE</th>
                   <th style="width:160px;">VERDICT</th>
-                  <th>THESIS HIGHLIGHTS & SETUP SUMMARY</th>
+                  <th style="min-width:320px;">THESIS HIGHLIGHTS &amp; SUMMARY</th>
                   <th style="width:130px;">ACTIONS</th>
                 </tr>
               </thead>

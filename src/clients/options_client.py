@@ -563,13 +563,23 @@ def _yfinance_quote(ticker: str) -> Optional[str]:
 
 def get_realtime_quote(ticker: str) -> Optional[str]:
     """Return a concise REAL-TIME quote + range block.
-    Cascades across Alpaca -> Tastytrade DXLink -> yfinance.
+    Uses QuoteRouter for high-speed quote generation, falling back to legacy providers.
     Used by LLM tools and deep research pipeline for live pricing."""
     ticker = ticker or _ACTIVE_TICKER
     if not ticker:
         logger.warning("get_realtime_quote called without a ticker and no active ticker set.")
         return None
-    
+
+    # 0. High-speed QuoteRouter fast-path (~200ms, multi-provider)
+    try:
+        from src.clients.quote_router import quote_router
+
+        router_text = quote_router.format_quote_text(ticker)
+        if router_text:
+            return router_text
+    except Exception as e_qr:
+        logger.debug(f"[{ticker}] QuoteRouter format_quote_text failed: {e_qr}")
+
     # 1. Try Alpaca Realtime Quote
     result = _alpaca_quote(ticker)
     if result:

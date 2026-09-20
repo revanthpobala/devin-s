@@ -22,7 +22,7 @@ REM Total Footprint: 20.47 GB (Model) + 0.86 GB (Vision) + 4.30 GB (KV Cache) + 
 REM
 REM Official Unsloth Sampling Settings for Qwen3.8:
 REM - Instruct Mode (non-thinking/coding): --temp 0.7 --top-p 0.80 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --repeat-penalty 1.0 --reasoning off
-D:\My-Projects\Stock\llama-cpp-server\llama-server.exe -m "D:\My-Projects\Stock\models\Qwen3.8-27B-UD-Q6_K.gguf" --mmproj "D:\My-Projects\Stock\models\mmproj-Qwen3.8-27B-F16.gguf" --host 127.0.0.1 --port 8000 -c 262144 --parallel 2 -fa on -ctk q4_0 -ctv q4_0 -b 1024 -ub 512 -ngl 999 --split-mode layer --temp 0.7 --top-p 0.80 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --repeat-penalty 1.0 -a "qwen,gpt-4,qwen-coder,qwen3.8-27b" --jinja --reasoning off -lv 3 --log-file "%LLM_LOG%"
+D:\My-Projects\Stock\llama-cpp-server\llama-server.exe -m "D:\My-Projects\Stock\models\Qwen3.8-27B-UD-Q6_K.gguf" --mmproj "D:\My-Projects\Stock\models\mmproj-Qwen3.8-27B-F16.gguf" --host 127.0.0.1 --port 8000 -c 348576 --parallel 1 -fa on -ctk q4_0 -ctv q4_0 -b 1024 -ub 512 -ngl 999 --split-mode layer --temp 0.7 --top-p 0.80 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --repeat-penalty 1.0 -a "qwen,gpt-4,qwen-coder,qwen3.8-27b" --jinja --reasoning off -lv 3 --log-file "%LLM_LOG%"
 
 pause
 

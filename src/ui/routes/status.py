@@ -14,11 +14,14 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from src import config
 from src.ui.services.daemon_manager import find_running_tracker_pid
 from src.ui.state import (
+    ACTIVE_RESEARCH_SUBPROCS,
+    ACTIVE_RESEARCH_WORKERS,
     LOG_BUFFER,
     LOGS_DIR,
     POSITIONS_FILE,
@@ -338,18 +341,71 @@ def get_company_names_endpoint():
 
 @router.get("/api/logs")
 def get_logs(channel: str = "all", job_id: Optional[str] = None):
-    """Fetch live log buffer by channel or specific research job log."""
+    """Fetch live log buffer by channel or specific research job log with reconciled job state."""
     if job_id:
         log_file = LOGS_DIR / f"{job_id}.log"
+        logs: list[str] = []
         if log_file.exists():
             try:
-                lines = log_file.read_text(encoding="utf-8").splitlines()
-                return {"logs": lines[-600:], "channel": f"job:{job_id}"}
+                logs = log_file.read_text(encoding="utf-8").splitlines()[-600:]
             except Exception:
                 pass
+
+        # Return reconciled job row so log view and job list never disagree
+        job_row = None
+        with get_db() as conn:
+            c = conn.cursor()
+            row = c.execute("SELECT * FROM active_research_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row:
+                job_row = dict(row)
+                # Liveness reconciliation matching /api/jobs logic
+                thread = ACTIVE_RESEARCH_WORKERS.get(job_id)
+                subproc = ACTIVE_RESEARCH_SUBPROCS.get(job_id)
+                is_alive = (
+                    (thread is not None and thread.is_alive())
+                    or (subproc is not None and subproc.poll() is None)
+                    or (job_row["status"] != "RUNNING")
+                )
+                if job_row["status"] == "RUNNING" and not is_alive:
+                    import psutil
+                    pid = job_row.get("pid")
+                    if not (pid and psutil.pid_exists(pid)):
+                        from src.ui.services.research_queue import find_live_research_pid
+                        live_pid = find_live_research_pid(job_row.get("ticker", ""), job_id)
+                        if live_pid:
+                            is_alive = True
+                            job_row["pid"] = live_pid
+                        else:
+                            job_row["status"] = "FAILED"
+                            job_row["stage"] = "ERROR"
+                            job_row["error_message"] = job_row.get("error_message") or "Process terminated before generating report"
+                            c.execute(
+                                "UPDATE active_research_jobs SET status='FAILED', stage='ERROR', error_message=COALESCE(error_message, ?) WHERE job_id=?",
+                                ("Process terminated before generating report", job_id),
+                            )
+                            conn.commit()
+                job_row["is_alive"] = is_alive
+
+        return {"logs": logs, "channel": f"job:{job_id}", "job": job_row}
 
     with get_db() as conn:
         c = conn.cursor()
         jobs = c.execute("SELECT * FROM active_research_jobs ORDER BY started_at DESC LIMIT 15").fetchall()
         jobs_list = [dict(j) for j in jobs]
     return {"logs": list(LOG_BUFFER), "state": RESEARCH_STATE, "jobs": jobs_list, "channel": channel}
+
+
+@router.get("/api/logs/raw/{job_id}")
+def get_raw_job_log(job_id: str):
+    """Serve the full raw log file for a research job (plain text, opens in new tab)."""
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_\-]+$', job_id):
+        raise HTTPException(400, "Invalid job ID")
+    log_file = LOGS_DIR / f"{job_id}.log"
+    if not log_file.exists():
+        raise HTTPException(404, f"No log file found for job {job_id}")
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read log: {e}")
+    return PlainTextResponse(content)

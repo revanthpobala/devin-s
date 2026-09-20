@@ -286,7 +286,71 @@ def test_rsi2_opening_ceiling_gap_skip():
         )
 
         assert res["was_filled"] is False
-        assert res["status"] == "STALKING"
+        assert res["status"] == "EXPIRED_CEILING"
+        assert res["is_terminal"] is True
+
+
+def test_rsi2_does_not_fill_on_second_day_after_ceiling_gap():
+    """Verify that an RSI2 setup with day 1 open 155 (above ceiling 150) expires and does NOT fill on day 2 open 149."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [155.0, 149.0],
+            "High": [160.0, 153.0],
+            "Low": [154.0, 147.0],
+            "Close": [159.0, 151.0],
+        },
+        index=pd.to_datetime(["2026-09-15", "2026-09-16"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="RSI2_TEST",
+            setup_date="2026-09-14",
+            side="LONG",
+            entry_type="RSI2",
+            opening_ceiling=150.0,
+            stop_loss=140.0,
+            target_1=165.0,
+            live_price=151.0,
+            current_status="STALKING",
+        )
+
+        assert res["was_filled"] is False
+        assert res["status"] == "EXPIRED_CEILING"
+        assert res["is_terminal"] is True
+
+
+def test_rsi2_ema5_recovery_exit():
+    """Verify that an active RSI2 position closing above EMA5 exits on the next open."""
+    mock_df = pd.DataFrame(
+        {
+            "Open": [144.0, 148.0, 156.0],
+            "High": [146.0, 156.0, 158.0],
+            "Low": [142.0, 146.0, 154.0],
+            "Close": [145.0, 155.0, 157.0],
+        },
+        index=pd.to_datetime(["2026-09-14", "2026-09-15", "2026-09-16"]),
+    )
+
+    with patch("src.tracking.execution_validator.get_bars_since_date", return_value=mock_df):
+        res = evaluate_setup_lifecycle(
+            ticker="RSI2_TEST",
+            setup_date="2026-09-14",
+            side="LONG",
+            entry_type="RSI2",
+            opening_ceiling=150.0,
+            stop_loss=140.0,
+            target_1=165.0,
+            live_price=157.0,
+            current_status="STALKING",
+        )
+
+        assert res["was_filled"] is True
+        assert res["fill_price"] == 148.0
+        assert res["status"] == "TARGET_HIT"
+        assert res["hit_target_level"] == "RECOVERY"
+        assert res["exit_price"] == 156.0
+        assert res["exit_date"] == "2026-09-16"
 
 
 def test_time_exit_after_max_holding_bars():
