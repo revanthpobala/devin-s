@@ -220,7 +220,9 @@ def test_continuous_screener_run_scan_cycle():
          patch("src.screener.schwab_pre_move_scan.run_schwab_pre_move_scan", return_value={"long": fake_long, "short": fake_short}), \
          patch("src.screener.schwab_pre_move_scan.save_survivors_manifest") as mock_save_long, \
          patch("src.screener.schwab_pre_move_scan.save_short_manifest") as mock_save_short, \
-         patch.object(daemon, "enrich_with_tastytrade", return_value=0):
+         patch.object(daemon, "enrich_with_tastytrade", return_value=0), \
+         patch("src.screener.continuous_screener_daemon.get_schwab_client", return_value=MagicMock()), \
+         patch("src.tracking.schwab_portfolio_manager.sync_schwab_positions"):
 
         res = daemon.run_scan_cycle()
 

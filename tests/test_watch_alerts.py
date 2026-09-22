@@ -125,8 +125,23 @@ def test_evaluate_watch_cycle_state_transitions(tmp_path):
             assert res[0]["last_alert_type"] == "STOP_BREACHED"
 
 
-def test_extract_watch_levels_from_amzn_report():
-    data = extract_watch_levels_from_report("AMZN", "2026-08-29")
+def test_extract_watch_levels_from_amzn_report(tmp_path):
+    reports_dir = tmp_path / "reports" / "2026-08-29"
+    reports_dir.mkdir(parents=True)
+    summary = reports_dir / "AMZN_summary.md"
+    summary.write_text(
+        "# AMZN Tactical Summary\n"
+        "```json:watch_levels\n"
+        '{"verdict": "STALK", "side": "LONG", '
+        '"shares_plan": {"entry_type": "LIMIT", "entry_zone_low": 263.42, '
+        '"entry_zone_high": 265.0, "tactical_stop": 262.0, "target_1": 275.0}, '
+        '"options_plan": {"structure": "BULL_CALL_SPREAD", "long_strike": 265.0, "short_strike": 280.0}, '
+        '"invalidation": {"condition": "DAILY_CLOSE_BELOW", "price_level": 262.0}}\n'
+        "```\n",
+        encoding="utf-8",
+    )
+    with patch("src.logic.report_level_extractor.config.BASE_DIR", tmp_path):
+        data = extract_watch_levels_from_report("AMZN", "2026-08-29")
     assert data is not None
     assert data["ticker"] == "AMZN"
     assert data["verdict"] in ("STALK", "ENTER")

@@ -107,4 +107,15 @@ def init_db():
             """)
         except Exception:
             pass
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS copilot_chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
         conn.commit()

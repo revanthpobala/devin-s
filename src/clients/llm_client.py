@@ -8,7 +8,9 @@ import os
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, Dict, Optional
+
+import pandas as pd
 
 from openai import OpenAI
 
