@@ -167,6 +167,7 @@ def evaluate_risk_vetoes(
     eastern_dt: datetime,
     grade: str = "A",
     align: str = "",
+    rvol: Optional[float] = None,
 ) -> Optional[Tuple[str, str]]:
     """
     Evaluate institutional risk gates:
@@ -176,7 +177,8 @@ def evaluate_risk_vetoes(
     2. Weinstein Stage & Multi-Timeframe Alignment: Veto counter-trend trades (never CALLS in Stage 4 Decline, never PUTS in Stage 2 Advance).
     3. Mid-Morning Exhaustion Window (10:30 - 11:30 AM ET): Requires Score >= MID_MORNING_MIN_SCORE (default 85).
     4. Max Concurrent Correlated Exposure: Max MAX_CONCURRENT_SAME_SIDE (default 3) same-direction open intraday positions.
-    5. Lunch Chop Window (11:30 AM - 1:15 PM ET): Requires Score >= 85 (Grade A+).
+    5. Lunch Chop Window (1:15 PM - 2:45 PM ET): Requires Score >= 88 (Grade A+).
+       EXCEPTION: Bypassed when RVOL > 1.8x.
     6. Consecutive Losses DAY PAUSE: Opt-in (DAY_PAUSE_ENABLED, gem spec is DEFAULT OFF) -
        cooldown after 2 consecutive stops within 45m.
 
@@ -280,17 +282,21 @@ def evaluate_risk_vetoes(
             )
             return hdr, pb
 
-    # 5. Lunch Chop Window Hard-Gate (11:30 AM – 1:15 PM ET)
-    is_lunch = (h == 11 and m >= 30) or (h == 12) or (h == 13 and m <= 15)
-    if is_lunch and score < 85:
-        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (LUNCH CHOP)"
-        pb = (
-            f"{hdr}\n\n"
-            f"⛔ REGIME VETO: Midday liquidity dead zone (11:30 AM – 1:15 PM ET).\n"
-            f"Conviction score {score}/100 is below the required 85/100 (Grade A+) threshold for lunch trading.\n"
-            f"Breakouts in this window frequently fail due to dried up institutional volume."
-        )
-        return hdr, pb
+    # 5. Lunch Chop Window Hard-Gate (1:15 PM – 2:45 PM ET / 11:15 AM – 12:45 PM MT)
+    is_lunch = (h == 13 and m >= 15) or (h == 14 and m <= 45)
+    if is_lunch and score < 88:
+        rvol_bypass = rvol is not None and rvol > 1.8
+        if not rvol_bypass:
+            hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (LUNCH CHOP)"
+            pb = (
+                f"{hdr}\n\n"
+                f"⛔ REGIME VETO: Midday liquidity dead zone (1:15–2:45 PM ET).\n"
+                f"Conviction score {score}/100 is below the required 88/100 (Grade A+) threshold for lunch trading.\n"
+                f"EXCEPTION: Bypassed when RVOL > 1.8x (current RVOL={rvol})."
+                if rvol is not None else
+                f"Breakouts in this window frequently fail due to dried up institutional volume."
+            )
+            return hdr, pb
 
     # 6. Consecutive Losses DAY PAUSE Circuit Breaker
     # Gem spec: DAY PAUSE is a SOFT, SELF-CLEARING pause with DEFAULT OFF, so the
@@ -518,6 +524,13 @@ def evaluate_alert_payload(
         align_val = str(payload.get("align") or alert.get("align") or "")
 
         # Hard Quantitative Risk Vetoes (Grade-A Gate, Stage Alignment, Time Windows, Exposure, Day Pause)
+        _rvol = None
+        _rvol_raw = payload.get("rvol") or alert.get("rvol")
+        if _rvol_raw is not None:
+            try:
+                _rvol = float(_rvol_raw)
+            except (ValueError, TypeError):
+                _rvol = None
         risk_veto = evaluate_risk_vetoes(
             symbol=symbol,
             action=action,
@@ -526,6 +539,7 @@ def evaluate_alert_payload(
             eastern_dt=eastern_now,
             grade=grade_val,
             align=align_val,
+            rvol=_rvol,
         ) if not is_exit else None
 
         if risk_veto:

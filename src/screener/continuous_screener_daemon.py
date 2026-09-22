@@ -470,7 +470,14 @@ class ContinuousScreenerDaemon(threading.Thread):
             }
 
     def get_active_research_count(self) -> int:
-        """Count currently running deep research jobs across threads, SQLite, and external processes."""
+        """Count currently running deep research jobs across threads, SQLite, and external processes.
+
+        Reconciles stale RUNNING/QUEUED rows before counting: if a row's PID is
+        dead (or never recorded) and the job started more than STALE_THRESHOLD
+        ago, the row is marked FAILED so it no longer blocks the slot.
+        """
+        self._reconcile_stale_research_jobs()
+
         count = 0
         if hasattr(self, "_active_research_threads"):
             self._active_research_threads = [t for t in self._active_research_threads if t.is_alive()]
@@ -503,6 +510,56 @@ class ContinuousScreenerDaemon(threading.Thread):
             pass
 
         return count
+
+    def _reconcile_stale_research_jobs(self) -> None:
+        """Mark RUNNING/QUEUED research jobs as FAILED when their process is
+        dead and the job has exceeded STALE_THRESHOLD (30 min) since start.
+
+        This prevents permanent slot starvation after a hard crash (OOM,
+        kill -9, reboot) where the SQLite row survives but the process does
+        not. Called at the start of get_active_research_count so every slot
+        availability check sees accurate state.
+        """
+        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        if not db_path.exists():
+            return
+        try:
+            import sqlite3
+            from datetime import datetime, timedelta, timezone
+            now_utc = datetime.now(timezone.utc)
+            stale_cutoff = now_utc - timedelta(minutes=30)
+            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT job_id, pid, started_at FROM active_research_jobs WHERE status IN ('RUNNING', 'QUEUED')"
+                ).fetchall()
+                for row in rows:
+                    pid = row["pid"]
+                    started_at_str = row["started_at"]
+                    pid_alive = False
+                    if pid is not None:
+                        try:
+                            import psutil
+                            pid_alive = psutil.pid_exists(pid)
+                        except Exception:
+                            pid_alive = False
+                    started_dt = None
+                    if started_at_str:
+                        try:
+                            started_dt = datetime.fromisoformat(started_at_str)
+                            if started_dt.tzinfo is None:
+                                started_dt = started_dt.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            started_dt = None
+                    is_stale = (not pid_alive) and (started_dt is None or started_dt < stale_cutoff)
+                    if is_stale:
+                        conn.execute(
+                            "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = ? WHERE job_id = ?",
+                            ("Stale job: process dead and no activity for 30+ min", row["job_id"]),
+                        )
+                conn.commit()
+        except Exception:
+            pass
 
     def is_slot_available(self) -> bool:
         """Check if at least one deep research slot is free."""

@@ -429,7 +429,8 @@ class PositionMonitor(threading.Thread):
 
             # 0b. Midday Chop Kill (Tier 4: scratch positions open ≥35 min in 11:15–12:45 MT without Target 1)
             if strat == "intraday" and now_et.weekday() < 5:
-                if (now_et.hour == 11 and now_et.minute >= 15) or (now_et.hour == 12) or (now_et.hour == 13 and now_et.minute <= 45):
+                now_mt = now_et.astimezone(ZoneInfo("America/Denver"))
+                if (now_mt.hour == 11 and now_mt.minute >= 15) or (now_mt.hour == 12 and now_mt.minute <= 45):
                     opened_at = rec.get("opened_at")
                     if opened_at:
                         try:
@@ -835,6 +836,7 @@ class PositionManager:
             eastern_dt=eastern_now,
             grade=grade_val,
             align=align_val,
+            rvol=float(payload.get("rvol", 0)) if payload.get("rvol") is not None else None,
         )
         if risk_veto:
             hdr, pb = risk_veto

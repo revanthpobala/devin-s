@@ -739,3 +739,297 @@ if __name__ == "__main__":
     print("Positions count:", pos.get("total_positions_count"))
 
 
+# ---------------------------------------------------------------------------
+# Position Reconciliation (Fix #8)
+# ---------------------------------------------------------------------------
+
+def reconcile_positions() -> dict:
+    """Diff Schwab's real position list against local positions.json.
+
+    Returns a dict with:
+      - schwab_only: tickers open at broker but NOT locally (human may have closed them)
+      - local_only: tickers open locally but NOT at broker (stale local state)
+      - mismatches: tickers in both but with differing quantities/prices
+      - clean: True if no mismatches found
+
+    Logs at WARNING level on any mismatch so a human sees it immediately.
+    Call this periodically (e.g. from the orchestrator tick or a dedicated
+    reconciliation interval) to keep local state trustworthy.
+    """
+    schwab_only = []
+    local_only = []
+    mismatches = []
+
+    try:
+        schwab_pos = get_schwab_positions()
+        schwab_tickers = {}
+        if schwab_pos.get("status") == "ok":
+            for acc in schwab_pos.get("accounts", []):
+                for p in acc.get("positions", []):
+                    sym = (p.get("symbol") or "").upper().strip()
+                    qty = p.get("quantity", 0)
+                    if sym and qty != 0:
+                        schwab_tickers[sym] = {
+                            "quantity": qty,
+                            "average_price": p.get("average_price", 0.0),
+                            "market_value": p.get("market_value", 0.0),
+                            "side": "LONG" if qty > 0 else "SHORT",
+                        }
+    except Exception as e:
+        logger.error(f"[reconcile] Failed to fetch Schwab positions: {e}")
+        return {"schwab_only": [], "local_only": [], "mismatches": [], "clean": False}
+
+    try:
+        from src.tracking.position_state import load_state
+        local_state = load_state()
+    except Exception as e:
+        logger.error(f"[reconcile] Failed to load local positions: {e}")
+        return {"schwab_only": [], "local_only": [], "mismatches": [], "clean": False}
+
+    local_tickers = set(local_state.keys())
+
+    # Tickers in Schwab but not locally
+    for sym in schwab_tickers:
+        if sym not in local_tickers:
+            schwab_only.append(sym)
+
+    # Tickers in local but not Schwab
+    for sym in local_tickers:
+        if sym not in schwab_tickers:
+            local_only.append(sym)
+
+    # Tickers in both — check for quantity/price drift
+    for sym in schwab_tickers:
+        if sym in local_tickers:
+            s = schwab_tickers[sym]
+            rec = local_state[sym]
+            local_qty = float(rec.get("quantity") or rec.get("shares") or 1)
+            local_side = rec.get("side", "LONG").upper()
+            local_entry = rec.get("entry_price") or rec.get("alert_price") or 0.0
+            schwab_qty = s["quantity"]
+            schwab_side = s["side"]
+
+            if local_qty != schwab_qty:
+                mismatches.append({
+                    "ticker": sym,
+                    "type": "QUANTITY_MISMATCH",
+                    "local_qty": local_qty,
+                    "schwab_qty": schwab_qty,
+                })
+            if local_side != schwab_side:
+                mismatches.append({
+                    "ticker": sym,
+                    "type": "SIDE_MISMATCH",
+                    "local_side": local_side,
+                    "schwab_side": schwab_side,
+                })
+            if local_entry > 0 and abs(s["average_price"] - local_entry) > 0.01:
+                mismatches.append({
+                    "ticker": sym,
+                    "type": "ENTRY_PRICE_MISMATCH",
+                    "local_entry": local_entry,
+                    "schwab_entry": s["average_price"],
+                })
+
+    has_issues = bool(schwab_only or local_only or mismatches)
+
+    if has_issues:
+        logger.warning(
+            f"[RECONCILE] Position drift detected: "
+            f"schwab_only={schwab_only}, local_only={local_only}, mismatches={mismatches}"
+        )
+    else:
+        logger.info("[RECONCILE] Local state matches broker — no drift detected.")
+
+    return {
+        "schwab_only": schwab_only,
+        "local_only": local_only,
+        "mismatches": mismatches,
+        "clean": not has_issues,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Order Placement (Fix #7) — gated behind TRADING_ENABLED (default OFF)
+# ---------------------------------------------------------------------------
+
+_TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
+def _ensure_trading_enabled():
+    """Raise if autonomous trading is not explicitly enabled."""
+    if not _TRADING_ENABLED:
+        raise RuntimeError(
+            "TRADING_ENABLED is OFF (default). Set TRADING_ENABLED=true in .env "
+            "to allow order placement. This flag must never be on by default."
+        )
+
+
+def _get_account_hash() -> str:
+    """Fetch the primary Schwab account hash via the accounts endpoint."""
+    client = get_schwab_client()
+    resp = client.get_accounts()
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to fetch accounts: HTTP {resp.status_code}")
+    accounts = resp.json()
+    if not accounts:
+        raise RuntimeError("No Schwab accounts found.")
+    # Primary account is the first one; account_hash is the id field.
+    primary = accounts[0]
+    acc_hash = primary.get("accountHash") or primary.get("id") or primary.get("accountId")
+    if not acc_hash:
+        # Fallback: some responses use securitiesAccount.accountNumber
+        sec = primary.get("securitiesAccount", {})
+        acc_hash = sec.get("accountNumber")
+    if not acc_hash:
+        raise RuntimeError("Could not extract account hash from Schwab accounts response.")
+    return acc_hash
+
+
+def place_equity_order(
+    symbol: str,
+    side: str,
+    quantity: int,
+    order_type: str = "MARKET",
+    price: Optional[float] = None,
+    duration: str = "DAY",
+) -> dict:
+    """Place an equity order (buy/sell).
+
+    Gated behind TRADING_ENABLED (default OFF). Returns the order response
+    from Schwab including the order ID. The caller must then poll for fill
+    via poll_for_fill().
+    """
+    _ensure_trading_enabled()
+    from schwab.orders.equities import (
+        equity_buy_limit,
+        equity_buy_market,
+        equity_sell_limit,
+        equity_sell_market,
+        Duration,
+    )
+
+    dur = Duration.DAY if duration.upper() == "DAY" else Duration.GOOD_TILL_CANCEL
+    if side.upper() == "BUY":
+        if order_type.upper() == "LIMIT" and price is not None:
+            order_spec = equity_buy_limit(symbol, quantity, price, duration=dur)
+        else:
+            order_spec = equity_buy_market(symbol, quantity, duration=dur)
+    elif side.upper() == "SELL":
+        if order_type.upper() == "LIMIT" and price is not None:
+            order_spec = equity_sell_limit(symbol, quantity, price, duration=dur)
+        else:
+            order_spec = equity_sell_market(symbol, quantity, duration=dur)
+    else:
+        raise ValueError(f"Unknown equity side: {side}")
+
+    account_hash = _get_account_hash()
+    client = get_schwab_client()
+    resp = client.place_order(account_hash, order_spec)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Order placement failed: HTTP {resp.status_code} {resp.text}")
+    return resp.json()
+
+
+def place_options_order(
+    symbol: str,
+    side: str,
+    quantity: int,
+    order_type: str = "LIMIT",
+    price: Optional[float] = None,
+    duration: str = "DAY",
+) -> dict:
+    """Place an options order (buy/sell to open/close).
+
+    Gated behind TRADING_ENABLED (default OFF). Returns the order response
+    from Schwab including the order ID. The caller must then poll for fill
+    via poll_for_fill().
+    """
+    _ensure_trading_enabled()
+    from schwab.orders.options import (
+        option_buy_to_open_limit,
+        option_buy_to_open_market,
+        option_sell_to_open_limit,
+        option_sell_to_open_market,
+        option_buy_to_close_limit,
+        option_buy_to_close_market,
+        option_sell_to_close_limit,
+        option_sell_to_close_market,
+        Duration,
+    )
+
+    dur = Duration.DAY if duration.upper() == "DAY" else Duration.GOOD_TILL_CANCEL
+    is_buy = side.upper() in ("BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE")
+    is_open = side.upper() in ("BUY_TO_OPEN", "SELL_TO_OPEN")
+
+    if order_type.upper() != "LIMIT" or price is None:
+        if is_buy:
+            order_spec = option_buy_to_open_market(symbol, quantity, duration=dur) if is_open else option_buy_to_close_market(symbol, quantity, duration=dur)
+        else:
+            order_spec = option_sell_to_open_market(symbol, quantity, duration=dur) if is_open else option_sell_to_close_market(symbol, quantity, duration=dur)
+    else:
+        if is_buy and is_open:
+            order_spec = option_buy_to_open_limit(symbol, quantity, price, duration=dur)
+        elif is_buy and not is_open:
+            order_spec = option_buy_to_close_limit(symbol, quantity, price, duration=dur)
+        elif not is_buy and is_open:
+            order_spec = option_sell_to_open_limit(symbol, quantity, price, duration=dur)
+        else:
+            order_spec = option_sell_to_close_limit(symbol, quantity, price, duration=dur)
+
+    account_hash = _get_account_hash()
+    client = get_schwab_client()
+    resp = client.place_order(account_hash, order_spec)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Options order placement failed: HTTP {resp.status_code} {resp.text}")
+    return resp.json()
+
+
+def poll_for_fill(
+    order_id: str,
+    account_hash: Optional[str] = None,
+    max_attempts: int = 30,
+    interval_sec: float = 2.0,
+) -> dict:
+    """Poll Schwab for an order's fill status.
+
+    Returns the order detail once status is FILLED or CANCELLED, or raises
+    after max_attempts. Caller should use the order ID returned by
+    place_equity_order() / place_options_order().
+    """
+    import time as _time
+
+    if account_hash is None:
+        account_hash = _get_account_hash()
+    client = get_schwab_client()
+
+    for attempt in range(max_attempts):
+        try:
+            resp = client.get_order(order_id, account_hash)
+            if resp.status_code == 200:
+                order_data = resp.json()
+                status = str(order_data.get("status", "")).upper()
+                if status in ("FILLED", "ACCEPTED"):
+                    return order_data
+                if status in ("CANCELLED", "REJECTED", "EXPIRED"):
+                    return order_data
+            _time.sleep(interval_sec)
+        except Exception as e:
+            logger.debug(f"[poll_for_fill] attempt {attempt+1}: {e}")
+            _time.sleep(interval_sec)
+
+    raise RuntimeError(f"Order {order_id} did not reach terminal status after {max_attempts} attempts.")
+
+
+def cancel_order(order_id: str, account_hash: Optional[str] = None) -> dict:
+    """Cancel a pending order by order_id. Returns the cancellation response."""
+    _ensure_trading_enabled()
+    if account_hash is None:
+        account_hash = _get_account_hash()
+    client = get_schwab_client()
+    resp = client.cancel_order(order_id, account_hash)
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Cancel failed: HTTP {resp.status_code} {resp.text}")
+    return resp.json()
+
+

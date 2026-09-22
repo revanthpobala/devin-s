@@ -113,9 +113,10 @@ window.App = {
     setInterval(() => {
       if (window.AppStatus) window.AppStatus.updateStatus();
       if (window.AppLogs) window.AppLogs.loadLogs();
-      if (window.AppState.currentDesk === 'intraday' && window.AppIntraday) {
+      if (window.AppIntraday) {
         window.AppIntraday.loadIntradayPositions();
-      } else if (window.AppState.currentDesk === 'logs' && window.AppLogs) {
+      }
+      if (window.AppState.currentDesk === 'logs' && window.AppLogs) {
         window.AppLogs.loadDedicatedLogs();
       } else if (window.AppState.currentDesk === 'alerts' && window.AppAlerts) {
         window.AppAlerts.loadAlerts();

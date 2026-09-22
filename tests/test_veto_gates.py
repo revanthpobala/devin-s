@@ -12,7 +12,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -40,7 +40,7 @@ def et_ts(hour: int, minute: int = 0) -> datetime:
 
 
 def call(symbol: str, score: int, hour: int, minute: int = 0, grade: str = "A",
-         align: str = "", side: str = "LONG") -> Any:
+         align: str = "", side: str = "LONG", rvol: Optional[float] = None) -> Any:
     return evaluate_risk_vetoes(
         symbol=symbol,
         action="BUY CALLS" if side == "LONG" else "SELL PUTS",
@@ -49,6 +49,7 @@ def call(symbol: str, score: int, hour: int, minute: int = 0, grade: str = "A",
         eastern_dt=et_ts(hour, minute),
         grade=grade,
         align=align,
+        rvol=rvol,
     )
 
 
@@ -177,18 +178,50 @@ def test_exposure_ignores_other_day_and_non_intraday(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Gate 5: Lunch chop (unchanged: require score >= 85)
+# Gate 5: Lunch chop (1:15 PM - 2:45 PM ET; require score >= 88; RVOL > 1.8x bypass)
 # ---------------------------------------------------------------------------
 
 def test_lunch_chop_84_vetoed():
-    result = call("AAPL", 84, 12, 15, grade="A")
+    result = call("AAPL", 84, 13, 30, grade="A")
     assert result is not None
     assert "LUNCH CHOP" in result[0]
 
 
-def test_lunch_chop_86_passes():
-    result = call("AAPL", 86, 12, 15, grade="A")
+def test_lunch_chop_88_passes():
+    result = call("AAPL", 88, 13, 30, grade="A")
     assert result is None
+
+
+def test_lunch_chop_87_vetoed():
+    result = call("AAPL", 87, 13, 30, grade="A")
+    assert result is not None
+    assert "LUNCH CHOP" in result[0]
+
+
+def test_lunch_chop_rvol_bypass():
+    # RVOL > 1.8x bypasses the lunch chop gate even with score < 88.
+    result = call("AAPL", 80, 13, 30, grade="A", rvol=2.0)
+    assert result is None, "RVOL > 1.8x must bypass the lunch chop gate."
+
+
+def test_lunch_chop_rvol_below_threshold_still_vetoed():
+    # RVOL <= 1.8x does NOT bypass the gate.
+    result = call("AAPL", 80, 13, 30, grade="A", rvol=1.5)
+    assert result is not None
+    assert "LUNCH CHOP" in result[0]
+
+
+def test_lunch_chop_rvol_none_no_bypass():
+    # RVOL=None (not provided) means no bypass — gate fires normally.
+    result = call("AAPL", 80, 13, 30, grade="A", rvol=None)
+    assert result is not None
+    assert "LUNCH CHOP" in result[0]
+
+
+def test_lunch_chop_outside_window_no_veto():
+    # 12:15 PM ET is OUTSIDE the new 1:15-2:45 PM ET window — no veto regardless of score.
+    result = call("AAPL", 70, 12, 15, grade="A")
+    assert result is None, "Outside the lunch chop window, low score must not veto."
 
 
 # ---------------------------------------------------------------------------

@@ -338,8 +338,11 @@ def evaluate_setup_lifecycle_bars(
                     notes = f"Target {hit_target_level} reached on entry bar {b_date}"
                     continue
 
-                if is_next_open_model and bar.get("ema5") is not None and b_close > bar["ema5"]:
-                    recovery_due = True
+                if is_next_open_model and bar.get("ema5") is not None:
+                    if side == "LONG" and b_close > bar["ema5"]:
+                        recovery_due = True
+                    elif side == "SHORT" and b_close < bar["ema5"]:
+                        recovery_due = True
 
         else:
             # Active in trade from a prior bar
@@ -431,8 +434,11 @@ def evaluate_setup_lifecycle_bars(
                 continue
 
             # Queue recovery exit if active position closed above EMA5
-            if is_next_open_model and bar.get("ema5") is not None and b_close > bar["ema5"]:
-                recovery_due = True
+            if is_next_open_model and bar.get("ema5") is not None:
+                if side == "LONG" and b_close > bar["ema5"]:
+                    recovery_due = True
+                elif side == "SHORT" and b_close < bar["ema5"]:
+                    recovery_due = True
 
     # 3. Post-walk status resolution if still non-terminal
     if not is_terminal:
