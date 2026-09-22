@@ -251,10 +251,26 @@ def test_position_monitor_post_t1_runner_trailing_protection(tmp_path):
 
 
 def test_evaluate_risk_vetoes_grade_b():
-    """Verify that Grade B / Score < 80 alerts are vetoed."""
+    """Verify that sub-Grade-B (score < 65) alerts are hard-vetoed; Grade-B 65-79 passes to LLM."""
     from src.tracking.alert_evaluator import evaluate_risk_vetoes
     dt = datetime(2026, 9, 17, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    # Score 64 (Grade C territory) -> hard veto
     res = evaluate_risk_vetoes(
+        symbol="AAPL",
+        action="ENTER_CALLS",
+        score=64,
+        current_time_et="10:00 AM ET",
+        eastern_dt=dt,
+        grade="C",
+    )
+    assert res is not None
+    hdr, pb = res
+    assert "GRADE B / LOW CONVICTION" in hdr
+    assert "QUALITY VETO" in pb
+
+    # Score 75 (Grade B range) -> passes through to the LLM for the catalyst call
+    res_b = evaluate_risk_vetoes(
         symbol="AAPL",
         action="ENTER_CALLS",
         score=75,
@@ -262,10 +278,7 @@ def test_evaluate_risk_vetoes_grade_b():
         eastern_dt=dt,
         grade="B",
     )
-    assert res is not None
-    hdr, pb = res
-    assert "GRADE B / LOW CONVICTION" in hdr
-    assert "QUALITY VETO" in pb
+    assert res_b is None, "Grade-B 65-79 must pass the quality gate (new default 65)."
 
 
 def test_evaluate_risk_vetoes_weinstein_stage_alignment():
@@ -330,17 +343,17 @@ def test_evaluate_risk_vetoes_weinstein_stage_alignment():
 
 
 def test_evaluate_risk_vetoes_mid_morning_trap():
-    """Verify that 10:30-11:30 ET mid-morning extension alerts require Score >= 90."""
+    """Verify that 10:30-11:30 ET mid-morning extension alerts require Score >= MID_MORNING_MIN_SCORE (default 85)."""
     from src.tracking.alert_evaluator import evaluate_risk_vetoes
     # 10:45 AM ET (in the trap window)
     dt = datetime(2026, 9, 17, 10, 45, tzinfo=ZoneInfo("America/New_York"))
-    
+
     with patch("src.tracking.position_state.list_open", return_value={}):
-        # Score 85 should be vetoed in mid-morning trap
+        # Score 84 should be vetoed in mid-morning trap (below default 85)
         res = evaluate_risk_vetoes(
             symbol="AAPL",
             action="ENTER_CALLS",
-            score=85,
+            score=84,
             current_time_et="10:45 AM ET",
             eastern_dt=dt,
             grade="A",
@@ -349,8 +362,19 @@ def test_evaluate_risk_vetoes_mid_morning_trap():
         hdr, pb = res
         assert "10:30-11:30 ET EXHAUSTION TRAP" in hdr
 
-        # Score 92 should pass
+        # Score 85 should now pass (A-grade 85-89 unlocked)
         res_pass = evaluate_risk_vetoes(
+            symbol="AAPL",
+            action="ENTER_CALLS",
+            score=85,
+            current_time_et="10:45 AM ET",
+            eastern_dt=dt,
+            grade="A",
+        )
+        assert res_pass is None
+
+        # Score 92 should pass
+        res_high = evaluate_risk_vetoes(
             symbol="AAPL",
             action="ENTER_CALLS",
             score=92,
@@ -358,7 +382,7 @@ def test_evaluate_risk_vetoes_mid_morning_trap():
             eastern_dt=dt,
             grade="A",
         )
-        assert res_pass is None
+        assert res_high is None
 
 
 def test_review_tv_exit_confirms_strategic_exits(tmp_path):
@@ -415,24 +439,24 @@ def test_review_tv_exit_confirms_strategic_exits(tmp_path):
 
 
 def test_position_manager_vetoes_low_grade_and_counter_stage_before_opening(tmp_path):
-    """Verify that PositionManager._handle_alert rejects Grade B or counter-stage alerts
-    and never opens them into position_state."""
+    """Verify that PositionManager._handle_alert rejects sub-Grade-B (score < 65) or
+    counter-stage alerts and never opens them into position_state."""
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
         mgr = PositionManager(poll_interval=10)
         mgr._ensure_monitor = MagicMock()
 
-        # 1. Grade B alert -> VETOED, not opened
-        grade_b_alert = {
+        # 1. Score 62 (true Grade C territory) -> VETOED, not opened
+        low_grade_alert = {
             "symbol": "TSLA",
             "strategy": "Intraday",
             "action": "CALLS",
             "side": "LONG",
-            "grade": "B",
-            "score": 72,
+            "grade": "C",
+            "score": 62,
             "alert_price": 220.0,
         }
-        mgr._handle_alert(grade_b_alert)
+        mgr._handle_alert(low_grade_alert)
         state = position_state.load_state()
         assert "TSLA" not in state
         mgr._ensure_monitor.assert_not_called()

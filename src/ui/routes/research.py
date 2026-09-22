@@ -838,10 +838,26 @@ def get_report_bundle(date: str, ticker: str):
                 f"👉 Use the interactive **AI Dossier Copilot** on the right to fetch live quotes, inspect options chains, or trigger fresh analysis."
             )
 
+    # Extract spot_price at time of report for the Suggested Position header
+    spot_price = None
+    if watch_levels:
+        spot_price = watch_levels.get("spot_price")
+        if not spot_price:
+            sp_plan = watch_levels.get("shares_plan") or {}
+            # Use entry_zone midpoint as proxy if spot not recorded
+            ez_l = sp_plan.get("entry_zone_low")
+            ez_h = sp_plan.get("entry_zone_high")
+            if ez_l and ez_h:
+                try:
+                    spot_price = (float(ez_l) + float(ez_h)) / 2.0
+                except (ValueError, TypeError):
+                    pass
+
     result_payload = {
         "ticker": ticker_u,
         "date": target_date,
         "live_price": live_price,
+        "spot_price": spot_price,
         "user_position": user_position,
         "trade_ideas": trade_ideas,
         "available_dates": available_dates,

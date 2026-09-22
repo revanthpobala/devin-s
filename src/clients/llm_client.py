@@ -595,7 +595,7 @@ TOOLS = [
 ]
 
 
-def _fetch_ohlc_df_fallback(ticker: str) -> "tuple[pd.DataFrame, Dict[str, Any]]":
+def _fetch_ohlc_df_fallback(ticker: str) -> "tuple":
     """Fetch ~1y daily OHLCV when no on-disk datawindow exists.
 
     Uses yfinance. (Tastytrade's Open API exposes live quotes + market-metrics but has

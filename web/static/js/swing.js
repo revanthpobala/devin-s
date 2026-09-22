@@ -1648,6 +1648,7 @@ window.AppSwing = {
 
     // 3. Options Play
     const optPlan = wl.options_plan || {};
+    const isDemoted = !optPlan.actionable || optPlan.structure === 'NONE' || !optPlan.structure;
     const optAct = document.getElementById('pane-opt-actionable');
     if (optAct) {
       optAct.style.display = optPlan.actionable ? 'inline-block' : 'none';
@@ -1655,12 +1656,25 @@ window.AppSwing = {
 
     const optName = document.getElementById('pane-opt-name');
     if (optName) {
-      optName.textContent = optPlan.structure ? optPlan.structure.replace(/_/g, ' ') : 'DEFINED RISK SPREAD';
+      if (isDemoted) {
+        optName.innerHTML = `<span style="color:var(--rose); font-weight:800;">⛔ DEMOTED</span>
+          <span style="font-size:10px; color:var(--text-muted); font-weight:600;"> – Use Equity Plan</span>`;
+      } else {
+        optName.textContent = optPlan.structure.replace(/_/g, ' ');
+      }
     }
 
     const optSummary = document.getElementById('pane-opt-summary');
     if (optSummary) {
-      optSummary.textContent = optPlan.summary || 'Defined risk options structure.';
+      const summaryText = optPlan.summary || 'Defined risk options structure.';
+      if (isDemoted && summaryText.includes('DEMOTED')) {
+        const demotedIdx = summaryText.indexOf('[DEMOTED');
+        const reason = demotedIdx >= 0 ? summaryText.slice(demotedIdx) : summaryText;
+        optSummary.innerHTML = `<span style="color:var(--text-muted);">${summaryText.slice(0, demotedIdx > 0 ? demotedIdx : summaryText.length).trim()}</span>
+          <span style="display:block; margin-top:4px; padding:4px 6px; background:rgba(239,68,68,0.08); border-left:2px solid var(--rose); border-radius:3px; font-size:10px; color:#f87171; font-style:italic;">${reason}</span>`;
+      } else {
+        optSummary.textContent = summaryText;
+      }
     }
 
     const optExpiry = document.getElementById('pane-opt-expiry');
@@ -1670,17 +1684,17 @@ window.AppSwing = {
 
     const optDebit = document.getElementById('pane-opt-debit');
     if (optDebit) {
-      optDebit.textContent = optPlan.target_debit ? `~$${Number(optPlan.target_debit).toFixed(2)}` : '--';
+      optDebit.textContent = isDemoted ? 'N/A' : (optPlan.target_debit ? `~$${Number(optPlan.target_debit).toFixed(2)}` : '--');
     }
 
     const optLoss = document.getElementById('pane-opt-loss');
     if (optLoss) {
-      optLoss.textContent = optPlan.max_loss ? `$${Number(optPlan.max_loss).toLocaleString()}` : '--';
+      optLoss.textContent = isDemoted ? 'N/A' : (optPlan.max_loss ? `$${Number(optPlan.max_loss).toLocaleString()}` : '--');
     }
 
     const optProfit = document.getElementById('pane-opt-profit');
     if (optProfit) {
-      optProfit.textContent = optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--';
+      optProfit.textContent = isDemoted ? 'N/A' : (optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--');
     }
 
     // Trigger live mathematical options calculation from Schwab
@@ -1805,12 +1819,23 @@ window.AppSwing = {
 
               <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:14px;">
                 <div style="font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:800; color:var(--text-main); margin-bottom:6px;">
-                  ${optPlan.structure ? optPlan.structure.replace(/_/g, ' ') : 'DEFINED RISK STRUCTURE'}
+                  ${(optPlan.structure && optPlan.structure !== 'NONE') ? optPlan.structure.replace(/_/g, ' ') : '⚠️ NON-ACTIONABLE'}
                 </div>
                 <div style="font-size:12px; color:var(--text-muted); line-height:1.45;">
                   ${optPlan.summary || 'No detailed options narrative provided.'}
                 </div>
               </div>
+
+              ${(!optPlan.actionable || !optPlan.structure || optPlan.structure === 'NONE') && optPlan.summary && optPlan.summary.includes('DEMOTED') ? `
+              <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px 12px; margin-bottom:14px; display:flex; align-items:flex-start; gap:8px;">
+                <span style="font-size:16px; flex-shrink:0;">⛔</span>
+                <div>
+                  <div style="font-size:11px; font-weight:800; color:#f87171; text-transform:uppercase; margin-bottom:2px;">Options Structure Demoted — Not Actionable</div>
+                  <div style="font-size:10.5px; color:rgba(248,113,113,0.85); line-height:1.4;">${optPlan.summary.slice(optPlan.summary.indexOf('[DEMOTED'))}</div>
+                  <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">📊 Use the <strong>Equity Shares Plan</strong> or the <strong>LEAPS / Income tiers</strong> below.</div>
+                </div>
+              </div>
+              ` : ''}
 
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-family:'JetBrains Mono',monospace; font-size:12px;">
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
@@ -1819,23 +1844,23 @@ window.AppSwing = {
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Entry Trigger</div>
-                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${optPlan.entry_trigger ? optPlan.entry_trigger.replace(/_/g, ' ') : 'AT MARKET'}</div>
+                  <div style="font-weight:700; color:${(optPlan.entry_trigger && optPlan.entry_trigger !== 'NONE') ? 'var(--text-main)' : 'var(--text-muted)'}; margin-top:2px;">${(optPlan.entry_trigger && optPlan.entry_trigger !== 'NONE') ? optPlan.entry_trigger.replace(/_/g, ' ') : '— See Equity Plan'}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Strikes (Long / Short)</div>
-                  <div style="font-weight:700; color:var(--blue); margin-top:2px;">${optPlan.long_strike ? `$${optPlan.long_strike}` : '--'} / ${optPlan.short_strike ? `$${optPlan.short_strike}` : '--'}</div>
+                  <div style="font-weight:700; color:${(optPlan.long_strike && optPlan.short_strike) ? 'var(--blue)' : 'var(--text-muted)'}; margin-top:2px;">${(optPlan.long_strike && optPlan.short_strike) ? `$${optPlan.long_strike} / $${optPlan.short_strike}` : 'N/A – Unscaled'}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Target Net Debit</div>
-                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${optPlan.target_debit ? `~$${Number(optPlan.target_debit).toFixed(2)}` : '--'}</div>
+                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${(optPlan.target_debit && !(!optPlan.actionable || optPlan.structure === 'NONE')) ? `~$${Number(optPlan.target_debit).toFixed(2)}` : '--'}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--rose); text-transform:uppercase; font-family:'Outfit',sans-serif;">Max Risk / Loss</div>
-                  <div style="font-weight:800; color:var(--rose); margin-top:2px;">${optPlan.max_loss ? `$${Number(optPlan.max_loss).toLocaleString()}` : '--'}</div>
+                  <div style="font-weight:800; color:${(!optPlan.actionable || optPlan.structure === 'NONE') ? 'var(--text-muted)' : 'var(--rose)'}; margin-top:2px;">${(!optPlan.actionable || optPlan.structure === 'NONE') ? '--' : (optPlan.max_loss ? `$${Number(optPlan.max_loss).toLocaleString()}` : '--')}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--emerald); text-transform:uppercase; font-family:'Outfit',sans-serif;">Max Profit</div>
-                  <div style="font-weight:800; color:var(--emerald); margin-top:2px;">${optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--'}</div>
+                  <div style="font-weight:800; color:${(!optPlan.actionable || optPlan.structure === 'NONE') ? 'var(--text-muted)' : 'var(--emerald)'}; margin-top:2px;">${(!optPlan.actionable || optPlan.structure === 'NONE') ? '--' : (optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--')}</div>
                 </div>
               </div>
             </div>

@@ -30,6 +30,9 @@ dist/
 # --- llama.cpp server build artifacts ---
 /llama-cpp-server/
 
+# --- llama.cpp Prism (llama-cpp build + models) ---
+/llama-cpp-prism/
+
 # --- unsloth compiled cache ---
 /unsloth_compiled_cache/
 

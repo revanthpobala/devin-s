@@ -111,6 +111,26 @@
             </div>
           </div>
 
+          <!-- LIVE EDGE SCANNER CANDIDATES (deep-research queue — pick which to run) -->
+          <div id="edge-candidates-strip" style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px; flex-wrap:wrap;">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">⚡ Edge Scanner Candidates</span>
+                <span class="pill red" id="edge-cand-strip-ws-badge">⚠️ Connecting…</span>
+                <span class="pill amber" id="edge-cand-strip-count">0 candidates · 0 pending</span>
+              </div>
+              <button class="btn secondary" id="btn-toggle-edge-cands" onclick="AppEdgeScanner.toggleRadarStrip()" style="padding:1px 8px; font-size:10.5px;">
+                Expand ▼
+              </button>
+            </div>
+            <!-- Candidate cards injected by AppEdgeScanner (shared with Intraday Scanner panel) -->
+            <div id="edge-candidates-radar-container" style="display:flex; flex-direction:column; gap:8px;">
+              <div class="station-card" style="text-align:center; padding:20px; color:var(--text-muted); font-size:12.5px;" data-placeholder>
+                No deep-research candidates yet. High-score edge-scanner triggers (≥75) will appear here to pick and run.
+              </div>
+            </div>
+          </div>
+
           <!-- Active AI & Scraping Processes / Recent Research Dossiers -->
           <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
@@ -255,6 +275,9 @@
           </button>
           <button class="btn secondary alerts-subtab-btn" id="btn-subtab-schwab" onclick="AppAlerts.switchSubTab('schwab')" style="padding:6px 16px; font-size:12.5px; font-weight:700;">
             ⚡ Schwab Pre-Move Screener
+          </button>
+          <button class="btn secondary alerts-subtab-btn" id="btn-subtab-edge" onclick="AppAlerts.switchSubTab('edge')" style="padding:6px 16px; font-size:12.5px; font-weight:700;">
+            ⚡ Intraday Scanner
           </button>
         </div>
 
@@ -579,6 +602,54 @@
             <!-- Screener Survivors Table / Cards -->
             <div id="schwab-screener-container" style="overflow-x:auto;">
               <div style="color:var(--text-muted); font-size:13px; padding:12px 0;">Loading screener candidates...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SUB-VIEW 3: INTRADAY EDGE SCANNER (REAL-TIME TRIGGERS) -->
+        <div id="edge-scanner-panel" style="display:none; flex-direction:column; gap:18px;">
+          <div class="station-card">
+            <div class="card-head" style="flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span class="card-title">⚡ INTRADAY EDGE SCANNER — REAL-TIME TRIGGERS</span>
+                <span class="pill red" id="edge-scanner-ws-badge">⚠️ Connecting…</span>
+                <span class="pill cyan" id="edge-scanner-running-pill">Scanner Offline</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap;">
+                <span style="font-size:11px; color:var(--text-muted);">Regime:</span>
+                <span class="pill" id="edge-scanner-regime" style="font-weight:800;">UNKNOWN</span>
+                <span style="font-size:11px; color:var(--text-muted);">Universe:</span>
+                <span class="pill cyan" id="edge-scanner-universe-count">… symbols</span>
+                <button class="btn secondary" onclick="AppEdgeScanner.activate()" style="padding:4px 12px; font-size:12px;" title="Reconnect to the live Edge Scanner feed">
+                  🔄 Reconnect
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- DEEP RESEARCH CANDIDATES — pick which valid setups to run -->
+          <div class="station-card">
+            <div class="card-head" style="flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span class="card-title">🔬 DEEP RESEARCH CANDIDATES</span>
+                <span class="pill amber" id="edge-scanner-candidates-count">0 candidates · 0 pending</span>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); margin-left:auto;">
+                All valid triggers (score ≥75) appear here — click 🚀 to run the ones you want.
+              </div>
+            </div>
+            <!-- Candidate cards injected by AppEdgeScanner._renderCandidates() -->
+            <div id="edge-scanner-candidates-container" style="display:flex; flex-direction:column; gap:10px; padding-top:12px;">
+              <div class="station-card" style="text-align:center; padding:36px; color:var(--text-muted); font-size:13px;" data-placeholder>
+                No deep-research candidates yet. High-score triggers (≥75) will appear here for you to pick and run.
+              </div>
+            </div>
+          </div>
+
+          <!-- Live alert cards injected by AppEdgeScanner.render() -->
+          <div id="edge-scanner-alerts-container" style="display:flex; flex-direction:column; gap:10px;">
+            <div class="station-card" style="text-align:center; padding:48px; color:var(--text-muted); font-size:13px;">
+              No intraday triggers fired yet. Waiting for the Edge Scanner to detect ORB / VWAP / HOD-LOD / RVOL breakouts…
             </div>
           </div>
         </div>

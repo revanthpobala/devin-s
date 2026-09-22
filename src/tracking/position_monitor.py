@@ -715,6 +715,39 @@ class PositionManager:
                     pass
             return
 
+        # AI Verdict Gate: never open a position the AI already vetoed in its persisted triage.
+        # (The enrichment worker may have written a STAND ASIDE verdict from the real Pine
+        # grade/score before this routing pass ran.)
+        existing_verdict = str(alert.get("llm_decision") or "")
+        if not existing_verdict and payload.get("verdict"):
+            existing_verdict = str(payload.get("verdict"))
+        if "STAND ASIDE" in existing_verdict.upper() or "DAY PAUSE" in existing_verdict.upper():
+            logger.info(f"[manager] 🛡️ AI VETO GATE for {symbol}: persisted verdict '{existing_verdict[:60]}' — position NOT opened.")
+            return
+
+        # If a position is already open for this symbol, the AI's verdict decides:
+        # a fresh TAKE verdict replaces it (latest alert wins); a STAND ASIDE closes it.
+        if list_open().get(symbol):
+            v_up = existing_verdict.upper()
+            if "STAND ASIDE" in v_up or "DAY PAUSE" in v_up:
+                try:
+                    close_price = get_current_price(symbol, context="execution")
+                except Exception:
+                    close_price = None
+                closed = close_position(
+                    symbol,
+                    exit_price=close_price,
+                    exit_reason=f"AI triage vetoed position ({existing_verdict[:80]})",
+                )
+                self._stop_monitor(symbol)
+                if closed:
+                    logger.warning(f"[manager] 🛡️ AI VETO for {symbol}: open position closed at ${closed.get('exit_price')} ({existing_verdict[:60]})")
+                return
+            elif not ("TAKE" in v_up or "GO" in v_up):
+                # No explicit TAKE and no veto — keep the existing position, don't replace it
+                logger.info(f"[manager] ⏸️ {symbol} already open; verdict '{existing_verdict[:40]}' has no TAKE signal — keeping existing position.")
+                return
+
         # Extract stop and target levels from alert or plan string (e.g. "In 165.60 · Stop 165.21 · T1 166.19")
         stop = alert.get("stop") or payload.get("stop")
         target = alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target")

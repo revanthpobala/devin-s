@@ -14,7 +14,7 @@
 | **Options (Derivatives)** | **[ENTER NOW (Credit Spread) / ENTER (LEAPS) / CASH]** | [Specific structure, e.g. Sep 18 $240P/$250P Bull Put @ $1.80 credit] | [X/10] |
 
 **EARNINGS GATE:** PASS ([XX] Days Remaining | Next Earnings Date: ~YYYY-MM-DD)
-**PRIMARY VEHICLE:** [If IV Rank ≥ 50% (mandatory >70%), OPTIONS CREDIT SPREAD is Primary; If IV Rank < 30%, EQUITY LIMIT or DEBIT SPREAD is Primary]
+**PRIMARY VEHICLE:** [OPTIONS CREDIT SPREAD is Primary ONLY when IV Rank ≥ 50% AND the short strike sits at ≥1.25× Expected Move AND outside the major GEX Put/Call wall; if IV Rank < 30%, EQUITY LIMIT or DEBIT SPREAD is Primary. High IV Rank alone does NOT justify a credit — an unscaled/rich-IV setup defaults to debit/equity by side.]
 **(If User Owns Shares):** [HOLD — no CC (Stage 2 Advancing, IV Rank elevated) / SELL COVERED CALL (Stage 4 / Climax)]
 
 ---
@@ -40,7 +40,7 @@
 ### Pillar 4: Volatility & Macro Profile
 * **Macro Benchmarks:** 10Y Yields [X.XX]%, DXY [XXX.X], SPY/QQQ Regime, Upcoming CPI ([Days]d) & FOMC ([Days]d).
 * **Derivatives Forensics:** `HV20` [XX.X]%, `IV30` [XX.X]%, `IV/HV Spread` [±XX.X]%, `Energy State` [0-3], `IV Rank` [XX.X]%.
-* **Options Regime:** [Elevated IV Rank (≥50%, mandatory >70%) or positive IV-HV spread mandates defined-risk credit spreads as Primary; cheap IV (<30%) favors debit/equity; deep ITM LEAPS (Delta 0.70-0.85) preferred over OTM lotto calls].
+* **Options Regime:** [Elevated IV Rank (≥50%, mandatory >70%) or positive IV-HV spread makes a credit *eligible*, but it is Primary ONLY when the short strike is scaled to ≥1.25× Expected Move AND anchored outside the major GEX Put/Call wall; if either fails, default to debit/equity by side. Cheap IV (<30%) favors debit/equity; deep ITM LEAPS (Delta 0.70-0.85) preferred over OTM lotto calls].
 
 ---
 
@@ -57,10 +57,10 @@
 | **Mathematical R:R** | **[X.XX]:1 (T1) / [X.XX]:1 (T2)** | Calculated against $[Entry] and $[Stop] |
 
 ### Plan B: Derivatives Execution (Actionable Right Now)
-* **Plan B-1: High-IV Credit Spread (Primary when IV Rank > 70%):**
+* **Plan B-1: High-IV Credit Spread (Primary only when IV Rank > 70% AND short strike ≥ 1.25× Expected Move AND outside the major GEX Put/Call wall):**
   * **Structure:** [Bull Put Spread] [Short Strike] / [Long Strike] ([DTE] DTE).
   * **Net Credit:** $[X.XX] per contract. Max Profit: $[XXX] | Max Loss: $[XXX] | Break-Even: $[XXX.XX].
-  * **Edge:** Sits below structural support shelf ($[SupportShelf]); captures rich IV without needing an immediate stock rally.
+  * **Edge:** Sits below structural support shelf ($[SupportShelf]) at ≥1.25× Expected Move, outside the dealer pin corridor; captures rich IV without needing an immediate stock rally. If the short strike is closer than 1.25× EM or inside a GEX wall, defer this structure and lead with Plan A (equity) or a debit by side.
 * **Plan B-2: Multi-Quarter LEAPS (90–365+ DTE):**
   * **Structure:** [Deep ITM Call Delta 0.75-0.85] [Strike]C ([DTE] DTE).
   * **Assessment:** [Deploy if IV Rank is reasonable; if IV Rank >70%, explicitly defer or structure as debit spread to mitigate extrinsic crush].

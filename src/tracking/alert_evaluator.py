@@ -26,6 +26,65 @@ from src.tracking.alert_db import update_alert_llm, get_eastern_now
 
 logger = logging.getLogger(__name__)
 
+# Explicit action -> directional side map. Substring matching ("CALL" in action) is unsafe:
+# an exit string like "EXIT_CALLS" or "CLOSE_CALLS" would otherwise be misread as a fresh
+# LONG entry and fed to the exposure / counter-stage gates. We only treat explicit entry
+# verbs as directional; anything else (exits, neutral, unknown) resolves to None so the
+# side-dependent gates are simply skipped.
+_ENTRY_SIDE_MAP = {
+    "ENTER_CALLS": "LONG",
+    "BUY_CALLS": "LONG",
+    "CALLS": "LONG",
+    "LONG": "LONG",
+    "BUY": "LONG",
+    "BULL": "LONG",
+    "ENTER_PUTS": "SHORT",
+    "SELL_PUTS": "SHORT",
+    "PUTS": "SHORT",
+    "SHORT": "SHORT",
+    "SELL": "SHORT",
+    "BEAR": "SHORT",
+}
+
+
+def _action_side(action: str) -> Optional[str]:
+    """Map an alert action string to LONG/SHORT, or None for non-directional actions."""
+    a = str(action or "").strip().upper()
+    if not a:
+        return None
+    # Exact match first (handles ENTER_CALLS / EXIT_CALLS unambiguously).
+    if a in _ENTRY_SIDE_MAP:
+        return _ENTRY_SIDE_MAP[a]
+    # Exit/close/cut/flatten actions are never directional entries for gate purposes.
+    if any(tok in a for tok in ("EXIT", "CLOSE", "FLATTEN", "CUT", "STOP")):
+        return None
+    # Fallback: token-level match handles multi-word forms like "BUY CALLS" / "SELL PUTS"
+    # without the old substring bug (where "CALL" also matched inside compound verbs).
+    tokens = a.replace("_", " ").split()
+    for tok in tokens:
+        if tok in _ENTRY_SIDE_MAP and tok not in ("BUY", "SELL"):
+            return _ENTRY_SIDE_MAP[tok]
+    if "BUY" in tokens or "BULL" in tokens:
+        return "LONG"
+    if "SELL" in tokens or "BEAR" in tokens:
+        return "SHORT"
+    return None
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer env var, falling back to `default` on any parse error.
+
+    A malformed value in .env must never crash the veto path (which sits in the live
+    alert-routing hot path) — it should degrade to a sane default instead."""
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid integer for {name}={raw!r}; using default {default}.")
+        return default
+
 
 def _load_gem(filename: str) -> str:
     gem_path = config.BASE_DIR / "gems" / filename
@@ -111,13 +170,16 @@ def evaluate_risk_vetoes(
 ) -> Optional[Tuple[str, str]]:
     """
     Evaluate institutional risk gates:
-    1. Grade-A Hard Quality Gate: Veto Grade B / Score < 80 (eliminates -$1,515 historical drag).
+    1. Grade-A Hard Quality Gate: Hard veto below GRADE_B_VETO_THRESHOLD (default 65 = true
+       Grade C territory). Score 65-79 (Grade B range) is routed to the LLM for the
+       catalyst call per the 0DTE card instead of being blanket-blocked.
     2. Weinstein Stage & Multi-Timeframe Alignment: Veto counter-trend trades (never CALLS in Stage 4 Decline, never PUTS in Stage 2 Advance).
-    3. Mid-Morning Exhaustion Window (10:30 - 11:30 AM ET): Requires Score >= 90 (Grade A+ only).
-    4. Max Concurrent Correlated Exposure: Max 2 same-direction open intraday positions.
+    3. Mid-Morning Exhaustion Window (10:30 - 11:30 AM ET): Requires Score >= MID_MORNING_MIN_SCORE (default 85).
+    4. Max Concurrent Correlated Exposure: Max MAX_CONCURRENT_SAME_SIDE (default 3) same-direction open intraday positions.
     5. Lunch Chop Window (11:30 AM - 1:15 PM ET): Requires Score >= 85 (Grade A+).
-    6. Consecutive Losses DAY PAUSE: Enforce cooldown after 2 consecutive stops within 45m.
-    
+    6. Consecutive Losses DAY PAUSE: Opt-in (DAY_PAUSE_ENABLED, gem spec is DEFAULT OFF) -
+       cooldown after 2 consecutive stops within 45m.
+
     Returns (header, playbook) if vetoed, or None if clear.
     """
     from src.tracking.position_state import list_open
@@ -125,20 +187,20 @@ def evaluate_risk_vetoes(
     from datetime import timezone
 
     today_str = eastern_dt.strftime("%Y-%m-%d")
-    act_clean = str(action or "").upper()
-    is_call = "CALL" in act_clean
-    is_put = "PUT" in act_clean
-    side = "LONG" if is_call else ("SHORT" if is_put else None)
+    # Explicit action->side mapping (None for exits/neutral so side gates are skipped).
+    side = _action_side(action)
 
-    # 1. Grade-A Hard Quality Gate (Cut Grade B / Score < 80)
+    # 1. Grade-A Hard Quality Gate (hard veto below GRADE_B_VETO_THRESHOLD, default 65)
     grade_clean = str(grade or "A").upper().strip()
-    if grade_clean == "B" or score < 80:
+    grade_b_threshold = _env_int("GRADE_B_VETO_THRESHOLD", 65)
+    if score < grade_b_threshold:
         hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (GRADE B / LOW CONVICTION)"
         pb = (
             f"{hdr}\n\n"
-            f"⛔ QUALITY VETO: Setup grade is '{grade_clean}' with score {score}/100 (< 80 threshold).\n"
-            f"Historical trade audit reveals Grade-B alerts generated a 27% win rate and net negative expectancy.\n"
-            f"0DTE intraday execution is restricted exclusively to institutional Grade-A setups."
+            f"⛔ QUALITY VETO: Setup grade '{grade_clean}' with score {score}/100 is below the "
+            f"hard-veto threshold {grade_b_threshold}/100 (true Grade C/D territory).\n"
+            f"Grade-B range (score >= {grade_b_threshold}) is routed to the LLM for the "
+            f"catalyst call; only sub-threshold setups are hard-blocked from 0DTE execution."
         )
         return hdr, pb
 
@@ -181,34 +243,39 @@ def evaluate_risk_vetoes(
     h = eastern_dt.hour
     m = eastern_dt.minute
     is_mid_morning = (h == 10 and m >= 30) or (h == 11 and m < 30)
-    if is_mid_morning and score < 90:
+    mid_morning_threshold = _env_int("MID_MORNING_MIN_SCORE", 85)
+    if is_mid_morning and score < mid_morning_threshold:
         hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (10:30-11:30 ET EXHAUSTION TRAP)"
         pb = (
             f"{hdr}\n\n"
             f"⛔ TIME-WINDOW VETO: Mid-morning trend extension & European close window (10:30–11:30 AM ET).\n"
-            f"Conviction score {score}/100 is below the required 90/100 (Grade A+) threshold for mid-morning entry.\n"
+            f"Conviction score {score}/100 is below the required {mid_morning_threshold}/100 "
+            f"(MID_MORNING_MIN_SCORE) threshold for mid-morning entry.\n"
             f"Breakouts in this window suffer from morning exhaustion and pre-lunch consolidation."
         )
         return hdr, pb
 
-    # 4. Max Concurrent Correlated Exposure Gate (Max 2 same-direction trades)
+    # 4. Max Concurrent Correlated Exposure Gate (MAX_CONCURRENT_SAME_SIDE, default 3)
     if side:
+        max_same_side = _env_int("MAX_CONCURRENT_SAME_SIDE", 3)
         open_pos = list_open()
         same_side = []
         for sym, p in open_pos.items():
             if not isinstance(p, dict) or sym.upper() == symbol.upper():
                 continue
             opened_at = str(p.get("opened_at", ""))
+            # strategy is stored as "Intraday" (capital I) by open_position — compare case-insensitively.
             strat = str(p.get("strategy", "")).lower()
-            if strat == "intraday" and opened_at.startswith(today_str):
+            if strat == "intraday" and opened_at.startswith(today_str[:10]):
                 p_side = str(p.get("side", "")).upper()
                 if p_side == side:
                     same_side.append(sym)
-        if len(same_side) >= 2:
+        if len(same_side) >= max_same_side:
             hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (MAX EXPOSURE)"
             pb = (
                 f"{hdr}\n\n"
-                f"⛔ RISK VETO: Maximum concurrent {side} exposure reached ({len(same_side)} active: {', '.join(same_side)}).\n"
+                f"⛔ RISK VETO: Maximum concurrent {side} exposure reached ({len(same_side)} active: "
+                f"{', '.join(same_side)}; cap {max_same_side} via MAX_CONCURRENT_SAME_SIDE).\n"
                 f"Further entries in {side} blocked to prevent correlated sector/beta risk clustering."
             )
             return hdr, pb
@@ -225,58 +292,74 @@ def evaluate_risk_vetoes(
         )
         return hdr, pb
 
-    # 3. Consecutive Losses DAY PAUSE Circuit Breaker
-    try:
-        from src.tracking.alert_db import DB_PATH
-        import sqlite3
-        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT timestamp, raw_payload, action 
-                FROM alerts 
-                WHERE date = ? 
-                  AND strategy = 'Intraday'
-                  AND (action LIKE '%EXIT%' OR action LIKE '%STOP%' OR action LIKE '%CUT%')
-                ORDER BY timestamp DESC LIMIT 6
-            """, (today_str,))
-            recent_exits = cur.fetchall()
+    # 6. Consecutive Losses DAY PAUSE Circuit Breaker
+    # Gem spec: DAY PAUSE is a SOFT, SELF-CLEARING pause with DEFAULT OFF, so the
+    # gate is opt-in via DAY_PAUSE_ENABLED (defaults to disabled).
+    # Loss signal comes from trade_events.details.net_pnl (authoritative), NOT the
+    # alerts row — the per-event P&L is only written on EXIT events.
+    day_pause_enabled = os.getenv("DAY_PAUSE_ENABLED", "false").lower() in ("true", "1", "yes")
+    if day_pause_enabled:
+        try:
+            import sqlite3
+            from src.tracking.alert_db import DB_PATH as _DP
+            with sqlite3.connect(str(_DP), timeout=5.0) as conn:
+                cur = conn.cursor()
+                # Intraday EXIT events, newest first. We fetch a small window and filter to
+                # "today in ET" in Python — NOT via SQLite date(), which interprets the stored
+                # ET timestamp as UTC and mis-buckets rows near the ET/UTC day boundary.
+                cur.execute("""
+                    SELECT timestamp, details
+                    FROM trade_events
+                    WHERE event_type = 'EXIT'
+                      AND strategy_id = 'Intraday'
+                    ORDER BY timestamp DESC
+                    LIMIT 20
+                """)
+                recent_exits = cur.fetchall()
 
-            loss_count = 0
-            latest_loss_time = None
-            for ts_str, raw_str, act_val in recent_exits:
-                raw_json = json.loads(raw_str) if isinstance(raw_str, str) and raw_str.startswith("{") else {}
-                why = (str(raw_json.get("exit_why", "")) + " " + str(raw_json.get("act_now", ""))).lower()
-                pnl = float(raw_json.get("session_pnl", 0) or 0)
-                is_loss = "stop" in why or "loss" in why or pnl < 0
-                if is_loss:
+                loss_count = 0
+                latest_loss_time = None
+                for ts_str, details_str in recent_exits:
+                    # Parse the exit timestamp to ET (aware or naive) and skip any not from today.
+                    try:
+                        clean_ts = str(ts_str).replace("Z", "+00:00")
+                        dt_parsed = datetime.fromisoformat(clean_ts)
+                    except Exception:
+                        continue
+                    if dt_parsed.tzinfo is None:
+                        exit_et = dt_parsed.replace(tzinfo=ZoneInfo("America/New_York"))
+                    else:
+                        exit_et = dt_parsed.astimezone(ZoneInfo("America/New_York"))
+                    if exit_et.strftime("%Y-%m-%d") != today_str:
+                        continue  # past the start of today (newest-first) -> stop scanning
+
+                    try:
+                        det = json.loads(details_str) if isinstance(details_str, str) and details_str.startswith("{") else {}
+                    except Exception:
+                        det = {}
+                    pnl = float(det.get("net_pnl", 0) or 0)
+                    exit_reason = str(det.get("exit_reason", "")).lower()
+                    is_loss = pnl < 0 or "stop" in exit_reason or "loss" in exit_reason
+                    if not is_loss:
+                        break  # a winning exit breaks the consecutive-loss streak
                     loss_count += 1
-                    if latest_loss_time is None and ts_str:
-                        try:
-                            clean_ts = ts_str.replace("Z", "+00:00")
-                            dt_parsed = datetime.fromisoformat(clean_ts)
-                            if dt_parsed.tzinfo is None:
-                                latest_loss_time = dt_parsed.replace(tzinfo=ZoneInfo("America/New_York"))
-                            else:
-                                latest_loss_time = dt_parsed.astimezone(ZoneInfo("America/New_York"))
-                        except Exception:
-                            pass
-                else:
-                    break
+                    if latest_loss_time is None:
+                        latest_loss_time = exit_et
 
-            if loss_count >= 2 and latest_loss_time:
-                diff_sec = (eastern_dt - latest_loss_time).total_seconds()
-                if 0 <= diff_sec <= 2700:  # 45 minutes cooldown
-                    mins_ago = int(diff_sec // 60)
-                    hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (DAY PAUSE)"
-                    pb = (
-                        f"{hdr}\n\n"
-                        f"⛔ CIRCUIT BREAKER: DAY PAUSE active.\n"
-                        f"{loss_count} consecutive stopped trades observed within the last {mins_ago}m.\n"
-                        f"Autonomous cooldown engaged to protect capital against hostile regime shifts."
-                    )
-                    return hdr, pb
-    except Exception as e_db:
-        logger.debug(f"DAY PAUSE check bypassed: {e_db}")
+                if loss_count >= 2 and latest_loss_time:
+                    diff_sec = (eastern_dt - latest_loss_time).total_seconds()
+                    if 0 <= diff_sec <= 2700:  # 45 minutes cooldown
+                        mins_ago = int(diff_sec // 60)
+                        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (DAY PAUSE)"
+                        pb = (
+                            f"{hdr}\n\n"
+                            f"⛔ CIRCUIT BREAKER: DAY PAUSE active.\n"
+                            f"{loss_count} consecutive stopped trades observed within the last {mins_ago}m.\n"
+                            f"Autonomous cooldown engaged to protect capital against hostile regime shifts."
+                        )
+                        return hdr, pb
+        except Exception as e_db:
+            logger.debug(f"DAY PAUSE check bypassed: {e_db}")
 
     return None
 

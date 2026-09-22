@@ -5,7 +5,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from src.logic.report_level_extractor import extract_watch_levels_from_report
+from src.logic.report_level_extractor import (
+    _credit_strike_em_consistent,
+    _demote_unscaled_credit,
+    _dw_lookup,
+    extract_watch_levels_from_report,
+)
 from src.tracking import watch_manager
 from run_watch_alerts import evaluate_watch_cycle
 
@@ -388,6 +393,172 @@ def test_extract_watch_levels_options_menu(tmp_path):
         assert menu["leaps"]["long_strike"] == 210.0
         assert menu["income_or_csp"]["structure"] == "COVERED_CALL"
         assert menu["income_or_csp"]["short_strike"] == 265.0
+
+
+# ---------------------------------------------------------------------------
+# EM-consistency backstop for credit spreads (unscaled premium-sale demotion)
+# ---------------------------------------------------------------------------
+
+def test_dw_lookup_real_keys():
+    # Real data-window headers are "Close" and "Exp Move % (21b)" — the gate must read them.
+    dw = {"Close": "317.31", "Exp Move % (21b)": "9.90"}
+    assert _dw_lookup(dw, "close", "Close") == 317.31
+    assert _dw_lookup(dw, "Exp Move % (21b)", "exp_move_pct") == 9.9
+    # Absent / non-numeric fields fall back to 0.0 without raising.
+    assert _dw_lookup({}, "close", "Close") == 0.0
+    assert _dw_lookup({"Close": ""}, "close", "Close") == 0.0
+
+
+def test_credit_strike_em_consistent_boundaries():
+    spot, em = 317.31, 9.9
+    floor = spot * (1 - 1.25 * em / 100.0)   # ~282.66
+    ceil = spot * (1 + 1.25 * em / 100.0)    # ~349.60
+    # Bull put / CSP: short strike must sit at or below the floor.
+    assert _credit_strike_em_consistent("BULL_PUT_SPREAD", floor, spot, em) is True
+    assert _credit_strike_em_consistent("BULL_PUT_SPREAD", floor - 1, spot, em) is True
+    assert _credit_strike_em_consistent("BULL_PUT_SPREAD", floor + 1, spot, em) is False
+    assert _credit_strike_em_consistent("CASH_SECURED_PUT", floor + 1, spot, em) is False
+    # Bear call: short strike must sit at or above the ceiling.
+    assert _credit_strike_em_consistent("BEAR_CALL_SPREAD", ceil, spot, em) is True
+    assert _credit_strike_em_consistent("BEAR_CALL_SPREAD", ceil + 1, spot, em) is True
+    assert _credit_strike_em_consistent("BEAR_CALL_SPREAD", ceil - 1, spot, em) is False
+
+
+def test_credit_gate_ignores_debit_and_missing_data():
+    # Debit / long structures are the buyer's side — never gated.
+    assert _credit_strike_em_consistent("BULL_CALL_SPREAD", 320, 317.31, 9.9) is True
+    assert _credit_strike_em_consistent("BEAR_PUT_SPREAD", 320, 317.31, 9.9) is True
+    assert _credit_strike_em_consistent("LONG_CALL", 320, 317.31, 9.9) is True
+    # Missing EM or spot defaults to consistent (no forced demotion on missing data).
+    assert _credit_strike_em_consistent("BULL_PUT_SPREAD", 300, 317.31, 0) is True
+    assert _credit_strike_em_consistent("BULL_PUT_SPREAD", 300, 0, 9.9) is True
+
+
+def test_demote_unscaled_credit_clears_strikes():
+    s, summary, cleared = _demote_unscaled_credit(
+        "BULL_PUT_SPREAD", 300, 317.31, 9.9, "$300P Bull Put", "AAPL"
+    )
+    assert s == "NONE"
+    assert cleared is True
+    assert "DEMOTED" in summary
+    # A scaled credit is left untouched.
+    floor = 317.31 * (1 - 1.25 * 9.9 / 100.0)
+    s2, _sum2, cleared2 = _demote_unscaled_credit(
+        "BULL_PUT_SPREAD", floor - 1, 317.31, 9.9, "$280P Bull Put", "AAPL"
+    )
+    assert s2 == "BULL_PUT_SPREAD"
+    assert cleared2 is False
+
+
+def test_regex_path_demotes_unscaled_credit(tmp_path):
+    raw_dir = tmp_path / "data" / "raw" / "2026-09-17" / "AMZN"
+    raw_dir.mkdir(parents=True)
+    reports_dir = tmp_path / "reports" / "2026-09-17"
+    reports_dir.mkdir(parents=True)
+
+    # No embedded block -> forces the regex path.
+    (reports_dir / "AMZN_summary.md").write_text(
+        "Bar close: $317.31\nTACTICAL ENTRY ZONE: $300.00 – $310.00"
+        "\nTACTICAL STOP: $295.00\nTARGET 1: $340.00",
+        encoding="utf-8",
+    )
+    (reports_dir / "AMZN_arbitration.md").write_text(
+        "**Verdict:** STALK\nConviction: 7/10\n"
+        "$300P/$290P Bull Put Spread\nMax Loss: $1000\nMax Profit: $500",
+        encoding="utf-8",
+    )
+    # Real data-window keys; EM short strike ($300) is inside 1.25x EM (~$282.7 floor).
+    (raw_dir / "AMZN_datawindow.json").write_text(
+        json.dumps({"Close": "317.31", "Exp Move % (21b)": "9.90"}), encoding="utf-8"
+    )
+
+    with patch("src.config.BASE_DIR", tmp_path):
+        res = extract_watch_levels_from_report("AMZN", "2026-09-17")
+    assert res is not None
+    assert res["options_plan"]["structure"] == "NONE"
+    assert res["options_plan"]["actionable"] is False
+    assert res["options_plan"]["short_strike"] == 0.0
+    assert "DEMOTED" in res["options_plan"]["summary"]
+
+
+def test_regex_path_keeps_scaled_credit(tmp_path):
+    raw_dir = tmp_path / "data" / "raw" / "2026-09-17" / "AMZN"
+    raw_dir.mkdir(parents=True)
+    reports_dir = tmp_path / "reports" / "2026-09-17"
+    reports_dir.mkdir(parents=True)
+
+    (reports_dir / "AMZN_summary.md").write_text(
+        "Bar close: $317.31\nTACTICAL ENTRY ZONE: $300.00 – $310.00"
+        "\nTACTICAL STOP: $295.00\nTARGET 1: $340.00",
+        encoding="utf-8",
+    )
+    # $275P is below the ~$282.7 floor -> properly scaled, must survive.
+    (reports_dir / "AMZN_arbitration.md").write_text(
+        "**Verdict:** STALK\nConviction: 7/10\n"
+        "$275P/$265P Bull Put Spread\nMax Loss: $1000\nMax Profit: $500",
+        encoding="utf-8",
+    )
+    (raw_dir / "AMZN_datawindow.json").write_text(
+        json.dumps({"Close": "317.31", "Exp Move % (21b)": "9.90"}), encoding="utf-8"
+    )
+
+    with patch("src.config.BASE_DIR", tmp_path):
+        res = extract_watch_levels_from_report("AMZN", "2026-09-17")
+    assert res is not None
+    assert res["options_plan"]["structure"] == "BULL_PUT_SPREAD"
+    assert res["options_plan"]["actionable"] is True
+    assert res["options_plan"]["short_strike"] == 275.0
+
+
+def test_embedded_path_demotes_unscaled_credit(tmp_path):
+    raw_dir = tmp_path / "data" / "raw" / "2026-09-17" / "AMZN"
+    raw_dir.mkdir(parents=True)
+    reports_dir = tmp_path / "reports" / "2026-09-17"
+    reports_dir.mkdir(parents=True)
+
+    (raw_dir / "AMZN_datawindow.json").write_text(
+        json.dumps({"Close": "317.31", "Exp Move % (21b)": "9.90"}), encoding="utf-8"
+    )
+    # Embedded block path (priority 1) with an unscaled credit short strike ($300).
+    (reports_dir / "AMZN_arbitration.md").write_text(
+        """# AMZN | ⚖️ SENIOR PM ARBITRATION
+```json:watch_levels
+{
+  "ticker": "AMZN",
+  "verdict": "ENTER",
+  "conviction": 8,
+  "shares_plan": {
+    "entry_type": "LIMIT",
+    "entry_zone_low": 300.0,
+    "entry_zone_high": 310.0,
+    "tactical_stop": 295.0,
+    "target_1": 340.0,
+    "target_2": 360.0
+  },
+  "options_plan": {
+    "structure": "BULL_PUT_SPREAD",
+    "expiration": "2026-10-16",
+    "long_strike": 290.0,
+    "short_strike": 300.0,
+    "target_credit": 4.5,
+    "max_loss": 950.0,
+    "max_profit": 450.0,
+    "summary": "Oct 16 $300P/$290P Bull Put Spread"
+  }
+}
+```
+""",
+        encoding="utf-8",
+    )
+
+    with patch("src.config.BASE_DIR", tmp_path):
+        res = extract_watch_levels_from_report("AMZN", "2026-09-17")
+    assert res is not None
+    assert res["options_plan"]["structure"] == "NONE"
+    assert res["options_plan"]["actionable"] is False
+    assert res["options_plan"]["short_strike"] == 0.0
+    ts = res.get("options_menu", {}).get("tactical_spread", {})
+    assert ts.get("structure") == "NONE"
 
 
 

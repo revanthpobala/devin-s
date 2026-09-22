@@ -102,6 +102,78 @@ def stop_orchestrator():
     return {"status": "stopped"}
 
 
+def _is_port_live(port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def start_edge_scanner_process():
+    """Launch the edge-scanner subprocess (port 7777) from edge_scanner_tmp/.
+
+    No-ops if a scanner is already listening on port 7777. Returns a status dict."""
+    from src.ui import state
+    if _is_port_live(7777):
+        return {"status": "already_running"}
+
+    edge_dir = config.BASE_DIR / "edge_scanner_tmp"
+    run_live = edge_dir / "scripts" / "run_live.py"
+    if not run_live.exists():
+        append_log(f"⚠️ [Startup] Edge Scanner not started: {run_live} not found.")
+        return {"status": "missing", "path": str(run_live)}
+
+    universe = edge_dir / "data" / "universe.csv"
+    if not universe.exists():
+        append_log("⚠️ [Startup] Edge Scanner universe missing; running generate_edge_universe.py first...")
+        try:
+            subprocess.run(
+                [sys.executable, "scripts/generate_edge_universe.py", "--limit", "150"],
+                cwd=str(config.BASE_DIR), capture_output=True, text=True, timeout=60,
+            )
+        except Exception as e_uni:
+            append_log(f"⚠️ [Startup] Universe pre-gen failed ({e_uni}); continuing with existing universe.")
+
+    cmd = [sys.executable, "scripts/run_live.py", "--log-level", "WARNING"]
+    state.EDGE_SCANNER_PROCESS = subprocess.Popen(
+        cmd,
+        cwd=str(edge_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    def _pipe_logs(proc):
+        try:
+            for line in proc.stdout:
+                l_str = line.strip()
+                if l_str:
+                    append_log(f"[EdgeScanner] {l_str}")
+        finally:
+            proc.wait()
+            append_log(f"⚠️ Edge Scanner stopped (code {proc.returncode}).")
+
+    threading.Thread(target=_pipe_logs, args=(state.EDGE_SCANNER_PROCESS,), daemon=True).start()
+    return {"status": "started", "pid": state.EDGE_SCANNER_PROCESS.pid}
+
+
+def stop_edge_scanner_process():
+    """Terminate the edge-scanner subprocess if it is still running."""
+    from src.ui import state
+    if state.EDGE_SCANNER_PROCESS is not None and state.EDGE_SCANNER_PROCESS.poll() is None:
+        try:
+            logger.info("Stopping Edge Scanner on UI shutdown...")
+            state.EDGE_SCANNER_PROCESS.terminate()
+            state.EDGE_SCANNER_PROCESS.wait(timeout=5)
+        except Exception:
+            state.EDGE_SCANNER_PROCESS.kill()
+        state.EDGE_SCANNER_PROCESS = None
+
+
 def start_all_daemons():
     """Initialize and start all background daemons on UI server launch."""
     # 1. Email Alert Ingestor
@@ -166,6 +238,16 @@ def start_all_daemons():
             logger.debug(f"Initial Schwab portfolio sync skipped/deferred: {e_pfsync}")
     threading.Thread(target=_bg_portfolio_sync, daemon=True, name="StartupPortfolioSync").start()
 
+    # 7. Edge Scanner (port 7777) + Bridge Daemon
+    try:
+        start_edge_scanner_process()       # launches edge_scanner_tmp as subprocess
+        from src.streaming.edge_scanner_bridge import start_bridge_daemon
+        start_bridge_daemon(min_score=75, auto_deep=True)
+        append_log("⚡ [Startup] Edge Scanner starting on port 7777 (warms up in ~90s).")
+    except Exception as e_edge:
+        logger.warning(f"Edge Scanner failed to start: {e_edge}")
+        append_log(f"⚠️ [Startup] Edge Scanner not started: {e_edge}")
+
 
 def stop_all_daemons():
     """Cleanly stop background ingestor, auto-triage daemon, and continuous screener on shutdown."""
@@ -191,3 +273,12 @@ def stop_all_daemons():
         stop_continuous_screener_daemon()
     except Exception:
         pass
+
+    # 7. Edge Scanner subprocess + bridge daemon
+    try:
+        from src.streaming.edge_scanner_bridge import _BRIDGE_THREAD
+        if _BRIDGE_THREAD is not None and _BRIDGE_THREAD.is_alive():
+            _BRIDGE_THREAD.join(timeout=3)
+    except Exception:
+        pass
+    stop_edge_scanner_process()

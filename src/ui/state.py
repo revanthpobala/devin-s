@@ -34,6 +34,7 @@ _LOG_LOCK = threading.Lock()
 ACTIVE_RESEARCH_WORKERS: Dict[str, threading.Thread] = {}
 ACTIVE_RESEARCH_SUBPROCS: Dict[str, subprocess.Popen] = {}
 TRACKER_PROCESS: Optional[subprocess.Popen] = None
+EDGE_SCANNER_PROCESS: Optional[subprocess.Popen] = None   # subprocess.Popen for edge_scanner_tmp
 
 _QUEUE_DISPATCH_LOCK = threading.Lock()
 

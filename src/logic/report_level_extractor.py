@@ -17,6 +17,84 @@ from src import config
 logger = logging.getLogger(__name__)
 
 
+def _credit_strike_em_consistent(structure: str, short_strike: float, spot_price: float, exp_move_pct: float) -> bool:
+    """Return True if a premium-sale (credit) structure's short strike is scaled to the
+    Expected Move at >= 1.25x. Encodes revanth-original-gem.md:341 — high IV Rank alone
+    does NOT justify selling premium; the strike must sit beyond 1.25x the expected move.
+
+    - BULL_PUT_SPREAD / CASH_SECURED_PUT: short strike must be <= spot * (1 - 1.25*EM/100).
+    - BEAR_CALL_SPREAD: short strike must be >= spot * (1 + 1.25*EM/100).
+    - DEBIT structures and LONG single-legs are never gated here (they are the buyer's side).
+    - If EM or spot is unavailable, default to consistent (True) so we don't force a demotion
+      on missing data — the LLM-side gem rules still apply.
+
+    `exp_move_pct` is a percentage already (e.g. 9.90 means a 9.9% expected move).
+    """
+    if structure not in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "CASH_SECURED_PUT"):
+        return True
+    try:
+        em = abs(float(exp_move_pct))
+        spot = float(spot_price)
+        k = float(short_strike)
+    except (TypeError, ValueError):
+        return True
+    if not spot or not em or not k:
+        return True
+    if structure == "BEAR_CALL_SPREAD":
+        return k >= spot * (1.0 + 1.25 * em / 100.0)
+    # Bull put / CSP: short strike must be priced below the 1.25x EM floor
+    return k <= spot * (1.0 - 1.25 * em / 100.0)
+
+
+def _dw_lookup(dw_data: Dict[str, Any], *keys: str) -> float:
+    """Case-insensitive data-window field lookup returning a float (0.0 if absent/invalid).
+
+    The data window JSON uses CSV headers like "Close" and "Exp Move % (21b)"; callers may
+    pass several candidate keys and we match the first that is present and numeric.
+    """
+    lower_map = {str(k).lower(): v for k, v in (dw_data or {}).items()}
+    for key in keys:
+        val = dw_data.get(key) if dw_data else None
+        if val is None:
+            val = lower_map.get(str(key).lower())
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _demote_unscaled_credit(
+    options_struct: str,
+    short_strike: float,
+    spot_price: float,
+    em_pct: float,
+    opt_summary: str,
+    safe_ticker: str,
+) -> tuple:
+    """Return (options_struct, opt_summary, clear_strikes) after applying the EM backstop.
+
+    A credit spread whose short strike sits inside 1.25x the Expected Move is demoted to
+    NONE so equity/debit can take primary instead of being buried behind a structurally
+    weak spread. `clear_strikes` signals the caller to zero out long/short strikes so the
+    result stays internally consistent (actionable=false carries no phantom strikes).
+    """
+    if short_strike and spot_price and not _credit_strike_em_consistent(
+        options_struct, short_strike, spot_price, em_pct
+    ):
+        logger.info(
+            f"[{safe_ticker}] Credit spread {options_struct} strike ${short_strike:.2f} is inside "
+            f"1.25x EM (EM={em_pct}%); demoting to NON-ACTIONABLE so equity/debit can be primary."
+        )
+        return (
+            "NONE",
+            f"{opt_summary} [DEMOTED: short strike inside 1.25x Expected Move — IV rich but unscaled; use debit/equity by side]",
+            True,
+        )
+    return options_struct, opt_summary, False
+
+
 def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dict[str, Any]]:
     """Extract structured watch levels for a ticker on a date.
 
@@ -163,6 +241,35 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                             "summary": "No income / CSP structure designated.",
                         }
 
+                # EM-consistency backstop (embedded path): apply the same unscaled-credit
+                # demotion here so the priority-1 block path can't bypass the gate. The
+                # embedded block may carry its own spot; fall back to the data window close.
+                em_pct = _dw_lookup(dw_data, "Exp Move % (21b)", "exp_move_pct", "Exp Move Pct 21b")
+                blk_struct = options_p.get("structure") or "NONE"
+                blk_short = float(options_p.get("short_strike") or 0.0)
+                blk_spot = float(data.get("spot_price") or shares_p.get("entry_zone_high") or spot_price or 0.0)
+                new_struct, new_summary, clear_strikes = _demote_unscaled_credit(
+                    blk_struct, blk_short, blk_spot, em_pct, options_p.get("summary", ""), safe_ticker
+                )
+                if clear_strikes:
+                    options_p["structure"] = "NONE"
+                    options_p["long_strike"] = 0.0
+                    options_p["short_strike"] = 0.0
+                    options_p["actionable"] = False
+                    options_p["entry_trigger"] = "NONE"
+                    options_p["summary"] = new_summary
+                    # Zero stale P/L fields so UI doesn't render phantom risk/profit numbers
+                    options_p["target_debit"] = 0.0
+                    options_p["target_credit"] = 0.0
+                    options_p["max_loss"] = 0.0
+                    options_p["max_profit"] = 0.0
+                    if "tactical_spread" in options_menu:
+                        options_menu["tactical_spread"]["structure"] = "NONE"
+                        options_menu["tactical_spread"]["long_strike"] = 0.0
+                        options_menu["tactical_spread"]["short_strike"] = 0.0
+                        options_menu["tactical_spread"]["target_debit"] = 0.0
+                        options_menu["tactical_spread"]["target_credit"] = 0.0
+
                 # Persist to raw folder
                 save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
                 save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +282,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     combined_text = (arbitration_text + "\n" + summary_text)
 
     # Spot Price
-    spot_price = float(dw_data.get("close", 0) or 0)
+    spot_price = _dw_lookup(dw_data, "close", "Close")
     if not spot_price:
         m_spot = re.search(r"Bar close:\s*\$([0-9.]+)", summary_text)
         if m_spot:
@@ -435,6 +542,23 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             max_profit = float(m_profit.group(1).replace(",", "").rstrip("."))
         except Exception:
             pass
+
+    # EM-consistency backstop: a credit spread is only "actionable" (i.e. promotable to
+    # primary) when its short strike sits beyond 1.25x the Expected Move. If the LLM emitted
+    # a high-IV credit on an unscaled strike, demote it so equity/debit can take the lead
+    # instead of being buried behind a structurally weak spread.
+    em_pct = _dw_lookup(dw_data, "Exp Move % (21b)", "exp_move_pct", "Exp Move Pct 21b")
+    options_struct, opt_summary, clear_strikes = _demote_unscaled_credit(
+        options_struct, short_strike, spot_price, em_pct, opt_summary, safe_ticker
+    )
+    if clear_strikes:
+        long_strike = 0.0
+        short_strike = 0.0
+        # Zero stale P/L fields so UI doesn't render phantom risk/profit numbers
+        target_debit = 0.0
+        target_credit = 0.0
+        max_loss = 0.0
+        max_profit = 0.0
 
     # Invalidation
     invalidation_level = tactical_stop

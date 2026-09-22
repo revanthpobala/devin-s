@@ -127,26 +127,33 @@ class SchwabStreamer:
         with self._lock:
             for s in clean_syms:
                 self._subscribed_symbols.discard(s)
-            remaining = list(self._subscribed_symbols)
 
         if self._loop and self._loop.is_running() and self._stream_client:
             asyncio.run_coroutine_threadsafe(
-                self._apply_subscriptions(remaining), self._loop
+                self._apply_unsubscriptions(clean_syms), self._loop
             )
 
     async def _apply_subscriptions(self, symbols: List[str]) -> None:
         """Async helper to update StreamClient subscriptions."""
-        if not self._stream_client:
+        client = self._stream_client
+        if not client or not symbols:
             return
         try:
-            if symbols:
-                logger.info(f"SchwabStreamer subscribing to {len(symbols)} symbol(s): {symbols}")
-                await self._stream_client.level_one_equity_subs(symbols)
-            else:
-                logger.info("SchwabStreamer unsubscribing all symbols.")
-                await self._stream_client.level_one_equity_unsubs()
+            logger.info(f"SchwabStreamer subscribing to {len(symbols)} symbol(s): {symbols}")
+            await client.level_one_equity_subs(symbols)
         except Exception as e:
             logger.warning(f"Error updating SchwabStreamer subscriptions: {e}")
+
+    async def _apply_unsubscriptions(self, symbols: List[str]) -> None:
+        """Async helper to unsubscribe StreamClient from symbols."""
+        client = self._stream_client
+        if not client or not symbols:
+            return
+        try:
+            logger.info(f"SchwabStreamer unsubscribing from {len(symbols)} symbol(s): {symbols}")
+            await client.level_one_equity_unsubs(symbols)
+        except Exception as e:
+            logger.warning(f"Error updating SchwabStreamer unsubscriptions: {e}")
 
     def _on_level_one_equity(self, message: Dict[str, Any]) -> None:
         """Handle incoming Level 1 equity ticks from Schwab."""
@@ -210,25 +217,28 @@ class SchwabStreamer:
                     time.sleep(10)
                     continue
 
-                self._stream_client = StreamClient(client)
-                self._stream_client.add_level_one_equity_handler(self._on_level_one_equity)
+                stream_client = StreamClient(client)
+                stream_client.add_level_one_equity_handler(self._on_level_one_equity)
+                self._stream_client = stream_client
 
                 async def _stream_worker():
-                    await self._stream_client.login()
+                    await stream_client.login()
                     logger.info("SchwabStreamer connected and authenticated.")
 
                     with self._lock:
                         syms = list(self._subscribed_symbols)
                     if syms:
-                        await self._stream_client.level_one_equity_subs(syms)
+                        await stream_client.level_one_equity_subs(syms)
 
                     while self._is_running:
-                        await self._stream_client.handle_message()
+                        await stream_client.handle_message()
 
                 self._loop.run_until_complete(_stream_worker())
             except Exception as e:
                 logger.warning(f"SchwabStreamer connection dropped: {e}. Reconnecting in 5s...")
                 time.sleep(5)
+            finally:
+                self._stream_client = None
 
         logger.info("SchwabStreamer event loop terminated.")
 

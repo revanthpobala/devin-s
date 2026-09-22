@@ -1030,10 +1030,16 @@ window.AppChat = {
           }
         }
 
-        assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:4px;">${chatHeaderTitle}</div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
         if (fullAnswer.trim()) {
+          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:4px;">${chatHeaderTitle}</div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
           window.AppState.revChatHistory.push({ role: 'assistant', content: fullAnswer });
+        } else {
+          // Stream ended with no content — surface the failure visibly
+          const emptyMsg = '⚠️ **No response received from LLM.** The server may have closed the connection early, hit an error, or the model is still loading. Check that the LLM server on port 8000 started correctly and try again.';
+          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--rose-light); margin-bottom:4px;">⚠️ STREAM EMPTY</div><div>${window.AppUtils.renderMarkdown(emptyMsg)}</div>`;
+          window.AppState.revChatHistory.push({ role: 'assistant', content: emptyMsg });
         }
+
       } catch (e) {
         const isAbort = e.name === 'AbortError' || (window.AppState.revChatAbortController && window.AppState.revChatAbortController.signal.aborted);
         if (fullAnswer.trim()) {

@@ -404,6 +404,33 @@ def process_alert_enrichment(alert: dict, sheets=None):
         llm_decision = eval_res.get("llm_decision", "")
         if llm_decision:
             logger.info(f"AI decision written to SQLite for {symbol}: {llm_decision}")
+        # Veto sync: if the AI vetoed this entry but routing already opened a position
+        # (routing uses default grade/score before the real Pine payload was evaluated),
+        # close the phantom position so positions.json and the UI stay consistent.
+        is_exit = any(k in str(alert.get("action") or "").upper() for k in ("EXIT", "CLOSE", "STOP", "FLATTEN", "CUT"))
+        if strategy == "Intraday" and not is_exit:
+            v_up = llm_decision.upper()
+            if "STAND ASIDE" in v_up or "DAY PAUSE" in v_up:
+                try:
+                    from src.tracking.position_state import close_position, list_open
+                    open_pos = list_open()
+                    pos_rec = open_pos.get(symbol)
+                    # Only close positions opened today (avoid killing stale rehydrated state)
+                    if pos_rec and str(pos_rec.get("opened_at", ""))[:10] == date_str:
+                        try:
+                            from src.clients.price_client import get_current_price
+                            close_px = get_current_price(symbol, context="execution")
+                        except Exception:
+                            close_px = None
+                        closed = close_position(
+                            symbol,
+                            exit_price=close_px,
+                            exit_reason=f"AI triage veto after routing ({llm_decision[:80]})",
+                        )
+                        if closed:
+                            logger.warning(f"[veto-sync] 🛡️ {symbol} position opened by routing but vetoed by AI triage — closed at ${closed.get('exit_price')}.")
+                except Exception as e_vsync:
+                    logger.debug(f"Veto sync check failed for {symbol}: {e_vsync}")
         if alert.get("message_id"):
             _update_routing_stage_db(alert["message_id"], "COMPLETED")
     except Exception as e_eval:

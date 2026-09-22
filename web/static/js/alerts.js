@@ -389,42 +389,42 @@ window.AppAlerts = {
     this.renderTable();
   },
 
+  // ── Sub-tab switcher (TradingView / Schwab Pre-Move / Intraday Edge Scanner) ──
   switchSubTab(tab) {
     this._activeSubTab = tab;
-    const tvView = document.getElementById('alerts-view-tv');
-    const schwabView = document.getElementById('alerts-view-schwab');
-    const btnTv = document.getElementById('btn-subtab-tv');
-    const btnSchwab = document.getElementById('btn-subtab-schwab');
 
-    if (tab === 'schwab') {
-      if (tvView) tvView.style.display = 'none';
-      if (schwabView) schwabView.style.display = 'flex';
-      if (btnTv) {
-        btnTv.className = 'btn secondary alerts-subtab-btn';
-        btnTv.style.background = '';
-        btnTv.style.color = '';
-      }
-      if (btnSchwab) {
-        btnSchwab.className = 'btn alerts-subtab-btn active';
-        btnSchwab.style.background = 'var(--text-main)';
-        btnSchwab.style.color = 'var(--bg-surface)';
-      }
-      if (window.AppSwing && typeof window.AppSwing.loadSchwabScreener === 'function') {
-        window.AppSwing.loadSchwabScreener();
-      }
-    } else {
-      if (tvView) tvView.style.display = 'flex';
-      if (schwabView) schwabView.style.display = 'none';
-      if (btnTv) {
-        btnTv.className = 'btn alerts-subtab-btn active';
-        btnTv.style.background = 'var(--text-main)';
-        btnTv.style.color = 'var(--bg-surface)';
-      }
-      if (btnSchwab) {
-        btnSchwab.className = 'btn secondary alerts-subtab-btn';
-        btnSchwab.style.background = '';
-        btnSchwab.style.color = '';
-      }
+    // Panels
+    const panels = {
+      tv:     document.getElementById('alerts-view-tv'),
+      schwab: document.getElementById('alerts-view-schwab'),
+      edge:   document.getElementById('edge-scanner-panel'),
+    };
+    Object.entries(panels).forEach(([key, el]) => {
+      if (!el) return;
+      el.style.display = (key === tab) ? 'flex' : 'none';
+    });
+
+    // Button active states
+    document.querySelectorAll('.alerts-subtab-btn').forEach(btn => {
+      const isActive = btn.id === `btn-subtab-${tab}`;
+      btn.classList.toggle('active', isActive);
+      btn.style.background    = isActive ? 'var(--text-main)' : '';
+      btn.style.color         = isActive ? 'var(--bg-surface)' : '';
+      btn.style.fontWeight    = isActive ? '800' : '700';
+    });
+
+    // First time opening Edge Scanner: connect WS + poll status
+    if (tab === 'edge' && window.AppEdgeScanner) {
+      AppEdgeScanner.activate();
+    }
+
+    // Re-trigger the Schwab screener load when that pane opens
+    if (tab === 'schwab' && window.AppSwing && typeof window.AppSwing.loadSchwabScreener === 'function') {
+      window.AppSwing.loadSchwabScreener();
+    }
+
+    // Refresh the TradingView alerts feed when that pane opens
+    if (tab === 'tv') {
       this.loadAlerts();
     }
   },
@@ -1300,7 +1300,10 @@ window.AppAlerts = {
           let cardClass = 'intraday-flat-trade-card';
           let aiVerdictBadge = '';
 
-          if (t.isOpen) {
+          if (t.isOpen && t.isAiFiltered) {
+            cardClass += ' is-open ai-filtered';
+            aiVerdictBadge = `<span class="badge danger" style="font-size:10px; font-weight:800;" title="AI triage vetoed this entry — no position was opened. P&L shown is the raw TV signal for reference only.">🛡️ ACTIVE · FILTERED</span>`;
+          } else if (t.isOpen) {
             cardClass += ' is-open';
             aiVerdictBadge = `<span class="badge in_zone" style="font-size:10px; font-weight:800; box-shadow:0 0 8px rgba(16,185,129,0.3);">⚡ ACTIVE POSITION</span>`;
           } else if (t.isAiTaken) {
@@ -1346,8 +1349,8 @@ window.AppAlerts = {
 
               <!-- Price & Exit Details -->
               <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:220px; flex-wrap:wrap;">
-                <span style="font-family:var(--font-mono); font-size:12px; font-weight:700; color:var(--text-main);">
-                  $${t.entryPrice > 0 ? t.entryPrice.toFixed(2) : '--'} ➔ $${t.exitPrice > 0 ? t.exitPrice.toFixed(2) : (t.isOpen ? 'ACTIVE' : '--')}
+                <span style="font-family:var(--font-mono); font-size:12px; font-weight:700; color:${(t.isOpen && t.isAiFiltered) ? 'var(--text-muted)' : 'var(--text-main)'};">
+                  $${t.entryPrice > 0 ? t.entryPrice.toFixed(2) : '--'} ➔ $${t.exitPrice > 0 ? t.exitPrice.toFixed(2) : (t.isOpen ? (t.isAiFiltered ? 'NOT ENTERED' : 'ACTIVE') : '--')}
                 </span>
                 <span class="pill" style="font-size:10px; padding:1px 6px;">
                   ⏱️ ${t.duration}
@@ -1429,12 +1432,20 @@ window.AppAlerts = {
       // Status Badge
       let statusBadge = '';
       if (d.status === 'IN_TRADE' && d.openTrade) {
-        statusBadge = `
-          <span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981; border:1px solid rgba(16,185,129,0.5); font-weight:800; font-size:11px; display:inline-flex; align-items:center; gap:5px;">
-            <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 6px #10b981;"></span>
-            IN TRADE · ${d.openTrade.side === 'LONG' ? 'CALLS' : 'PUTS'} @ $${d.openTrade.entryPrice.toFixed(2)}
-          </span>
-        `;
+        if (d.openTrade.isAiFiltered) {
+          statusBadge = `
+            <span class="badge" style="background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800; font-size:11px; display:inline-flex; align-items:center; gap:5px;" title="AI triage vetoed this entry — no position was opened">
+              🛡️ FILTERED · ${d.openTrade.side === 'LONG' ? 'CALLS' : 'PUTS'} signal @ $${d.openTrade.entryPrice.toFixed(2)} (not entered)
+            </span>
+          `;
+        } else {
+          statusBadge = `
+            <span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981; border:1px solid rgba(16,185,129,0.5); font-weight:800; font-size:11px; display:inline-flex; align-items:center; gap:5px;">
+              <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 6px #10b981;"></span>
+              IN TRADE · ${d.openTrade.side === 'LONG' ? 'CALLS' : 'PUTS'} @ $${d.openTrade.entryPrice.toFixed(2)}
+            </span>
+          `;
+        }
       } else if (d.completedTrades.length > 0) {
         statusBadge = `
           <span class="badge" style="background:rgba(255,255,255,0.06); color:var(--text-main); border:1px solid var(--border); font-size:11px; font-weight:700;">
@@ -6276,6 +6287,394 @@ ${d.falseNeg.map(t => `- ${t.symbol} ${t.side} (${(t.entryTime||'').substring(11
       this.openChart(this._currentTickerTradesSymbol);
     }
   }
+};
+
+/* ============================================================
+   AppEdgeScanner — Real-Time Intraday Edge Scanner Feed
+   WebSocket: ws://<host>/ws/edge-scanner-alerts
+   REST:      GET /api/edge-scanner/status
+              POST /api/edge-scanner/dispatch
+   ============================================================ */
+window.AppEdgeScanner = {
+  _ws: null,
+  _alerts: [],           // newest-first, max 200
+  _candidates: [],       // all valid deep-research candidates (from /candidates)
+  _activated: false,
+  _statusTimer: null,
+  _candTimer: null,
+  _reconnectTimer: null,
+  _reconnectDelay: 2000,
+
+  // ── Public entry: called on app load, switchSubTab('edge'), and Reconnect ──
+  activate() {
+    if (this._ws && this._ws.readyState <= 1) return; // already open/connecting
+    this._connect();
+    this._startStatusPolling();
+    this._startCandidatePolling();
+  },
+
+  // Start the candidate + status poll loop exactly once (safe to call repeatedly).
+  _startCandidatePolling() {
+    if (!this._candTimer) {
+      this._loadCandidates();
+      this._candTimer = setInterval(() => this._loadCandidates(), 8000);
+    }
+  },
+
+  // Toggle the Radar-desk candidate strip between collapsed (top-5) and full.
+  toggleRadarStrip() {
+    const btn = document.getElementById('btn-toggle-edge-cands');
+    if (!this._radarExpanded) {
+      this._radarExpanded = true;
+      if (btn) btn.textContent = 'Collapse ▲';
+    } else {
+      this._radarExpanded = false;
+      if (btn) btn.textContent = 'Expand ▼';
+    }
+    this._renderCandidates();
+  },
+
+  // ── Deep-Research candidates (the list the user picks from) ───────────────
+  async _loadCandidates() {
+    try {
+      const res = await fetch('/api/edge-scanner/candidates');
+      if (!res.ok) return;
+      const data = await res.json();
+      this._candidates = data.candidates || [];
+      this._renderCandidates();
+    } catch (e) { /* ignore */ }
+  },
+
+  _statusPill(status) {
+    const s = (status || 'PENDING').toUpperCase();
+    const map = {
+      PENDING:    { text: '⏳ Pending',    cls: 'pill amber' },
+      DISPATCHED: { text: '🔬 Researching',cls: 'pill cyan'  },
+      COMPLETED:  { text: '✅ Completed',  cls: 'pill green' },
+      FAILED:     { text: '❌ Failed',     cls: 'pill red'   },
+    };
+    const cfg = map[s] || map.PENDING;
+    return `<span class="${cfg.cls}">${cfg.text}</span>`;
+  },
+
+  _candidateCardHTML(c, compact) {
+    const sym       = (c.symbol || '?').toUpperCase();
+    const dir       = (c.direction || 'LONG').toUpperCase();
+    const trigger   = c.trigger || '';
+    const score     = parseFloat(c.score || 0);
+    const price     = parseFloat(c.price || 0);
+    const dirArrow  = dir === 'LONG' ? '▲' : '▼';
+    const dirColor  = dir === 'LONG' ? '#10b981' : '#f87171';
+    const priceStr  = price > 0 ? `$${price.toFixed(2)}` : '—';
+    const canRun    = c.status === 'PENDING';
+    const runBtn = canRun
+      ? `<button class="btn" style="padding:4px 12px; font-size:11px; font-weight:800;
+           background:linear-gradient(135deg,#10b981 0%,#059669 100%); color:#fff; border:1px solid #10b981;"
+           onclick="AppEdgeScanner.dispatch('${sym}','${dir}')" title="Run deep research on ${sym}">
+           🚀 Run Deep Research
+         </button>`
+      : `<span style="font-size:11px; color:var(--text-muted);">${c.status === 'DISPATCHED' ? 'in progress…' : c.status.toLowerCase()}</span>`;
+
+    const pad = compact ? 'padding:8px 14px;' : 'padding:12px 16px;';
+    return `
+      <div class="station-card" style="${pad} display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-left:3px solid ${dirColor};">
+        <div style="min-width:${compact ? '78px' : '84px'};">
+          <div style="font-size:${compact ? '14px' : '15px'}; font-weight:900; color:var(--text-main);">${sym}</div>
+          <div style="font-size:11.5px; font-weight:700; color:${dirColor};">${dirArrow} ${dir}</div>
+        </div>
+        <div style="flex:1; min-width:110px;">
+          <div style="font-size:11px; font-weight:800; color:var(--cyan); text-transform:uppercase; letter-spacing:0.5px;">TRIGGER</div>
+          <div style="font-size:12px; font-weight:700; color:var(--text-main); font-family:'JetBrains Mono', monospace;">${trigger}</div>
+        </div>
+        <div style="min-width:64px; text-align:right;">
+          <div style="font-size:11px; color:var(--text-muted);">PRICE</div>
+          <div style="font-size:${compact ? '13px' : '13.5px'}; font-weight:800; color:var(--text-main);">${priceStr}</div>
+        </div>
+        <div style="text-align:center; min-width:46px;">
+          <div style="font-size:11px; color:var(--text-muted);">SCORE</div>
+          <div style="font-size:${compact ? '14px' : '15px'}; font-weight:900; color:${score >= 75 ? '#10b981' : 'var(--amber)'};">${score.toFixed(0)}</div>
+        </div>
+        <div style="min-width:92px;">${this._statusPill(c.status)}</div>
+        <div style="margin-left:auto; display:flex; align-items:center;">${runBtn}</div>
+      </div>`;
+  },
+
+  // Renders the candidate list into BOTH surfaces (Radar strip + Intraday Scanner panel)
+  // and keeps all count pills / WS badges in sync.
+  _renderCandidates() {
+    const pending = this._candidates.filter(c => c.status === 'PENDING').length;
+    const summaryText = `${this._candidates.length} candidates · ${pending} pending`;
+
+    // Count pills (both surfaces).
+    const counts = ['edge-scanner-candidates-count', 'edge-cand-strip-count'];
+    counts.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = summaryText;
+    });
+
+    // WS badges (both surfaces) mirror the live connection state.
+    const wsBadges = ['edge-scanner-ws-badge', 'edge-cand-strip-ws-badge'];
+    wsBadges.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        el.textContent = '⚡ Live';
+        el.className = 'pill green';
+      } else if (this._ws && this._ws.readyState <= 1) {
+        el.textContent = '🔄 Connecting…';
+        el.className = 'pill amber';
+      } else {
+        el.textContent = '⚠️ Offline';
+        el.className = 'pill red';
+      }
+    });
+
+    // Radar-desk strip (compact; collapsed to top-5 unless expanded).
+    const radar = document.getElementById('edge-candidates-radar-container');
+    if (radar) {
+      if (!this._candidates.length) {
+        radar.innerHTML = `<div class="station-card" style="text-align:center; padding:20px; color:var(--text-muted); font-size:12.5px;" data-placeholder>
+          No deep-research candidates yet. High-score edge-scanner triggers (≥75) will appear here to pick and run.</div>`;
+      } else {
+        const list = this._radarExpanded ? this._candidates : this._candidates.slice(0, 5);
+        radar.innerHTML = list.map(c => this._candidateCardHTML(c, true)).join('');
+        if (!this._radarExpanded && this._candidates.length > 5) {
+          const more = this._candidates.length - 5;
+          radar.insertAdjacentHTML('beforeend',
+            `<div style="text-align:center; font-size:11px; color:var(--text-muted); padding-top:2px;">+${more} more — click Expand</div>`);
+        }
+      }
+    }
+
+    // Intraday Scanner panel (full list).
+    const panel = document.getElementById('edge-scanner-candidates-container');
+    if (panel) {
+      if (!this._candidates.length) {
+        panel.innerHTML = `<div class="station-card" style="text-align:center; padding:36px; color:var(--text-muted); font-size:13px;" data-placeholder>
+          No deep-research candidates yet. High-score triggers (≥75) will appear here for you to pick and run.</div>`;
+      } else {
+        panel.innerHTML = this._candidates.map(c => this._candidateCardHTML(c, false)).join('');
+      }
+    }
+  },
+
+  // ── WebSocket lifecycle ───────────────────────────────────────────────────
+  _connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const url   = `${proto}://${location.host}/ws/edge-scanner-alerts`;
+    this._setBadge('connecting');
+
+    try {
+      this._ws = new WebSocket(url);
+    } catch (e) {
+      this._setBadge('offline');
+      this._scheduleReconnect();
+      return;
+    }
+
+    this._ws.onopen = () => {
+      this._setBadge('live');
+      this._reconnectDelay = 2000;
+    };
+
+    this._ws.onmessage = (evt) => {
+      let msg;
+      try { msg = JSON.parse(evt.data); } catch (e) { return; }
+
+      if (msg.type === 'replay') {
+        // Seed from historical buffer (newest-first array)
+        this._alerts = (msg.alerts || []).slice(0, 200);
+        this._render();
+      } else if (msg.type === 'alert') {
+        this._alerts.unshift(msg.alert);          // prepend (newest first)
+        if (this._alerts.length > 200) this._alerts.pop();
+        this._prependCard(msg.alert);             // fast path — no full re-render
+      }
+      // msg.type === 'ping' → ignore (keepalive)
+    };
+
+    this._ws.onclose = () => {
+      this._setBadge('offline');
+      this._scheduleReconnect();
+    };
+
+    this._ws.onerror = () => {
+      this._setBadge('offline');
+    };
+  },
+
+  _scheduleReconnect() {
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = setTimeout(() => this._connect(), this._reconnectDelay);
+    this._reconnectDelay = Math.min(this._reconnectDelay * 1.5, 30000);
+  },
+
+  // ── Status bar polling ────────────────────────────────────────────────────
+  _startStatusPolling() {
+    if (this._statusTimer) return;
+    this._pollStatus();
+    this._statusTimer = setInterval(() => this._pollStatus(), 15000);
+  },
+
+  async _pollStatus() {
+    try {
+      const res  = await fetch('/api/edge-scanner/status');
+      if (!res.ok) return;
+      const data = await res.json();
+
+      const runningPill = document.getElementById('edge-scanner-running-pill');
+      const regimePill  = document.getElementById('edge-scanner-regime');
+      const univPill    = document.getElementById('edge-scanner-universe-count');
+
+      if (runningPill) {
+        runningPill.textContent = data.running ? '🟢 Scanner Live' : '🔴 Scanner Offline';
+        runningPill.className   = `pill ${data.running ? 'green' : 'red'}`;
+      }
+      if (regimePill) {
+        const regime = (data.regime || 'unknown').toUpperCase();
+        regimePill.textContent  = regime;
+        regimePill.style.color  = regime === 'BULLISH' ? 'var(--green-light)'
+                                : regime === 'BEARISH' ? 'var(--rose-light)'
+                                : 'var(--text-muted)';
+      }
+      if (univPill) {
+        univPill.textContent = `${data.universe_count || 0} symbols`;
+      }
+    } catch (e) { /* scanner offline — ignore */ }
+  },
+
+  // ── WS connection badge ───────────────────────────────────────────────────
+  _setBadge(state) {
+    const el = document.getElementById('edge-scanner-ws-badge');
+    if (!el) return;
+    const map = {
+      live:        { text: '⚡ Live',        cls: 'pill green' },
+      connecting:  { text: '🔄 Connecting…', cls: 'pill amber' },
+      offline:     { text: '⚠️ Offline',     cls: 'pill red'   },
+    };
+    const cfg = map[state] || map.offline;
+    el.textContent = cfg.text;
+    el.className   = cfg.cls;
+  },
+
+  // ── Full render (used for replay) ─────────────────────────────────────────
+  _render() {
+    const container = document.getElementById('edge-scanner-alerts-container');
+    if (!container) return;
+    if (!this._alerts.length) {
+      container.innerHTML = `
+        <div class="station-card" style="text-align:center; padding:48px; color:var(--text-muted); font-size:13px;" data-placeholder>
+          No intraday triggers fired yet. Waiting for the Edge Scanner to detect ORB / VWAP / HOD-LOD / RVOL breakouts…
+        </div>`;
+      return;
+    }
+    container.innerHTML = this._alerts.map(a => this._cardHTML(a)).join('');
+  },
+
+  // ── Prepend a single card (fast path for new alerts) ─────────────────────
+  _prependCard(alert) {
+    const container = document.getElementById('edge-scanner-alerts-container');
+    if (!container) return;
+    // Remove placeholder if present
+    const placeholder = container.querySelector('[data-placeholder]');
+    if (placeholder) placeholder.remove();
+
+    const div = document.createElement('div');
+    div.innerHTML = this._cardHTML(alert);
+    container.insertBefore(div.firstElementChild, container.firstChild);
+
+    // Cap DOM to 100 cards for performance
+    while (container.children.length > 100) container.lastElementChild.remove();
+  },
+
+  // ── Alert card HTML ───────────────────────────────────────────────────────
+  _cardHTML(a) {
+    const sym       = (a.symbol   || '?').toUpperCase();
+    const dir       = (a.direction || 'LONG').toUpperCase();
+    // System alerts carry `trigger`; custom setups carry `entry_trigger`/
+    // `trigger_label`. Fall back through all of them so the card never renders
+    // an empty TRIGGER field.
+    const trigger   = a.trigger || a.entry_trigger || a.trigger_label || a.setup_label || '';
+    const score     = parseFloat(a.score || 0);
+    const price     = parseFloat(a.price || 0);
+    const recvAt    = a.received_at ? new Date(a.received_at).toLocaleTimeString() : '';
+
+    // Score pill colour
+    const scoreColor = score >= 75 ? '#10b981'          // green
+                     : score >= 55 ? 'var(--amber)'
+                     :               'var(--text-muted)';
+    const dirArrow   = dir === 'LONG' ? '▲' : '▼';
+    const dirColor   = dir === 'LONG' ? '#10b981' : '#f87171';
+    const priceStr   = price > 0 ? `$${price.toFixed(2)}` : '—';
+
+    return `
+      <div class="station-card" style="padding:14px 18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-left:3px solid ${dirColor};">
+        <!-- Symbol + Direction -->
+        <div style="min-width:90px;">
+          <div style="font-size:16px; font-weight:900; color:var(--text-main);">${sym}</div>
+          <div style="font-size:12px; font-weight:700; color:${dirColor};">${dirArrow} ${dir}</div>
+        </div>
+
+        <!-- Trigger label -->
+        <div style="flex:1; min-width:120px;">
+          <div style="font-size:11px; font-weight:800; color:var(--cyan); text-transform:uppercase; letter-spacing:0.5px;">TRIGGER</div>
+          <div style="font-size:12.5px; font-weight:700; color:var(--text-main); font-family:'JetBrains Mono', monospace;">${trigger}</div>
+        </div>
+
+        <!-- Price -->
+        <div style="min-width:70px; text-align:right;">
+          <div style="font-size:11px; color:var(--text-muted);">PRICE</div>
+          <div style="font-size:14px; font-weight:800; color:var(--text-main);">${priceStr}</div>
+        </div>
+
+        <!-- Score pill -->
+        <div style="text-align:center; min-width:56px;">
+          <div style="font-size:11px; color:var(--text-muted);">SCORE</div>
+          <div style="font-size:15px; font-weight:900; color:${scoreColor};">${score.toFixed(0)}</div>
+        </div>
+
+        <!-- Time -->
+        <div style="font-size:10.5px; color:var(--text-muted); min-width:55px; text-align:right;">${recvAt}</div>
+
+        <!-- Action buttons -->
+        <div style="display:flex; gap:6px; margin-left:auto; flex-wrap:wrap;">
+          <button class="btn" style="padding:4px 11px; font-size:11px; font-weight:800;
+            background:linear-gradient(135deg,#10b981 0%,#059669 100%); color:#fff; border:1px solid #10b981;"
+            onclick="AppEdgeScanner.dispatch('${sym}','${dir}')"
+            title="Dispatch ${sym} to Deep Research pipeline">
+            ⚡ Dispatch
+          </button>
+        </div>
+      </div>`;
+  },
+
+  // ── Dispatch to Deep Research via REST ────────────────────────────────────
+  async dispatch(symbol, direction) {
+    const btn = event && event.target;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Dispatching…'; }
+    try {
+      const res = await fetch('/api/edge-scanner/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, direction }),
+      });
+      const data = await res.json();
+      if (res.ok && data.status === 'dispatched') {
+        if (btn) { btn.textContent = '✅ Dispatched'; btn.style.background = '#1d4ed8'; }
+        // Surface a quick toast if AppUtils supports it
+        if (window.AppUtils && AppUtils.showToast) {
+          AppUtils.showToast(`🚀 ${symbol} dispatched to Deep Research`, 'success');
+        }
+        this._loadCandidates();  // refresh the candidate list status immediately
+      } else {
+        if (btn) { btn.textContent = '❌ Failed'; btn.disabled = false; }
+        this._loadCandidates();  // reflect any state change (e.g. already dispatched)
+      }
+    } catch (e) {
+      console.error('Dispatch error', e);
+      if (btn) { btn.textContent = '❌ Error'; btn.disabled = false; }
+    }
+  },
 };
 
 document.addEventListener('click', (e) => {
