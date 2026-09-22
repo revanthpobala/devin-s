@@ -79,13 +79,9 @@ def _save_state(state: dict) -> None:
         json.dump(state, f, indent=2, default=str)
     try:
         tmp.replace(POSITIONS_FILE)  # atomic on Windows + POSIX
-    except Exception:
-        import shutil
-        shutil.copyfile(tmp, POSITIONS_FILE)
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
+    except OSError:
+        tmp.unlink()
+        raise
 
 
 def open_position(

@@ -351,6 +351,8 @@ def _num_mask(val, max_val: Optional[int] = None) -> Optional[float]:
         head, _, tail = s.rpartition(".")
         if all(ch == "0" for ch in tail):
             s = head
+        else:
+            return None
 
     s = s.replace(".", ",")
     candidates = [s.replace(",", "")]

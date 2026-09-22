@@ -1723,11 +1723,39 @@ def query_local_llm(
         MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "50"))
         tool_call_count = 0
 
+        # Per-request output timeout (seconds): kill a single hung completion instead of
+        # blocking the whole run for an unbounded time. A healthy local-GPU generation from a
+        # ~550k-char prompt can take 15+ min to emit its first token, so default is generous;
+        # only set lower if you confirm the model is actually wedged.
+        _REQ_TIMEOUT_SEC = float(os.getenv("LLM_REQUEST_TIMEOUT_SEC", "2400"))
+
         while tool_call_count < MAX_TOOL_CALLS:
             try:
                 if not attach_tools and provider == "local":
                     kwargs["stream"] = True
-                response = _create_completion(client, provider, **kwargs)
+                _req_result: list = [None]
+                _req_exc: list = [None]
+
+                def _run_req(_k=kwargs):
+                    try:
+                        _req_result[0] = _create_completion(client, provider, **_k)
+                    except Exception as _e:  # noqa: BLE001 - re-raised below
+                        _req_exc[0] = _e
+
+                _req_thread = threading.Thread(target=_run_req, daemon=True)
+                _req_thread.start()
+                _req_thread.join(_REQ_TIMEOUT_SEC)
+                if _req_thread.is_alive():
+                    logger.error(
+                        f"[{provider}] LLM request exceeded per-request timeout of {_REQ_TIMEOUT_SEC:.0f}s "
+                        f"with no output; aborting this attempt."
+                    )
+                    raise TimeoutError(
+                        f"LLM request timed out after {_REQ_TIMEOUT_SEC:.0f}s with no output (provider={provider})"
+                    )
+                if _req_exc[0] is not None:
+                    raise _req_exc[0]
+                response = _req_result[0]
             except Exception as e:
                 # If tool calling fails (HTTP 400 or HTTP 500 JSON parse errors) — retry cleanly without tools.
                 if attach_tools and ("400" in str(e) or "500" in str(e) or "tool" in str(e).lower()):

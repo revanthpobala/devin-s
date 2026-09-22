@@ -165,7 +165,9 @@ def resolve_triage(
     if not triage_record.get("flags") and thesis_file.exists():
         try:
             tdata = json.loads(thesis_file.read_text(encoding="utf-8"))
-            triage_record = tdata.get("triage") or tdata.get("llm_data") or {}
+            triage_record = tdata.get("triage") or {}
+            if not triage_record.get("flags") and tdata.get("llm_data", {}).get("flags"):
+                triage_record["flags"] = tdata["llm_data"]["flags"]
             if not verdict_record and isinstance(tdata.get("triage"), dict):
                 verdict_record = tdata["triage"]
         except (json.JSONDecodeError, OSError):

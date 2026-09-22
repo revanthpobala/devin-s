@@ -1749,6 +1749,39 @@ window.AppSwing = {
     if (invRat) {
       invRat.textContent = inv.rationale || 'Sustained breach terminates trade posture.';
     }
+
+    // When options are demoted, elevate the equity plan as the primary suggestion
+    if (isDemoted) {
+      const paneBody = document.getElementById('modal-positions-pane-content');
+      const optCard = document.getElementById('pane-card-options');
+      const eqCard = document.getElementById('pane-card-equity');
+      if (paneBody && optCard && eqCard) {
+        // Remove any existing demoted banner from previous render
+        const existingBanner = document.getElementById('pane-demoted-banner');
+        if (existingBanner) existingBanner.remove();
+        // Hide options card entirely — equity is the only suggestion
+        optCard.style.display = 'none';
+        // Insert equity card before options card (swap visual order)
+        paneBody.insertBefore(eqCard, optCard);
+        // Add banner above equity card indicating it's the primary plan
+        const banner = document.createElement('div');
+        banner.id = 'pane-demoted-banner';
+        banner.style.cssText = 'background:rgba(5,150,105,0.08); border:1px solid rgba(5,150,105,0.3); border-radius:6px; padding:8px 12px; font-size:11px; font-weight:700; color:#059669; display:flex; align-items:center; gap:6px;';
+        banner.innerHTML = '<span style="font-size:14px;">📊</span> EQUITY PLAN IS THE SUGGESTED TRADE — Options structure demoted (not actionable)';
+        paneBody.insertBefore(banner, eqCard);
+      }
+    } else {
+      // Clean up demoted state if options are now actionable
+      const existingBanner = document.getElementById('pane-demoted-banner');
+      if (existingBanner) existingBanner.remove();
+      const optCard = document.getElementById('pane-card-options');
+      if (optCard) {
+        optCard.style.display = '';
+        optCard.style.opacity = '';
+        optCard.style.borderLeft = '';
+        optCard.style.background = '';
+      }
+    }
   },
 
   renderSuggestedPositionsFullTab(data, container) {
@@ -1773,6 +1806,7 @@ window.AppSwing = {
     const optPlan = wl.options_plan || {};
     const shPlan = wl.shares_plan || {};
     const inv = wl.invalidation || {};
+    const isDemoted = !optPlan.actionable || optPlan.structure === 'NONE' || !optPlan.structure;
 
     const livePx = data.live_price ? `$${Number(data.live_price).toFixed(2)}` : '--';
     const spotPx = data.spot_price ? `$${Number(data.spot_price).toFixed(2)}` : '--';
@@ -1804,15 +1838,23 @@ window.AppSwing = {
 
 
 
+        <!-- Demotion banner when options are not actionable -->
+        ${isDemoted ? `
+        <div style="background:rgba(5,150,105,0.08); border:1px solid rgba(5,150,105,0.3); border-radius:6px; padding:8px 14px; margin-bottom:14px; display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:#059669;">
+          <span style="font-size:16px;">📊</span>
+          <div>Equity Shares Plan is the <strong>PRIMARY SUGGESTED TRADE</strong> — Options structure demoted (not actionable)</div>
+        </div>
+        ` : ''}
+
         <!-- 2-Column Grid: Options Vehicle vs Equity Vehicle -->
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap:18px; margin-bottom:20px;">
+        <div style="display:grid; grid-template-columns: ${isDemoted ? '1fr' : 'repeat(auto-fit, minmax(360px, 1fr))'}; gap:18px; margin-bottom:20px;">
           
           <!-- Column 1: Options Vehicle (Primary Spread) -->
-          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:18px; display:flex; flex-direction:column; justify-content:space-between;">
+          <div style="${isDemoted ? 'display:none;' : ''}background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:18px; display:flex; flex-direction:column; justify-content:space-between;">
             <div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <span style="font-size:13px; font-weight:800; color:var(--blue); text-transform:uppercase; letter-spacing:0.5px;">
-                  🎯 Options Structure (Primary Vehicle)
+                <span style="font-size:13px; font-weight:800; color:${isDemoted ? 'var(--rose)' : 'var(--blue)'}; text-transform:uppercase; letter-spacing:0.5px;">
+                  🎯 Options Structure ${isDemoted ? '(Not Actionable)' : '(Primary Vehicle)'}
                 </span>
                 ${optPlan.actionable ? '<span class="pill green" style="font-size:10px; font-weight:800;">ACTIONABLE</span>' : ''}
               </div>
@@ -1871,7 +1913,7 @@ window.AppSwing = {
             <div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                 <span style="font-size:13px; font-weight:800; color:var(--emerald); text-transform:uppercase; letter-spacing:0.5px;">
-                  📊 Equity Shares Execution Plan
+                  📊 Equity Shares Execution Plan ${isDemoted ? '(Primary Vehicle)' : ''}
                 </span>
                 <span class="pill blue" style="font-size:10px; font-weight:800;">${shPlan.side || 'LONG'}</span>
               </div>

@@ -36,12 +36,105 @@ def _now_iso() -> str:
     return datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
 
 
+# Tier 2 catastrophic circuit breaker (skills/exit_management_and_veto.md):
+# breach on EITHER >= 1.25x 5m ATR drawdown OR >= 2.5% drawdown from entry
+# (30% premium loss for option trades). The dollar distance of the initial
+# stop IS 1.25x ATR by construction (see open_position / _tick derivation),
+# so the ATR leg is evaluated against that stored distance — not a flat %.
+ATR_STOP_MULTIPLIER = 1.25
+FLAT_CATASTROPHIC_PCT = 0.025
+OPTION_PREMIUM_CATASTROPHIC_PCT = 0.30
+
+
+def _catastrophic_stop_distance(rec: dict) -> float | None:
+    """Dollar distance of the initial stop from entry — i.e. 1.25x 5m ATR, the
+    trade's designed risk budget (see open_position / _tick stop derivation).
+
+    Uses `initial_stop` when present (immutable entry-time value), else `stop`,
+    but ONLY while that stop still sits on the original side of entry — once it
+    trails through to break-even it no longer represents the risk budget. Falls
+    back to a live ATR fetch as last resort."""
+    side = str(rec.get("side", "LONG")).upper()
+    try:
+        entry = float(rec.get("entry_price") or 0)
+    except (ValueError, TypeError):
+        entry = 0.0
+    if entry <= 0:
+        return None
+    for key in ("initial_stop", "stop"):
+        raw = rec.get(key)
+        try:
+            lvl = float(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            lvl = None
+        if lvl is None or abs(entry - lvl) == 0:
+            continue
+        on_entry_side = (side == "LONG" and lvl < entry) or (side == "SHORT" and lvl > entry)
+        if not on_entry_side:
+            break
+        return abs(entry - lvl)
+    try:
+        from src.clients.schwab_client import calculate_intraday_atr
+        atr = calculate_intraday_atr(str(rec.get("ticker", "")))
+        return ATR_STOP_MULTIPLIER * float(atr) if atr and atr > 0 else None
+    except Exception:
+        return None
+
+
+def _catastrophic_breached(rec: dict, price) -> tuple[bool, str]:
+    """Tier 2 circuit breaker: OR of the ATR leg and the flat-percent/premium leg.
+
+    - ATR leg: adverse move >= initial-stop distance (1.25x 5m ATR).
+    - Percent leg: >= 2.5% adverse move from entry, or >= 30% premium loss for
+      instrument_type == OPTION (entry is the premium). The percent leg only
+      guards setups whose designed risk budget is WIDER than it — a trade with a
+      tighter stop exits at its own stop first, so the flat breaker never
+      pre-empts the real stop.
+    Returns (breached, reason)."""
+    side = str(rec.get("side", "LONG")).upper()
+    try:
+        entry = float(rec.get("entry_price") or 0) or None
+    except (ValueError, TypeError):
+        entry = None
+    if not entry or entry <= 0 or price is None or not isinstance(price, (int, float)):
+        return False, ""
+
+    adverse = (entry - price) if side == "LONG" else (price - entry)
+
+    atr_distance = _catastrophic_stop_distance(rec)
+
+    breached = False
+    parts = []
+    if atr_distance is not None and adverse >= atr_distance:
+        breached = True
+        parts.append(f"adverse move ${adverse:.2f} >= 1.25x ATR stop distance ${atr_distance:.2f}")
+    pct_threshold = (
+        OPTION_PREMIUM_CATASTROPHIC_PCT
+        if str(rec.get("instrument_type", "")).upper() == "OPTION"
+        else FLAT_CATASTROPHIC_PCT
+    )
+    drawdown = adverse / entry
+    # The flat-percent/premium leg only fires when the stop is NARROWER than
+    # the flat percentage threshold — i.e. the trade's real stop would already
+    # have been hit before the flat leg could fire. For wide-stop setups the
+    # trade continues to its real stop; the ATR leg catches genuine breakouts.
+    if drawdown >= pct_threshold and (atr_distance is None or atr_distance < pct_threshold * entry):
+        breached = True
+        label = "premium loss" if pct_threshold == OPTION_PREMIUM_CATASTROPHIC_PCT else "drawdown from entry"
+        parts.append(f"{drawdown*100:.1f}% {label} >= {pct_threshold*100:.0f}%")
+
+    if breached:
+        return True, f"Catastrophic breaker: {'; '.join(parts)} (entry ${entry:.2f}, price ${price:.2f})."
+    return False, ""
+
+
 def review_tv_exit(symbol: str, alert: dict) -> dict:
     """Review an incoming TradingView EXIT alert against live broker telemetry and market context.
 
     Evaluates whether the exit is:
     1. A target hit / profit taking event -> CONFIRM_EXIT.
-    2. A catastrophic stop-loss breach (>2.5% loss) -> CONFIRM_EXIT (non-negotiable safety guard).
+    2. A catastrophic stop-loss breach (>=1.25x ATR drawdown or >=2.5% / 30% premium
+       loss — Tier 2 circuit breaker) -> CONFIRM_EXIT (non-negotiable safety guard).
     3. An intra-bar wick or noise tap where live price is still holding above stop (for LONG)
        or below stop (for SHORT) -> VETO_HOLD.
     4. A confirmed breakdown/breach where live price is confirmed at or beyond stop -> CONFIRM_EXIT.
@@ -131,17 +224,15 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
             "target": target,
         }
 
-    # 3. Catastrophic risk safeguard (>2.5% drawdown from entry)
-    if entry and entry > 0:
-        drawdown = (entry - price) / entry if side == "LONG" else (price - entry) / entry
-        if drawdown >= 0.025:
-            return {
-                "action": "CONFIRM_EXIT",
-                "reason": f"Catastrophic stop safeguard breached ({drawdown*100:.1f}% drawdown from entry ${entry:.2f}).",
-                "current_price": price,
-                "stop": stop,
-                "drawdown": drawdown,
-            }
+    # 3. Catastrophic risk safeguard (Tier 2: >=1.25x ATR drawdown OR >=2.5% / 30% premium loss)
+    breached, breach_reason = _catastrophic_breached(rec, price)
+    if breached:
+        return {
+            "action": "CONFIRM_EXIT",
+            "reason": f"Catastrophic stop safeguard breached — {breach_reason}",
+            "current_price": price,
+            "stop": stop,
+        }
 
     # 4. Stop evaluation: Intra-bar wick vs confirmed breakdown
     # Only genuine stop events ("stopped", "runner stop", or unclassified stop exits) undergo intra-bar wick veto.
@@ -245,6 +336,7 @@ class PositionMonitor(threading.Thread):
         self.ticker = ticker.upper()
         self.poll_interval = poll_interval
         self._stop = stop_event or threading.Event()
+        self._consecutive_price_failures = 0
 
     def run(self):
         logger.info(f"[monitor:{self.ticker}] started (interval={self.poll_interval}s).")
@@ -272,6 +364,17 @@ class PositionMonitor(threading.Thread):
         except Exception as e:
             logger.warning(f"[monitor:{self.ticker}] price fetch failed: {e}")
             price = None
+
+        if price is None or not isinstance(price, (int, float)):
+            self._consecutive_price_failures += 1
+            price = rec.get("last_price")
+            if self._consecutive_price_failures >= 3:
+                logger.warning(
+                    f"[monitor:{self.ticker}] ⚠️ {self._consecutive_price_failures} consecutive price fetch failures — "
+                    f"falling back to last_price=${price:.2f} for tier decisions."
+                )
+        else:
+            self._consecutive_price_failures = 0
 
         breached_stop = False
         hit_target = False
@@ -324,16 +427,46 @@ class PositionMonitor(threading.Thread):
                     self._stop.set()
                     return
 
-            # 1. Catastrophic circuit breaker (>2.5% drawdown or 1.25x ATR loss)
-            if entry and entry > 0:
-                drawdown = (entry - price) / entry if side == "LONG" else (price - entry) / entry
-                if drawdown >= 0.025:
-                    logger.warning(
-                        f"[monitor:{self.ticker}] 🛑 CATASTROPHIC RISK SAFEGUARD TRIGGERED ({drawdown*100:.1f}% drawdown from entry ${entry:.2f}) — closing position immediately."
-                    )
-                    close_position(self.ticker, exit_price=price, exit_reason=f"Catastrophic drawdown safeguard breached ({drawdown*100:.1f}%)")
-                    self._stop.set()
-                    return
+            # 0b. Midday Chop Kill (Tier 4: scratch positions open ≥35 min in 11:15–12:45 MT without Target 1)
+            if strat == "intraday" and now_et.weekday() < 5:
+                if (now_et.hour == 11 and now_et.minute >= 15) or (now_et.hour == 12) or (now_et.hour == 13 and now_et.minute <= 45):
+                    opened_at = rec.get("opened_at")
+                    if opened_at:
+                        try:
+                            op_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                            if op_dt.tzinfo is None:
+                                op_dt = op_dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                            else:
+                                op_dt = op_dt.astimezone(ZoneInfo("America/New_York"))
+                            minutes_open = (now_et - op_dt).total_seconds() / 60.0
+                            target_hit = target is not None and (
+                                (side == "LONG" and price >= float(target)) or
+                                (side == "SHORT" and price <= float(target))
+                            )
+                            if minutes_open >= 35 and not target_hit:
+                                logger.info(
+                                    f"[monitor:{self.ticker}] ⏰ MIDDAY CHOP KILL (Tier 4) — position open {minutes_open:.0f}m "
+                                    f"in 11:15–12:45 MT window without Target 1, closing at ${price or entry:.2f}."
+                                )
+                                close_position(
+                                    self.ticker,
+                                    exit_price=price or entry,
+                                    exit_reason="Midday Chop Kill (Tier 4: 11:15–12:45 MT, ≥35m without Target 1)",
+                                )
+                                self._stop.set()
+                                return
+                        except Exception:
+                            pass
+
+            # 1. Catastrophic circuit breaker (Tier 2: >=1.25x ATR drawdown OR >=2.5% / 30% premium loss)
+            breached, breach_reason = _catastrophic_breached(rec, price)
+            if breached:
+                logger.warning(
+                    f"[monitor:{self.ticker}] 🛑 CATASTROPHIC RISK SAFEGUARD TRIGGERED ({breach_reason}) — closing position immediately."
+                )
+                close_position(self.ticker, exit_price=price, exit_reason=f"Catastrophic breaker breached — {breach_reason}")
+                self._stop.set()
+                return
 
             # 2. Dynamic Profit Protection & Golden Lock
             scaled_at_t1 = rec.get("scaled_at_t1", False)
@@ -355,7 +488,7 @@ class PositionMonitor(threading.Thread):
             # Never let a trade that achieved meaningful traction turn into a red loss.
             if entry and entry > 0:
                 unrealized_gain = (price - entry) if side == "LONG" else (entry - price)
-                unrealized_pnl = unrealized_gain * 100.0
+                unrealized_pnl = unrealized_gain * rec.get("remaining_quantity", 100) * rec.get("multiplier", 1)
                 halfway_to_target = False
                 if target and entry:
                     target_dist = abs(float(target) - float(entry))
@@ -393,16 +526,16 @@ class PositionMonitor(threading.Thread):
                 # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= $200)
                 if scaled_at_t1 and entry:
                     peak_gain = (peak_price - entry)
-                    if peak_gain * 100.0 >= 200.0:
+                    if peak_gain * rec.get("remaining_quantity", 100) * rec.get("multiplier", 1) >= 200.0:
                         locked_gain = peak_gain * 0.65
                         lock_stop = round(float(entry) + locked_gain, 2)
                         if stop is None or float(stop) < lock_stop:
                             stop = lock_stop
                             trailed_stop = True
-                            eval_reason = f"🔒 Runner profit locked (+${peak_gain*100:.2f} peak). Stop trailed to ${stop:.2f}."
+                            eval_reason = f"🔒 Runner profit locked (+${peak_gain * rec.get('remaining_quantity', 100) * rec.get('multiplier', 1):.2f} peak). Stop trailed to ${stop:.2f}."
                             logger.info(
                                 f"[monitor:{self.ticker}] 🔒 RUNNER PROFIT PROTECTED: Trailed stop to ${stop:.2f} "
-                                f"(locking 65% of peak +${peak_gain*100:.2f} gain)."
+                                f"(locking 65% of peak +${peak_gain * rec.get('remaining_quantity', 100) * rec.get('multiplier', 1):.2f} gain)."
                             )
 
                 if stop is not None and price <= float(stop):
@@ -425,16 +558,16 @@ class PositionMonitor(threading.Thread):
                 # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= $200)
                 if scaled_at_t1 and entry:
                     peak_gain = (entry - peak_price)
-                    if peak_gain * 100.0 >= 200.0:
+                    if peak_gain * rec.get("remaining_quantity", 100) * rec.get("multiplier", 1) >= 200.0:
                         locked_gain = peak_gain * 0.65
                         lock_stop = round(float(entry) - locked_gain, 2)
                         if stop is None or float(stop) > lock_stop:
                             stop = lock_stop
                             trailed_stop = True
-                            eval_reason = f"🔒 Runner profit locked (+${peak_gain*100:.2f} peak). Stop trailed to ${stop:.2f}."
+                            eval_reason = f"🔒 Runner profit locked (+${peak_gain * rec.get('remaining_quantity', 100) * rec.get('multiplier', 1):.2f} peak). Stop trailed to ${stop:.2f}."
                             logger.info(
                                 f"[monitor:{self.ticker}] 🔒 RUNNER PROFIT PROTECTED: Trailed stop to ${stop:.2f} "
-                                f"(locking 65% of peak +${peak_gain*100:.2f} gain)."
+                                f"(locking 65% of peak +${peak_gain * rec.get('remaining_quantity', 100) * rec.get('multiplier', 1):.2f} gain)."
                             )
 
                 if stop is not None and price >= float(stop):

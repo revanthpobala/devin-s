@@ -328,10 +328,14 @@ def test_excluded_ticker_vetoed(monkeypatch: pytest.MonkeyPatch):
     assert "EXCLUDED" in result[0]
 
 
-def _pos(symbol: str, side: str, opened_at: str = "2026-09-21", strategy: str = "Intraday") -> dict:
+def _pos(symbol: str, side: str, opened_at: str | None = None, strategy: str = "Intraday") -> dict:
     # NOTE: strategy is stored as "Intraday" (capital I) by open_position. The exposure
     # gate must match it case-insensitively — a regression to exact-lowercase matching
     # silently disables the cap (see test_exposure_gate_matches_real_intraday_strategy).
+    # Default opened_at to today: the gate only counts positions opened today in ET,
+    # so a stale hardcoded date makes same_side empty and the cap never fires.
+    if opened_at is None:
+        opened_at = datetime.now(ET).strftime("%Y-%m-%d")
     return {
         "symbol": symbol,
         "side": side,

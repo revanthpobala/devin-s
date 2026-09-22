@@ -201,8 +201,11 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         except Exception:
             pass
 
-    # Idle timeout: no output for this many seconds → kill (Playwright/LLM hang guard)
-    IDLE_TIMEOUT_SEC = 600  # 10 min
+    # Idle timeout: no output for this many seconds → kill (Playwright/LLM hang guard).
+    # The hard cap must exceed the longest legitimate silent run. A local-GPU deep-research
+    # pass ingests a ~550k-char prompt and can take 12-18 min to emit its FIRST output token,
+    # while debate + two model passes + arbitration run sequentially with long generation gaps.
+    IDLE_TIMEOUT_SEC = int(os.getenv("RESEARCH_IDLE_TIMEOUT_SEC", "2700"))  # 45 min hard cap
 
     def _run_subproc(cmd: list[str], phase_label: str) -> None:
         """Run a subprocess, stream output to log, track sub-stages, raise with tail on failure.
@@ -210,6 +213,11 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         import time as _time
         import queue as _queue
         nonlocal current_subproc
+        # Propagate the job id so child scripts can derive a stable, per-job Chrome profile
+        # slot (run_swing_research.py) — prevents two concurrent scrape jobs from colliding on
+        # the same user-data-dir.
+        env = os.environ.copy()
+        env["RESEARCH_JOB_ID"] = job_id
         current_subproc = subprocess.Popen(
             cmd,
             cwd=str(config.BASE_DIR),
@@ -218,6 +226,7 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=env,
         )
         ACTIVE_RESEARCH_SUBPROCS[job_id] = current_subproc
         with get_db() as conn:
@@ -244,7 +253,11 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             try:
                 ln = line_q.get(timeout=30)
             except _queue.Empty:
-                # No line for 30s — check if process is still alive and if we've hit idle timeout
+                # No line for 30s — check if process is still alive and if we've hit idle timeout.
+                # A healthy local-GPU inference emits one log line per completed request, so a
+                # long single generation (e.g. synthesizing the final report from a ~550k-char
+                # prompt) produces no lines for many minutes. The hard cap below is therefore set
+                # well above the longest legitimate silent run (see IDLE_TIMEOUT_SEC).
                 if current_subproc.poll() is not None:
                     break  # process exited, drain remaining
                 elapsed_idle = _time.monotonic() - last_output_ts

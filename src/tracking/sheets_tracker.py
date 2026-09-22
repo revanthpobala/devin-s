@@ -1293,6 +1293,8 @@ class SheetsTracker:
                     status_badge = "🏁 TARGET HIT"
                 elif status_raw == "MISSED_RUNAWAY":
                     status_badge = "🏃 MISSED RUNAWAY"
+                elif status_raw == "RECOVERY_EXIT":
+                    status_badge = "🔄 RECOVERY EXIT"
                 else:
                     status_badge = status_raw
 

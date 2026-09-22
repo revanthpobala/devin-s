@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import threading
 from datetime import datetime
 
 import concurrent.futures
@@ -143,12 +144,78 @@ def run_swing_pipeline(
 
     import random
     scrape_futures = []
+
+    # Cross-process exclusive lock on a Chrome profile's user-data-dir. Each research job runs
+    # in its OWN OS process, so an msvcrt byte-range lock is the only mechanism that reliably
+    # prevents two CONCURRENT jobs from grabbing the same profile (a plain MD5 slot can collide;
+    # a psutil name-scan misses a browser that hasn't spawned yet). The lock file lives inside
+    # the profile dir and is released on process exit, so a killed job auto-frees its profile.
+    class _ProfileLock:
+        def __init__(self, profile_name: str):
+            self.path = config.BASE_DIR / profile_name / "_kilo_job.lock"
+            self._fh = None
+
+        def acquire(self) -> bool:
+            try:
+                import msvcrt
+                fh = open(self.path, "a+b")
+                fh.seek(0)
+                if fh.tell() == 0:
+                    fh.write(b"\0")
+                    fh.flush()
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                self._fh = fh  # hold the handle for the lifetime of the scrape
+                return True
+            except Exception:
+                try:
+                    if self._fh:
+                        self._fh.close()
+                except Exception:
+                    pass
+                self._fh = None
+                return False
+
+        def release(self):
+            try:
+                import msvcrt
+                if self._fh:
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+    def _acquire_free_profile(offset: int):
+        """Walk profiles from a per-job offset; return (profile_name, lock) of the first free one."""
+        for k in range(len(CHROME_PROFILES)):
+            p = CHROME_PROFILES[(offset + k) % len(CHROME_PROFILES)]
+            if _is_profile_locked(p):
+                continue  # another live Chrome already owns it
+            lock = _ProfileLock(p)
+            if lock.acquire():
+                return p, lock
+        return None, None
+
+    job_seed = os.environ.get("RESEARCH_JOB_ID") or f"{os.getpid()}-{threading.get_ident()}"
+    try:
+        import hashlib
+        job_offset = int(hashlib.md5(job_seed.encode()).hexdigest(), 16) % len(CHROME_PROFILES)
+    except Exception:
+        job_offset = random.randrange(len(CHROME_PROFILES))
+
+    held_locks: list = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         for index, survivor in enumerate(survivors):
             worker_id = (index % num_workers) + 1
             if target_ticker:
-                free_profs = [p for p in CHROME_PROFILES if not _is_profile_locked(p)]
-                profile = random.choice(free_profs) if free_profs else random.choice(CHROME_PROFILES)
+                profile, lock = _acquire_free_profile(job_offset)
+                if profile is None:
+                    # No free profile at all — serialize: reuse the first one by brute force.
+                    profile = CHROME_PROFILES[index % len(CHROME_PROFILES)]
+                else:
+                    held_locks.append(lock)  # keep locked for the whole scrape phase
             else:
                 profile = CHROME_PROFILES[index % len(CHROME_PROFILES)]
             logger.info(f"Assigning {profile} to worker {worker_id} for survivor {survivor.get('Ticker', 'UNKNOWN')}...")
@@ -176,9 +243,11 @@ def run_swing_pipeline(
                     has_error = True
             if has_error and target_ticker:
                 raise RuntimeError(f"Scrape failed for {target_ticker}")
-        except Exception as e:
-            logger.error(f"Scrape phase exception: {e}")
-            raise e
+        finally:
+            # Release every profile lock we held once all scrapes are done (or after a crash),
+            # so the next job can reuse those profiles. Process exit also auto-releases them.
+            for _lk in held_locks:
+                _lk.release()
 
     logger.info("=" * 60)
     logger.info("SCRAPE PHASE COMPLETE.")

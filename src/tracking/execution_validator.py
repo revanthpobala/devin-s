@@ -167,6 +167,7 @@ def evaluate_setup_lifecycle_bars(
     hit_t1 = False
     hit_t2 = False
     hit_stop = False
+    hit_recovery = False
     hit_target_level: Optional[str] = None
     is_terminal = False
     is_reclaimed = False
@@ -353,8 +354,8 @@ def evaluate_setup_lifecycle_bars(
                     notes = f"Stop breached on gap open (${b_open:.2f}) before recovery exit on {b_date}"
                     continue
                 else:
-                    status = "TARGET_HIT"
-                    hit_t1 = True
+                    status = "RECOVERY_EXIT"
+                    hit_recovery = True
                     hit_target_level = "RECOVERY"
                     is_terminal = True
                     exit_date = b_date
@@ -478,6 +479,7 @@ def evaluate_setup_lifecycle_bars(
         "hit_t1": hit_t1,
         "hit_t2": hit_t2,
         "hit_stop": hit_stop,
+        "hit_recovery": hit_recovery,
         "unrealized_pnl_pct": unrealized_pnl_pct,
         "notes": notes,
         "is_terminal": is_terminal,

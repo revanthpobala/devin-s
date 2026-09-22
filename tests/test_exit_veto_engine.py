@@ -70,7 +70,7 @@ def test_review_tv_exit_confirms_valid_stop_breach(tmp_path):
         with patch("src.tracking.position_monitor.get_current_price", return_value=197.86):
             decision = review_tv_exit("TSLA", exit_alert)
             assert decision["action"] == "CONFIRM_EXIT"
-            assert "Confirmed stop breach" in decision["reason"]
+            assert "Catastrophic stop safeguard breached" in decision["reason"]
 
         # PositionManager must close the position
         mgr = PositionManager(poll_interval=10)
@@ -115,10 +115,40 @@ def test_review_tv_exit_catastrophic_safeguard(tmp_path):
             side="LONG",
             strategy="Intraday",
             entry_price=200.0,
-            stop=190.0,  # Wide stop
+            stop=197.0,  # $3.00 initial risk (1.5% < 2.5% flat leg)
         )
 
-        # Alert triggered after >2.5% drop (e.g. price at 194.0 is -3.0%)
+        # Price at 196.5 is -1.75% from entry: below the 2.5% flat leg AND past
+        # the full $3.00 ATR-stop distance -> Tier 2 catastrophic breaker fires
+        # on the ATR leg.
+        exit_alert = {
+            "symbol": "AAPL",
+            "action": "EXIT",
+            "alert_price": 196.5,
+            "strategy": "Intraday",
+        }
+
+        with patch("src.tracking.position_monitor.get_current_price", return_value=196.5):
+            decision = review_tv_exit("AAPL", exit_alert)
+            assert decision["action"] == "CONFIRM_EXIT"
+            assert "Catastrophic stop safeguard breached" in decision["reason"]
+
+
+def test_review_tv_exit_catastrophic_wide_stop_within_risk_budget(tmp_path):
+    """Tier 2 must NOT fire on a wide-ATR setup when the drawdown is inside the
+    designed risk budget (stop distance). The trade keeps running to its real stop."""
+    fake_positions = tmp_path / "positions.json"
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions):
+        position_state.open_position(
+            "AAPL",
+            side="LONG",
+            strategy="Intraday",
+            entry_price=200.0,
+            stop=190.0,  # Wide $10.00 (5%) initial risk — wide-ATR setup
+        )
+
+        # -3.0% drawdown: above the old flat 2.5% breaker, but well inside the
+        # $10.00 stop distance and price still holds above stop -> VETO_HOLD.
         exit_alert = {
             "symbol": "AAPL",
             "action": "EXIT",
@@ -128,8 +158,75 @@ def test_review_tv_exit_catastrophic_safeguard(tmp_path):
 
         with patch("src.tracking.position_monitor.get_current_price", return_value=194.0):
             decision = review_tv_exit("AAPL", exit_alert)
+            assert decision["action"] == "VETO_HOLD"
+            assert "Catastrophic" not in decision["reason"]
+
+        # Once price breaks the real stop, it exits via catastrophic breaker (ATR leg).
+        with patch("src.tracking.position_monitor.get_current_price", return_value=189.5):
+            decision = review_tv_exit("AAPL", exit_alert)
             assert decision["action"] == "CONFIRM_EXIT"
             assert "Catastrophic stop safeguard breached" in decision["reason"]
+
+
+def test_review_tv_exit_catastrophic_option_premium_leg(tmp_path):
+    """Option trades use the 30% premium-loss leg instead of the flat 2.5%."""
+    fake_positions = tmp_path / "positions.json"
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions):
+        # Wide stop distance ($1.00 on a $5.00 premium) — only the premium leg fires.
+        position_state.open_position(
+            "SPY260922C4800",
+            side="LONG",
+            strategy="Intraday",
+            entry_price=5.00,
+            stop=4.00,
+            instrument_type="OPTION",
+        )
+
+        # -30% premium loss ($3.50): inside the $1.00 ATR distance, so only the
+        # 30% premium leg can fire.
+        exit_alert = {
+            "symbol": "SPY260922C4800",
+            "action": "EXIT",
+            "alert_price": 3.50,
+            "strategy": "Intraday",
+        }
+
+        with patch("src.tracking.position_monitor.get_current_price", return_value=3.50):
+            decision = review_tv_exit("SPY260922C4800", exit_alert)
+            assert decision["action"] == "CONFIRM_EXIT"
+            assert "premium loss" in decision["reason"]
+
+
+def test_position_monitor_catastrophic_breaker_uses_atr_stop_distance(tmp_path):
+    """The monitor's breaker must respect the ATR risk budget: a -3% drawdown on a
+    wide-ATR setup (stop distance 5%) is NOT catastrophic; breaking the real stop is."""
+    fake_positions = tmp_path / "positions.json"
+    fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
+         patch("src.tracking.alert_db.get_eastern_now", return_value=fake_now):
+        position_state.open_position(
+            "TSLA",
+            side="LONG",
+            strategy="Intraday",
+            entry_price=200.0,
+            stop=190.0,  # $10.00 (5%) initial risk — wide-ATR setup
+            target=215.0,
+        )
+
+        monitor = PositionMonitor("TSLA", poll_interval=1)
+        monitor._eval_playbook = MagicMock(return_value="Hold")
+
+        # -3.0% drawdown: inside the designed risk budget and above stop -> stays open.
+        with patch("src.tracking.position_monitor.get_current_price", return_value=194.0):
+            monitor._tick()
+        state = position_state.load_state()
+        assert "TSLA" in state, "wide-ATR -3% drawdown must NOT trip the catastrophic breaker"
+
+        # Price breaks the real stop -> autonomous stop close (not the flat breaker).
+        with patch("src.tracking.position_monitor.get_current_price", return_value=189.5):
+            monitor._tick()
+        state = position_state.load_state()
+        assert "TSLA" not in state
 
 
 def test_position_monitor_autonomous_profit_locking_trailing_stop(tmp_path):

@@ -30,7 +30,7 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
         "* **Floor Defense & Proximity Rule:** [If defending an indisputable structural Put Wall, VP POC, or gap floor, DO NOT demand an exact tick fill. Expand entry_zone_high by +1.0% to catch institutional front-running (e.g. $300 Put Wall -> $300.00–$303.00 entry zone), and use a local tactical stop just below the floor to yield >4:1 R:R].\n"
         "* **Tiered Options Directives:** Always provide a 3-tiered options menu across durations and account structures:\n"
-        "  1. Tactical 30-45 DTE Defined Risk Spread (primary directional vehicle; mark options_plan.actionable = true if R:R >= 2.5:1 so options can be traded immediately even while shares stalk).\n"
+        "  1. Tactical 30-45 DTE Defined Risk Spread (primary directional vehicle; mark options_plan.actionable = true ONLY if R:R >= 2.5:1 AND the short strike is at ≥1.25× Expected Move (Exp Move Pct 21b) AND outside major GEX Put/Call walls — IV Rank > 50 alone does NOT justify selling premium. If the strike is unscaled (inside 1.25× EM), mark actionable = false and lead with equity/debit by side; do not force a credit just because IV is rich).\n"
         "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
         "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put / Floor Bull Put Spread below Put Wall floor).\n"
         "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / STALK / CASH_SKIP]** (Conviction: X/10)\n\n"

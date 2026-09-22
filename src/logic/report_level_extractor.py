@@ -128,6 +128,13 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         logger.warning(f"[{safe_ticker}] No reports or datawindow found for date {date_str}.")
         return None
 
+    # Spot Price — resolved up front so the embedded-block EM backstop below can use it.
+    spot_price = _dw_lookup(dw_data, "close", "Close")
+    if not spot_price:
+        m_spot = re.search(r"Bar close:\s*\$([0-9.]+)", summary_text)
+        if m_spot:
+            spot_price = float(m_spot.group(1))
+
     # ── 1. Embedded JSON Block Check ───────────────────────────────────────
     for text_source in (arbitration_text, summary_text):
         if not text_source:
@@ -281,12 +288,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     # ── 2. Deterministic Regex Extraction Fallback ──────────────────────────
     combined_text = (arbitration_text + "\n" + summary_text)
 
-    # Spot Price
-    spot_price = _dw_lookup(dw_data, "close", "Close")
-    if not spot_price:
-        m_spot = re.search(r"Bar close:\s*\$([0-9.]+)", summary_text)
-        if m_spot:
-            spot_price = float(m_spot.group(1))
+    # Spot Price was resolved up front (above the embedded-block check).
 
     # Side
     side = "LONG"

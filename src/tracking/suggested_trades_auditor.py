@@ -407,7 +407,7 @@ def get_audit_summary(
             won_trades = [t for t in all_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
             lost_trades = [t for t in all_trades if t["status"] in ("INVALIDATED", "STOP_BREACHED", "STOPPED")]
             active_trades = [t for t in all_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
-            stalking_trades = [t for t in all_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "IN_TRADE", "IN_ZONE")]
+            stalking_trades = [t for t in all_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT")]
 
             won_count = len(won_trades)
             lost_count = len(lost_trades)

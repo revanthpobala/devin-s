@@ -269,7 +269,7 @@ def _evaluate_state(
         all_passed (bool), open_count, total_count
     """
     evaluated = [_check_gate(f, g) for g in gates]
-    open_gates = [g for g in evaluated if not g["passed"]]
+    open_gates = [g for g in evaluated if not g["passed"] and g["required"]]
     passed_gates = [g for g in evaluated if g["passed"]]
 
     return {

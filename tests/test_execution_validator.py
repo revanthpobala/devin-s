@@ -347,8 +347,10 @@ def test_rsi2_ema5_recovery_exit():
 
         assert res["was_filled"] is True
         assert res["fill_price"] == 148.0
-        assert res["status"] == "TARGET_HIT"
+        assert res["status"] == "RECOVERY_EXIT"
         assert res["hit_target_level"] == "RECOVERY"
+        assert res["hit_t1"] is False
+        assert res["hit_recovery"] is True
         assert res["exit_price"] == 156.0
         assert res["exit_date"] == "2026-09-16"
 

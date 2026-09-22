@@ -83,12 +83,19 @@ def format_scenario_block(scenarios: list) -> str:
     lines = ["--- 2d-iii. PRICE SCENARIO TRAJECTORY ---"]
     for s in scenarios:
         if isinstance(s, dict):
-            entry = s.get("entry_price", "?")
-            zone = s.get("zone", "?")
-            stop = s.get("stop", "?")
-            target = s.get("target", "?")
-            rr = s.get("rr", "?")
-            lines.append(f"  Zone={zone} Entry=${entry} Stop=${stop} Target=${target} R:R={rr}")
+            candidate = s.get("candidate_price", "?")
+            ma50 = s.get("ma50_proj", "?")
+            ma200 = s.get("ma200_proj", "?")
+            ext = s.get("ext_pct", "?")
+            lane = s.get("lane", "?")
+            lane_edge = s.get("lane_edge", "?")
+            zone_top = s.get("zone_top", "?")
+            zone_bot = s.get("zone_bot", "?")
+            lines.append(
+                f"  Zone=[{zone_bot},{zone_top}] Entry=${candidate} "
+                f"MA50=${ma50} MA200=${ma200} Ext={ext}% "
+                f"Lane={lane} ({lane_edge})"
+            )
         else:
             lines.append(f"  {s}")
     return "\n".join(lines)
@@ -98,11 +105,11 @@ def format_state_response_block(f_parsed: dict, scenarios: list) -> str:
     if not f_parsed:
         return ""
     try:
-        from src.logic.response_model import lookup_state_response
+        from src.logic.response_model import state_response
         stage = f_parsed.get("stage")
         regime = f_parsed.get("regime")
         action_code = f_parsed.get("action_long_code") or f_parsed.get("action_code")
-        result = lookup_state_response(stage=stage, regime=regime, action_code=action_code)
+        result = state_response(f_parsed)
         if result:
             return f"--- 2d-iv. STATE RESPONSE (historical, honest) ---\n{result}"
     except Exception as e:

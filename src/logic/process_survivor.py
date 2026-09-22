@@ -277,6 +277,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         and has_plan
         and not blocked
         and not income_only
+        and (det_ev_r is None or det_ev_r >= min_ev_r)
     )
     # Informational scalar (mirrors deep_research_sort_key's news penalty on the
     # ev axis so the logged number tracks the real ordering intent).
@@ -518,8 +519,8 @@ def _screener_payload_verdict(ticker, safe_ticker, survivor, payload, thesis_jso
     price = _lvl("price")
     stop = _lvl("stop_level")
     target = _lvl("target_level")
-    zone_bot = _lvl("support_level") if chosen == "long" else _lvl("ceiling_level")
-    zone_top = _lvl("entry_level") if chosen == "long" else price
+    zone_bot = _lvl("support_level") if chosen == "long" else price
+    zone_top = _lvl("entry_level") if chosen == "long" else _lvl("ceiling_level")
 
     plan = {"zone": [zone_bot, zone_top], "stop": stop, "target": target}
     has_plan = bool(

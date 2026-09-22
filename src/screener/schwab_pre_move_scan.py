@@ -1148,6 +1148,39 @@ def create_screener_feature_payload(
     return payload
 
 
+def _register_slot(t_date: str, selected: List[Dict[str, Any]]) -> str:
+    """Register a deep-research slot in SQLite so is_slot_available() reports
+    the slot as occupied for the entire autonomous pipeline duration.
+
+    Returns the job_id so it can be cleaned up on completion/failure.
+    """
+    job_id = f"auto_{t_date}_{'_'.join(p.get('symbol', p.get('Ticker', '')) for p in selected[:3])}"
+    try:
+        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        import sqlite3
+        with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    ",".join(p.get("symbol", p.get("Ticker", "")) for p in selected),
+                    "autonomous",
+                    os.getpid(),
+                    "PIPELINE",
+                    "RUNNING",
+                    datetime.now(ZoneInfo("America/Denver")).isoformat(timespec="seconds"),
+                    "",
+                    t_date,
+                ),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"[AUTONOMOUS] Slot registration failed: {e}")
+    logger.info(f"[AUTONOMOUS] Slot registered: {job_id}")
+    return job_id
+
+
 def run_autonomous_screener_pipeline(
     candidates: List[Dict[str, Any]],
     auto_max: int = 3,
@@ -1212,208 +1245,214 @@ def run_autonomous_screener_pipeline(
         logger.info("🤖 [AUTONOMOUS ENGINE] No candidates available for autonomous pipeline.")
         return {"count": 0, "researched": []}
 
-    print("\n" + "=" * 115)
-    print(f">> 🤖 AUTONOMOUS SCREENER DISPATCH: Selected Top {len(selected)} High-Priority Setups (Max: {auto_max} | Headless: {headless})")
-    print("=" * 115)
-    for idx, p in enumerate(selected, 1):
-        sym = p.get("symbol") or p.get("Ticker")
-        score = p.get("priority_score", 0.0)
-        tier = p.get("priority_tier", "MONITOR")
-        stage = p.get("weinstein_stage", 1)
-        rr = p.get("long_rr", p.get("short_rr", 0.0))
-        side_str = p.get("side", "LONG")
-        print(f"   [{idx}/{len(selected)}] {sym:<6} | {side_str:<5} | {tier:<15} (Score: {score:<4.1f}) | Stage {stage} | R:R {rr}:1")
-    print("=" * 115 + "\n")
+    # Register slot occupancy immediately so is_slot_available() reports
+    # the slot as taken for the entire pipeline duration (Steps 1-4),
+    # preventing double-dispatch from concurrent scan cycles.
+    _slot_job_id = _register_slot(t_date, selected)
 
-    for p in selected:
-        sym = p.get("symbol") or p.get("Ticker")
-        if not sym:
-            continue
-        sym = sym.strip().upper()
+    try:
+        print("\n" + "=" * 115)
+        print(f">> 🤖 AUTONOMOUS SCREENER DISPATCH: Selected Top {len(selected)} High-Priority Setups (Max: {auto_max} | Headless: {headless})")
+        print("=" * 115)
+        for idx, p in enumerate(selected, 1):
+            sym = p.get("symbol") or p.get("Ticker")
+            score = p.get("priority_score", 0.0)
+            tier = p.get("priority_tier", "MONITOR")
+            stage = p.get("weinstein_stage", 1)
+            rr = p.get("long_rr", p.get("short_rr", 0.0))
+            side_str = p.get("side", "LONG")
+            print(f"   [{idx}/{len(selected)}] {sym:<6} | {side_str:<5} | {tier:<15} (Score: {score:<4.1f}) | Stage {stage} | R:R {rr}:1")
+        print("=" * 115 + "\n")
 
-        # Deduplication: Check if ticker already has completed deep research today
-        rep_file = config.BASE_DIR / "reports" / t_date / f"{sym}_summary.md"
-        arb_file = config.BASE_DIR / "reports" / t_date / f"{sym}_arbitration.md"
-        if rep_file.exists() or arb_file.exists():
-            logger.info(f"⏭️ [{sym}] Already has completed deep research report for {t_date}. Skipping.")
-            continue
+        for p in selected:
+            sym = p.get("symbol") or p.get("Ticker")
+            if not sym:
+                continue
+            sym = sym.strip().upper()
 
-        side_str = (p.get("side") or "LONG").upper()
-        stage = p.get("weinstein_stage", 1)
-        tier = p.get("priority_tier", "MONITOR")
-        score = float(p.get("priority_score", 0.0))
-        rr = p.get("long_rr", p.get("short_rr", 0.0))
-
-        logger.info(f"\n========================================================")
-        logger.info(f"🤖 [AUTONOMOUS RESEARCH] Starting pipeline for {sym} ({side_str} | Stage {stage})...")
-        logger.info(f"========================================================")
-
-        # =========================================================================
-        # STEP 1: REAL-TIME DATA & NEWS INGESTION (Fast REST APIs — Zero browser)
-        # =========================================================================
-        logger.info(f"[{sym}] 1/4: Ingesting real-time quote, options metrics & news context...")
-        raw_ticker_dir = config.BASE_DIR / "data" / "raw" / t_date / sym
-        raw_ticker_dir.mkdir(parents=True, exist_ok=True)
-
-        # 1a. Real-time live quote
-        rt_quote = None
-        try:
-            from src.clients.schwab_client import get_realtime_quote
-            rt_quote = get_realtime_quote(sym)
-            if rt_quote:
-                with open(raw_ticker_dir / f"{sym}_quote.json", "w", encoding="utf-8") as f_q:
-                    json.dump(rt_quote, f_q, indent=2)
-        except Exception as e_q:
-            logger.debug(f"[{sym}] Live quote fetch notice: {e_q}")
-
-        # 1b. Real-time news & catalyst
-        try:
-            from src.clients.news_client import get_ticker_news
-            rt_news = get_ticker_news(sym, days=2)
-            if rt_news:
-                with open(raw_ticker_dir / f"{sym}_fetch_finnhub_news.json", "w", encoding="utf-8") as f_n:
-                    json.dump(rt_news, f_n, indent=2)
-        except Exception as e_n:
-            logger.debug(f"[{sym}] Live news fetch notice: {e_n}")
-
-        # 1c. Ensure Data Window exists for local research (zero browser — synthesize from screener metrics if no prior scrape)
-        dw_json = raw_ticker_dir / f"{sym}_datawindow.json"
-        dw_csv = raw_ticker_dir / f"{sym}_datawindow.csv"
-        if not dw_json.exists():
-            # Search recent dates in data/raw for existing datawindow
-            raw_root = config.BASE_DIR / "data" / "raw"
-            for d in sorted(raw_root.iterdir(), reverse=True):
-                if d.is_dir() and d.name != t_date and d.name.startswith("202"):
-                    src_dw = d / sym / f"{sym}_datawindow.json"
-                    src_csv = d / sym / f"{sym}_datawindow.csv"
-                    if src_dw.exists():
-                        import shutil
-                        shutil.copy2(str(src_dw), str(dw_json))
-                        if src_csv.exists():
-                            shutil.copy2(str(src_csv), str(dw_csv))
-                        logger.info(f"⚡ [{sym}] Reused historical datawindow from {d.name} for local research.")
-                        break
-
-        # If no real TradingView Data Window exists, write a TYPED screener feature payload
-        # (observed Schwab metrics, source="SCHWAB_SCAN"). We deliberately do NOT fabricate a
-        # Data Window: the deterministic filter treats this as research-interested (WATCH) and
-        # never fires its measured PASS lanes on it. A fresh scrape in Step 3 supersedes it.
-        if not dw_json.exists():
-            payload_path = raw_ticker_dir / f"{sym}_screener_payload.json"
-            logger.info(f"⚡ [{sym}] No TradingView data window — writing typed screener feature payload (zero fabrication)...")
-            try:
-                payload = create_screener_feature_payload(sym, p, rt_quote=rt_quote, t_date=t_date)
-                with open(payload_path, "w", encoding="utf-8") as f_dw:
-                    json.dump(payload, f_dw, indent=2)
-                logger.info(f"✅ [{sym}] Screener feature payload written (source=SCHWAB_SCAN).")
-            except Exception as e_synth:
-                logger.error(f"[{sym}] Failed to write screener feature payload: {e_synth}")
+            # Deduplication: Check if ticker already has completed deep research today
+            rep_file = config.BASE_DIR / "reports" / t_date / f"{sym}_summary.md"
+            arb_file = config.BASE_DIR / "reports" / t_date / f"{sym}_arbitration.md"
+            if rep_file.exists() or arb_file.exists():
+                logger.info(f"⏭️ [{sym}] Already has completed deep research report for {t_date}. Skipping.")
                 continue
 
-        # =========================================================================
-        # STEP 2: LAUNCH LOCAL RESEARCH (Free, Local LLM @ localhost:8000)
-        # =========================================================================
-        logger.info(f"[{sym}] 2/4: Running Local Research (Deterministic triage + Local Qwen)...")
-        try:
-            cmd_local = [py_exe, "run_local_research.py", t_date, "--ticker", sym]
-            subprocess.run(cmd_local, cwd=config.BASE_DIR, check=True)
-        except Exception as e_local:
-            logger.error(f"[{sym}] Local research error: {e_local}")
-            continue
+            side_str = (p.get("side") or "LONG").upper()
+            stage = p.get("weinstein_stage", 1)
+            tier = p.get("priority_tier", "MONITOR")
+            score = float(p.get("priority_score", 0.0))
+            rr = p.get("long_rr", p.get("short_rr", 0.0))
 
-        # Inspect local triage outcome
-        thesis_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / sym / f"{sym}_thesis.json"
-        if not thesis_path.exists():
-            thesis_path = config.BASE_DIR / "data" / "raw" / t_date / sym / f"{sym}_thesis.json"
-        if not thesis_path.exists():
-            thesis_path = config.BASE_DIR / "data" / "raw" / t_date / f"{sym}_thesis.json"
+            logger.info(f"\n========================================================")
+            logger.info(f"🤖 [AUTONOMOUS RESEARCH] Starting pipeline for {sym} ({side_str} | Stage {stage})...")
+            logger.info(f"========================================================")
 
-        send_to_deep = False
-        triage_verdict = "UNKNOWN"
-        rec = {}
-        if thesis_path.exists():
+            # =========================================================================
+            # STEP 1: REAL-TIME DATA & NEWS INGESTION (Fast REST APIs — Zero browser)
+            # =========================================================================
+            logger.info(f"[{sym}] 1/4: Ingesting real-time quote, options metrics & news context...")
+            raw_ticker_dir = config.BASE_DIR / "data" / "raw" / t_date / sym
+            raw_ticker_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1a. Real-time live quote
+            rt_quote = None
             try:
-                rec = json.loads(thesis_path.read_text(encoding="utf-8"))
-                send_to_deep = bool(rec.get("send_for_deep_research", False))
-                triage_verdict = str(rec.get("triage", "WATCH"))
-            except Exception:
-                pass
+                from src.clients.schwab_client import get_realtime_quote
+                rt_quote = get_realtime_quote(sym)
+                if rt_quote:
+                    with open(raw_ticker_dir / f"{sym}_quote.json", "w", encoding="utf-8") as f_q:
+                        json.dump(rt_quote, f_q, indent=2)
+            except Exception as e_q:
+                logger.debug(f"[{sym}] Live quote fetch notice: {e_q}")
 
-        logger.info(f"[{sym}] Local triage verdict: {triage_verdict} (send_for_deep_research={send_to_deep})")
+            # 1b. Real-time news & catalyst
+            try:
+                from src.clients.news_client import get_ticker_news
+                rt_news = get_ticker_news(sym, days=2)
+                if rt_news:
+                    with open(raw_ticker_dir / f"{sym}_fetch_finnhub_news.json", "w", encoding="utf-8") as f_n:
+                        json.dump(rt_news, f_n, indent=2)
+            except Exception as e_n:
+                logger.debug(f"[{sym}] Live news fetch notice: {e_n}")
 
-        # =========================================================================
-        # STEP 3: "IF SATISFIED" GATE -> SCRAPE TRADINGVIEW CHARTS
-        # =========================================================================
-        is_satisfied = send_to_deep or triage_verdict in ("PASS", "WATCH")
-        chart_png = raw_ticker_dir / f"{sym}_chart.png"
-        chart_zoom_png = raw_ticker_dir / f"{sym}_chart_zoom.png"
-        has_charts = chart_png.exists() and chart_zoom_png.exists()
+            # 1c. Ensure Data Window exists for local research (zero browser — synthesize from screener metrics if no prior scrape)
+            dw_json = raw_ticker_dir / f"{sym}_datawindow.json"
+            dw_csv = raw_ticker_dir / f"{sym}_datawindow.csv"
+            if not dw_json.exists():
+                # Search recent dates in data/raw for existing datawindow
+                raw_root = config.BASE_DIR / "data" / "raw"
+                for d in sorted(raw_root.iterdir(), reverse=True):
+                    if d.is_dir() and d.name != t_date and d.name.startswith("202"):
+                        src_dw = d / sym / f"{sym}_datawindow.json"
+                        src_csv = d / sym / f"{sym}_datawindow.csv"
+                        if src_dw.exists():
+                            import shutil
+                            shutil.copy2(str(src_dw), str(dw_json))
+                            if src_csv.exists():
+                                shutil.copy2(str(src_csv), str(dw_csv))
+                            logger.info(f"⚡ [{sym}] Reused historical datawindow from {d.name} for local research.")
+                            break
 
-        if run_deep and is_satisfied:
-            if not has_charts:
-                logger.info(f"[{sym}] 3/4: Local research SATISFIED! Scraping TradingView multimodal charts (Headless={headless})...")
+            # If no real TradingView Data Window exists, write a TYPED screener feature payload
+            # (observed Schwab metrics, source="SCHWAB_SCAN"). We deliberately do NOT fabricate a
+            # Data Window: the deterministic filter treats this as research-interested (WATCH) and
+            # never fires its measured PASS lanes on it. A fresh scrape in Step 3 supersedes it.
+            if not dw_json.exists():
+                payload_path = raw_ticker_dir / f"{sym}_screener_payload.json"
+                logger.info(f"⚡ [{sym}] No TradingView data window — writing typed screener feature payload (zero fabrication)...")
                 try:
-                    cmd_scrape = [py_exe, "run_swing_research.py", t_date, "--ticker", sym]
-                    if headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"):
-                        cmd_scrape.append("--headless")
-                    subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True)
-                except Exception as e_scrape:
-                    logger.error(f"[{sym}] Multimodal chart scrape notice: {e_scrape}")
-            else:
-                logger.info(f"⚡ [{sym}] 3/4: Multimodal chart images already present. Ready for deep pass.")
+                    payload = create_screener_feature_payload(sym, p, rt_quote=rt_quote, t_date=t_date)
+                    with open(payload_path, "w", encoding="utf-8") as f_dw:
+                        json.dump(payload, f_dw, indent=2)
+                    logger.info(f"✅ [{sym}] Screener feature payload written (source=SCHWAB_SCAN).")
+                except Exception as e_synth:
+                    logger.error(f"[{sym}] Failed to write screener feature payload: {e_synth}")
+                    continue
 
             # =========================================================================
-            # STEP 4: LAUNCH DEEP RESEARCH & WATCH ALERTS (In Slot)
+            # STEP 2: LAUNCH LOCAL RESEARCH (Free, Local LLM @ localhost:8000)
             # =========================================================================
-            logger.info(f"[{sym}] 4/4: Launching Deep Research debate & senior PM arbitration...")
-            deep_done = False
+            logger.info(f"[{sym}] 2/4: Running Local Research (Deterministic triage + Local Qwen)...")
             try:
-                cmd_deep = [py_exe, "run_deep_research.py", t_date, "--ticker", sym]
-                subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True)
+                cmd_local = [py_exe, "run_local_research.py", t_date, "--ticker", sym]
+                subprocess.run(cmd_local, cwd=config.BASE_DIR, check=True)
+            except Exception as e_local:
+                logger.error(f"[{sym}] Local research error: {e_local}")
+                continue
 
-                logger.info(f"[{sym}] Syncing research watch levels & Tastytrade cloud quote alerts...")
-                subprocess.run([py_exe, "run_watch_alerts.py", "--sync", "--once"], cwd=config.BASE_DIR)
-                deep_done = True
-            except Exception as e_deep:
-                logger.error(f"[{sym}] Deep research error: {e_deep}")
-        else:
-            logger.info(f"⏸️ [{sym}] Local research verdict ({triage_verdict}) not satisfied for deep pass. Skipping scrape & deep research to preserve slots.")
-            deep_done = False
+            # Inspect local triage outcome
+            thesis_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / sym / f"{sym}_thesis.json"
+            if not thesis_path.exists():
+                thesis_path = config.BASE_DIR / "data" / "raw" / t_date / sym / f"{sym}_thesis.json"
+            if not thesis_path.exists():
+                thesis_path = config.BASE_DIR / "data" / "raw" / t_date / f"{sym}_thesis.json"
 
-        # Extract details for presentation
-        triage_info = rec.get("triage", {}) if isinstance(rec.get("triage"), dict) else rec
-        conviction = triage_info.get("conviction", rec.get("conviction", "N/A"))
-        win_prob = triage_info.get("win_prob", rec.get("win_prob", "N/A"))
-        reasoning = triage_info.get("reasoning") or rec.get("reasoning") or triage_info.get("pursue_reason") or "N/A"
-        sentiment = triage_info.get("sentiment", {})
-        sentiment_label = sentiment.get("label", "neutral") if isinstance(sentiment, dict) else str(sentiment)
-        headlines = sentiment.get("headlines", []) if isinstance(sentiment, dict) else []
+            send_to_deep = False
+            triage_verdict = "UNKNOWN"
+            rec = {}
+            if thesis_path.exists():
+                try:
+                    rec = json.loads(thesis_path.read_text(encoding="utf-8"))
+                    send_to_deep = bool(rec.get("send_for_deep_research", False))
+                    triage_verdict = str(rec.get("triage", "WATCH"))
+                except Exception:
+                    pass
 
-        plan = triage_info.get("long_plan", {}) if side_str == "LONG" else triage_info.get("short_plan", {})
-        zone = plan.get("zone", [None, None])
-        stop_px = plan.get("stop")
-        target_px = plan.get("target")
+            logger.info(f"[{sym}] Local triage verdict: {triage_verdict} (send_for_deep_research={send_to_deep})")
 
-        # PRESENTATION: Print comprehensive dossier card for each candidate
-        print("\n" + "=" * 105)
-        print(f"🎯 AUTONOMOUS RESEARCH DOSSIER: ${sym} ({side_str} SETUP)")
-        print("=" * 105)
-        print(f"  📌 Classification:   Stage {stage} | Priority: {tier} (Score: {score:.1f}) | Pre-Move R:R: {rr}:1")
-        print(f"  ⚖️ Local Verdict:     {triage_verdict} | Conviction: {conviction} | Win Probability: {win_prob}%")
-        if zone and zone[0] is not None and zone[1] is not None:
-            print(f"  🎯 Planned Entry:    [${float(zone[0]):.2f} – ${float(zone[1]):.2f}]")
-        if stop_px is not None:
-            print(f"  🛑 Tactical Stop:    ${float(stop_px):.2f}")
-        if target_px is not None:
-            print(f"  🏁 Profit Target:    ${float(target_px):.2f}")
-        print(f"  💡 Catalyst / Posture: {reasoning}")
-        print(f"  📰 News Sentiment:   {sentiment_label.upper()}")
-        if headlines:
-            print(f"  🗞️ Headline:         \"{headlines[0][:90]}\"")
-        rel_thesis = thesis_path.relative_to(config.BASE_DIR) if thesis_path.exists() else "N/A"
-        print(f"  📁 Artifact Dossier: {rel_thesis}")
-        print(f"  🚀 Deep Research:    {'✅ APPROVED & COMPLETED' if deep_done else ('⏳ QUALIFIED FOR DEEP PASS' if send_to_deep else '⏸ PRESERVED IN LOCAL TRIAGE')}")
-        print("=" * 105 + "\n")
+            # =========================================================================
+            # STEP 3: "IF SATISFIED" GATE -> SCRAPE TRADINGVIEW CHARTS
+            # =========================================================================
+            is_satisfied = send_to_deep
+            chart_png = raw_ticker_dir / f"{sym}_chart.png"
+            chart_zoom_png = raw_ticker_dir / f"{sym}_chart_zoom.png"
+            has_charts = chart_png.exists() and chart_zoom_png.exists()
+
+            if run_deep and is_satisfied:
+                if not has_charts:
+                    logger.info(f"[{sym}] 3/4: Local research SATISFIED! Scraping TradingView multimodal charts (Headless={headless})...")
+                    try:
+                        cmd_scrape = [py_exe, "run_swing_research.py", t_date, "--ticker", sym]
+                        if headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"):
+                            cmd_scrape.append("--headless")
+                        subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True)
+                    except Exception as e_scrape:
+                        logger.error(f"[{sym}] Multimodal chart scrape notice: {e_scrape}")
+                else:
+                    logger.info(f"⚡ [{sym}] 3/4: Multimodal chart images already present. Ready for deep pass.")
+
+                # =========================================================================
+                # STEP 4: LAUNCH DEEP RESEARCH & WATCH ALERTS (In Slot)
+                # =========================================================================
+                logger.info(f"[{sym}] 4/4: Launching Deep Research debate & senior PM arbitration...")
+                deep_done = False
+                try:
+                    cmd_deep = [py_exe, "run_deep_research.py", t_date, "--ticker", sym]
+                    subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True)
+
+                    logger.info(f"[{sym}] Syncing research watch levels & Tastytrade cloud quote alerts...")
+                    subprocess.run([py_exe, "run_watch_alerts.py", "--sync", "--once"], cwd=config.BASE_DIR)
+                    deep_done = True
+                except Exception as e_deep:
+                    logger.error(f"[{sym}] Deep research error: {e_deep}")
+            else:
+                logger.info(f"⏸️ [{sym}] Local research verdict ({triage_verdict}) not satisfied for deep pass. Skipping scrape & deep research to preserve slots.")
+                deep_done = False
+
+            # Extract details for presentation
+            triage_info = rec.get("triage", {}) if isinstance(rec.get("triage"), dict) else rec
+            conviction = triage_info.get("conviction", rec.get("conviction", "N/A"))
+            win_prob = triage_info.get("win_prob", rec.get("win_prob", "N/A"))
+            reasoning = triage_info.get("reasoning") or rec.get("reasoning") or triage_info.get("pursue_reason") or "N/A"
+            sentiment = triage_info.get("sentiment", {})
+            sentiment_label = sentiment.get("label", "neutral") if isinstance(sentiment, dict) else str(sentiment)
+            headlines = sentiment.get("headlines", []) if isinstance(sentiment, dict) else []
+
+            plan = triage_info.get("long_plan", {}) if side_str == "LONG" else triage_info.get("short_plan", {})
+            zone = plan.get("zone", [None, None])
+            stop_px = plan.get("stop")
+            target_px = plan.get("target")
+
+            # PRESENTATION: Print comprehensive dossier card for each candidate
+            print("\n" + "=" * 105)
+            print(f"🎯 AUTONOMOUS RESEARCH DOSSIER: ${sym} ({side_str} SETUP)")
+            print("=" * 105)
+            print(f"  📌 Classification:   Stage {stage} | Priority: {tier} (Score: {score:.1f}) | Pre-Move R:R: {rr}:1")
+            print(f"  ⚖️ Local Verdict:     {triage_verdict} | Conviction: {conviction} | Win Probability: {win_prob}%")
+            if zone and zone[0] is not None and zone[1] is not None:
+                print(f"  🎯 Planned Entry:    [${float(zone[0]):.2f} – ${float(zone[1]):.2f}]")
+            if stop_px is not None:
+                print(f"  🛑 Tactical Stop:    ${float(stop_px):.2f}")
+            if target_px is not None:
+                print(f"  🏁 Profit Target:    ${float(target_px):.2f}")
+            print(f"  💡 Catalyst / Posture: {reasoning}")
+            print(f"  📰 News Sentiment:   {sentiment_label.upper()}")
+            if headlines:
+                print(f"  🗞️ Headline:         \"{headlines[0][:90]}\"")
+            rel_thesis = thesis_path.relative_to(config.BASE_DIR) if thesis_path.exists() else "N/A"
+            print(f"  📁 Artifact Dossier: {rel_thesis}")
+            print(f"  🚀 Deep Research:    {'✅ APPROVED & COMPLETED' if deep_done else ('⏳ QUALIFIED FOR DEEP PASS' if send_to_deep else '⏸ PRESERVED IN LOCAL TRIAGE')}")
+            print("=" * 105 + "\n")
 
         results.append(
             {
@@ -1433,6 +1472,21 @@ def run_autonomous_screener_pipeline(
                 "thesis_file": str(rel_thesis),
             }
         )
+    finally:
+        if _slot_job_id:
+            try:
+                db_path = config.BASE_DIR / "data" / "research_watch.db"
+                if db_path.exists():
+                    import sqlite3
+                    with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                        conn.execute(
+                            "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'DONE', completed_at = ? WHERE job_id = ?",
+                            (datetime.now(ZoneInfo("America/Denver")).isoformat(timespec="seconds"), _slot_job_id),
+                        )
+                        conn.commit()
+            except Exception as e_cleanup:
+                logger.warning(f"[AUTONOMOUS] Slot cleanup failed: {e_cleanup}")
+
 
     # PRESENTATION: Print consolidated scoreboard table
     print("\n" + "=" * 120)

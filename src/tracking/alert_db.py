@@ -155,7 +155,18 @@ def init_alert_db():
                     last_price REAL,
                     last_eval TEXT,
                     raw_alert TEXT,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    quantity REAL DEFAULT 100.0,
+                    remaining_quantity REAL DEFAULT 100.0,
+                    multiplier INTEGER DEFAULT 1,
+                    fees REAL DEFAULT 0.0,
+                    slippage REAL DEFAULT 0.0,
+                    trade_id TEXT,
+                    strategy_id TEXT DEFAULT 'Intraday',
+                    mode TEXT DEFAULT 'MODEL',
+                    initial_stop REAL,
+                    initial_target REAL,
+                    realized_broker_pnl REAL DEFAULT 0.0
                 );
                 """
             )
@@ -580,8 +591,12 @@ def sync_position(symbol: str, position_data: Dict[str, Any]):
                 INSERT INTO positions (
                     symbol, side, strategy, entry_price, stop, target, alert_price,
                     opened_at, closed_at, status, exit_price, exit_reason, last_price,
-                    last_eval, raw_alert, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_eval, raw_alert, updated_at,
+                    quantity, remaining_quantity, multiplier, fees, slippage,
+                    trade_id, strategy_id, mode, initial_stop, initial_target,
+                    realized_broker_pnl
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol) DO UPDATE SET
                     side = excluded.side,
                     strategy = excluded.strategy,
@@ -597,7 +612,18 @@ def sync_position(symbol: str, position_data: Dict[str, Any]):
                     last_price = excluded.last_price,
                     last_eval = excluded.last_eval,
                     raw_alert = excluded.raw_alert,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    quantity = excluded.quantity,
+                    remaining_quantity = excluded.remaining_quantity,
+                    multiplier = excluded.multiplier,
+                    fees = excluded.fees,
+                    slippage = excluded.slippage,
+                    trade_id = excluded.trade_id,
+                    strategy_id = excluded.strategy_id,
+                    mode = excluded.mode,
+                    initial_stop = excluded.initial_stop,
+                    initial_target = excluded.initial_target,
+                    realized_broker_pnl = excluded.realized_broker_pnl
                 """,
                 (
                     symbol,
@@ -616,6 +642,17 @@ def sync_position(symbol: str, position_data: Dict[str, Any]):
                     position_data.get("last_eval"),
                     raw_str,
                     now_iso,
+                    position_data.get("quantity"),
+                    position_data.get("remaining_quantity"),
+                    position_data.get("multiplier"),
+                    position_data.get("fees"),
+                    position_data.get("slippage"),
+                    position_data.get("trade_id"),
+                    position_data.get("strategy_id"),
+                    position_data.get("mode"),
+                    position_data.get("initial_stop"),
+                    position_data.get("initial_target"),
+                    position_data.get("realized_broker_pnl"),
                 ),
             )
             conn.commit()
