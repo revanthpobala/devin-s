@@ -1,9 +1,13 @@
 """
 Unit tests for the recalibrated risk gates in alert_evaluator.py.
 
-Verifies that the old blanket vetoes (Grade-B <80, mid-morning <90, exposure cap 2,
-DAY PAUSE always-on) have been replaced by env-tunable defaults:
-  GRADE_B_VETO_THRESHOLD=65  MID_MORNING_MIN_SCORE=85  MAX_CONCURRENT_SAME_SIDE=3  DAY_PAUSE_ENABLED=off
+Verifies that the old blanket vetoes (Grade-B <80, mid-morning <90, exposure cap 2)
+have been replaced by env-tunable defaults:
+  GRADE_B_VETO_THRESHOLD=65  MID_MORNING_MIN_SCORE=85  MAX_CONCURRENT_SAME_SIDE=3
+
+DAY PAUSE is mandatory per skill spec (catastrophe_risk_controls.md Rule 2.6):
+always-on, triggers after 3 consecutive intraday losses in a session,
+clears only on Grade A+ (score >= 88) or next session.
 """
 from __future__ import annotations
 
@@ -30,7 +34,6 @@ def default_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GRADE_B_VETO_THRESHOLD", "65")
     monkeypatch.setenv("MID_MORNING_MIN_SCORE", "85")
     monkeypatch.setenv("MAX_CONCURRENT_SAME_SIDE", "3")
-    monkeypatch.setenv("DAY_PAUSE_ENABLED", "false")
     monkeypatch.setenv("INTRADAY_EXCLUDED_TICKERS", "")
 
 
@@ -225,7 +228,8 @@ def test_lunch_chop_outside_window_no_veto():
 
 
 # ---------------------------------------------------------------------------
-# Gate 6: DAY PAUSE (default OFF; opt-in via DAY_PAUSE_ENABLED)
+# Gate 6: DAY PAUSE (mandatory per skill spec — always on, 3 losses in session,
+# clears on Grade A+ or next session)
 # ---------------------------------------------------------------------------
 
 def _make_stop_db(tmp_path: Path, n_stops: int, stop_minutes_ago: list[int]) -> Path:
@@ -262,37 +266,24 @@ def _make_stop_db(tmp_path: Path, n_stops: int, stop_minutes_ago: list[int]) -> 
     return db_path
 
 
-def test_day_pause_off_by_default_never_fires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    db_path = _make_stop_db(tmp_path, 2, [40, 20])
+def test_day_pause_fires_after_three_losses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # DAY PAUSE is mandatory — fires after 3 consecutive intraday losses
+    # when score is below A+ (88). A+ clears it (see test_day_pause_a_plus_clears_pause).
+    db_path = _make_stop_db(tmp_path, 3, [40, 30, 20])
     monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
     dt = datetime.now(ET).replace(second=0, microsecond=0)
     result = evaluate_risk_vetoes(
-        symbol="AAPL", action="BUY CALLS", score=90,
-        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
-    )
-    assert result is None, "DAY PAUSE must be OFF by default (gem spec)."
-
-
-def test_day_pause_on_fires_after_two_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # DAY PAUSE compares eastern_dt against the exit timestamps; use "now" so
-    # the 20/40-min-old stops fall inside the 45-min cooldown window.
-    db_path = _make_stop_db(tmp_path, 2, [40, 20])
-    monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
-    monkeypatch.setenv("DAY_PAUSE_ENABLED", "true")
-    dt = datetime.now(ET).replace(second=0, microsecond=0)
-    result = evaluate_risk_vetoes(
-        symbol="AAPL", action="BUY CALLS", score=90,
-        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
+        symbol="AAPL", action="BUY CALLS", score=85,
+        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="B",
     )
     assert result is not None
     assert "DAY PAUSE" in result[0]
 
 
-def test_day_pause_on_stale_stops_not_fired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # Stops are 2 hours old -> outside the 45-min window -> no pause.
-    db_path = _make_stop_db(tmp_path, 2, [120, 90])
+def test_day_pause_does_not_fire_after_two_losses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # 2 losses is below the threshold of 3 — no pause.
+    db_path = _make_stop_db(tmp_path, 2, [40, 20])
     monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
-    monkeypatch.setenv("DAY_PAUSE_ENABLED", "true")
     dt = datetime.now(ET).replace(second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=90,
@@ -302,7 +293,7 @@ def test_day_pause_on_stale_stops_not_fired(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_day_pause_win_breaks_streak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # A winning exit (net_pnl >= 0) between two losses breaks the consecutive streak.
+    # A winning exit (net_pnl >= 0) between losses breaks the consecutive streak.
     db_path = tmp_path / "veto.db"
     if db_path.exists():
         db_path.unlink()
@@ -329,13 +320,69 @@ def test_day_pause_win_breaks_streak(tmp_path: Path, monkeypatch: pytest.MonkeyP
     conn.close()
 
     monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
-    monkeypatch.setenv("DAY_PAUSE_ENABLED", "true")
     dt = datetime.now(ET).replace(second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=90,
         current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
     )
     assert result is None, "A winning exit must break the consecutive-loss streak."
+
+
+def test_day_pause_a_plus_clears_pause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Grade A+ (score >= 88) clears the DAY PAUSE.
+    db_path = _make_stop_db(tmp_path, 3, [40, 30, 20])
+    monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
+    dt = datetime.now(ET).replace(second=0, microsecond=0)
+    result = evaluate_risk_vetoes(
+        symbol="AAPL", action="BUY CALLS", score=90,
+        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
+    )
+    assert result is None, "Grade A+ must clear DAY PAUSE."
+
+
+def test_day_pause_below_a_plus_does_not_clear(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Grade B (score < 88) does NOT clear DAY PAUSE even with 3 losses.
+    db_path = _make_stop_db(tmp_path, 3, [40, 30, 20])
+    monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
+    dt = datetime.now(ET).replace(second=0, microsecond=0)
+    result = evaluate_risk_vetoes(
+        symbol="AAPL", action="BUY CALLS", score=85,
+        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="B",
+    )
+    assert result is not None
+    assert "DAY PAUSE" in result[0]
+
+
+def test_day_pause_prior_day_losses_dont_fire(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Losses from a previous session do not count — DAY PAUSE is session-scoped.
+    db_path = tmp_path / "veto.db"
+    if db_path.exists():
+        db_path.unlink()
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE trade_events (
+            id INTEGER PRIMARY KEY, trade_id TEXT, event_type TEXT, symbol TEXT,
+            strategy_id TEXT, timestamp TEXT, details TEXT
+        )
+    """)
+    # 3 losses from yesterday (before today_str).
+    yesterday = datetime.now(ET).replace(second=0, microsecond=0) - timedelta(days=1)
+    for i in range(3):
+        ts = (yesterday - timedelta(minutes=(i + 1) * 10)).isoformat()
+        conn.execute(
+            "INSERT INTO trade_events (trade_id, event_type, symbol, strategy_id, timestamp, details) VALUES (?,?,?,?,?,?)",
+            (f"old-{i}", "EXIT", "AAPL", "Intraday", ts, json.dumps({"exit_reason": "stop", "net_pnl": -50.0})),
+        )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
+    dt = datetime.now(ET).replace(second=0, microsecond=0)
+    result = evaluate_risk_vetoes(
+        symbol="AAPL", action="BUY CALLS", score=90,
+        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
+    )
+    assert result is None, "Prior-session losses must not trigger DAY PAUSE."
 
 
 # ---------------------------------------------------------------------------

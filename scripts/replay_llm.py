@@ -199,8 +199,7 @@ def main():
     print(f"REPLAY (full path: NEW gates + local LLM)  date={args.date}  entries={len(parsed)}")
     print(f"GATES: GRADE_B<{os.getenv('GRADE_B_VETO_THRESHOLD','65')}  "
           f"MID_MORNING>={os.getenv('MID_MORNING_MIN_SCORE','85')}  "
-          f"MAX_SIDE={os.getenv('MAX_CONCURRENT_SAME_SIDE','3')}  "
-          f"DAY_PAUSE={os.getenv('DAY_PAUSE_ENABLED','false')}\n")
+          f"MAX_SIDE={os.getenv('MAX_CONCURRENT_SAME_SIDE','3')}\n")
 
     open_pos = {}   # real open positions, reconstructed from what OLD system took
     results = []

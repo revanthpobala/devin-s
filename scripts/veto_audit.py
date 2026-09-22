@@ -9,12 +9,11 @@ TWO rule sets:
         - Grade B / score < 80  -> hard veto
         - 10:30-11:30 ET score < 90 -> hard veto
         - 2 same-direction open positions -> hard veto
-        - DAY PAUSE always on
+        - DAY PAUSE mandatory (3 losses/session, clears on A+)
   NEW = the recalibrated env-driven gates (src/tracking/alert_evaluator.py):
         - GRADE_B_VETO_THRESHOLD     (default 65)
         - MID_MORNING_MIN_SCORE      (default 85)
         - MAX_CONCURRENT_SAME_SIDE   (default 3)
-        - DAY_PAUSE_ENABLED         (default OFF)
 
 For each vetoed entry it also:
   - counts same-direction open positions at the alert moment (from trade_events),
@@ -239,10 +238,8 @@ def day_pause_fired(
                 latest_loss_time = loss_dt
         else:
             break
-    if loss_count >= 2 and latest_loss_time is not None:
-        diff_sec = (t_naive - latest_loss_time).total_seconds()
-        if 0 <= diff_sec <= 2700:  # 45-minute cooldown window
-            return True
+    if loss_count >= 3:
+        return True
     return False
 
 
@@ -299,11 +296,10 @@ def simulate_gates(
         gates_old.append("LUNCH CHOP (<85)")
         gates_new.append("LUNCH CHOP (<85)")
 
-    # 7. DAY PAUSE: always evaluated old, opt-in new
+    # 7. DAY PAUSE: mandatory in both eras (trigger: 3 losses/session, clears on A+)
     if day_pause_fired(conn, date_str, t_naive):
         gates_old.append("DAY PAUSE (2 losses / 45m)")
-        if env["DAY_PAUSE"]:
-            gates_new.append("DAY PAUSE (2 losses / 45m)")
+        gates_new.append("DAY PAUSE (3 losses / session)")
 
     return {"old": gates_old, "new": gates_new}
 
@@ -374,7 +370,6 @@ def build_report_rows(conn: sqlite3.Connection, date_str: Optional[str], all_dat
         "GRADE_B": int(os.getenv("GRADE_B_VETO_THRESHOLD", "65")),
         "MID_MORNING": int(os.getenv("MID_MORNING_MIN_SCORE", "85")),
         "MAX_SIDE": int(os.getenv("MAX_CONCURRENT_SAME_SIDE", "3")),
-        "DAY_PAUSE": os.getenv("DAY_PAUSE_ENABLED", "false").lower() in ("true", "1", "yes"),
     }
 
     conn.row_factory = sqlite3.Row
@@ -530,7 +525,7 @@ def print_report(rows: List[Dict[str, Any]], env: Dict[str, Any]) -> None:
     still = [r for r in rows if r["verdict"] == "STILL FILTERED"]
     reroll = [r for r in rows if r["verdict"] == "RE-ROLL TO LLM"]
 
-    print(f"RULE SET (NEW): GRADE_B_VETO_THRESHOLD={env['GRADE_B']}  MID_MORNING_MIN_SCORE={env['MID_MORNING']}  MAX_CONCURRENT_SAME_SIDE={env['MAX_SIDE']}  DAY_PAUSE_ENABLED={'on' if env['DAY_PAUSE'] else 'off'}")
+    print(f"RULE SET (NEW): GRADE_B_VETO_THRESHOLD={env['GRADE_B']}  MID_MORNING_MIN_SCORE={env['MID_MORNING']}  MAX_CONCURRENT_SAME_SIDE={env['MAX_SIDE']}")
     print(f"TOTAL VETES: {len(rows)}")
     print(f"  UNLOCKED BY NEW RULES      : {len(unlocked)}")
     print(f"  STILL FILTERED BY NEW RULES: {len(still)}")
@@ -615,7 +610,6 @@ def main() -> int:
             "GRADE_B": int(os.getenv("GRADE_B_VETO_THRESHOLD", "65")),
             "MID_MORNING": int(os.getenv("MID_MORNING_MIN_SCORE", "85")),
             "MAX_SIDE": int(os.getenv("MAX_CONCURRENT_SAME_SIDE", "3")),
-            "DAY_PAUSE": os.getenv("DAY_PAUSE_ENABLED", "false").lower() in ("true", "1", "yes"),
         }
 
         print_report(rows, env)

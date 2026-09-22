@@ -179,8 +179,9 @@ def evaluate_risk_vetoes(
     4. Max Concurrent Correlated Exposure: Max MAX_CONCURRENT_SAME_SIDE (default 3) same-direction open intraday positions.
     5. Lunch Chop Window (1:15 PM - 2:45 PM ET): Requires Score >= 88 (Grade A+).
        EXCEPTION: Bypassed when RVOL > 1.8x.
-    6. Consecutive Losses DAY PAUSE: Opt-in (DAY_PAUSE_ENABLED, gem spec is DEFAULT OFF) -
-       cooldown after 2 consecutive stops within 45m.
+    6. Consecutive Losses DAY PAUSE: Mandatory per skill spec (catastrophe_risk_controls.md Rule 2.6) —
+       triggers after 3 consecutive intraday losses in a single session.
+       Clears only on a Grade A+ (score >= 88) setup or a new session.
 
     Returns (header, playbook) if vetoed, or None if clear.
     """
@@ -299,73 +300,67 @@ def evaluate_risk_vetoes(
             return hdr, pb
 
     # 6. Consecutive Losses DAY PAUSE Circuit Breaker
-    # Gem spec: DAY PAUSE is a SOFT, SELF-CLEARING pause with DEFAULT OFF, so the
-    # gate is opt-in via DAY_PAUSE_ENABLED (defaults to disabled).
-    # Loss signal comes from trade_events.details.net_pnl (authoritative), NOT the
-    # alerts row — the per-event P&L is only written on EXIT events.
-    day_pause_enabled = os.getenv("DAY_PAUSE_ENABLED", "false").lower() in ("true", "1", "yes")
-    if day_pause_enabled:
-        try:
-            import sqlite3
-            from src.tracking.alert_db import DB_PATH as _DP
-            with sqlite3.connect(str(_DP), timeout=5.0) as conn:
-                cur = conn.cursor()
-                # Intraday EXIT events, newest first. We fetch a small window and filter to
-                # "today in ET" in Python — NOT via SQLite date(), which interprets the stored
-                # ET timestamp as UTC and mis-buckets rows near the ET/UTC day boundary.
-                cur.execute("""
-                    SELECT timestamp, details
-                    FROM trade_events
-                    WHERE event_type = 'EXIT'
-                      AND strategy_id = 'Intraday'
-                    ORDER BY timestamp DESC
-                    LIMIT 20
-                """)
-                recent_exits = cur.fetchall()
+    # Skill spec (catastrophe_risk_controls.md Rule 2.6): MANDATORY —
+    # triggers after 3 consecutive intraday losses in a single session.
+    # Clears only on Grade A+ (score >= 88) or new session (implicit:
+    # no losses in today's session at all). Loss signal comes from
+    # trade_events.details.net_pnl (authoritative), NOT the alerts row.
+    try:
+        import sqlite3
+        from src.tracking.alert_db import DB_PATH as _DP
+        with sqlite3.connect(str(_DP), timeout=5.0) as conn:
+            cur = conn.cursor()
+            # Intraday EXIT events, newest first. We fetch a small window and filter to
+            # "today in ET" in Python — NOT via SQLite date(), which interprets the stored
+            # ET timestamp as UTC and mis-buckets rows near the ET/UTC day boundary.
+            cur.execute("""
+                SELECT timestamp, details
+                FROM trade_events
+                WHERE event_type = 'EXIT'
+                  AND strategy_id = 'Intraday'
+                ORDER BY timestamp DESC
+                LIMIT 20
+            """)
+            recent_exits = cur.fetchall()
 
-                loss_count = 0
-                latest_loss_time = None
-                for ts_str, details_str in recent_exits:
-                    # Parse the exit timestamp to ET (aware or naive) and skip any not from today.
-                    try:
-                        clean_ts = str(ts_str).replace("Z", "+00:00")
-                        dt_parsed = datetime.fromisoformat(clean_ts)
-                    except Exception:
-                        continue
-                    if dt_parsed.tzinfo is None:
-                        exit_et = dt_parsed.replace(tzinfo=ZoneInfo("America/New_York"))
-                    else:
-                        exit_et = dt_parsed.astimezone(ZoneInfo("America/New_York"))
-                    if exit_et.strftime("%Y-%m-%d") != today_str:
-                        continue  # past the start of today (newest-first) -> stop scanning
+            loss_count = 0
+            for ts_str, details_str in recent_exits:
+                try:
+                    clean_ts = str(ts_str).replace("Z", "+00:00")
+                    dt_parsed = datetime.fromisoformat(clean_ts)
+                except Exception:
+                    continue
+                if dt_parsed.tzinfo is None:
+                    exit_et = dt_parsed.replace(tzinfo=ZoneInfo("America/New_York"))
+                else:
+                    exit_et = dt_parsed.astimezone(ZoneInfo("America/New_York"))
+                if exit_et.strftime("%Y-%m-%d") != today_str:
+                    continue  # past the start of today (newest-first) -> stop scanning
 
-                    try:
-                        det = json.loads(details_str) if isinstance(details_str, str) and details_str.startswith("{") else {}
-                    except Exception:
-                        det = {}
-                    pnl = float(det.get("net_pnl", 0) or 0)
-                    exit_reason = str(det.get("exit_reason", "")).lower()
-                    is_loss = pnl < 0 or "stop" in exit_reason or "loss" in exit_reason
-                    if not is_loss:
-                        break  # a winning exit breaks the consecutive-loss streak
-                    loss_count += 1
-                    if latest_loss_time is None:
-                        latest_loss_time = exit_et
+                try:
+                    det = json.loads(details_str) if isinstance(details_str, str) and details_str.startswith("{") else {}
+                except Exception:
+                    det = {}
+                pnl = float(det.get("net_pnl", 0) or 0)
+                exit_reason = str(det.get("exit_reason", "")).lower()
+                is_loss = pnl < 0 or "stop" in exit_reason or "loss" in exit_reason
+                if not is_loss:
+                    break  # a winning exit breaks the consecutive-loss streak
+                loss_count += 1
 
-                if loss_count >= 2 and latest_loss_time:
-                    diff_sec = (eastern_dt - latest_loss_time).total_seconds()
-                    if 0 <= diff_sec <= 2700:  # 45 minutes cooldown
-                        mins_ago = int(diff_sec // 60)
-                        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (DAY PAUSE)"
-                        pb = (
-                            f"{hdr}\n\n"
-                            f"⛔ CIRCUIT BREAKER: DAY PAUSE active.\n"
-                            f"{loss_count} consecutive stopped trades observed within the last {mins_ago}m.\n"
-                            f"Autonomous cooldown engaged to protect capital against hostile regime shifts."
-                        )
-                        return hdr, pb
-        except Exception as e_db:
-            logger.debug(f"DAY PAUSE check bypassed: {e_db}")
+            if loss_count >= 3:
+                # Clearing: Grade A+ (score >= 88) clears the pause.
+                if score < 88:
+                    hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (DAY PAUSE)"
+                    pb = (
+                        f"{hdr}\n\n"
+                        f"⛔ CIRCUIT BREAKER: DAY PAUSE active.\n"
+                        f"{loss_count} consecutive stopped trades in this session.\n"
+                        f"Clears on a Grade A+ (score >= 88) setup or next session."
+                    )
+                    return hdr, pb
+    except Exception as e_db:
+        logger.debug(f"DAY PAUSE check bypassed: {e_db}")
 
     return None
 

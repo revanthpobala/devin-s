@@ -79,8 +79,7 @@ def main():
           f"{sum(1 for p in parsed if p['is_exit'])} exits)")
     print(f"ENV GATES: GRADE_B_VETO_THRESHOLD={os.getenv('GRADE_B_VETO_THRESHOLD','65')}  "
           f"MID_MORNING_MIN_SCORE={os.getenv('MID_MORNING_MIN_SCORE','85')}  "
-          f"MAX_CONCURRENT_SAME_SIDE={os.getenv('MAX_CONCURRENT_SAME_SIDE','3')}  "
-          f"DAY_PAUSE_ENABLED={os.getenv('DAY_PAUSE_ENABLED','false')}\n")
+          f"MAX_CONCURRENT_SAME_SIDE={os.getenv('MAX_CONCURRENT_SAME_SIDE','3')}\n")
 
     open_pos = {}   # symbol -> side, reconstructed from what was REALLY taken/closed
     results = []
