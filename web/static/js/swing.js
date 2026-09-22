@@ -742,7 +742,16 @@ window.AppSwing = {
     alert(`Queued all ${total} ${label} candidates!\n${startedCount} running immediately in open slots, ${queuedCount} queued to auto-process as slots free up.\nMonitor progress in Hardware/Processes.`);
   },
 
+  toggleResearchQueue() {
+    const container = document.getElementById('research-queue-container');
+    if (container) {
+      container.style.display = container.style.display === 'none' ? '' : 'none';
+    }
+  },
+
   async refreshResearchQueue() {
+    const container = document.getElementById('research-queue-container');
+    if (container && container.style.display === 'none') return;
     const pillsEl = document.getElementById('research-queue-pills');
     if (!pillsEl) return;
 
