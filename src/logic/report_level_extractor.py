@@ -254,7 +254,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                 em_pct = _dw_lookup(dw_data, "Exp Move % (21b)", "exp_move_pct", "Exp Move Pct 21b")
                 blk_struct = options_p.get("structure") or "NONE"
                 blk_short = float(options_p.get("short_strike") or 0.0)
-                blk_spot = float(data.get("spot_price") or shares_p.get("entry_zone_high") or spot_price or 0.0)
+                blk_spot = float(data.get("spot_price") or spot_price or 0.0)
                 new_struct, new_summary, clear_strikes = _demote_unscaled_credit(
                     blk_struct, blk_short, blk_spot, em_pct, options_p.get("summary", ""), safe_ticker
                 )
