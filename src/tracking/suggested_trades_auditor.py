@@ -232,6 +232,13 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
     # 1. Sync from watch targets
     sync_suggested_trades_from_watch_targets()
 
+    # Also evaluate append-only suggestions ledger
+    try:
+        from src.tracking.suggestion_scorer import evaluate_all_suggestions
+        evaluate_all_suggestions()
+    except Exception as e_sugg:
+        logger.debug(f"evaluate_all_suggestions notice: {e_sugg}")
+
     eval_time = _now_iso()
 
     with _db_lock:

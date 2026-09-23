@@ -1395,7 +1395,9 @@ def run_autonomous_screener_pipeline(
                         cmd_scrape = [py_exe, "run_swing_research.py", t_date, "--ticker", sym]
                         if headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"):
                             cmd_scrape.append("--headless")
-                        subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True, timeout=600)
+                        subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True, timeout=900)
+                    except subprocess.TimeoutExpired:
+                        logger.error(f"[{sym}] Multimodal chart scrape TIMED OUT after 900s.")
                     except Exception as e_scrape:
                         logger.error(f"[{sym}] Multimodal chart scrape notice: {e_scrape}")
                 else:
@@ -1406,13 +1408,16 @@ def run_autonomous_screener_pipeline(
                 # =========================================================================
                 logger.info(f"[{sym}] 4/4: Launching Deep Research debate & senior PM arbitration...")
                 deep_done = False
+                deep_timeout_s = int(os.getenv("DEEP_RESEARCH_TIMEOUT_S", "5400"))
                 try:
                     cmd_deep = [py_exe, "run_deep_research.py", t_date, "--ticker", sym]
-                    subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True, timeout=600)
+                    subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True, timeout=deep_timeout_s)
 
                     logger.info(f"[{sym}] Syncing research watch levels & Tastytrade cloud quote alerts...")
                     subprocess.run([py_exe, "run_watch_alerts.py", "--sync", "--once"], cwd=config.BASE_DIR, timeout=120)
                     deep_done = True
+                except subprocess.TimeoutExpired:
+                    logger.error(f"[{sym}] Deep research TIMED OUT after {deep_timeout_s}s.")
                 except Exception as e_deep:
                     logger.error(f"[{sym}] Deep research error: {e_deep}")
             else:

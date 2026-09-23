@@ -72,10 +72,67 @@ def sync_reports_to_watchlist(
     for t in sorted(tickers):
         data = extract_watch_levels_from_report(t, date_str)
         if data:
+            # Load ticker's latest data window for accurate level validation
+            dw_dict = {}
+            safe_sym = t.replace(":", "_")
+            log_file = config.BASE_DIR / "data" / "logs" / "data_window_scrapes.jsonl"
+            if log_file.exists():
+                try:
+                    for line in reversed(log_file.read_text(encoding="utf-8", errors="ignore").splitlines()):
+                        if line.strip():
+                            obj = json.loads(line)
+                            if (obj.get("ticker") or "").upper() == safe_sym:
+                                dw_dict = obj.get("data_window") or obj.get("data") or {}
+                                if dw_dict:
+                                    break
+                except Exception:
+                    pass
+
+            if not dw_dict:
+                raw_root = config.BASE_DIR / "data" / "raw"
+                search_dirs = [raw_root / date_str] if (raw_root / date_str).exists() else []
+                if raw_root.exists():
+                    search_dirs += sorted(raw_root.glob("*/"), reverse=True)
+                for d in search_dirs:
+                    for cand_p in (
+                        d / safe_sym / f"{safe_sym}_thesis.json",
+                        d / f"{safe_sym}_thesis.json",
+                        d / safe_sym / f"{safe_sym}_datawindow.json",
+                        d / f"{safe_sym}_datawindow.json",
+                    ):
+                        if cand_p.exists():
+                            try:
+                                th_obj = json.loads(cand_p.read_text(encoding="utf-8"))
+                                dw_dict = th_obj.get("data_window") or th_obj.get("_datawindow") or th_obj.get("dw") or th_obj
+                                if isinstance(dw_dict, dict) and any("close" in str(k).lower() for k in dw_dict.keys()):
+                                    break
+                                else:
+                                    dw_dict = {}
+                            except Exception:
+                                pass
+                    if dw_dict:
+                        break
+
+            if not dw_dict:
+                import pandas as pd
+                raw_root = config.BASE_DIR / "data" / "raw"
+                if raw_root.exists():
+                    for d in sorted(raw_root.glob("*/"), reverse=True):
+                        cand = d / safe_sym / f"{safe_sym}_datawindow.csv"
+                        if not cand.exists():
+                            cand = d / f"{safe_sym}_datawindow.csv"
+                        if cand.exists():
+                            try:
+                                df_csv = pd.read_csv(cand)
+                                if not df_csv.empty:
+                                    dw_dict = df_csv.iloc[-1].to_dict()
+                                    break
+                            except Exception:
+                                pass
+
             from src.logic.level_validation import validate_levels
-            _ok, _reasons = validate_levels(
-                data.get("shares_plan", {}), data, data.get("side", "LONG")
-            )
+            plan = {**data.get("shares_plan", {}), "options_plan": data.get("options_plan", {})}
+            _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"))
             if not _ok:
                 logger.warning(
                     f"[{t}] Level gate FAILED: {'; '.join(_reasons)} — "

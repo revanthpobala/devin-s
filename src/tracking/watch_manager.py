@@ -84,6 +84,37 @@ def init_watch_db():
 
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS watch_targets_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    conviction INTEGER DEFAULT 5,
+                    actionable BOOLEAN DEFAULT 1,
+                    side TEXT DEFAULT 'LONG',
+                    entry_type TEXT DEFAULT 'LIMIT',
+                    entry_zone_low REAL,
+                    entry_zone_high REAL,
+                    breakout_level REAL,
+                    breakout_stop REAL,
+                    tactical_stop REAL,
+                    target_1 REAL,
+                    target_2 REAL,
+                    options_structure TEXT,
+                    options_summary TEXT,
+                    options_actionable BOOLEAN DEFAULT 0,
+                    options_entry_trigger TEXT,
+                    invalidation_price REAL,
+                    invalidation_condition TEXT,
+                    invalidation_rationale TEXT,
+                    status TEXT DEFAULT 'STALKING',
+                    updated_at TEXT NOT NULL,
+                    raw_json TEXT
+                )
+                """
+            )
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS watch_alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
@@ -249,6 +280,45 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     json.dumps(data, default=str),
                 ),
             )
+            # Append to history table for immutable audit tracking
+            cursor.execute(
+                """
+                INSERT INTO watch_targets_history (
+                    ticker, date, verdict, conviction, actionable, side,
+                    entry_type, entry_zone_low, entry_zone_high, breakout_level,
+                    breakout_stop, tactical_stop, target_1, target_2,
+                    options_structure, options_summary, options_actionable,
+                    options_entry_trigger, invalidation_price, invalidation_condition,
+                    invalidation_rationale, status, updated_at, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    data.get("verdict", "STALK"),
+                    data.get("conviction", 5),
+                    1 if data.get("actionable", True) else 0,
+                    side,
+                    shares_plan.get("entry_type", "LIMIT"),
+                    shares_plan.get("entry_zone_low"),
+                    shares_plan.get("entry_zone_high"),
+                    breakout_level,
+                    breakout_stop,
+                    shares_plan.get("tactical_stop"),
+                    shares_plan.get("target_1"),
+                    shares_plan.get("target_2"),
+                    options_plan.get("structure", "NONE"),
+                    options_plan.get("summary", ""),
+                    1 if (options_plan.get("actionable") or (options_plan.get("structure") not in ("NONE", "", None) and (options_plan.get("target_debit", 0) > 0 or options_plan.get("max_profit", 0) > 0))) else 0,
+                    str(options_plan.get("entry_trigger") or "AT_FLOOR_LIMIT"),
+                    invalidation.get("price_level"),
+                    invalidation.get("condition", "DAILY_CLOSE_BELOW"),
+                    invalidation.get("rationale", ""),
+                    data.get("status", "STALKING"),
+                    now,
+                    json.dumps(data, default=str),
+                ),
+            )
             conn.commit()
             logger.info(f"[{ticker}] Registered in Watchlist DB (Side: {side}, Verdict: {data.get('verdict')}, Status: {data.get('status')})")
 
@@ -262,6 +332,7 @@ def get_active_watch_targets() -> List[Dict[str, Any]]:
                 """
                 SELECT * FROM watch_targets 
                 WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT')
+                  AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
                 ORDER BY date DESC, conviction DESC
                 """
             )

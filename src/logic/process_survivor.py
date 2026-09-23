@@ -473,8 +473,8 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         logger.error(f"[Prefilter-{worker_id}] Failed to cache thesis/triage JSON for {ticker}: {e}")
     _update_research_ledger(out_dir, result_dict)
 
-    # Phase 4: Log rule baseline (source="rule") to suggestions ledger
-    if triage.get("triage") in ("PASS", "WATCH"):
+    # Phase 4: Log rule baseline (source="rule") to suggestions ledger (LONG only — shorts measured no edge)
+    if triage.get("triage") in ("PASS", "WATCH") and str(triage.get("chosen_side") or "LONG").upper() == "LONG":
         try:
             from src.tracking.suggestions_ledger import append_suggestion
             long_p = triage.get("long_plan") or {}
@@ -485,7 +485,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "ticker": ticker,
                 "date": today_str,
                 "source": "rule",
-                "side": str(triage.get("chosen_side") or "LONG").upper(),
+                "side": "LONG",
                 "entry_type": "LIMIT",
                 "entry_low": float(e_low) if e_low else None,
                 "entry_high": float(e_high) if e_high else None,

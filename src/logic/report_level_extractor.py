@@ -425,9 +425,9 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         clean_combined,
         re.IGNORECASE,
     )
-    if m_opt:
+    if m_opt and m_opt.group(1):
+        raw_exp = m_opt.group(1)
         options_struct = "BULL_CALL_SPREAD"
-        raw_exp = m_opt.group(1) or "Sep 18, 2026"
         long_strike = float(m_opt.group(2))
         short_strike = float(m_opt.group(3))
         try:

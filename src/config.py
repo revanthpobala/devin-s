@@ -132,7 +132,7 @@ SCREENER_MIN_CONVICTION = float(os.getenv("CONTINUOUS_MIN_CONVICTION", "60.0"))
 # Level-validation gate (src/logic/level_validation.py).
 # LEVEL_RR_FLOOR: minimum planned R:R from zone midpoint (default 1.5;
 #   measured evidence favours 2.0 — set via LEVEL_RR_FLOOR=2.0).
-LEVEL_RR_FLOOR = float(os.getenv("LEVEL_RR_FLOOR", "1.5"))
+LEVEL_RR_FLOOR = float(os.getenv("LEVEL_RR_FLOOR", "2.0"))
 # LEVEL_ATR_STOP_MIN: minimum stop distance from zone midpoint in ATR units
 #   (default 1.0 — direct fix for 2.45%-median tight stops).
 LEVEL_ATR_STOP_MIN = float(os.getenv("LEVEL_ATR_STOP_MIN", "1.0"))

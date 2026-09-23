@@ -21,8 +21,17 @@ from src.tracking.watch_manager import _get_connection, _db_lock, _now_iso
 logger = logging.getLogger(__name__)
 
 
-def _compute_hash(ticker: str, date: str, source: str, report_source: str = "") -> str:
-    raw = f"{ticker.upper()}:{date}:{source}:{report_source}"
+def _compute_hash(
+    ticker: str,
+    date: str,
+    source: str,
+    entry_low: float = 0.0,
+    entry_high: float = 0.0,
+    stop: float = 0.0,
+    target_1: float = 0.0,
+    target_2: float = 0.0,
+) -> str:
+    raw = f"{ticker.upper()}:{date}:{source}:{entry_low:.4f}:{entry_high:.4f}:{stop:.4f}:{target_1:.4f}:{target_2:.4f}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -39,46 +48,109 @@ def append_suggestion(data: Dict[str, Any]) -> int:
     date_str = data.get("date") or datetime.now().strftime("%Y-%m-%d")
     side = str(data.get("side", "LONG")).upper()
     source = data.get("source", "research")
-    report_source = data.get("report_source", "pine")
-    report_hash = data.get("report_hash") or _compute_hash(ticker, date_str, source, report_source)
 
-    # Run level validation gate
-    dw = data.get("_datawindow", {})
-    ok, reasons = validate_levels(data, dw, side)
-    if not ok:
-        logger.warning(
-            f"[ledger] Level gate FAILED for {ticker}: {'; '.join(reasons)} — logging as REJECTED_BY_GATE"
-        )
-        source = "judge"
-        notes = f"REJECTED_BY_GATE: {'; '.join(reasons)}"
-    else:
-        notes = data.get("notes") or data.get("triage_reason") or ""
-
-    entry_type = data.get("entry_type") or "LIMIT"
-    entry_low = float(data.get("entry_low") or data.get("entry_zone_low") or 0.0)
-    entry_high = float(data.get("entry_high") or data.get("entry_zone_high") or 0.0)
-    breakout_level = float(data.get("breakout_level") or 0.0)
-    stop = float(data.get("stop") or data.get("tactical_stop") or 0.0)
-    target_1 = float(data.get("target_1") or 0.0)
-    target_2 = float(data.get("target_2") or 0.0)
-    planned_rr = float(data.get("planned_rr") or 0.0)
+    shares_plan = data.get("shares_plan") or {}
+    entry_type = data.get("entry_type") or shares_plan.get("entry_type") or "LIMIT"
+    entry_low = float(data.get("entry_low") or data.get("entry_zone_low") or shares_plan.get("entry_low") or shares_plan.get("entry_zone_low") or 0.0)
+    entry_high = float(data.get("entry_high") or data.get("entry_zone_high") or shares_plan.get("entry_high") or shares_plan.get("entry_zone_high") or 0.0)
+    breakout_level = float(data.get("breakout_level") or shares_plan.get("breakout_level") or 0.0)
+    stop = float(data.get("stop") or data.get("tactical_stop") or shares_plan.get("stop") or shares_plan.get("tactical_stop") or 0.0)
+    target_1 = float(data.get("target_1") or shares_plan.get("target_1") or 0.0)
+    target_2 = float(data.get("target_2") or shares_plan.get("target_2") or 0.0)
+    planned_rr = float(data.get("planned_rr") or shares_plan.get("rr_ratio") or 0.0)
     atr_at_signal = float(data.get("atr_at_signal") or 0.0)
     taken = 1 if data.get("taken") else 0
     your_fill = data.get("your_fill")
     is_modeled = 1 if data.get("is_modeled") else 0
 
+    report_hash = data.get("report_hash") or _compute_hash(
+        ticker, date_str, source, entry_low, entry_high, stop, target_1, target_2
+    )
+
+    # Run level validation gate
+    dw = data.get("_datawindow") or data.get("dw") or {}
+    val_plan = {
+        **shares_plan,
+        **data,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "stop": stop,
+        "target_1": target_1,
+        "target_2": target_2,
+        "options_plan": data.get("options_plan") or shares_plan.get("options_plan") or {},
+    }
+    ok, reasons = validate_levels(val_plan, dw, side)
+    gate_status = "PASS" if ok else "REJECTED_BY_GATE"
+    gate_reasons = "; ".join(reasons) if not ok else None
+    if not ok:
+        logger.warning(
+            f"[ledger] Level gate FAILED for {ticker}: {'; '.join(reasons)} — logging as REJECTED_BY_GATE"
+        )
+        notes = f"REJECTED_BY_GATE: {'; '.join(reasons)}"
+    else:
+        notes = data.get("notes") or data.get("triage_reason") or ""
+
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
             try:
+                # Ensure table and schema migration
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS suggestions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ticker TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        report_hash TEXT NOT NULL,
+                        side TEXT NOT NULL DEFAULT 'LONG',
+                        entry_type TEXT DEFAULT 'LIMIT',
+                        entry_low REAL,
+                        entry_high REAL,
+                        breakout_level REAL,
+                        stop REAL,
+                        target_1 REAL,
+                        target_2 REAL,
+                        planned_rr REAL,
+                        atr_at_signal REAL,
+                        taken INTEGER DEFAULT 0,
+                        your_fill REAL,
+                        notes TEXT,
+                        is_modeled INTEGER DEFAULT 0,
+                        gate_status TEXT DEFAULT 'PASS',
+                        gate_reasons TEXT,
+                        fill_date TEXT,
+                        fill_price REAL,
+                        exit_date TEXT,
+                        exit_price REAL,
+                        exit_reason TEXT,
+                        bars_held INTEGER,
+                        gross_r REAL,
+                        r_net REAL,
+                        mae_r REAL,
+                        scored_at TEXT,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(ticker, date, source, report_hash)
+                    )
+                    """
+                )
+                try:
+                    cursor.execute("ALTER TABLE suggestions ADD COLUMN gate_status TEXT DEFAULT 'PASS'")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE suggestions ADD COLUMN gate_reasons TEXT")
+                except Exception:
+                    pass
+
                 cursor.execute(
                     """
                     INSERT INTO suggestions (
                         ticker, date, source, report_hash, side, entry_type,
                         entry_low, entry_high, breakout_level, stop,
                         target_1, target_2, planned_rr, atr_at_signal,
-                        taken, your_fill, notes, is_modeled, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        taken, your_fill, notes, is_modeled, gate_status, gate_reasons, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(ticker, date, source, report_hash) DO NOTHING
                     """,
                     (
@@ -86,7 +158,7 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                         entry_low, entry_high, breakout_level, stop,
                         target_1, target_2, planned_rr if planned_rr > 0 else None,
                         atr_at_signal if atr_at_signal > 0 else None,
-                        taken, your_fill, notes, is_modeled, _now_iso(),
+                        taken, your_fill, notes, is_modeled, gate_status, gate_reasons, _now_iso(),
                     ),
                 )
                 conn.commit()
@@ -164,16 +236,24 @@ def get_ledger_summary(ticker: Optional[str] = None, limit: int = 100) -> Dict[s
 
 
 def get_per_source_stats() -> List[Dict[str, Any]]:
-    """Return performance aggregated per research source."""
+    """Return performance aggregated per research source, split by gate_status."""
     with _db_lock:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            sources = [r["source"] for r in cursor.execute("SELECT DISTINCT source FROM suggestions").fetchall()]
+            try:
+                pairs = cursor.execute(
+                    "SELECT DISTINCT source, COALESCE(gate_status, 'PASS') as gate_status FROM suggestions ORDER BY source, gate_status"
+                ).fetchall()
+            except Exception:
+                return []
+
             stats = []
-            for src in sources:
+            for p in pairs:
+                src = p["source"]
+                gate_st = p["gate_status"]
                 rows = cursor.execute(
-                    "SELECT * FROM suggestions WHERE source = ?", (src,)
+                    "SELECT * FROM suggestions WHERE source = ? AND COALESCE(gate_status, 'PASS') = ?", (src, gate_st)
                 ).fetchall()
                 total = len(rows)
                 taken_count = sum(1 for r in rows if r["taken"])
@@ -192,6 +272,7 @@ def get_per_source_stats() -> List[Dict[str, Any]]:
 
                 stats.append({
                     "source": src,
+                    "gate_status": gate_st,
                     "total": total,
                     "scored_count": len(scored_rows),
                     "mean_r": mean_r,

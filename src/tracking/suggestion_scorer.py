@@ -41,16 +41,16 @@ def _load_suggestions(
                 sql += " AND source = ?"
                 params.append(source)
             if scored:
-                sql += " AND r_net IS NOT NULL"
+                sql += " AND scored_at IS NOT NULL"
+            else:
+                sql += " AND scored_at IS NULL"
             sql += " ORDER BY date ASC"
             rows = cursor.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
 
 
 def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Score a single suggestion row. Returns the row with scoring fields filled."""
-    import sqlite3 as _sqlite3
-
+    """Score a single suggestion row according to honest lifecycle validation."""
     ticker = row["ticker"]
     date_str = row["date"]
     side = (row.get("side") or "LONG").upper()
@@ -65,23 +65,12 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     if not ticker or not date_str:
         return {**row, "r_net": None, "mae_r": None, "scored_at": _now_iso()}
 
-    fill_price = float(row.get("your_fill") or 0.0)
-    if fill_price <= 0:
-        if breakout_level > 0:
-            fill_price = breakout_level
-        elif entry_low > 0 and entry_high > 0:
-            fill_price = round((entry_low + entry_high) / 2.0, 2)
-        elif entry_low > 0:
-            fill_price = entry_low
-        else:
-            return {**row, "r_net": None, "mae_r": None, "scored_at": _now_iso()}
-
     from src.tracking.execution_validator import get_bars_since_date
 
     bars = get_bars_since_date(ticker, date_str)
     if bars is None or bars.empty:
         logger.debug(f"No bars for {ticker} since {date_str}; cannot score.")
-        return {**row, "r_net": None, "mae_r": None, "scored_at": _now_iso()}
+        return row
 
     eval_res = evaluate_setup_lifecycle_bars(
         bars=bars,
@@ -99,30 +88,113 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         skip_setup_bar=True,
     )
 
-    exit_price = eval_res.get("exit_price") or 0.0
-    exit_date = eval_res.get("exit_date") or ""
-    exit_reason = eval_res.get("exit_reason") or eval_res.get("status") or ""
+    was_filled = eval_res.get("was_filled", False)
+    bars_count = len(bars)
 
-    risk = fill_price - stop
-    if risk <= 0:
-        r_net = None
-        mae_r = None
+    # 1. Unfilled: if setup never filled within 5 bars, mark NOT_FILLED with r_net=NULL
+    if not was_filled:
+        if bars_count >= 5:
+            return {
+                **row,
+                "fill_date": None,
+                "fill_price": None,
+                "exit_date": str(bars.iloc[-1].name)[:10] if hasattr(bars.iloc[-1], "name") else None,
+                "exit_price": None,
+                "exit_reason": "NOT_FILLED",
+                "bars_held": 0,
+                "gross_r": None,
+                "r_net": None,
+                "mae_r": None,
+                "scored_at": _now_iso(),
+            }
+        else:
+            # Fewer than 5 bars passed; leave scored_at NULL so it can fill later
+            return row
+
+    # 2. Setup filled: determine exact fill_price and fill_date
+    if row.get("your_fill") and float(row["your_fill"]) > 0:
+        fill_price = float(row["your_fill"])
+    elif entry_type == "BREAKOUT" and breakout_level > 0:
+        fill_price = breakout_level
     else:
-        gross_r = (exit_price - fill_price) / risk if exit_price > 0 else 0.0
-        fee_cost = ROUND_TRIP_FEES_BPS / 10000.0
-        r_net = gross_r - fee_cost
-        mae_r = gross_r
+        # For LIMIT, use fill price from validator, or entry_high (LONG) / entry_low (SHORT)
+        fill_price = float(eval_res.get("fill_price") or (entry_high if side == "LONG" else entry_low))
 
-    now = _now_iso()
+    fill_date = eval_res.get("fill_date") or date_str
+    risk = abs(fill_price - stop)
+    if risk <= 0:
+        return {
+            **row,
+            "fill_date": fill_date,
+            "fill_price": fill_price,
+            "r_net": None,
+            "mae_r": None,
+            "scored_at": _now_iso(),
+        }
+
+    is_terminal = eval_res.get("is_terminal", False)
+    bars_held = eval_res.get("bars_held", 0)
+
+    # 3. Immature: if fewer than 21 bars have passed since fill and has not exited, leave scored_at NULL
+    if not is_terminal and bars_held < MAX_HOLDING_BARS:
+        return {
+            **row,
+            "fill_date": fill_date,
+            "fill_price": fill_price,
+            "bars_held": bars_held,
+            "scored_at": None,
+        }
+
+    # 4. Finalize exit
+    exit_date = eval_res.get("exit_date") or (str(bars.iloc[-1].name)[:10] if hasattr(bars.iloc[-1], "name") else "")
+    exit_price = eval_res.get("exit_price")
+    if exit_price is None or exit_price <= 0:
+        exit_price = float(bars.iloc[-1].get("Close", bars.iloc[-1].get("close", fill_price)))
+    exit_reason = eval_res.get("exit_reason") or eval_res.get("status") or "MAX_HOLDING_EXPIRED"
+
+    # 5. Compute gross R, fee (10bps expressed in R), and net R
+    if side == "LONG":
+        gross_r = (exit_price - fill_price) / risk
+    else:
+        gross_r = (fill_price - exit_price) / risk
+
+    # 10bps round-trip fee expressed in R: (0.001 * fill_price) / risk
+    fee_r = (0.001 * fill_price) / risk
+    r_net = gross_r - fee_r
+
+    # 6. Compute MAE as worst adverse excursion between fill and exit divided by risk
+    held_bars = bars
+    if fill_date:
+        held_bars = held_bars[held_bars.index >= fill_date]
+    if exit_date:
+        held_bars = held_bars[held_bars.index <= exit_date]
+    if held_bars.empty:
+        held_bars = bars
+
+    low_col = "Low" if "Low" in held_bars.columns else "low"
+    high_col = "High" if "High" in held_bars.columns else "high"
+
+    if side == "LONG":
+        worst_price = float(held_bars[low_col].min())
+        adverse_excursion = max(0.0, fill_price - worst_price)
+    else:
+        worst_price = float(held_bars[high_col].max())
+        adverse_excursion = max(0.0, worst_price - fill_price)
+
+    mae_r = adverse_excursion / risk
+
     return {
         **row,
+        "fill_date": fill_date,
         "fill_price": fill_price,
         "exit_date": exit_date,
-        "exit_price": exit_price if exit_price > 0 else None,
+        "exit_price": exit_price,
         "exit_reason": exit_reason,
-        "r_net": round(r_net, 4) if r_net is not None else None,
-        "mae_r": round(mae_r, 4) if mae_r is not None else None,
-        "scored_at": now,
+        "bars_held": bars_held,
+        "gross_r": round(gross_r, 4),
+        "r_net": round(r_net, 4),
+        "mae_r": round(mae_r, 4),
+        "scored_at": _now_iso(),
     }
 
 
@@ -136,7 +208,8 @@ def evaluate_all_suggestions() -> Dict[str, Any]:
         try:
             scored = score_suggestion(row)
             _upsert_scored(scored)
-            scored_count += 1
+            if scored.get("scored_at"):
+                scored_count += 1
         except Exception as e:
             errors.append(f"{row.get('ticker')}/{row.get('date')}: {e}")
             logger.warning(f"Failed to score {row.get('ticker')}/{row.get('date')}: {e}")
@@ -157,7 +230,7 @@ def _upsert_scored(row: Dict[str, Any]) -> None:
                 """
                 UPDATE suggestions
                 SET fill_date=?, fill_price=?, exit_date=?, exit_price=?,
-                    exit_reason=?, r_net=?, mae_r=?, scored_at=?
+                    exit_reason=?, bars_held=?, gross_r=?, r_net=?, mae_r=?, scored_at=?
                 WHERE ticker=? AND date=? AND source=? AND report_hash=?
                 """,
                 (
@@ -166,6 +239,8 @@ def _upsert_scored(row: Dict[str, Any]) -> None:
                     row.get("exit_date"),
                     row.get("exit_price"),
                     row.get("exit_reason"),
+                    row.get("bars_held"),
+                    row.get("gross_r"),
                     row.get("r_net"),
                     row.get("mae_r"),
                     row.get("scored_at"),
@@ -184,7 +259,7 @@ def _compute_stats() -> Dict[str, Any]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             rows = cursor.execute(
-                "SELECT * FROM suggestions WHERE r_net IS NOT NULL"
+                "SELECT * FROM suggestions WHERE r_net IS NOT NULL AND exit_reason != 'NOT_FILLED'"
             ).fetchall()
             if not rows:
                 return {}
@@ -198,48 +273,3 @@ def _compute_stats() -> Dict[str, Any]:
                 "min_r": round(min(r_vals), 4),
                 "max_r": round(max(r_vals), 4),
             }
-
-
-def insert_suggestion(row: Dict[str, Any]) -> bool:
-    """Insert a suggestion with ON CONFLICT DO NOTHING. Returns whether inserted."""
-    with _db_lock:
-        with _get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(
-                    """
-                    INSERT INTO suggestions (
-                        ticker, date, source, report_hash, side, entry_type,
-                        entry_low, entry_high, breakout_level, stop,
-                        target_1, target_2, planned_rr, atr_at_signal,
-                        taken, your_fill, notes, is_modeled, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(ticker, date, source, report_hash) DO NOTHING
-                    """,
-                    (
-                        row["ticker"],
-                        row["date"],
-                        row["source"],
-                        row.get("report_hash"),
-                        row.get("side", "LONG"),
-                        row.get("entry_type", "LIMIT"),
-                        row.get("entry_low"),
-                        row.get("entry_high"),
-                        row.get("breakout_level"),
-                        row.get("stop"),
-                        row.get("target_1"),
-                        row.get("target_2"),
-                        row.get("planned_rr"),
-                        row.get("atr_at_signal"),
-                        row.get("taken", 0),
-                        row.get("your_fill"),
-                        row.get("notes"),
-                        row.get("is_modeled", 0),
-                        _now_iso(),
-                    ),
-                )
-                conn.commit()
-                return cursor.rowcount > 0
-            except Exception as e:
-                logger.warning(f"Failed to insert suggestion: {e}")
-                return False

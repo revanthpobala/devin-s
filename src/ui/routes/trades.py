@@ -64,6 +64,18 @@ def evaluate_trades_audit(
         return {"success": False, "error": str(e), "summary": {}, "trades": []}
 
 
+@router.post("/api/trades/suggestions/evaluate")
+def evaluate_suggestions_endpoint():
+    """Triggers on-demand honest 21-bar R scoring for all suggestions."""
+    try:
+        from src.tracking.suggestion_scorer import evaluate_all_suggestions
+        result = evaluate_all_suggestions()
+        return {"success": True, **result}
+    except Exception as e:
+        logger.error(f"Error in evaluate_suggestions_endpoint: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/api/trades/suggested")
 def get_suggested_trades_endpoint():
     """Returns structured suggested trades from watch_targets with live PnL and outcome metrics."""

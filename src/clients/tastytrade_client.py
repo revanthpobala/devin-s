@@ -299,10 +299,10 @@ class TastytradeClient:
         target_op = "<" if side == "SHORT" else ">"
 
         desired_specs = []
-        # 1. Pullback limit entry alert (includes 1.0% institutional front-running buffer)
-        if entry_high and float(entry_high) > 0:
+        # 1. Pullback limit entry alert
+        if (entry_high and float(entry_high) > 0) or (side == "SHORT" and entry_low and float(entry_low) > 0):
             limit_op = ">" if side == "SHORT" else "<"
-            limit_thresh = float(entry_low * 0.99 if side == "SHORT" else entry_high * 1.01)
+            limit_thresh = float(entry_low if side == "SHORT" else entry_high)
             desired_specs.append((limit_op, round(limit_thresh, 2), f"Limit Entry ({side})"))
 
         # 2. Breakout entry alert (if configured)

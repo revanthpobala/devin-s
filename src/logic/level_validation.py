@@ -19,10 +19,10 @@ from src.logic.strike_validator import validate_strike_geometry
 
 logger = logging.getLogger(__name__)
 
-# Configurable gates (env-var overridable)
-LEVEL_RR_FLOOR = float(os.getenv("LEVEL_RR_FLOOR", "1.5"))
-LEVEL_ATR_STOP_MIN = float(os.getenv("LEVEL_ATR_STOP_MIN", "1.0"))
-LEVEL_PINE_DRIFT_ATR = float(os.getenv("LEVEL_PINE_DRIFT_ATR", "2.0"))
+# Configurable gates imported directly from src.config
+LEVEL_RR_FLOOR = config.LEVEL_RR_FLOOR
+LEVEL_ATR_STOP_MIN = config.LEVEL_ATR_STOP_MIN
+LEVEL_PINE_DRIFT_ATR = config.LEVEL_PINE_DRIFT_ATR
 
 
 def _dw_num(dw: Dict[str, Any], *keys: str) -> float:
@@ -72,9 +72,9 @@ def _pine_drift(
     if side != "LONG":
         return drifts
 
-    atr = _dw_num(dw, "rsi2_atr14", "atr14", "ATR 14", "atr_14")
+    atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14")
     if atr <= 0:
-        atr = _dw_num(dw, "close", "Close") * 0.02
+        return drifts
 
     pine_map = {
         "entry_low": ("Long Entry Zone Bot",),
@@ -138,18 +138,20 @@ def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tupl
 
     # ── 1. Level ordering ──────────────────────────────────────
     if side == "LONG":
-        if not (stop < entry_low <= entry_high < target_1 <= target_2):
+        t2_ok = (target_1 <= target_2) if target_2 > 0 else True
+        if not (stop < entry_low <= entry_high < target_1 and t2_ok):
             if stop >= entry_low:
                 reasons.append(f"stop ${stop:.4f} >= entry_low ${entry_low:.4f}")
             if entry_low > entry_high:
                 reasons.append(f"entry_low ${entry_low:.4f} > entry_high ${entry_high:.4f}")
             if entry_high >= target_1:
                 reasons.append(f"entry_high ${entry_high:.4f} >= target_1 ${target_1:.4f}")
-            if target_1 > target_2:
+            if target_2 > 0 and target_1 > target_2:
                 reasons.append(f"target_1 ${target_1:.4f} > target_2 ${target_2:.4f}")
     else:
-        if not (target_2 <= target_1 < entry_low <= entry_high < stop):
-            if not (target_2 <= target_1):
+        t2_ok = (target_2 <= target_1) if target_2 > 0 else True
+        if not (t2_ok and target_1 < entry_low <= entry_high < stop):
+            if target_2 > 0 and not (target_2 <= target_1):
                 reasons.append(f"target_2 ${target_2:.4f} > target_1 ${target_1:.4f}")
             if not (target_1 < entry_low):
                 reasons.append(f"target_1 ${target_1:.4f} >= entry_low ${entry_low:.4f}")
@@ -172,10 +174,10 @@ def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tupl
     mid = _zone_midpoint(entry_low, entry_high)
     if mid > 0 and stop > 0:
         stop_dist = abs(mid - stop)
-        atr = _dw_num(dw, "rsi2_atr14", "atr14", "ATR 14", "atr_14")
+        atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14")
         if atr <= 0:
-            atr = _dw_num(dw, "close", "Close") * 0.02
-        if atr > 0:
+            reasons.append("atr_unavailable")
+        else:
             dist_in_atr = stop_dist / atr
             if dist_in_atr < LEVEL_ATR_STOP_MIN:
                 reasons.append(

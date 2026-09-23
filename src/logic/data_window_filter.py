@@ -75,7 +75,7 @@ HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 # it is deliberately NOT used -- the same standard that rejected PRIME and code 20 for breadth.
 # Win rate FALLS as the ratio rises (34% at >=2, 23% at >=5): the edge is payoff, not hit rate.
 # User specification: R:R >= 1.5 is accepted for the PASS lane.
-RR_MKT_PASS = float(os.getenv("RR_MKT_PASS", "1.5"))
+RR_MKT_PASS = float(os.getenv("RR_MKT_PASS", "2.0"))
 RR_MKT_STRONG = 5.0
 # Set RR_LANE_ENABLED=0 to restore code-20-only PASS behaviour for an A/B comparison.
 RR_LANE_ENABLED = os.getenv("RR_LANE_ENABLED", "1") not in ("0", "false", "False")
@@ -991,7 +991,7 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
 # ---------------------------------------------------------------------------
 # 5. RANK — sort candidates for deep research selection
 # ---------------------------------------------------------------------------
-def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, float, float, float]:
+def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, float, float, float]:
     """THE single ranking key for deep-research selection.
 
     Priority order (all derived from the gem/bible measured rules, NOT from
@@ -1003,28 +1003,14 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, f
        gates on. Measured: +0.116R at >=2 (4/4 eras, 12/12 sectors), +0.252R at
        >=5. This is the only continuous field with a measured, era-stable,
        breadth-verified edge, so it orders candidates.
-    4. `ev_r` — expected-value ratio (win_prob * rr - (1-win_prob)), deterministic
+    4. `is_rsi2` — RSI2 pullback long candidate.
+    5. `ev_r` — expected-value ratio (win_prob * rr - (1-win_prob)), deterministic
        and side-guarded. Ties the rr_at_market order.
-    5. `ext_pct` — DEMOTED to a tiebreak. The prior version ranked by this
-       highest-first, which contradicted the gem/bible directly:
-         - Gem rule 4 (Pillar 1): Ext Pct 25-60% -> 0% size, no fresh long.
-         - Bible §16.7: Ext 25-60% = -0.71% ex21 [−1.13, −0.32] SIG, monotone.
-       The old docstring's "+0.84 top-8" measurement was a MOMENTUM framing
-       (which name captures the movers), not the CONDITIONAL forward-excess
-       metric the gem/bible use (if you buy a name in 25-60%, you lose 0.71%).
-       Both can be "true" in their own framing, but the operational consequence
-       was inverted: the old key's top-N were exactly the names the gem's
-       calibration table sizes at 0%. The DEEP_RESEARCH_CAP budget was being
-       spent on names that would get a SKIP/STALK verdict anyway.
-       Now ext_pct only breaks ties after the measured fields agree.
-    6. `conviction` — final deterministic tiebreak.
-
-    News penalties are applied to `ev_r` (the R-scale), not to `ext_pct` (the
-    % scale), so a contradiction costs a meaningful amount of the EV gap between
-    adjacent candidates without distorting the extension tiebreak.
+    6. `ext_pct` — DEMOTED to a tiebreak.
+    7. `conviction` — final deterministic tiebreak.
     """
     if not rec:
-        return (0, 0, 0, -1e9, -1e9, 0.0, 0.0)
+        return (0, 0, -1e9, 0, -1e9, 0.0, 0.0)
 
     # Unpack nested triage dict if outer record passed
     if isinstance(rec.get("triage"), dict):
@@ -1036,7 +1022,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, f
     # already excluded from the paid pass upstream (_deep_research_gate), so this
     # is a belt-and-braces guard: if one ever reaches here, sort it last.
     if rec.get("no_fresh_long"):
-        return (0, 0, 0, -1e9, -1e9, 0.0, 0.0)
+        return (0, 0, -1e9, 0, -1e9, 0.0, 0.0)
 
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
@@ -1068,7 +1054,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, f
 
     conviction = float(rec.get("conviction") or 0.0)
 
-    return (is_pass, is_rev_buy, is_rsi2, rr_mkt, ev_r, ext_pct, conviction)
+    return (is_pass, is_rev_buy, rr_mkt, is_rsi2, ev_r, ext_pct, conviction)
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""
