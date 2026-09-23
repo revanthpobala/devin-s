@@ -948,7 +948,7 @@ class PositionManager:
                     pass
             # Record vetoed trade in intraday_signals shadow ledger
             try:
-                from src.tracking.alert_db import upsert_intraday_signal
+                from src.tracking.alert_db import format_llm_verdict, upsert_intraday_signal
                 upsert_intraday_signal({
                     "trade_id": trade_id,
                     "ticker": symbol,
@@ -964,6 +964,7 @@ class PositionManager:
                     "entry_stop": stop,
                     "entry_t1": target,
                     "veto_reason": hdr,
+                    "llm_verdict": format_llm_verdict(risk_veto_header=hdr),
                     "taken": 0,
                 })
             except Exception as e_sig:
@@ -977,7 +978,7 @@ class PositionManager:
         if "STAND ASIDE" in existing_verdict.upper() or "DAY PAUSE" in existing_verdict.upper():
             logger.info(f"[manager] 🛡️ AI VETO GATE for {symbol}: persisted verdict '{existing_verdict[:60]}' — position NOT opened.")
             try:
-                from src.tracking.alert_db import upsert_intraday_signal
+                from src.tracking.alert_db import format_llm_verdict, upsert_intraday_signal
                 upsert_intraday_signal({
                     "trade_id": trade_id,
                     "ticker": symbol,
@@ -993,7 +994,7 @@ class PositionManager:
                     "entry_stop": stop,
                     "entry_t1": target,
                     "veto_reason": f"AI VETO: {existing_verdict[:100]}",
-                    "llm_verdict": existing_verdict,
+                    "llm_verdict": format_llm_verdict(decision=existing_verdict),
                     "taken": 0,
                 })
             except Exception:
@@ -1079,6 +1080,7 @@ class PositionManager:
                 "entry_stop": stop,
                 "entry_t1": target,
                 "veto_reason": None,
+                "llm_verdict": "TAKE",
                 "taken": 1,
             })
             if grade_val == "A":

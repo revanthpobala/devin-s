@@ -887,12 +887,15 @@ def evaluate_batch_pending(limit: int = 100, date_str: Optional[str] = None, for
 
 
 def format_intraday_entry_push(alert: Dict[str, Any], llm_note: str = "") -> str:
-    """Format single-block push notification for non-vetoed Grade-A ENTRY alert.
+    """Format push notification for non-vetoed Intraday ENTRY alert with empirical track record and conflict checks.
 
     Format:
-    [UNPROVEN] TICKER SIDE · Entry $XX.XX · Stop $XX.XX (X.XX%) · T1 $XX.XX
-    Grade A · Score XX/100 · HH:MM AM/PM ET · Wrong if: <wrong_if>
-    Note: <one-line LLM note>
+    !! CONFLICT: <chase >0.5R past entry | midday score<85 | LLM veto vs card ENTER | CPI/FOMC/NFP/earnings in note> (if any)
+    QQQ CALLS · Entry 512.40 · Stop 510.90 (0.29%, 0.8 ATR) · T1 515.10 · R:R 1.8
+    Wrong if: 15m close < 510.90
+    Track: Grade A 9-10h score85+ +0.22R n=40 win 45% (or "n=12, no read yet")
+    Unmeasured: stage=<align> · phase=<phase> · bias=<bias>
+    AI read: <llm note, max 200 chars>
     """
     payload = alert.get("raw_payload") or alert.get("payload") or {}
     if isinstance(payload, str):
@@ -902,38 +905,161 @@ def format_intraday_entry_push(alert: Dict[str, Any], llm_note: str = "") -> str
             payload = {}
 
     ticker = (alert.get("symbol") or alert.get("ticker") or "").strip().upper()
-    side = "SHORT" if ("PUT" in str(alert.get("action", "")).upper() or str(alert.get("side", "")).upper() == "SHORT") else "LONG"
+    raw_action = str(alert.get("action") or payload.get("action") or "").upper()
+    side = "SHORT" if ("PUT" in raw_action or str(alert.get("side", "")).upper() == "SHORT") else "LONG"
+    action_type = "PUTS" if side == "SHORT" else "CALLS"
 
     entry = float(payload.get("entry_px") or alert.get("entry_px") or alert.get("alert_price") or alert.get("market_price") or payload.get("price") or 0.0)
     stop = float(payload.get("entry_stop") or alert.get("entry_stop") or alert.get("stop") or payload.get("stop") or 0.0)
     t1 = float(payload.get("entry_t1") or alert.get("entry_t1") or alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target") or 0.0)
 
     stop_pct = (abs(entry - stop) / entry * 100.0) if entry > 0 and stop > 0 else 0.0
+    r_unit = abs(entry - stop)
+    t1_dist = abs(t1 - entry)
+    rr = (t1_dist / r_unit) if r_unit > 0 else 0.0
+
+    # ATR calculation
+    atr_val = None
+    atr_raw = payload.get("atr") or alert.get("atr") or payload.get("atr_at_signal")
+    if atr_raw is not None:
+        try:
+            atr_val = float(atr_raw)
+        except (ValueError, TypeError):
+            atr_val = None
+    if atr_val and atr_val > 0 and r_unit > 0:
+        atr_mult = r_unit / atr_val
+        stop_desc = f"({stop_pct:.2f}%, {atr_mult:.1f} ATR)"
+    else:
+        stop_desc = f"({stop_pct:.2f}%)"
+
     grade_raw = payload.get("grade") or alert.get("grade")
-    grade_str = str(grade_raw).upper() if grade_raw else "NULL"
+    grade_val = str(grade_raw).upper() if grade_raw not in (None, "", "NULL") else None
+    grade_str = grade_val or "NULL"
+
     score_raw = payload.get("score") or alert.get("score")
-    score_str = f"{int(float(score_raw))}/100" if score_raw not in (None, "") else "NULL"
-    time_et = alert.get("time_et") or alert.get("timestamp") or get_eastern_now().strftime("%I:%M %p ET")
-    wrong_if = str(payload.get("wrong_if") or alert.get("wrong_if") or "Confirmed stop / exit signal hit")
+    score_val = None
+    if score_raw not in (None, "", "NULL"):
+        try:
+            score_val = float(score_raw)
+            score_str = f"{int(score_val)}"
+        except (ValueError, TypeError):
+            score_str = "NULL"
+    else:
+        score_str = "NULL"
+
+    eastern_now = get_eastern_now()
+    hour_val = eastern_now.hour
+    time_et = alert.get("time_et") or alert.get("timestamp") or eastern_now.strftime("%I:%M %p ET")
+    if isinstance(time_et, str) and ":" in time_et:
+        # Try extracting hour from time string if available
+        parts = time_et.split(":")
+        clean_h = parts[0].strip()[-2:]
+        if clean_h.isdigit():
+            h_int = int(clean_h)
+            if "PM" in time_et.upper() and h_int < 12:
+                hour_val = h_int + 12
+            elif "AM" in time_et.upper() and h_int == 12:
+                hour_val = 0
+            else:
+                hour_val = h_int
+
+    # Conflict checks
+    conflicts: List[str] = []
+
+    # 1. chase >0.5R past entry
+    market_px_raw = alert.get("market_price") or alert.get("current_price") or payload.get("market_price") or payload.get("price")
+    if market_px_raw is not None and r_unit > 0:
+        try:
+            m_px = float(market_px_raw)
+            if m_px > 0 and entry > 0:
+                chase = (m_px - entry) if side == "LONG" else (entry - m_px)
+                if chase > 0.5 * r_unit:
+                    conflicts.append("chase >0.5R past entry")
+        except (ValueError, TypeError):
+            pass
+
+    # 2. midday score<85 (11:00 - 13:59 ET)
+    is_midday = 11 <= hour_val <= 13
+    if is_midday and (score_val is None or score_val < 85):
+        conflicts.append("midday score<85")
+
+    # 3. LLM veto vs card ENTER
+    note_up = (llm_note or "").upper()
+    v_hdr = str(alert.get("llm_decision") or alert.get("llm_verdict") or "").upper()
+    if ("STAND ASIDE" in note_up or "VETO" in note_up or "STAND ASIDE" in v_hdr or "VETO" in v_hdr) and ("ENTER" in raw_action or "BUY" in raw_action or "CALL" in raw_action or "PUT" in raw_action):
+        conflicts.append("LLM veto vs card ENTER")
+
+    # 4. CPI/FOMC/NFP/earnings in note
+    full_notes_text = f"{llm_note} {alert.get('note', '')} {payload.get('notes', '')}".upper()
+    for kw in ["CPI", "FOMC", "NFP", "EARNINGS"]:
+        if kw in full_notes_text:
+            conflicts.append(f"{kw.lower()} in note" if kw == "EARNINGS" else f"{kw} in note")
+            break
+
+    # Format lines
+    lines: List[str] = []
+    if conflicts:
+        lines.append(f"!! CONFLICT: {' | '.join(conflicts)}")
+
+    lines.append(f"{ticker} {action_type} · Entry {entry:.2f} · Stop {stop:.2f} {stop_desc} · T1 {t1:.2f} · R:R {rr:.1f}")
+
+    wrong_if = str(payload.get("wrong_if") or alert.get("wrong_if") or (f"15m close < {stop:.2f}" if side == "LONG" else f"15m close > {stop:.2f}"))
+    lines.append(f"Wrong if: {wrong_if}")
+
+    # Track line from empirical bucket stats
+    try:
+        from src.tracking.intraday_stats import lookup_bucket_stats
+        bucket_res = lookup_bucket_stats(grade=grade_val, hour=hour_val, score=score_val)
+        lines.append(f"Track: {bucket_res.get('text', 'no read yet')}")
+    except Exception:
+        lines.append("Track: n=0, no read yet")
+
+    align_val = payload.get("align") or alert.get("align") or "NULL"
+    phase_val = payload.get("phase") or alert.get("phase") or "NULL"
+    bias_val = payload.get("bias") or alert.get("bias") or "NULL"
+    lines.append(f"Unmeasured: stage={align_val} · phase={phase_val} · bias={bias_val}")
 
     note_clean = (llm_note or "").strip().replace("\n", " ")
-    if len(note_clean) > 120:
-        note_clean = note_clean[:117] + "..."
+    if len(note_clean) > 200:
+        note_clean = note_clean[:197] + "..."
+    lines.append(f"AI read: {note_clean or 'None'}")
 
-    lines = [
-        f"[UNPROVEN] {ticker} {side} · Entry ${entry:.2f} · Stop ${stop:.2f} ({stop_pct:.2f}%) · T1 ${t1:.2f}",
-        f"Grade {grade_str} · Score {score_str} · {time_et} · Wrong if: {wrong_if}",
-    ]
-    if note_clean:
-        lines.append(f"Note: {note_clean}")
     return "\n".join(lines)
 
 
-def format_intraday_exit_push(symbol: str, exit_r: float, session_r: float = 0.0, reason: str = "") -> str:
-    """Format single-line push notification for an intraday EXIT."""
+def format_intraday_exit_push(
+    symbol: str,
+    exit_r: float,
+    session_r: Optional[float] = None,
+    reason: str = "",
+    exit_why: str = "",
+    day_record: Optional[str] = None,
+) -> str:
+    """Format single-line push notification for an intraday EXIT.
+
+    Format: [EXIT] QQQ · +1.30R · day +2.10R (3W/1L) · why: <exit_why>
+    """
     sym = (symbol or "").strip().upper()
-    reason_str = f" ({reason})" if reason else ""
-    return f"[EXIT] {sym} · Exit: {exit_r:+.2f}R · Session: {session_r:+.2f}R{reason_str}"
+    why_clean = exit_why or reason or "EXIT"
+
+    sess_r = session_r
+    if sess_r is None:
+        try:
+            from src.tracking.alert_db import get_day_session_r
+            sess_r = get_day_session_r()
+        except Exception:
+            sess_r = exit_r
+
+    rec_str = day_record
+    if rec_str is None:
+        try:
+            from src.tracking.alert_db import get_day_session_record
+            wins, losses = get_day_session_record()
+            rec_str = f"({wins}W/{losses}L)"
+        except Exception:
+            rec_str = "(0W/0L)"
+
+    return f"[EXIT] {sym} · {exit_r:+.2f}R · day {sess_r:+.2f}R {rec_str} · why: {why_clean}"
 
 
 def notify_push(message: str) -> None:

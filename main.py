@@ -447,7 +447,12 @@ def process_alert_enrichment(alert: dict, sheets=None):
         # Record into intraday_signals shadow ledger table (Phase 0)
         if strategy == "Intraday":
             try:
-                from src.tracking.alert_db import get_canonical_trade_id, record_intraday_exit, upsert_intraday_signal
+                from src.tracking.alert_db import (
+                    format_llm_verdict,
+                    get_canonical_trade_id,
+                    record_intraday_exit,
+                    upsert_intraday_signal,
+                )
                 tid = get_canonical_trade_id(alert)
                 if is_exit:
                     pine_exit_r_val = float(alert.get("exit_r")) if alert.get("exit_r") is not None else None
@@ -469,6 +474,7 @@ def process_alert_enrichment(alert: dict, sheets=None):
                     stop_raw = alert.get("stop")
                     t1_raw = alert.get("t1") or alert.get("target_1")
                     t2_raw = alert.get("t2") or alert.get("target_2")
+                    verdict_val = format_llm_verdict(llm_decision)
                     upsert_intraday_signal({
                         "trade_id": tid,
                         "ticker": symbol,
@@ -484,6 +490,7 @@ def process_alert_enrichment(alert: dict, sheets=None):
                         "target_1": float(t1_raw) if t1_raw not in (None, "") else None,
                         "target_2": float(t2_raw) if t2_raw not in (None, "") else None,
                         "veto_reason": v_reason,
+                        "llm_verdict": verdict_val,
                         "pine_exit_r": float(alert.get("exit_r")) if alert.get("exit_r") is not None else None,
                     })
             except Exception as e_sig:

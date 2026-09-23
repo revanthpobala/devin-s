@@ -70,14 +70,15 @@ def test_push_formatters():
         "wrong_if": "5m close below $148.50",
     }
     push_entry = format_intraday_entry_push(alert, llm_note="Clean bounce off VWAP")
-    assert "[UNPROVEN] AAPL LONG" in push_entry
-    assert "Entry $150.00 · Stop $148.50 (1.00%) · T1 $153.00" in push_entry
-    assert "Grade A · Score 92/100 · 10:05 AM ET" in push_entry
+    assert "[UNPROVEN]" not in push_entry
+    assert "AAPL CALLS · Entry 150.00 · Stop 148.50 (1.00%) · T1 153.00 · R:R 2.0" in push_entry
     assert "Wrong if: 5m close below $148.50" in push_entry
-    assert "Note: Clean bounce off VWAP" in push_entry
+    assert "Track: n=0, no read yet" in push_entry
+    assert "Unmeasured: stage=NULL · phase=NULL · bias=NULL" in push_entry
+    assert "AI read: Clean bounce off VWAP" in push_entry
 
-    push_exit = format_intraday_exit_push("AAPL", exit_r=1.52, session_r=2.10, reason="T2 target hit")
-    assert push_exit == "[EXIT] AAPL · Exit: +1.52R · Session: +2.10R (T2 target hit)"
+    push_exit = format_intraday_exit_push("AAPL", exit_r=1.52, session_r=2.10, reason="T2 target hit", day_record="(3W/1L)")
+    assert push_exit == "[EXIT] AAPL · +1.52R · day +2.10R (3W/1L) · why: T2 target hit"
 
 
 def test_intraday_signals_ledger_lifecycle(tmp_path, monkeypatch):
@@ -386,3 +387,237 @@ def test_get_day_session_r_cumulative(tmp_path, monkeypatch):
 
     total_r = adb.get_day_session_r("2026-09-23")
     assert total_r == 2.50
+
+
+def test_entry_push_conflicts():
+    from src.tracking.alert_evaluator import format_intraday_entry_push
+
+    alert = {
+        "symbol": "QQQ",
+        "action": "BUY CALLS",
+        "entry_px": 500.0,
+        "entry_stop": 490.0,
+        "entry_t1": 520.0,
+        "grade": "A",
+        "score": 80,
+        "time_et": "12:00 PM ET",
+        "market_price": 506.0,
+        "wrong_if": "15m close < 490.00",
+    }
+    push_msg = format_intraday_entry_push(alert, llm_note="Watch for CPI data release")
+    assert "!! CONFLICT:" in push_msg
+    assert "chase >0.5R past entry" in push_msg
+    assert "midday score<85" in push_msg
+    assert "CPI in note" in push_msg
+
+
+def test_llm_verdict_written_and_not_nulled(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+
+    db_file = tmp_path / "test_verdict.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    # 1. Upsert with VETO
+    adb.upsert_intraday_signal({
+        "trade_id": "T_VETO",
+        "ticker": "AAPL",
+        "date": "2026-09-23",
+        "entry_ts": "10:00:00",
+        "llm_verdict": "VETO:Trend extension into resistance",
+        "taken": 0,
+    })
+
+    signals = adb.get_intraday_signals()
+    assert len(signals) == 1
+    assert signals[0]["llm_verdict"] == "VETO:Trend extension into resistance"
+
+    # 2. Subsequent upsert with None for llm_verdict does not overwrite
+    adb.upsert_intraday_signal({
+        "trade_id": "T_VETO",
+        "ticker": "AAPL",
+        "date": "2026-09-23",
+        "llm_verdict": None,
+        "pine_exit_r": -0.5,
+    })
+
+    signals = adb.get_intraday_signals()
+    assert signals[0]["llm_verdict"] == "VETO:Trend extension into resistance"
+    assert signals[0]["pine_exit_r"] == -0.5
+
+    # 3. Subsequent upsert with empty string does not overwrite
+    adb.upsert_intraday_signal({
+        "trade_id": "T_VETO",
+        "ticker": "AAPL",
+        "date": "2026-09-23",
+        "llm_verdict": "",
+    })
+    signals = adb.get_intraday_signals()
+    assert signals[0]["llm_verdict"] == "VETO:Trend extension into resistance"
+
+    # 4. Upsert with TAKE and GATE
+    adb.upsert_intraday_signal({
+        "trade_id": "T_TAKE",
+        "ticker": "MSFT",
+        "date": "2026-09-23",
+        "llm_verdict": "TAKE",
+        "taken": 1,
+    })
+    adb.upsert_intraday_signal({
+        "trade_id": "T_GATE",
+        "ticker": "NVDA",
+        "date": "2026-09-23",
+        "llm_verdict": "GATE:grade",
+        "taken": 0,
+    })
+    sig_take = next(s for s in adb.get_intraday_signals() if s["trade_id"] == "T_TAKE")
+    sig_gate = next(s for s in adb.get_intraday_signals() if s["trade_id"] == "T_GATE")
+    assert sig_take["llm_verdict"] == "TAKE"
+    assert sig_gate["llm_verdict"] == "GATE:grade"
+
+
+def test_by_llm_present_with_correct_means(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+    from src.tracking.intraday_stats import generate_postmortem_stats
+
+    db_file = tmp_path / "test_by_llm.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    # Insert TAKE rows (+1.0, +2.0 -> mean 1.5)
+    adb.upsert_intraday_signal({
+        "trade_id": "T_T1", "ticker": "AAPL", "date": "2026-09-23",
+        "llm_verdict": "TAKE", "exit_r": 1.0,
+    })
+    adb.upsert_intraday_signal({
+        "trade_id": "T_T2", "ticker": "MSFT", "date": "2026-09-23",
+        "llm_verdict": "TAKE", "exit_r": 2.0,
+    })
+
+    # Insert VETO rows (-1.0, -0.5 -> mean -0.75)
+    adb.upsert_intraday_signal({
+        "trade_id": "T_V1", "ticker": "NVDA", "date": "2026-09-23",
+        "llm_verdict": "VETO:Midday exhaustion", "exit_r": -1.0,
+    })
+    adb.upsert_intraday_signal({
+        "trade_id": "T_V2", "ticker": "AMD", "date": "2026-09-23",
+        "llm_verdict": "VETO:Chop", "exit_r": -0.5,
+    })
+
+    # Insert GATE row (-1.0)
+    adb.upsert_intraday_signal({
+        "trade_id": "T_G1", "ticker": "TSLA", "date": "2026-09-23",
+        "llm_verdict": "GATE:grade", "exit_r": -1.0,
+    })
+
+    stats = generate_postmortem_stats(db_path=db_file)
+    assert "by_llm" in stats
+    by_llm = stats["by_llm"]
+    assert "TAKE" in by_llm
+    assert "VETO" in by_llm
+    assert "GATE" in by_llm
+
+    assert by_llm["TAKE"]["scored_n"] == 2
+    assert by_llm["TAKE"]["mean_r"] == 1.5
+    assert by_llm["VETO"]["scored_n"] == 2
+    assert by_llm["VETO"]["mean_r"] == -0.75
+    assert by_llm["GATE"]["scored_n"] == 1
+    assert by_llm["GATE"]["mean_r"] == -1.0
+
+
+def test_no_read_stub_prints_when_n_under_30(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+    from src.tracking.intraday_stats import clear_bucket_stats_cache, lookup_bucket_stats
+
+    db_file = tmp_path / "test_bucket.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+    clear_bucket_stats_cache()
+
+    # 1. With 0 matching records, prints stub
+    res0 = lookup_bucket_stats(grade="A", hour=10, score=90, min_n=30, db_path=db_file)
+    assert res0["read"] is False
+    assert "no read yet" in res0["text"]
+    assert res0["n"] == 0
+
+    # 2. Insert 5 records (5 < 30) -> prints stub n=5
+    for i in range(5):
+        adb.upsert_intraday_signal({
+            "trade_id": f"T_BK_{i}",
+            "ticker": "AAPL",
+            "date": "2026-09-23",
+            "entry_ts": "10:15:00",
+            "hour": 10,
+            "grade": "A",
+            "score": 90,
+            "exit_r": 0.5,
+        })
+    clear_bucket_stats_cache()
+    res5 = lookup_bucket_stats(grade="A", hour=10, score=90, min_n=30, db_path=db_file)
+    assert res5["read"] is False
+    assert res5["n"] == 5
+    assert res5["text"] == "n=5, no read yet"
+
+    # 3. Insert 25 more records (total 30 >= 30) -> read is True
+    for i in range(5, 30):
+        adb.upsert_intraday_signal({
+            "trade_id": f"T_BK_{i}",
+            "ticker": "AAPL",
+            "date": "2026-09-23",
+            "entry_ts": "10:15:00",
+            "hour": 10,
+            "grade": "A",
+            "score": 90,
+            "exit_r": 0.5,
+        })
+    clear_bucket_stats_cache()
+    res30 = lookup_bucket_stats(grade="A", hour=10, score=90, min_n=30, db_path=db_file)
+    assert res30["read"] is True
+    assert res30["n"] == 30
+    assert "Grade A 9-10h score85+" in res30["text"]
+    assert "+0.50R" in res30["text"]
+
+
+def test_scoreboard_returns_both_sections(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+    import src.tracking.watch_manager as wm
+    from src.ui.routes.trades import get_scoreboard
+
+    db_intraday = tmp_path / "test_sb_intra.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_intraday)
+    adb.init_db()
+
+    db_swing = tmp_path / "test_sb_swing.db"
+    monkeypatch.setattr(wm, "DB_PATH", db_swing)
+    wm.init_watch_db()
+
+    # Seed 1 intraday row
+    adb.upsert_intraday_signal({
+        "trade_id": "T_SB_1",
+        "ticker": "AAPL",
+        "date": "2026-09-23",
+        "grade": "A",
+        "hour": 10,
+        "score": 90,
+        "llm_verdict": "TAKE",
+        "exit_r": 1.2,
+    })
+
+    sb = get_scoreboard(since=None)
+    assert "intraday" in sb
+    assert "swing" in sb
+
+    intra = sb["intraday"]
+    assert "by_grade" in intra
+    assert "by_hour" in intra
+    assert "by_score" in intra
+    assert "by_llm" in intra
+    assert "n_scored" in intra
+    assert "go_no_go" in intra
+    assert intra["n_scored"] == 1
+
+    # Every group with n < 30 carries "read": False
+    assert intra["by_grade"]["A"]["read"] is False
+    assert intra["by_llm"]["TAKE"]["read"] is False
+    assert isinstance(sb["swing"], list)
+

@@ -348,3 +348,41 @@ def update_suggestion_taken_endpoint(
     except Exception as e:
         logger.error(f"Error updating suggestion {suggestion_id}: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+@router.get("/api/scoreboard")
+def get_scoreboard(since: Optional[str] = Query(None)):
+    """Return unified empirical scoreboard for Intraday and Swing suggestions."""
+    try:
+        from src.tracking.intraday_stats import generate_postmortem_stats
+        from src.tracking.suggestions_ledger import get_per_source_stats
+
+        stats = generate_postmortem_stats(since=since)
+        intraday_data = {
+            "by_grade": stats.get("by_grade", {}),
+            "by_hour": stats.get("by_hour", {}),
+            "by_score": stats.get("by_score", {}),
+            "by_llm": stats.get("by_llm", {}),
+            "n_scored": stats.get("n_scored", 0),
+            "go_no_go": stats.get("go_no_go", {}),
+        }
+
+        swing_data = get_per_source_stats(since=since)
+        return {
+            "intraday": intraday_data,
+            "swing": swing_data,
+        }
+    except Exception as e:
+        logger.error(f"Error generating scoreboard: {e}", exc_info=True)
+        return {
+            "intraday": {
+                "by_grade": {},
+                "by_hour": {},
+                "by_score": {},
+                "by_llm": {},
+                "n_scored": 0,
+                "go_no_go": {},
+            },
+            "swing": [],
+            "error": str(e),
+        }

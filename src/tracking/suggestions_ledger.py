@@ -237,16 +237,22 @@ def get_ledger_summary(ticker: Optional[str] = None, limit: int = 100) -> Dict[s
             }
 
 
-def get_per_source_stats() -> List[Dict[str, Any]]:
+def get_per_source_stats(since: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return performance aggregated per research source, split by gate_status."""
     with _db_lock:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             try:
-                pairs = cursor.execute(
-                    "SELECT DISTINCT source, COALESCE(gate_status, 'PASS') as gate_status FROM suggestions ORDER BY source, gate_status"
-                ).fetchall()
+                if since:
+                    pairs = cursor.execute(
+                        "SELECT DISTINCT source, COALESCE(gate_status, 'PASS') as gate_status FROM suggestions WHERE date >= ? ORDER BY source, gate_status",
+                        (since,),
+                    ).fetchall()
+                else:
+                    pairs = cursor.execute(
+                        "SELECT DISTINCT source, COALESCE(gate_status, 'PASS') as gate_status FROM suggestions ORDER BY source, gate_status"
+                    ).fetchall()
             except Exception:
                 return []
 
@@ -254,9 +260,16 @@ def get_per_source_stats() -> List[Dict[str, Any]]:
             for p in pairs:
                 src = p["source"]
                 gate_st = p["gate_status"]
-                rows = cursor.execute(
-                    "SELECT * FROM suggestions WHERE source = ? AND COALESCE(gate_status, 'PASS') = ?", (src, gate_st)
-                ).fetchall()
+                if since:
+                    rows = cursor.execute(
+                        "SELECT * FROM suggestions WHERE source = ? AND COALESCE(gate_status, 'PASS') = ? AND date >= ?",
+                        (src, gate_st, since),
+                    ).fetchall()
+                else:
+                    rows = cursor.execute(
+                        "SELECT * FROM suggestions WHERE source = ? AND COALESCE(gate_status, 'PASS') = ?",
+                        (src, gate_st),
+                    ).fetchall()
                 total = len(rows)
                 taken_count = sum(1 for r in rows if r["taken"])
                 scored_rows = [r for r in rows if r["r_net"] is not None]
@@ -275,13 +288,17 @@ def get_per_source_stats() -> List[Dict[str, Any]]:
                 stats.append({
                     "source": src,
                     "gate_status": gate_st,
+                    "n": total,
                     "total": total,
+                    "scored": len(scored_rows),
                     "scored_count": len(scored_rows),
                     "mean_r": mean_r,
                     "median_r": median_r,
+                    "win": win_pct,
                     "win_rate_pct": win_pct,
                     "stop_out_pct": stopped_pct,
                     "taken_count": taken_count,
                     "not_taken_count": total - taken_count,
+                    "read": len(scored_rows) >= 30,
                 })
             return stats

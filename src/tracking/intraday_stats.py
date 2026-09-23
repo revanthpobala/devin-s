@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,47 @@ from src.tracking import alert_db
 from src.tracking.alert_db import get_eastern_now
 
 logger = logging.getLogger(__name__)
+
+_BUCKET_CACHE: Dict[str, Any] = {"timestamp": 0.0, "db_path": "", "rows": []}
+
+
+def clear_bucket_stats_cache() -> None:
+    """Clear in-memory 5-minute bucket stats cache."""
+    global _BUCKET_CACHE
+    _BUCKET_CACHE = {"timestamp": 0.0, "db_path": "", "rows": []}
+
+
+def _get_cached_scored_rows(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    global _BUCKET_CACHE
+    path = db_path or alert_db.DB_PATH
+    now = time.time()
+    if (
+        _BUCKET_CACHE["rows"]
+        and _BUCKET_CACHE["db_path"] == str(path)
+        and (now - _BUCKET_CACHE["timestamp"]) < 300.0
+    ):
+        return _BUCKET_CACHE["rows"]
+
+    if not path.exists():
+        return []
+
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM intraday_signals
+            WHERE COALESCE(pine_exit_r, exit_r) IS NOT NULL
+            ORDER BY date ASC, entry_ts ASC
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    _BUCKET_CACHE = {"timestamp": now, "db_path": str(path), "rows": rows}
+    return rows
 
 
 def _sanitize_veto_reason(reason: Optional[str]) -> str:
@@ -83,7 +125,150 @@ def compute_group_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def generate_postmortem_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
+def lookup_bucket_stats(
+    grade: Optional[str],
+    hour: Optional[int],
+    score: Optional[float],
+    min_n: int = 30,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Look up empirical edge stats for a specific (grade, hour, score) bucket.
+
+    Rows: COALESCE(pine_exit_r, exit_r) is not null.
+    Bucket: grade x hour band (9-10 / 11-13 / 14-15) x score band (<85 / >=85).
+    Math: reuse compute_group_stats.
+    Output: a stub when n < min_n; cache for 5 minutes.
+    """
+    grade_missing = grade in (None, "", "NULL")
+    score_missing = score in (None, "", "NULL")
+    if grade_missing or score_missing or hour is None:
+        parts = []
+        if grade_missing:
+            parts.append("Grade NULL")
+        if score_missing:
+            parts.append("Score NULL")
+        prefix = f"{' · '.join(parts)} " if parts else ""
+        return {
+            "n": 0,
+            "scored_n": 0,
+            "mean_r": 0.0,
+            "win_rate": 0.0,
+            "stop_rate": 0.0,
+            "read": False,
+            "text": f"{prefix}n=0, no read yet".strip(),
+        }
+
+    try:
+        score_num = float(score)
+    except (ValueError, TypeError):
+        return {
+            "n": 0,
+            "scored_n": 0,
+            "mean_r": 0.0,
+            "win_rate": 0.0,
+            "stop_rate": 0.0,
+            "read": False,
+            "text": "Score NULL n=0, no read yet",
+        }
+
+    try:
+        hour_num = int(hour)
+    except (ValueError, TypeError):
+        return {
+            "n": 0,
+            "scored_n": 0,
+            "mean_r": 0.0,
+            "win_rate": 0.0,
+            "stop_rate": 0.0,
+            "read": False,
+            "text": "n=0, no read yet",
+        }
+
+    if 9 <= hour_num <= 10:
+        h_band = "9-10"
+        h_label = "9-10h"
+    elif 11 <= hour_num <= 13:
+        h_band = "11-13"
+        h_label = "11-13h"
+    elif 14 <= hour_num <= 15:
+        h_band = "14-15"
+        h_label = "14-15h"
+    else:
+        h_band = f"{hour_num}"
+        h_label = f"{hour_num}h"
+
+    if score_num < 85:
+        s_band = "<85"
+        s_label = "score<85"
+    else:
+        s_band = "85+"
+        s_label = "score85+"
+
+    grade_clean = str(grade).strip().upper()
+    rows = _get_cached_scored_rows(db_path=db_path)
+
+    matched_rows = []
+    for r in rows:
+        r_grade = str(r.get("grade") or "").strip().upper()
+        if r_grade != grade_clean:
+            continue
+
+        r_hour = r.get("hour")
+        if r_hour is None:
+            ts = str(r.get("entry_ts") or "")
+            if len(ts) >= 2 and ts[:2].isdigit():
+                try:
+                    r_hour = int(ts[:2])
+                except ValueError:
+                    r_hour = None
+        if r_hour is None:
+            continue
+
+        if 9 <= int(r_hour) <= 10:
+            r_h_band = "9-10"
+        elif 11 <= int(r_hour) <= 13:
+            r_h_band = "11-13"
+        elif 14 <= int(r_hour) <= 15:
+            r_h_band = "14-15"
+        else:
+            r_h_band = f"{r_hour}"
+
+        if r_h_band != h_band:
+            continue
+
+        r_score = r.get("score")
+        if r_score is None:
+            continue
+        try:
+            r_score_num = float(r_score)
+        except (ValueError, TypeError):
+            continue
+
+        r_s_band = "<85" if r_score_num < 85 else "85+"
+        if r_s_band != s_band:
+            continue
+
+        matched_rows.append(r)
+
+    stats = compute_group_stats(matched_rows)
+    n = stats["scored_n"]
+    if n < min_n:
+        stats["read"] = False
+        stats["text"] = f"n={n}, no read yet"
+        return stats
+
+    stats["read"] = True
+    stats["text"] = (
+        f"Grade {grade_clean} {h_label} {s_label} {stats['mean_r']:+.2f}R "
+        f"n={n} win {int(round(stats['win_rate']))}%"
+    )
+    return stats
+
+
+def generate_postmortem_stats(
+    db_path: Optional[Path] = None,
+    since: Optional[str] = None,
+) -> Dict[str, Any]:
     """Load all intraday_signals and generate structured multi-factor R attribution."""
     path = db_path or alert_db.DB_PATH
     if not path.exists():
@@ -95,18 +280,45 @@ def generate_postmortem_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
     cur = conn.cursor()
 
     try:
-        cur.execute("SELECT * FROM intraday_signals ORDER BY date ASC, entry_ts ASC")
+        if since:
+            cur.execute(
+                "SELECT * FROM intraday_signals WHERE date >= ? ORDER BY date ASC, entry_ts ASC",
+                (since,),
+            )
+        else:
+            cur.execute("SELECT * FROM intraday_signals ORDER BY date ASC, entry_ts ASC")
         rows = [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
 
     if not rows:
-        return {}
+        return {
+            "total_count": 0,
+            "n_scored": 0,
+            "by_grade": {},
+            "by_hour": {},
+            "by_score": {},
+            "by_veto": {},
+            "by_llm": {
+                "TAKE": {"n": 0, "scored_n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0, "read": False},
+                "VETO": {"n": 0, "scored_n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0, "read": False},
+                "GATE": {"n": 0, "scored_n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0, "read": False},
+            },
+            "go_no_go": {
+                "n_grade_a": 0,
+                "mean_grade_a_r": 0.0,
+                "positive_days": 0,
+                "total_days": 0,
+                "day_win_rate": 0.0,
+                "status": "INSUFFICIENT SAMPLE (0/200 pairs)",
+            },
+        }
 
     by_grade: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     by_hour: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     by_score: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     by_veto: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    by_llm: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     by_day_grade_a: Dict[str, List[float]] = defaultdict(list)
 
     grade_a_scored_pairs = []
@@ -132,6 +344,26 @@ def generate_postmortem_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
 
         veto_cat = _sanitize_veto_reason(row.get("veto_reason"))
         by_veto[veto_cat].append(row)
+
+        v_raw = str(row.get("llm_verdict") or "").strip().upper()
+        if v_raw.startswith("TAKE"):
+            llm_cat = "TAKE"
+        elif v_raw.startswith("VETO"):
+            llm_cat = "VETO"
+        elif v_raw.startswith("GATE"):
+            llm_cat = "GATE"
+        else:
+            if row.get("taken"):
+                llm_cat = "TAKE"
+            elif row.get("veto_reason"):
+                v_hdr = str(row.get("veto_reason")).upper()
+                if "GRADE" in v_hdr or "STAND ASIDE (" in v_hdr:
+                    llm_cat = "GATE"
+                else:
+                    llm_cat = "VETO"
+            else:
+                llm_cat = "TAKE"
+        by_llm[llm_cat].append(row)
 
         # Track Grade-A Go/No-Go condition
         if grade == "A":
@@ -161,12 +393,26 @@ def generate_postmortem_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
     else:
         go_status = f"INSUFFICIENT SAMPLE ({n_a}/200 pairs)"
 
+    def _with_read_flag(st: Dict[str, Any]) -> Dict[str, Any]:
+        st["read"] = st.get("scored_n", st.get("n", 0)) >= 30
+        return st
+
+    n_scored = sum(
+        1 for r in rows
+        if r.get("exit_r") is not None or r.get("pine_exit_r") is not None or r.get("replay_r") is not None
+    )
+
     return {
         "total_count": len(rows),
-        "by_grade": {g: compute_group_stats(rows_g) for g, rows_g in by_grade.items()},
-        "by_hour": {h: compute_group_stats(rows_h) for h, rows_h in sorted(by_hour.items())},
-        "by_score": {s: compute_group_stats(rows_s) for s, rows_s in by_score.items()},
-        "by_veto": {v: compute_group_stats(rows_v) for v, rows_v in sorted(by_veto.items())},
+        "n_scored": n_scored,
+        "by_grade": {g: _with_read_flag(compute_group_stats(rows_g)) for g, rows_g in by_grade.items()},
+        "by_hour": {h: _with_read_flag(compute_group_stats(rows_h)) for h, rows_h in sorted(by_hour.items())},
+        "by_score": {s: _with_read_flag(compute_group_stats(rows_s)) for s, rows_s in by_score.items()},
+        "by_veto": {v: _with_read_flag(compute_group_stats(rows_v)) for v, rows_v in sorted(by_veto.items())},
+        "by_llm": {
+            k: _with_read_flag(compute_group_stats(by_llm.get(k, [])))
+            for k in ["TAKE", "VETO", "GATE"]
+        },
         "go_no_go": {
             "n_grade_a": n_a,
             "mean_grade_a_r": mean_a,

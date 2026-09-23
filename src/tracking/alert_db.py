@@ -908,7 +908,10 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
                         entry_t1=COALESCE(intraday_signals.entry_t1, excluded.entry_t1),
                         target_2=COALESCE(intraday_signals.target_2, excluded.target_2),
                         veto_reason=COALESCE(excluded.veto_reason, intraday_signals.veto_reason),
-                        llm_verdict=COALESCE(excluded.llm_verdict, intraday_signals.llm_verdict),
+                        llm_verdict=CASE
+                            WHEN excluded.llm_verdict IS NOT NULL AND TRIM(excluded.llm_verdict) != '' THEN excluded.llm_verdict
+                            ELSE intraday_signals.llm_verdict
+                        END,
                         exit_r=COALESCE(excluded.exit_r, intraday_signals.exit_r),
                         exit_why=COALESCE(excluded.exit_why, intraday_signals.exit_why),
                         pine_exit_r=COALESCE(excluded.pine_exit_r, intraday_signals.pine_exit_r),
@@ -937,7 +940,7 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
                         entry_t1,
                         signal.get("target_2"),
                         signal.get("veto_reason"),
-                        signal.get("llm_verdict"),
+                        str(signal.get("llm_verdict")).strip() if signal.get("llm_verdict") not in (None, "") else None,
                         exit_r,
                         exit_why,
                         signal.get("pine_exit_r"),
@@ -1054,6 +1057,88 @@ def get_day_session_r(date: Optional[str] = None) -> float:
             row = cur.fetchone()
             val = row[0] if row and row[0] is not None else 0.0
             return round(float(val), 2)
+
+
+def get_day_session_record(date: Optional[str] = None) -> tuple[int, int]:
+    """Return (wins, losses) for completed intraday exits on date."""
+    d_str = date or get_eastern_now().strftime("%Y-%m-%d")
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN exit_r > 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN exit_r <= 0 THEN 1 ELSE 0 END)
+                FROM intraday_signals
+                WHERE date = ? AND exit_r IS NOT NULL
+                """,
+                (d_str,),
+            )
+            row = cur.fetchone()
+            wins = int(row[0] or 0) if row else 0
+            losses = int(row[1] or 0) if row else 0
+            return wins, losses
+
+
+def format_llm_verdict(decision: Optional[str] = None, risk_veto_header: Optional[str] = None) -> str:
+    """Format verdict as TAKE, VETO:<first 80 chars of reason>, or GATE:<rule>."""
+    if risk_veto_header:
+        hdr_up = str(risk_veto_header).upper()
+        if "GRADE" in hdr_up:
+            return "GATE:grade"
+        if "EXHAUSTION" in hdr_up or "10:30-11:30" in hdr_up:
+            return "GATE:time"
+        if "LUNCH" in hdr_up:
+            return "GATE:time"
+        if "COUNTER-STAGE" in hdr_up or "STAGE 4" in hdr_up or "STAGE 2" in hdr_up or "REGIME" in hdr_up:
+            return "GATE:stage"
+        if "MAX EXPOSURE" in hdr_up or "MAX_CONCURRENT" in hdr_up:
+            return "GATE:max_exposure"
+        if "DAY PAUSE" in hdr_up:
+            return "GATE:day_pause"
+        if "EXCLUDED" in hdr_up:
+            return "GATE:excluded"
+        return f"GATE:{risk_veto_header[:40].strip()}"
+
+    text = str(decision or "").strip()
+    if not text:
+        return "TAKE"
+
+    if text.startswith("GATE:"):
+        return text
+    if text.startswith("VETO:"):
+        return text[:85]
+    if text.upper() == "TAKE" or text.upper().startswith("TAKE"):
+        return "TAKE"
+
+    t_up = text.upper()
+    if "GRADE" in t_up:
+        return "GATE:grade"
+    if "EXHAUSTION" in t_up or "10:30-11:30" in t_up:
+        return "GATE:time"
+    if "LUNCH" in t_up:
+        return "GATE:time"
+    if "COUNTER-STAGE" in t_up or "STAGE 4" in t_up or "STAGE 2" in t_up:
+        return "GATE:stage"
+    if "MAX EXPOSURE" in t_up:
+        return "GATE:max_exposure"
+    if "DAY PAUSE" in t_up:
+        return "GATE:day_pause"
+    if "EXCLUDED" in t_up:
+        return "GATE:excluded"
+
+    if "STAND ASIDE" in t_up or "VETO" in t_up or "WAIT" in t_up:
+        clean = text
+        for prefix in ["🛡️", "⛔", "—", "-", "[", "]"]:
+            clean = clean.replace(prefix, " ")
+        clean = " ".join(clean.split()).strip()
+        if "STAND ASIDE" in clean.upper():
+            idx = clean.upper().find("STAND ASIDE")
+            clean = clean[idx + len("STAND ASIDE"):].strip(" :—-( )")
+        return f"VETO:{clean[:80].strip() or 'AI triage stand aside'}"
+
+    return "TAKE"
 
 
 def get_intraday_signals(
