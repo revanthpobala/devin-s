@@ -248,7 +248,7 @@ python run_watch_alerts.py --sync --date 2026-08-29
 - `data/positions.json` is the authoritative record (ticker, side, entry, stop, target, last eval)
 - ENTRY alert → opens a position + spawns a per-ticker monitor thread
 - EXIT alert (TradingView) → routes through the **Institutional Exit Veto Engine** (`skills/exit_management_and_veto.md`):
-  - **Tier 1 (Scale Trim / Target Hit)**: Automatically locks profit on 50% at Target 1 ($R \ge 1.5$) and ratchets remaining stop to Break-Even + $0.05 buffer (Golden Lock rule: never turn a winning trade into a loss). Closes remainder at Target 2.
+  - **Tier 1 (Scale Trim / Target Hit)**: Automatically locks profit on 50% at Target 1 ($R \ge 1.5$) and ratchets remaining stop to Break-Even + max($0.05, 0.1×ATR) buffer (Golden Lock rule: never turn a winning trade into a loss). Closes remainder at Target 2.
   - **Tier 2 (Catastrophic Circuit Breaker)**: Mandatory market exit if drawdown reaches $\ge 1.25\times$ 5m ATR or 30% option premium loss.
   - **Tier 3 (Technical Invalidation vs Wick Tap)**: Vetoes false exits if price wicks through invalidation but candle closes structurally intact above VWAP/POC. Confirms exit if 5m candle closes beyond line on volume.
   - **Tier 4 (Midday Chop Stagnation Kill)**: Scratches stagnant positions open $\ge 35$ minutes between 11:15 MT and 12:45 MT without Target 1 to prevent theta bleed.

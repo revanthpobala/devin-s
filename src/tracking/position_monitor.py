@@ -45,6 +45,61 @@ ATR_STOP_MULTIPLIER = 1.25
 FLAT_CATASTROPHIC_PCT = 0.025
 OPTION_PREMIUM_CATASTROPHIC_PCT = 0.30
 
+# Position sizing: fixed-fractional risk — risk RISK_PCT of notional per trade,
+# scaled by conviction grade multiplier (A+ > A > B).
+RISK_PCT = 0.01  # 1% of notional per trade
+GRADE_MULTIPLIER = {"A+": 1.5, "A": 1.2, "B": 0.8, "C": 0.5}
+DEFAULT_QTY = 100.0
+
+# ============================================================================
+# THRESHOLD AUDIT TRAIL (Fix #6) — all magic numbers in this file and
+# src/tracking/alert_evaluator.py. Each threshold below MUST be validated by
+# replaying it against historical data before trusting autonomous operation.
+# Replay scripts: scripts/replay_llm.py, scripts/replay_verify.py, scripts/veto_audit.py
+#
+# | Threshold | Value | Location | Backtest Status |
+# |-----------|-------|----------|-----------------|
+# | 1.25x ATR stop | ATR_STOP_MULTIPLIER | _catastrophic_stop_distance | PENDING — scripts/replay_verify.py |
+# | 2.5% drawdown | FLAT_CATASTROPHIC_PCT | _catastrophic_breached | PENDING — scripts/replay_verify.py |
+# | 30% premium loss | OPTION_PREMIUM_CATASTROPHIC_PCT | _catastrophic_breached | PENDING — scripts/replay_verify.py |
+# | BE lock: 0.5x ATR x qty | be_trigger | _tick (was $100 flat) | PENDING — scripts/replay_verify.py |
+# | BE buffer: max($0.05, 0.1x ATR) | be_buffer | _tick (was $0.05 flat) | PENDING — scripts/replay_verify.py |
+# | Runner lock: 2.0x ATR x qty | runner_trigger | _tick (was $200 flat) | PENDING — scripts/replay_verify.py |
+# | Midday chop window | 35 min in 11:15-12:45 MT | _tick | PENDING — scripts/replay_verify.py |
+# | DAY_PAUSE 3-loss | in alert_evaluator.py | evaluate_risk_vetoes | PENDING — scripts/replay_verify.py |
+# | Lunch-gate score 88 | in alert_evaluator.py | evaluate_risk_vetoes | PENDING — scripts/replay_verify.py |
+# | RVOL 1.8x bypass | in alert_evaluator.py | evaluate_risk_vetoes | PENDING — scripts/replay_verify.py |
+#
+# To validate: run each replay script, record pass/fail rate, update this table.
+# ============================================================================
+
+# Position sizing: fixed-fractional risk — risk RISK_PCT of notional per trade,
+# scaled by conviction grade multiplier (A+ > A > B).
+RISK_PCT = 0.01  # 1% of notional per trade
+GRADE_MULTIPLIER = {"A+": 1.5, "A": 1.2, "B": 0.8, "C": 0.5}
+DEFAULT_QTY = 100.0
+
+
+def _compute_position_size(
+    entry_price: float, atr: float, score: int = 85, grade: str = "A",
+) -> float:
+    """Fixed-fractional position size: risk dollars / (ATR-based stop distance).
+
+    Risk = RISK_PCT * (entry_price * DEFAULT_QTY) * grade_multiplier.
+    Size = risk_dollars / max(atr * ATR_STOP_MULTIPLIER, entry_price * 0.005).
+    Falls back to DEFAULT_QTY if inputs are degenerate."""
+    try:
+        grade_mult = GRADE_MULTIPLIER.get(grade.upper(), 1.0)
+        notional = entry_price * DEFAULT_QTY
+        risk_dollars = RISK_PCT * notional * grade_mult
+        stop_distance = max(atr * ATR_STOP_MULTIPLIER, entry_price * 0.005)
+        if stop_distance <= 0:
+            return DEFAULT_QTY
+        qty = risk_dollars / stop_distance
+        return max(round(qty, 2), 1.0)
+    except Exception:
+        return DEFAULT_QTY
+
 
 def _catastrophic_stop_distance(rec: dict) -> float | None:
     """Dollar distance of the initial stop from entry — i.e. 1.25x 5m ATR, the
@@ -475,6 +530,21 @@ class PositionMonitor(threading.Thread):
             peak_price = float(rec.get("peak_price") or entry or price)
             eval_reason = ""
 
+            # Compute ATR for threshold scaling (Fix #3/#4/#5: replace flat dollars with ATR-scaled values)
+            try:
+                from src.clients.schwab_client import calculate_intraday_atr as _atr_fn
+                atr = _atr_fn(self.ticker)
+            except Exception:
+                atr = None
+            if not atr or atr <= 0:
+                atr = float(rec.get("atr", 0.0) or 0.0)
+            if not atr or atr <= 0:
+                atr = round(entry * 0.01, 2) if entry and entry > 0 else 1.0
+            qty = float(rec.get("remaining_quantity", 100) or 100)
+            be_buffer = max(0.05, 0.1 * atr)
+            be_trigger = 0.5 * atr * qty
+            runner_trigger = 2.0 * atr * qty
+
             # 2a. Track High-Water Mark (Peak Price)
             if side == "LONG":
                 if price > peak_price:
@@ -495,8 +565,8 @@ class PositionMonitor(threading.Thread):
                     target_dist = abs(float(target) - float(entry))
                     halfway_to_target = unrealized_gain >= (0.5 * target_dist)
 
-                if not be_locked and (unrealized_pnl >= 100.0 or halfway_to_target):
-                    be_stop = round(float(entry) + 0.05, 2) if side == "LONG" else round(float(entry) - 0.05, 2)
+                if not be_locked and (unrealized_pnl >= be_trigger or halfway_to_target):
+                    be_stop = round(float(entry) + be_buffer, 2) if side == "LONG" else round(float(entry) - be_buffer, 2)
                     should_move = (side == "LONG" and (stop is None or float(stop) < be_stop)) or \
                                   (side == "SHORT" and (stop is None or float(stop) > be_stop))
                     if should_move:
@@ -509,25 +579,25 @@ class PositionMonitor(threading.Thread):
                             f"AUTONOMOUSLY RATCHETED STOP TO BREAK-EVEN+ (${stop})."
                         )
 
-            # 2c. Target 1 Reached: Golden Lock (50% scale + trail runner to BE+ 0.05)
+            # 2c. Target 1 Reached: Golden Lock (50% scale + trail runner to BE+ max($0.05, 0.1×ATR))
             if side == "LONG":
                 if target is not None and price >= float(target):
                     hit_target = True
                     if not scaled_at_t1:
                         from src.tracking.position_state import scale_position
-                        scale_position(self.ticker, scale_pct=0.5, fill_price=price, reason=f"Target 1 hit at ${price:.2f} — Golden Lock 50% scale")
-                        stop = round(float(entry) + 0.05, 2) if entry else stop
+                        scale_position(self.ticker, scale_pct=0.5, fill_price=price, atr=atr, reason=f"Target 1 hit at ${price:.2f} — Golden Lock 50% scale")
+                        stop = round(float(entry) + be_buffer, 2) if entry else stop
                         trailed_stop = True
                         eval_reason = f"🎯 Target hit at {price}. Scaled 50%, stop trailed to BE+ (${stop})."
                     elif entry is not None and stop is not None and float(stop) < float(entry):
-                        stop = round(float(entry) + 0.05, 2)
+                        stop = round(float(entry) + be_buffer, 2)
                         trailed_stop = True
                         eval_reason = f"🎯 Target hit at {price}. Stop trailed to BE+ (${stop})."
 
-                # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= $200)
+                # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= 2.0x ATR)
                 if scaled_at_t1 and entry:
                     peak_gain = (peak_price - entry)
-                    if peak_gain * rec.get("remaining_quantity", 100) * rec.get("multiplier", 1) >= 200.0:
+                    if peak_gain * qty >= runner_trigger:
                         locked_gain = peak_gain * 0.65
                         lock_stop = round(float(entry) + locked_gain, 2)
                         if stop is None or float(stop) < lock_stop:
@@ -547,19 +617,19 @@ class PositionMonitor(threading.Thread):
                     hit_target = True
                     if not scaled_at_t1:
                         from src.tracking.position_state import scale_position
-                        scale_position(self.ticker, scale_pct=0.5, fill_price=price, reason=f"Target 1 hit at ${price:.2f} — Golden Lock 50% scale")
-                        stop = round(float(entry) - 0.05, 2) if entry else stop
+                        scale_position(self.ticker, scale_pct=0.5, fill_price=price, atr=atr, reason=f"Target 1 hit at ${price:.2f} — Golden Lock 50% scale")
+                        stop = round(float(entry) - be_buffer, 2) if entry else stop
                         trailed_stop = True
                         eval_reason = f"🎯 Target hit at {price}. Scaled 50%, stop trailed to BE+ (${stop})."
                     elif entry is not None and stop is not None and float(stop) > float(entry):
-                        stop = round(float(entry) - 0.05, 2)
+                        stop = round(float(entry) - be_buffer, 2)
                         trailed_stop = True
                         eval_reason = f"🎯 Target hit at {price}. Stop trailed to BE+ (${stop})."
 
-                # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= $200)
+                # 2d. Post-T1 Runner Protection (Trail at least 65% of peak gains once peak >= 2.0x ATR)
                 if scaled_at_t1 and entry:
                     peak_gain = (entry - peak_price)
-                    if peak_gain * rec.get("remaining_quantity", 100) * rec.get("multiplier", 1) >= 200.0:
+                    if peak_gain * qty >= runner_trigger:
                         locked_gain = peak_gain * 0.65
                         lock_stop = round(float(entry) - locked_gain, 2)
                         if stop is None or float(stop) > lock_stop:
@@ -610,13 +680,6 @@ class PositionMonitor(threading.Thread):
 
         playbook = self._eval_playbook(rec, price)
         if playbook:
-            # Sovereign LLM Exit Directive
-            if any(term in playbook.upper() for term in ("ACTION: EXIT", "🔴 EXIT CONFIRMED", "ACTION: CLOSE", "INVALIDATED — EXIT")):
-                logger.warning(f"[monitor:{self.ticker}] 🔴 LLM SOVEREIGN EXIT DIRECTIVE TRIGGERED: closing position at ${price:.2f}.")
-                close_position(self.ticker, exit_price=price, exit_reason=f"LLM Sovereign Exit Directive: {playbook[:100]}")
-                self._stop.set()
-                return
-
             if trailed_stop and msg:
                 playbook = f"{msg}\n\n" + playbook
             update_position(self.ticker, last_eval=playbook, last_eval_at=_now_iso())
@@ -633,11 +696,14 @@ class PositionMonitor(threading.Thread):
             from src.clients.llm_client import query_local_llm
 
             rules_path = config.BASE_DIR / "gems" / "revanth-0dte.md"
-            system_prompt = (
-                rules_path.read_text(encoding="utf-8")
-                if rules_path.exists()
-                else "You are a trading analyst."
-            )
+            if rules_path.exists():
+                system_prompt = rules_path.read_text(encoding="utf-8")
+            else:
+                logger.warning(
+                    f"[monitor:{self.ticker}] ⚠️ Gem file not found at {rules_path} — "
+                    "playbook LLM running on generic prompt. Check that gems/revanth-0dte.md exists."
+                )
+                system_prompt = "You are a trading analyst."
             vix = get_current_price("VIX")
             ctx = {
                 "ticker": self.ticker,
@@ -924,6 +990,18 @@ class PositionManager:
             if target is None:
                 target = round(entry + 1.5 * atr, 2) if side == "LONG" else round(entry - 1.5 * atr, 2)
 
+        # Compute conviction-based position size
+        try:
+            from src.clients.schwab_client import calculate_intraday_atr as _atr
+            atr_val = _atr(symbol) or round(entry * 0.01, 2) if entry else 0.0
+        except Exception:
+            atr_val = round(entry * 0.01, 2) if entry else 0.0
+        if not atr_val or atr_val <= 0:
+            atr_val = round(entry * 0.01, 2) if entry else 1.0
+        computed_qty = _compute_position_size(
+            entry, atr_val, score=score_val, grade=grade_val,
+        )
+
         open_position(
             symbol,
             side=side,
@@ -933,6 +1011,7 @@ class PositionManager:
             target=target,
             alert_price=entry,
             raw_alert=alert,
+            quantity=computed_qty,
         )
         self._ensure_monitor(symbol)
 

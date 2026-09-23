@@ -172,9 +172,12 @@ def open_position(
     return rec
 
 
-def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None = None, reason: str = "T1_SCALE") -> dict | None:
+def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None = None, reason: str = "T1_SCALE", atr: float | None = None) -> dict | None:
     """Scale out a portion (default 50%) of the position at Target 1, realizing partial profit
-    and ratcheting runner stop to Break-Even + $0.05 buffer (Rule 4.1.1 Golden Lock)."""
+    and ratcheting runner stop to Break-Even + max($0.05, 0.1×ATR) buffer (Rule 4.1.1 Golden Lock).
+
+    If atr is provided, the BE+ buffer scales with volatility; otherwise falls back to $0.05 flat.
+    """
     ticker = ticker.strip().upper()
     now = _now_iso()
     with _state_lock:
@@ -199,8 +202,9 @@ def scale_position(ticker: str, scale_pct: float = 0.5, fill_price: float | None
         prior_pnl = rec.get("realized_pnl", 0.0) or 0.0
         total_realized = round(prior_pnl + realized_add, 2)
 
-        # Move runner stop to BE+ 0.05
-        runner_stop = round(entry + 0.05, 2) if "LONG" in side else round(entry - 0.05, 2)
+        # Move runner stop to BE+ max($0.05, 0.1×ATR) (Golden Lock)
+        be_buffer = max(0.05, 0.1 * atr) if atr and atr > 0 else 0.05
+        runner_stop = round(entry + be_buffer, 2) if "LONG" in side else round(entry - be_buffer, 2)
 
         rec["scaled_at_t1"] = True
         rec["remaining_quantity"] = rem_qty

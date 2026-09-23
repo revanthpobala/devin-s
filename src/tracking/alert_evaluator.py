@@ -446,7 +446,7 @@ WHY (card):  {why_now} · Alignment: {align}
 WHY (tape):  Live price: ${current_price:.2f} · Premium: {premium} · VIX: {vix}
 KILL IT IF:  {wrong_if}
 
-Status: Verified {grade}-grade institutional setup. Execute discipline: scale 50% at T1, trail stop to BE+ 0.05."""
+Status: Verified {grade}-grade institutional setup. Execute discipline: scale 50% at T1, trail stop to BE+ max($0.05, 0.1×ATR)."""
     return header, pb
 
 

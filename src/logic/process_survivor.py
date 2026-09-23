@@ -251,7 +251,10 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         # A genuine Z1/Z0 reversal will almost always have a LOW trend-conviction
         # (Buy/Sell) score by construction — that low score is what makes it a
         # reversal, not a trend. Gate on the purpose-built Rev Zone metric instead.
-        conviction_ok = rev_score is not None and rev_score >= min_rev_zone
+        # Missing rev_score is treated as PASS (same as trend mode) — the
+        # deterministic filter owns the verdict, and a missing score is not
+        # evidence against the setup.
+        conviction_ok = rev_score is None or rev_score >= min_rev_zone
     else:
         conviction_ok = det_conv is None or det_conv >= min_conviction
 
@@ -269,11 +272,19 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     # the moment ev_r changes -- so it is stated explicitly.
     income_only = bool(triage.get("no_fresh_long"))
 
+    # CAUTION intermediate effect: earnings within 3-7 days raises the
+    # conviction floor — CAUTION is neither PASS (no weight) nor FAIL
+    # (hard block). A near-dividend setup needs stronger deterministic
+    # conviction to justify paid deep research.
+    caution_floor = min_conviction + 10.0 if earnings_gate == "CAUTION" else 0.0
+    caution_pass = det_conv is None or det_conv >= caution_floor
+
     send = bool(
         quality_pass
         and triage.get("pursue") is True
         and earnings_gate != "FAIL"
         and conviction_ok
+        and caution_pass
         and has_plan
         and not blocked
         and not income_only
@@ -281,7 +292,10 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     )
     # Informational scalar (mirrors deep_research_sort_key's news penalty on the
     # ev axis so the logged number tracks the real ordering intent).
-    ev_score = det_ev_r if det_ev_r is not None else -1e9
+    # Neutral placeholder (0.0) for missing EV — cohort median would be ideal
+    # but is unavailable at this scope; 0.0 avoids maximally penalizing
+    # otherwise-strong setups for a single missing field.
+    ev_score = det_ev_r if det_ev_r is not None else 0.0
     if news_contradiction:
         ev_score -= 1.0
     if news_negative:

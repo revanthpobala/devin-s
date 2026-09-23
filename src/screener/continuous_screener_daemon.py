@@ -189,7 +189,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         auto_alerts: bool = True,
         market_hours_only: Optional[bool] = None,
         auto_deep_research: Optional[bool] = None,
-        max_concurrent_slots: int = 1,
+        max_concurrent_slots: int = 3,
     ):
         super().__init__(name="ContinuousScreenerDaemon", daemon=True)
         self.poll_interval = max(60, poll_interval)
@@ -657,20 +657,26 @@ class ContinuousScreenerDaemon(threading.Thread):
                 continue
 
             price = float(c.get("price") or 0.0)
-            if price < 15.0:
+            if price < 1.0:
+                continue
+            # Liquidity gate replaces flat price floor — a $12 stock with
+            # institutional-grade spread/volume beats a $50 stock with none.
+            tt = c.get("tastytrade") or {}
+            liq_rating = tt.get("liquidity_rating") if tt.get("connected") else None
+            avg_vol = float(c.get("volume") or 0.0)
+            if liq_rating is not None:
+                if liq_rating < 2 and avg_vol < 800_000:
+                    continue
+            elif avg_vol > 0 and avg_vol < 500_000:
                 continue
 
             score = float(c.get("priority_score") or 0.0)
             tier = str(c.get("priority_tier") or "MONITOR")
-            if tier != "HIGH_PRIORITY" and score < self.min_conviction_score:
-                continue
-
-            # Options liquidity check if Tastytrade is available
-            tt = c.get("tastytrade") or {}
-            if tt.get("connected"):
-                liq = tt.get("liquidity_rating") or 1
-                if liq < 2 and float(c.get("volume") or 0.0) < 800_000:
+            if tier == "HIGH_PRIORITY":
+                if score < self.min_conviction_score * 0.5:
                     continue
+            elif score < self.min_conviction_score:
+                continue
 
             # Check if active job already running or queued in SQLite
             if self._is_job_active_in_db(sym):
@@ -723,7 +729,7 @@ def start_continuous_screener_daemon(
     auto_alerts: bool = True,
     market_hours_only: bool = False,
     auto_deep_research: Optional[bool] = None,
-    max_concurrent_slots: int = 1,
+    max_concurrent_slots: int = 3,
 ) -> ContinuousScreenerDaemon:
     """Start or retrieve the singleton continuous screener daemon."""
     global _daemon_instance
@@ -780,6 +786,8 @@ if __name__ == "__main__":
     parser.add_argument("--auto-deep", action="store_true", default=True, help="Automatically dispatch 1 qualified candidate into deep research when slot is free")
     parser.add_argument("--no-auto-deep", dest="auto_deep", action="store_false", help="Disable autonomous deep research")
     parser.add_argument("--max-deep", type=int, default=3, help="Max deep research runs per day")
+    parser.add_argument("--max-slots", type=int, default=3, help="Max concurrent deep research slots (default 3)")
+    parser.add_argument("--max-slots", type=int, default=3, help="Max concurrent deep research slots (default 3)")
     parser.add_argument("--min-score", type=float, default=60.0, help="Minimum priority score for deep research")
     parser.add_argument("--market-hours-only", action="store_true", help="Only scan during market hours")
     parser.add_argument("--once", action="store_true", help="Run a single scan cycle and exit")
@@ -797,7 +805,7 @@ if __name__ == "__main__":
         auto_alerts=True,
         market_hours_only=args.market_hours_only,
         auto_deep_research=args.auto_deep,
-        max_concurrent_slots=1,
+        max_concurrent_slots=args.max_slots,
     )
 
     if args.once:

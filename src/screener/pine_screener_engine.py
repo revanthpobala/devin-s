@@ -440,10 +440,15 @@ def calc_reversal_zone_scores(
 def evaluate_pine_screener_model(
     df: pd.DataFrame,
     benchmark_df: Optional[pd.DataFrame] = None,
+    side: str = "LONG",
 ) -> Dict[str, Any]:
     """
     Computes the complete suite of rev-screener.pine indicators for a single ticker's daily DataFrame.
     DataFrame must have columns: ['open', 'high', 'low', 'close', 'volume'] sorted chronologically.
+    Args:
+        df: Daily OHLCV DataFrame.
+        benchmark_df: Optional benchmark DataFrame (unused).
+        side: "LONG" or "SHORT" — mirrors scoring components for the given direction.
     Returns:
       - weinstein_stage (1 to 5)
       - rev_zone_long (0.0 to 10.0)
@@ -454,7 +459,7 @@ def evaluate_pine_screener_model(
       - prime_signal (-2 to +2)
       - vcp_energy (-2 to +2)
       - proxy_rr (float R:R)
-      - atrs_above_stop (float)
+      - atrs_above_stop (float) — distance from current price to the side's stop in ATRs
       - entry_rank (0 to 100)
       - priority_score (0 to 100 composite conviction)
       - priority_tier ('HIGH_PRIORITY', 'MEDIUM_PRIORITY', 'MONITOR')
@@ -537,11 +542,20 @@ def evaluate_pine_screener_model(
 
     # 5. Proxy Risk:Reward & Swing Low (The #1 Measured Factor)
     swing_lo = float(low.iloc[-10:].min())
+    swing_hi = float(high.iloc[-10:].max())
     range_hi = float(high.iloc[-min(60, n):].max())
-    risk = max(curr_close - swing_lo, 0.01)
-    reward = max(range_hi - curr_close, 0.01)
-    proxy_rr = round(reward / risk, 2)
-    atrs_up = round((curr_close - swing_lo) / max(atr14, 0.01), 2)
+    range_lo = float(low.iloc[-min(60, n):].min())
+    is_short = side.upper() == "SHORT"
+    if is_short:
+        risk = max(swing_hi - curr_close, 0.01)
+        reward = max(curr_close - range_lo, 0.01)
+        proxy_rr = round(reward / risk, 2)
+        atrs_up = round((swing_hi - curr_close) / max(atr14, 0.01), 2)
+    else:
+        risk = max(curr_close - swing_lo, 0.01)
+        reward = max(range_hi - curr_close, 0.01)
+        proxy_rr = round(reward / risk, 2)
+        atrs_up = round((curr_close - swing_lo) / max(atr14, 0.01), 2)
 
     # 6. Prime Signal
     is_blowoff = abs(z_vel) > 2.0
@@ -578,20 +592,33 @@ def evaluate_pine_screener_model(
     )
 
     # 8. Composite Conviction / Priority Score (0 to 100)
-    # Rewards Stage 2/1 basing, Rev Zone >= 7, Volatility Squeeze, and High R:R
+    # Rewards Stage 2/1 basing (LONG) or Stage 4/1/5 (SHORT), Rev Zone >= 7,
+    # Volatility Squeeze, High R:R, and Bayesian buy/sell sigma.
     score = 0.0
 
-    # A. Weinstein Stage (+20 pts)
-    if stage == 2:
-        score += 20.0
-    elif stage in (1, 5):
-        score += 15.0
+    # A. Weinstein Stage (+20 pts, mirrored for SHORT)
+    if is_short:
+        if stage == 4:
+            score += 20.0
+        elif stage in (1, 5):
+            score += 15.0
+    else:
+        if stage == 2:
+            score += 20.0
+        elif stage in (1, 5):
+            score += 15.0
 
     # B. Reversal Zone / Connors Mean Reversion (+25 pts)
-    if rev_long >= 7.0 or rev_short >= 7.0:
-        score += 25.0
-    elif rev_long >= 5.0 or rev_short >= 5.0:
-        score += 15.0
+    if is_short:
+        if rev_short >= 7.0:
+            score += 25.0
+        elif rev_short >= 5.0:
+            score += 15.0
+    else:
+        if rev_long >= 7.0:
+            score += 25.0
+        elif rev_long >= 5.0:
+            score += 15.0
 
     # C. Squeeze / Compression (+20 pts)
     if sqz_on:
@@ -612,6 +639,36 @@ def evaluate_pine_screener_model(
         score += 15.0
     elif atrs_up <= 1.0:
         score += 10.0
+
+    # F. Bayesian Sigma (buy_score/sell_score) (+5 pts each direction)
+    # High buy_score confirms long conviction; high sell_score confirms short conviction.
+    if is_short:
+        if sell_score >= 80.0:
+            score += 5.0
+        elif sell_score >= 65.0:
+            score += 2.5
+        if buy_score >= 80.0:
+            score -= 5.0
+    else:
+        if buy_score >= 80.0:
+            score += 5.0
+        elif buy_score >= 65.0:
+            score += 2.5
+        if sell_score >= 80.0:
+            score -= 5.0
+
+    # G. Prime Signal (+3/+5 for aligned direction)
+    # prime_signal >= 1 confirms long conviction; <= -1 confirms short conviction.
+    if is_short:
+        if prime_signal <= -2:
+            score += 5.0
+        elif prime_signal <= -1:
+            score += 3.0
+    else:
+        if prime_signal >= 2:
+            score += 5.0
+        elif prime_signal >= 1:
+            score += 3.0
 
     priority_score = round(float(np.clip(score, 0.0, 100.0)), 1)
     if priority_score >= 75.0:

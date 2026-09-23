@@ -1957,7 +1957,7 @@ Guidelines:
 12. Intraday Trade Exit Intelligence & TV Alert Veto Protocol (skills/exit_management_and_veto.md):
    - When the user asks about an open position, an incoming EXIT alert, or asks 'should I close / do I exit?':
      DO NOT give a blind, generic answer. Apply the institutional 5-tier exit decision hierarchy from `skills/exit_management_and_veto.md`:
-     (1) TARGET 1 / PROFIT TAKING: If live price reached Target 1 (R >= 1.5) -> SCALE 50% IMMEDIATELY, lock realized profit, move runner stop to Break-Even + $0.05 buffer (BE+).
+      (1) TARGET 1 / PROFIT TAKING: If live price reached Target 1 (R >= 1.5) -> SCALE 50% IMMEDIATELY, lock realized profit, move runner stop to Break-Even + max($0.05, 0.1×ATR) buffer (BE+).
      (2) TARGET 2 / FULL EXHAUSTION: If Target 2 or exhaustion reached -> CONFIRM EXIT (Lock 100%).
      (3) CATASTROPHIC RISK CIRCUIT BREAKER: If drawdown reaches >= 1.25x 5m ATR or >= 2.5% from entry -> CONFIRM EXIT IMMEDIATELY via market order. Zero debate, zero hoping.
      (4) INTRA-BAR WICK TAP vs CONFIRMED BREAKDOWN:

@@ -904,10 +904,10 @@ def evaluate_short_setup(candles: List[Dict[str, Any]]) -> Optional[Dict[str, An
     if rr_ratio < 1.5:
         return None
 
-    # Pine Screener Engine Integration (rev-screener.pine)
+    # Pine Screener Engine Integration (rev-screener.pine) — SHORT side mirrors scoring
     try:
         from src.screener.pine_screener_engine import evaluate_pine_screener_model
-        pine_metrics = evaluate_pine_screener_model(df)
+        pine_metrics = evaluate_pine_screener_model(df, side="SHORT")
     except Exception as e_pine:
         logger.debug(f"Pine screener calculation warning: {e_pine}")
         pine_metrics = {}

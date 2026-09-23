@@ -272,6 +272,16 @@ def _evaluate_state(
     open_gates = [g for g in evaluated if not g["passed"] and g["required"]]
     passed_gates = [g for g in evaluated if g["passed"]]
 
+    # Weighted open count: sum of each gate's gap normalized by its
+    # reference level — a gate one tick from triggering contributes far
+    # less than one needing a full catalyst move. (Fix #17)
+    weighted_open = 0.0
+    for g in open_gates:
+        if g["gap"] is None:
+            continue
+        ref = g["ref_level"] or 1.0
+        weighted_open += min(g["gap"] / max(abs(ref), 0.01), 1.0)
+
     return {
         "state": state_name,
         "gates": evaluated,
@@ -291,6 +301,7 @@ def _evaluate_state(
         "passed_gates": [g["name"] for g in passed_gates],
         "all_passed": len(open_gates) == 0,
         "open_count": len(open_gates),
+        "weighted_open_count": round(weighted_open, 4),
         "total_count": len(evaluated),
     }
 
@@ -320,12 +331,12 @@ def compute_triggers(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     
     code20["lane_edge"] = LANE_EDGE_MAP["code20_reversal"]
     stage2["lane_edge"] = LANE_EDGE_MAP["stage2_prime"]
-    code20["edge_rank"] = 1
-    stage2["edge_rank"] = 0
+    code20["edge_rank"] = code20["total_count"] - code20["open_count"]
+    stage2["edge_rank"] = stage2["total_count"] - stage2["open_count"]
 
-    # Determine nearest actionable state (edge_rank desc, open_count asc)
+    # Determine nearest actionable state (edge_rank desc, weighted_open_count asc)
     states = [code20, stage2]
-    states.sort(key=lambda s: (-s["edge_rank"], s["open_count"]))
+    states.sort(key=lambda s: (-s["edge_rank"], s["weighted_open_count"]))
     nearest = states[0]
 
     # Conviction ceiling: indicator-only = 6, no pillar bonus without catalyst
@@ -344,7 +355,9 @@ def compute_triggers(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "open_gates": code20["open_gates"],
             "passed_gates": code20["passed_gates"],
             "open_count": code20["open_count"],
+            "weighted_open_count": code20["weighted_open_count"],
             "total_count": code20["total_count"],
+            "edge_rank": code20["edge_rank"],
             "lane_edge": code20["lane_edge"],
         },
         "stage2_prime": {
@@ -353,7 +366,9 @@ def compute_triggers(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "open_gates": stage2["open_gates"],
             "passed_gates": stage2["passed_gates"],
             "open_count": stage2["open_count"],
+            "weighted_open_count": stage2["weighted_open_count"],
             "total_count": stage2["total_count"],
+            "edge_rank": stage2["edge_rank"],
             "lane_edge": stage2["lane_edge"],
         },
         "nearest_actionable_state": nearest["state"],

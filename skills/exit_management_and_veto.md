@@ -11,7 +11,7 @@ When an alert fires or when evaluating whether to close an open position, the sy
 ### Tier 1: Target Reached & Scaling Protocol (SCALE_TRIM / PROFIT_HIT)
 - **Target 1 Reached ($R \ge 1.5$):**
   - **Action:** **SCALE 50% IMMEDIATELY**. Lock realized profit on half the position.
-  - **Runner Protection:** Ratchet the stop on the remaining 50% to **Break-Even + $0.05 buffer (BE+)**.
+  - **Runner Protection:** Ratchet the stop on the remaining 50% to **Break-Even + max($0.05, 0.1×ATR) buffer (BE+)**.
   - **Rule 4.1.1 (Golden Lock):** A trade that has hit Target 1 is NEVER permitted to turn into a negative trade.
 - **Target 2 Reached ($R \ge 3.0$ or Technical Exhaustion):**
   - **Action:** **CONFIRM_EXIT**. Close remaining contracts. Full profit captured.
@@ -66,12 +66,12 @@ Many retail traders get stopped out by market-maker liquidity sweeps (stop hunts
 
 | Condition Observed | Live Spot vs Levels | Action Directive | Tactical Instructions |
 |---|---|---|---|
-| Price reached Target 1 | Spot $\ge T_1$ (Long) | **SCALE_TRIM** | Take 50% profit off table; move runner stop to BE+ 0.05. |
+| Price reached Target 1 | Spot $\ge T_1$ (Long) | **SCALE_TRIM** | Take 50% profit off table; move runner stop to BE+ max($0.05, 0.1×ATR). |
 | Price reached Target 2 | Spot $\ge T_2$ (Long) | **CONFIRM_EXIT** | Close 100% of remaining position. Setup completed. |
 | Drawdown $> 1.25\times$ ATR or $>2.5\%$ | Drawdown $\ge 2.5\%$ | **CONFIRM_EXIT** | Catastrophic stop triggered. Immediate market exit. |
 | Intra-bar wick tap | Wick probed stop, 5m body held | **VETO_HOLD** | Invalidation line held on close; retain position with hard stop. |
 | Confirmed 5m candle close below stop | 5m Close $<$ Stop | **CONFIRM_EXIT** | Structural invalidation confirmed. Exit trade now. |
-| Stagnant $>35$ min in 11:30–12:30 MT chop | Entry $\pm 0.3\%$ | **TIME_STOP_KILL** | Theta bleed risk. Close at scratch/BE before IV decay. |
+| Stagnant $>35$ min in 11:15–12:45 MT chop | Entry $\pm 0.3\%$ | **TIME_STOP_KILL** | Theta bleed risk. Close at scratch/BE before IV decay. |
 | Clock reaches 13:45 MT / 15:45 ET | Any P&L | **EOD_FLATTEN** | Cash close settlement rule. Flatten 100% of 0DTE positions. |
 
 ---

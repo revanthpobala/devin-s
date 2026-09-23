@@ -143,8 +143,8 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 | BUY (11:30–1:15 ET) | Score < 85 | **⛔ STAND ASIDE (LUNCH CHOP)** — Midday liquidity dead zone requires Grade A+ (Score ≥ 85). |
 | BUY | Catalyst directly **opposes** the side (e.g. hawkish surprise vs CALLS) | **SKIP** — the card is fighting the news. |
 | STAND ASIDE | A catalyst is now driving a clean move in the card's bias | **WAIT for the card to flip to BUY** (trigger + grade). Do not pre-empt its vetoes. |
-| HOLD (in trade) | +0.5R or ≥ +$100 unrealized gain | **RATCHET TO BE+ ($0.05)** — Capital preservation rule: never let a winning trade become a loss. |
-| HOLD (in trade) | Scaled at T1 / Peak gain > +$200 | **TRAIL RUNNER** — Protect ≥ 65% of peak gains. |
+| HOLD (in trade) | +0.5R or ≥ 0.5×ATR×qty unrealized gain | **RATCHET TO BE+** (max($0.05, 0.1×ATR) buffer) — Capital preservation rule: never let a winning trade become a loss. |
+| HOLD (in trade) | Scaled at T1 / Peak gain > 2.0×ATR×qty | **TRAIL RUNNER** — Protect ≥ 65% of peak gains. |
 | HOLD (in trade) | Adverse print/headline hit | Respect stop, bank profits early — 0DTE gives no time to recover. |
 
 **Hard Institutional 0DTE Vetoes (override any BUY → STAND ASIDE/WAIT):**
@@ -280,9 +280,10 @@ Then **2–3 sentences max**, trader-to-trader: would you size this or pass, and
 ## SPECIALIZED INSTITUTIONAL RULES (Embedded Skills)
 
 1. **Exit Management & Veto Protocol**:
-   - **Target 1 Scale**: Scale 50% profit immediately; ratchet runner stop to Break-Even + $0.05 (Rule 4.1.1 Golden Lock).
-   - **Catastrophic Risk**: Immediate market close if drawdown reaches >= 1.25x ATR or >= 2.5%. Zero waiting for candle close.
-   - **Intra-Bar Wick vs 5m Close**: If spot wicks below stop but 5m candle body holds above, VETO premature TV exits and hold.
+    - **Target 1 Scale**: Scale 50% profit immediately; ratchet runner stop to Break-Even + max($0.05, 0.1×ATR) buffer (Rule 4.1.1 Golden Lock).
+    - **Catastrophic Risk**: Immediate market close if drawdown reaches >= 1.25x ATR or >= 2.5%. Zero waiting for candle close.
+    - **Intra-Bar Wick vs 5m Close**: If spot wicks below stop but 5m candle body holds above, VETO premature TV exits and hold.
+    - **Profit-Lock Thresholds**: BE-lock at 0.5×ATR×qty, runner-lock at 2.0×ATR×qty (scaled to position size and volatility, not flat dollars).
 2. **Execution Timing Gates**:
    - **11:15–12:45 MT (1:15–2:45 ET) Lunch Lull**: Demand A-grade conviction (score >= 80) and volume expansion; default is WAIT.
    - **Post 3:00 PM ET**: No new 0DTE entries; manage existing positions only. Flat by 3:45 PM ET EOD.
