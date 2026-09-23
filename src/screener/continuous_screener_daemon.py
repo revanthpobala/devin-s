@@ -26,7 +26,7 @@ from src.clients.tastytrade_client import TastytradeClient
 logger = logging.getLogger("continuous_screener")
 
 # Default scan interval in seconds (default 5 minutes)
-DEFAULT_SCAN_INTERVAL = int(os.getenv("CONTINUOUS_SCREENER_INTERVAL", "300"))
+DEFAULT_SCAN_INTERVAL = int(os.getenv("CONTINUOUS_SCREENER_INTERVAL", "600"))
 
 _daemon_instance: Optional[ContinuousScreenerDaemon] = None
 

@@ -111,14 +111,14 @@ python run_swing_research.py --spx
   - Sequentially runs parallel chart scraping (`run_swing_research.py --ticker <SYM>`), local triage (`run_local_research.py --ticker <SYM>`), deep research (`run_deep_research.py --ticker <SYM>`), and watch alerts synchronization (`run_watch_alerts.py --sync --once`).
   - Registers 24/7 cloud quote alerts with Tastytrade mobile push.
 - **Continuous Autonomous Daemon & Slot Engine** (`run_continuous_screener.py`):
-  - Continuously loops through the Schwab 1000 universe every `--interval` seconds (default 300s / 5 min).
-  - Enriches setups with real-time Tastytrade volatility metrics (IV Rank, IV Percentile, 30d HV, IV-HV spread) and auto-registers 24/7 cloud price alerts with mobile push notifications.
+  - Continuously loops through the Schwab 1000 universe every `--interval` seconds (default 600s / 10 min).
+  - Enriches setups with real-time Tastytrade volatility metrics (IV Rank, IV Percentile, 30d HV, IV-HV spread).
   - **Slot-Aware Deep Research**: Checks local GPU / process slot availability and automatically dispatches exactly **1** top-conviction setup at a time into deep research when the slot is free. If a deep research pass is already running, preserves the slot and holds candidates until it frees up.
   - One-click launch via `scripts\launchers\start_autonomous_scanner.bat`.
 
 **Usage**:
 ```bash
-# Continuous autonomous loop (scans every 5 min, runs 1 deep research in slot when qualified)
+# Continuous autonomous loop (scans every 10 min, runs 1 deep research in slot when qualified)
 python run_continuous_screener.py
 
 # Run with headless scraping

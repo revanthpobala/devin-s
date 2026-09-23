@@ -64,7 +64,7 @@ def main():
         "--interval",
         type=int,
         default=DEFAULT_SCAN_INTERVAL,
-        help="Scan interval in seconds (default: 300s / 5m)",
+        help="Scan interval in seconds (default: 600s / 10m)",
     )
     parser.add_argument(
         "--top",
