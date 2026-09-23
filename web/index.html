@@ -833,6 +833,11 @@
           </div>
         </div>
 
+        <!-- Unified Empirical Scoreboard Panel (Lanes x Sources) -->
+        <div id="trades-scoreboard-panel" class="station-card" style="margin-bottom:14px; padding:14px 16px;">
+          <!-- Dynamically populated by AppTrades.loadScoreboard() -->
+        </div>
+
         <!-- Structured Suggested Trades Table Station -->
         <div class="station-card" style="padding:0; overflow:hidden;">
           <div style="overflow-x:auto;">
@@ -841,15 +846,18 @@
                 <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
                   <th onclick="AppTrades.setSort('updated_at')" style="text-align:left; padding:10px 12px; cursor:pointer;">Time / Date ⇅</th>
                   <th onclick="AppTrades.setSort('ticker')" style="text-align:left; padding:10px 12px; cursor:pointer;">Ticker & Company ⇅</th>
-                  <th onclick="AppTrades.setSort('verdict')" style="text-align:center; padding:10px 12px; cursor:pointer;">Verdict ⇅</th>
-                  <th style="text-align:center; padding:10px 12px;">Plan / Structure</th>
-                  <th style="text-align:right; padding:10px 12px;">Entry Zone</th>
-                  <th style="text-align:right; padding:10px 12px;">Stop Loss</th>
-                  <th style="text-align:right; padding:10px 12px;">Targets (T1 / T2)</th>
-                  <th onclick="AppTrades.setSort('last_price')" style="text-align:right; padding:10px 12px; cursor:pointer;">Live Quote ⇅</th>
-                  <th onclick="AppTrades.setSort('status')" style="text-align:center; padding:10px 12px; cursor:pointer;">Status ⇅</th>
-                  <th onclick="AppTrades.setSort('pnl_pct')" style="text-align:center; padding:10px 12px; cursor:pointer;">Theor. PnL ⇅</th>
-                  <th style="text-align:center; padding:10px 12px;">Audit / Check</th>
+                  <th onclick="AppTrades.setSort('gate_status')" style="text-align:center; padding:10px 8px; cursor:pointer;">Gate ⇅</th>
+                  <th onclick="AppTrades.setSort('setup_lane')" style="text-align:center; padding:10px 8px; cursor:pointer;">Lane ⇅</th>
+                  <th onclick="AppTrades.setSort('kind')" style="text-align:center; padding:10px 8px; cursor:pointer;">Kind ⇅</th>
+                  <th onclick="AppTrades.setSort('verdict')" style="text-align:center; padding:10px 10px; cursor:pointer;">Verdict ⇅</th>
+                  <th style="text-align:center; padding:10px 10px;">Plan / Structure</th>
+                  <th style="text-align:right; padding:10px 10px;">Entry Zone</th>
+                  <th onclick="AppTrades.setSort('stop_in_atr')" style="text-align:right; padding:10px 10px; cursor:pointer;">Stop (xATR) ⇅</th>
+                  <th style="text-align:right; padding:10px 10px;">Targets (T1 / T2)</th>
+                  <th onclick="AppTrades.setSort('rr_at_market')" style="text-align:right; padding:10px 8px; cursor:pointer;">R:R @ Mkt ⇅</th>
+                  <th onclick="AppTrades.setSort('last_price')" style="text-align:right; padding:10px 10px; cursor:pointer;">Live Quote ⇅</th>
+                  <th onclick="AppTrades.setSort('status')" style="text-align:center; padding:10px 10px; cursor:pointer;">Status ⇅</th>
+                  <th style="text-align:center; padding:10px 10px;">Audit / Check</th>
                 </tr>
               </thead>
               <tbody id="trades-table-body">

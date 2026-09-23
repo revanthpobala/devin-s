@@ -85,6 +85,23 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN is_active INTEGER DEFAULT 1")
             if "user_taken" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN user_taken INTEGER DEFAULT 0")
+            if "suggestion_id" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN suggestion_id INTEGER")
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS last_researched (
+                    ticker TEXT PRIMARY KEY,
+                    last_researched_date TEXT NOT NULL,
+                    action_code INTEGER,
+                    in_zone INTEGER,
+                    rr_at_market REAL,
+                    stop REAL,
+                    target REAL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
             cursor.execute(
                 """
@@ -227,8 +244,8 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     tactical_stop, target_1, target_2, options_structure, options_summary,
                     options_actionable, options_entry_trigger,
                     invalidation_price, invalidation_condition, invalidation_rationale,
-                    status, updated_at, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, updated_at, raw_json, is_active, user_taken, suggestion_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
                 ON CONFLICT(ticker) DO UPDATE SET
                     date=excluded.date,
                     verdict=excluded.verdict,
@@ -254,6 +271,9 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                         WHEN watch_targets.status IN ('IN_TRADE', 'IN_ZONE') THEN watch_targets.status 
                         ELSE excluded.status 
                     END,
+                    is_active=1,
+                    user_taken=0,
+                    suggestion_id=COALESCE(excluded.suggestion_id, watch_targets.suggestion_id),
                     updated_at=excluded.updated_at,
                     raw_json=excluded.raw_json
                 """,
@@ -282,6 +302,7 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     data.get("status", "STALKING"),
                     now,
                     json.dumps(data, default=str),
+                    data.get("suggestion_id"),
                 ),
             )
             # Append to history table for immutable audit tracking
@@ -522,3 +543,54 @@ def get_superforecasting_stats() -> Dict[str, Any]:
                 "model_b": model_b_stats,
                 "recent_audits": recent_rows,
             }
+
+
+def get_last_researched(ticker: str) -> Optional[Dict[str, Any]]:
+    """Get last researched metrics for a ticker from last_researched table."""
+    sym = ticker.strip().upper()
+    if not sym:
+        return None
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            row = cursor.execute(
+                "SELECT * FROM last_researched WHERE ticker = ?", (sym,)
+            ).fetchone()
+            return dict(row) if row else None
+
+
+def record_last_researched(
+    ticker: str,
+    date_str: str,
+    action_code: int = 0,
+    in_zone: int = 0,
+    rr_at_market: float = 0.0,
+    stop: float = 0.0,
+    target: float = 0.0,
+) -> None:
+    """Record or update research state in last_researched table."""
+    sym = ticker.strip().upper()
+    if not sym:
+        return
+    now = _now_iso()
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO last_researched (
+                    ticker, last_researched_date, action_code, in_zone, rr_at_market, stop, target, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ticker) DO UPDATE SET
+                    last_researched_date = excluded.last_researched_date,
+                    action_code = excluded.action_code,
+                    in_zone = excluded.in_zone,
+                    rr_at_market = excluded.rr_at_market,
+                    stop = excluded.stop,
+                    target = excluded.target,
+                    updated_at = excluded.updated_at
+                """,
+                (sym, date_str, int(action_code or 0), int(in_zone or 0), float(rr_at_market or 0.0), float(stop or 0.0), float(target or 0.0), now),
+            )
+            conn.commit()
+

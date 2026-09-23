@@ -32,7 +32,11 @@ def validate_strike_geometry(
     if not spot_price or spot_price <= 0:
         return False, ["Missing or invalid spot price"]
 
-    pct = (exp_move_pct_21b / 100.0) if (exp_move_pct_21b and exp_move_pct_21b > 1.0) else exp_move_pct_21b
+    try:
+        exp_move_num = float(exp_move_pct_21b) if exp_move_pct_21b is not None else None
+    except (ValueError, TypeError):
+        exp_move_num = None
+    pct = (exp_move_num / 100.0) if (exp_move_num is not None and exp_move_num > 0) else None
     exp_move_dist = (spot_price * pct) if pct else None
     max_allowed_dist = (1.5 * exp_move_dist) if exp_move_dist else None
 
@@ -71,6 +75,11 @@ def validate_strike_geometry(
                 f"Cash-secured/short put strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Income put sales must be strictly OTM."
             )
+        elif exp_move_dist and (spot_price - short_strike) < (1.25 * exp_move_dist - 0.05):
+            defects.append(
+                f"Cash-secured/short put strike (${short_strike:.2f}) is within 1.25x ExpMove "
+                f"({(spot_price - short_strike)/exp_move_dist:.2f}x EM vs required >= 1.25x EM)."
+            )
     elif "SHORT_CALL" in strat or "CALL_SALE" in strat or "COVERED_CALL" in strat:
         if short_strike is None:
             defects.append("Missing short strike for income call sale")
@@ -78,6 +87,11 @@ def validate_strike_geometry(
             defects.append(
                 f"Covered/short call strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Income call sales must be strictly OTM."
+            )
+        elif exp_move_dist and (short_strike - spot_price) < (1.25 * exp_move_dist - 0.05):
+            defects.append(
+                f"Covered/short call strike (${short_strike:.2f}) is within 1.25x ExpMove "
+                f"({(short_strike - spot_price)/exp_move_dist:.2f}x EM vs required >= 1.25x EM)."
             )
     elif "JADE_LIZARD" in strat or "JADE" in strat:
         # Jade Lizard = Short OTM Put + Bear Call Credit Spread (Short Call + Long Call)

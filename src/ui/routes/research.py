@@ -298,7 +298,13 @@ def get_research_queue(date: Optional[str] = None):
                         try:
                             th_data = json.loads(th_file.read_text(encoding="utf-8"))
                             triage_dict = th_data.get("triage", {})
-                            if (isinstance(triage_dict, dict) and triage_dict.get("triage") == "PASS") or th_data.get("llm_data", {}).get("send_for_deep_research") is True:
+                            send_flag = (
+                                th_data.get("send_for_deep_research") is True
+                                or th_data.get("llm_data", {}).get("send_for_deep_research") is True
+                                or (isinstance(triage_dict, dict) and triage_dict.get("send_for_deep_research") is True)
+                            )
+                            is_pass = (isinstance(triage_dict, dict) and triage_dict.get("triage") == "PASS") or th_data.get("triage") == "PASS"
+                            if is_pass and send_flag:
                                 triage_pass_or_force.add(sym)
                         except Exception:
                             pass

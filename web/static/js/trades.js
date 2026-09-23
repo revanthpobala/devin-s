@@ -20,6 +20,7 @@ window.AppTrades = {
     if (!container && AppState.currentDesk !== 'trades') return;
 
     try {
+      this.loadScoreboard();
       const data = await window.AppApi.getSuggestedTrades();
       this._trades = (data && data.trades) ? data.trades : [];
       this._summary = (data && data.summary) ? data.summary : { total: 0, in_zone: 0, stalking: 0, target_hit: 0, stopped: 0 };
@@ -51,6 +52,107 @@ window.AppTrades = {
     if (stalkingEl) stalkingEl.textContent = this._summary.stalking || 0;
     if (winnersEl) winnersEl.textContent = this._summary.target_hit || 0;
     if (stoppedEl) stoppedEl.textContent = this._summary.stopped || 0;
+  },
+
+  async loadScoreboard() {
+    const panel = document.getElementById('trades-scoreboard-panel');
+    if (!panel) return;
+    try {
+      const [resScoreboard, resSources] = await Promise.all([
+        fetch('/api/scoreboard').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/trades/sources').then(r => r.ok ? r.json() : null).catch(() => null),
+      ]);
+
+      const sources = (resSources && resSources.sources) ? resSources.sources : ((resScoreboard && resScoreboard.swing) ? resScoreboard.swing : []);
+      const mainRec = (resScoreboard && resScoreboard.main_record) ? resScoreboard.main_record : null;
+
+      let html = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+          <div>
+            <span style="font-size:13px; font-weight:800; color:var(--text-main); font-family:var(--font-mono);">📊 EMPIRICAL SCOREBOARD</span>
+            <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">Validated R-Performance across Lanes &amp; Sources</span>
+          </div>
+          <button class="btn secondary" onclick="AppTrades.loadScoreboard()" style="padding:2px 8px; font-size:11px;">🔄 Refresh Scoreboard</button>
+        </div>
+      `;
+
+      if (mainRec) {
+        html += `
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:4px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="pill green" style="font-weight:800; font-size:11px;">🏆 MAIN RECORD</span>
+              <span style="font-size:12px; color:var(--text-main); font-weight:700;">Since 2026-09-23 (Judge, PASS, NEW)</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:16px; font-family:var(--font-mono); font-size:12px;">
+              <span><strong>N:</strong> ${mainRec.total || 0}</span>
+              <span><strong>Fill Rate:</strong> ${mainRec.fill_rate !== undefined ? mainRec.fill_rate : 0}%</span>
+              <span><strong>Mean R:</strong> <span style="color:${(mainRec.mean_r || 0) >= 0 ? '#10b981' : '#f43f5e'}; font-weight:700;">${mainRec.mean_r !== null && mainRec.mean_r !== undefined ? mainRec.mean_r : '-'}R</span></span>
+              <span><strong>Win Rate:</strong> ${mainRec.win_rate_pct !== undefined ? mainRec.win_rate_pct : 0}%</span>
+              <span><strong>Stop Rate:</strong> ${mainRec.stop_out_pct !== undefined ? mainRec.stop_out_pct : 0}%</span>
+              ${mainRec.flag_n30 ? '<span class="pill cyan" style="font-size:10px;">VALID (N>=30)</span>' : '<span class="pill amber" style="font-size:10px;">CALIBRATING</span>'}
+            </div>
+          </div>
+        `;
+      }
+
+      if (sources && sources.length > 0) {
+        html += `
+          <div style="overflow-x:auto;">
+            <table class="data-table" style="width:100%; border-collapse:collapse; font-size:11.5px; font-family:var(--font-mono);">
+              <thead>
+                <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                  <th style="text-align:left; padding:6px 10px;">Source</th>
+                  <th style="text-align:left; padding:6px 10px;">Setup Lane</th>
+                  <th style="text-align:center; padding:6px 8px;">Gate</th>
+                  <th style="text-align:right; padding:6px 8px;">N</th>
+                  <th style="text-align:right; padding:6px 8px;">Fill %</th>
+                  <th style="text-align:right; padding:6px 8px;">Mean R</th>
+                  <th style="text-align:right; padding:6px 8px;">Median R</th>
+                  <th style="text-align:right; padding:6px 8px;">Win %</th>
+                  <th style="text-align:right; padding:6px 8px;">Stop %</th>
+                  <th style="text-align:right; padding:6px 8px;">Prior Win% / EV</th>
+                  <th style="text-align:center; padding:6px 8px;">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        sources.forEach(s => {
+          const meanColor = (s.mean_r || 0) >= 0 ? 'var(--emerald-light, #10b981)' : 'var(--rose-light, #f43f5e)';
+          const priorText = s.lane_prior_win !== null && s.lane_prior_win !== undefined 
+            ? `${s.lane_prior_win}% / ${s.lane_prior_ev ? `${s.lane_prior_ev > 0 ? '+' : ''}${s.lane_prior_ev}R` : '-'}`
+            : '-';
+          const nBadge = s.flag_n30
+            ? `<span class="pill green" style="font-size:9.5px; padding:1px 5px;">N>=30 🔥</span>`
+            : `<span class="pill" style="font-size:9.5px; padding:1px 5px; color:var(--text-muted);">n=${s.n}</span>`;
+          html += `
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 10px; font-weight:700;">${s.source}</td>
+              <td style="padding:6px 10px; color:var(--cyan-glow);">${s.setup_lane || s.lane}</td>
+              <td style="padding:6px 8px; text-align:center;"><span class="pill ${s.gate_status === 'PASS' ? 'green' : 'red'}" style="font-size:9px;">${s.gate_status}</span></td>
+              <td style="padding:6px 8px; text-align:right; font-weight:700;">${s.n}</td>
+              <td style="padding:6px 8px; text-align:right;">${s.fill_rate}%</td>
+              <td style="padding:6px 8px; text-align:right; color:${meanColor}; font-weight:700;">${s.mean_r !== null ? s.mean_r : '-'}</td>
+              <td style="padding:6px 8px; text-align:right;">${s.median_r !== null ? s.median_r : '-'}</td>
+              <td style="padding:6px 8px; text-align:right;">${s.win_rate_pct !== undefined ? s.win_rate_pct : s.win}%</td>
+              <td style="padding:6px 8px; text-align:right; color:var(--rose-light);">${s.stop_out_pct || 0}%</td>
+              <td style="padding:6px 8px; text-align:right; color:var(--text-muted);">${priorText}</td>
+              <td style="padding:6px 8px; text-align:center;">${nBadge}</td>
+            </tr>
+          `;
+        });
+        html += `
+              </tbody>
+            </table>
+          </div>
+        `;
+      } else {
+        html += `<div style="color:var(--text-muted); font-size:12px; padding:8px 0;">No scored suggestion history recorded yet.</div>`;
+      }
+
+      panel.innerHTML = html;
+    } catch (e) {
+      console.warn('Failed loading scoreboard panel:', e);
+    }
   },
 
   setFilter(status) {
@@ -339,55 +441,76 @@ window.AppTrades = {
             </div>
           </td>
 
-          <!-- 3. VERDICT & CONVICTION -->
-          <td style="padding:10px 12px; text-align:center;">
+          <!-- 3. GATE -->
+          <td style="padding:10px 8px; text-align:center;">
+            <span class="pill ${t.gate_status === 'PASS' ? 'green' : 'red'}" style="font-size:9.5px; padding:2px 6px; font-weight:800;">
+              ${t.gate_status || 'PASS'}
+            </span>
+          </td>
+
+          <!-- 4. LANE -->
+          <td style="padding:10px 8px; text-align:center;">
+            <span class="pill cyan" style="font-size:9.5px; padding:2px 6px; font-weight:700;">
+              ${t.setup_lane || 'DEFAULT'}
+            </span>
+          </td>
+
+          <!-- 5. KIND -->
+          <td style="padding:10px 8px; text-align:center;">
+            <span class="pill ${t.kind === 'NEW' ? 'blue' : 'amber'}" style="font-size:9.5px; padding:2px 6px; font-weight:700;">
+              ${t.kind || 'NEW'}
+            </span>
+          </td>
+
+          <!-- 6. VERDICT & CONVICTION -->
+          <td style="padding:10px 10px; text-align:center;">
             <span class="pill ${vClass}" style="font-size:10px; padding:2px 7px; font-weight:700;">
               ${verdictStr}
             </span>
           </td>
 
-          <!-- 4. PLAN / STRUCTURE (CLICK TO OPEN POSITION MODAL) -->
-          <td style="padding:10px 12px; text-align:center;">
+          <!-- 7. PLAN / STRUCTURE (CLICK TO OPEN POSITION MODAL) -->
+          <td style="padding:10px 10px; text-align:center;">
             ${structureBtn}
           </td>
 
-          <!-- 5. ENTRY ZONE -->
-          <td style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
+          <!-- 8. ENTRY ZONE -->
+          <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
             <span style="font-weight:700; color:var(--amber-light, #f59e0b);">$${entryLow.toFixed(2)} - $${entryHigh.toFixed(2)}</span>
             <div style="font-size:10px; color:var(--text-muted);">Mid: $${entryMid.toFixed(2)}</div>
           </td>
 
-          <!-- 6. TACTICAL STOP -->
-          <td style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; text-align:right; color:var(--rose-light, #f43f5e);">
+          <!-- 9. TACTICAL STOP (xATR) -->
+          <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right; color:var(--rose-light, #f43f5e);">
             $${stop.toFixed(2)}
-            ${t.stop_risk_pct ? `<div style="font-size:10px; opacity:0.8;">-${t.stop_risk_pct}%</div>` : ''}
+            ${t.stop_in_atr ? `<div style="font-size:10px; opacity:0.85;">${Number(t.stop_in_atr).toFixed(2)}x ATR</div>` : ''}
           </td>
 
-          <!-- 7. TARGET 1 & 2 -->
-          <td style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
+          <!-- 10. TARGET 1 & 2 -->
+          <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
             <span style="font-weight:700; color:var(--emerald-light, #10b981);">$${t1.toFixed(2)}</span>
             ${t.target_1_pct ? `<span style="font-size:10px; color:var(--emerald-light); font-weight:600;"> (+${t.target_1_pct}%)</span>` : ''}
             ${t2 > 0 ? `<div style="font-size:10px; color:var(--cyan-glow);">T2: $${t2.toFixed(2)}</div>` : ''}
           </td>
 
-          <!-- 8. LIVE QUOTE & DISTANCE -->
-          <td style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
+          <!-- 11. R:R @ MKT -->
+          <td style="padding:10px 8px; font-family:var(--font-mono); font-size:11.5px; text-align:right; font-weight:700; color:var(--cyan-glow);">
+            ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : (t.rr_ratio ? Number(t.rr_ratio).toFixed(2) : '-')}
+          </td>
+
+          <!-- 12. LIVE QUOTE & DISTANCE -->
+          <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
             <span style="font-weight:700; color:var(--text-main);">$${spot.toFixed(2)}</span>
             <div style="font-size:10px; color:var(--text-muted);" title="Distance from entry zone">${distStr} dist</div>
           </td>
 
-          <!-- 9. TRADE STATUS -->
-          <td style="padding:10px 12px; text-align:center;">
+          <!-- 13. TRADE STATUS -->
+          <td style="padding:10px 10px; text-align:center;">
             ${statusBadge}
           </td>
 
-          <!-- 10. THEORETICAL PNL / PERFORMANCE -->
-          <td style="padding:10px 12px; text-align:center;">
-            ${pnlDisplay}
-          </td>
-
-          <!-- 11. AUDIT & VERIFY ACTIONS -->
-          <td style="padding:10px 12px; text-align:center; white-space:nowrap;">
+          <!-- 14. AUDIT & VERIFY ACTIONS -->
+          <td style="padding:10px 10px; text-align:center; white-space:nowrap;">
             <div style="display:inline-flex; gap:5px; align-items:center;">
               <button class="btn secondary" 
                       onclick="AppSwing.openReportModal('${t.date}', '${sym}')" 

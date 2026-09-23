@@ -240,16 +240,22 @@ def get_watch_targets():
                             gain = (t_exit - eff_entry) if side == "LONG" else (eff_entry - t_exit)
                             trade_r = round(gain / risk_amt, 2)
                         else:
-                            trade_r = 1.5
+                            trade_r = 0.0
                     won_r.append(trade_r)
 
                 elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
-                    trade_r = -1.0
-                    lost_r.append(trade_r)
+                    was_filled = bool(item.get("fill_price") or item.get("was_filled") or item.get("user_taken"))
+                    if status == "INVALIDATED" and not was_filled:
+                        trade_r = 0.0
+                    else:
+                        trade_r = -1.0
+                        lost_r.append(trade_r)
 
                 elif status in ("IN_TRADE", "IN_ZONE") and live_px and live_px > 0:
                     if is_options and max_loss > 0:
-                        trade_r = 0.0
+                        spot_move = (live_px - eff_entry) if (eff_entry and side == "LONG") else ((eff_entry - live_px) if eff_entry else 0.0)
+                        est_opt_pnl = max(-max_loss, min(max_prof, spot_move * 0.50))
+                        trade_r = round(est_opt_pnl / max_loss, 2)
                     else:
                         if eff_entry and risk_amt > 0:
                             unrealized_gain = (live_px - eff_entry) if side == "LONG" else (eff_entry - live_px)
@@ -375,6 +381,12 @@ def set_watch_target_status_endpoint(data: dict):
                 c = conn.cursor()
                 now_str = _now_iso()
                 if row_id:
+                    wt_row = c.execute("SELECT ticker, date, suggestion_id FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+                    srow = dict(wt_row) if wt_row else {}
+                    sugg_id = srow.get("suggestion_id")
+                    t_sym = srow.get("ticker")
+                    t_date = srow.get("date")
+
                     if new_status:
                         c.execute(
                             "UPDATE watch_targets SET status = ?, user_taken = COALESCE(?, user_taken), updated_at = ? WHERE rowid = ?",
@@ -388,19 +400,21 @@ def set_watch_target_status_endpoint(data: dict):
                     # Sync to suggestions ledger if exists and user_taken specified
                     if user_taken is not None:
                         try:
-                            c.execute(
-                                """
-                                UPDATE suggestions SET taken = ?
-                                WHERE id = ? OR (
-                                    ticker = (SELECT ticker FROM watch_targets WHERE rowid = ?) AND
-                                    date = (SELECT date FROM watch_targets WHERE rowid = ?)
+                            if sugg_id:
+                                c.execute("UPDATE suggestions SET taken = ? WHERE id = ?", (user_taken, sugg_id))
+                            elif t_sym and t_date:
+                                c.execute(
+                                    "UPDATE suggestions SET taken = ? WHERE ticker = ? AND date = ?",
+                                    (user_taken, t_sym, t_date)
                                 )
-                                """,
-                                (user_taken, row_id, row_id, row_id)
-                            )
                         except Exception:
                             pass
                 else:
+                    wt_row = c.execute("SELECT date, suggestion_id FROM watch_targets WHERE ticker = ?", (ticker,)).fetchone()
+                    srow = dict(wt_row) if wt_row else {}
+                    sugg_id = srow.get("suggestion_id")
+                    t_date = srow.get("date")
+
                     if new_status:
                         c.execute(
                             "UPDATE watch_targets SET status = ?, user_taken = COALESCE(?, user_taken), updated_at = ? WHERE ticker = ?",
@@ -413,7 +427,10 @@ def set_watch_target_status_endpoint(data: dict):
                         )
                     if user_taken is not None:
                         try:
-                            c.execute("UPDATE suggestions SET taken = ? WHERE ticker = ?", (user_taken, ticker))
+                            if sugg_id:
+                                c.execute("UPDATE suggestions SET taken = ? WHERE id = ?", (user_taken, sugg_id))
+                            elif t_date:
+                                c.execute("UPDATE suggestions SET taken = ? WHERE ticker = ? AND date = ?", (user_taken, ticker, t_date))
                         except Exception:
                             pass
                 conn.commit()

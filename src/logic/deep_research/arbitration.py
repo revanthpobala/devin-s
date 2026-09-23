@@ -80,7 +80,9 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         '    "price_level": 0.0,\n'
         '    "rationale": "Short explanation"\n'
         '  },\n'
-        '  "status": "STALKING|IN_ZONE|IN_TRADE|INVALIDATED"\n'
+        '  "setup_lane": "RR_SETUP_STRONG|RR_SETUP|CODE20|OVERSOLD|RSI2",\n'
+        '  "lane_prior_win": 0.0,\n'
+        '  "lane_prior_ev": 0.0\n'
         '}\n'
         '```\n\n'
         f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
@@ -105,6 +107,26 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         "  - **Income / Floor Support Structure:** [Covered Call / PMCC if holding position, or CSP / Bull Put Spread below Put Wall floor]\n"
         "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n"
     )
+
+
+def _decode_zone_rr_flags(val) -> str:
+    """Decode 4-bit Zone RR Flags Pack: 1 Long In Zone, 2 Short In Zone, 4 Long RR Valid, 8 Short RR Valid."""
+    if val is None or val == "N/A":
+        return "N/A"
+    try:
+        v = int(round(float(val)))
+        parts = []
+        if (v & 1):
+            parts.append("Long In Zone (1)")
+        if (v & 2):
+            parts.append("Short In Zone (2)")
+        if (v & 4):
+            parts.append("Long RR Valid (4)")
+        if (v & 8):
+            parts.append("Short RR Valid (8)")
+        return f"{v} [{', '.join(parts) if parts else 'None'}]"
+    except Exception:
+        return str(val)
 
 
 def run_arbitration(
@@ -138,12 +160,33 @@ def run_arbitration(
 
     judge_sys_prompt = _build_judge_sys_prompt(ticker)
 
-    atr14_val = dw_dict.get("Wilder ATR 14") or f_parsed.get("atr14") or "N/A"
+    atr14_val = (
+        dw_dict.get("RSI2 ATR14")
+        or dw_dict.get("rsi2_atr14")
+        or dw_dict.get("Wilder ATR 14")
+        or dw_dict.get("ATR 14")
+        or f_parsed.get("atr14")
+        or f_parsed.get("rsi2_atr14")
+        or "N/A"
+    )
     exp_move_val = dw_dict.get("Exp Move Pct 21b") or f_parsed.get("exp_move_pct") or "N/A"
-    zone_rr_flags = dw_dict.get("Zone RR Flags") or f_parsed.get("zone_rr_flags") or "N/A"
-    act_long_code = dw_dict.get("Action Long Code") or f_parsed.get("action_long") or "N/A"
+    raw_zone_flags = dw_dict.get("Zone RR Flags Pack") or dw_dict.get("Zone RR Flags") or f_parsed.get("zone_rr_flags")
+    zone_rr_flags = _decode_zone_rr_flags(raw_zone_flags)
+
+    raw_act = dw_dict.get("Action Long Code")
+    if raw_act is None:
+        raw_act = dw_dict.get("Context Action Pack")
+    if raw_act is None:
+        raw_act = f_parsed.get("action_long_code")
+    if raw_act is None:
+        raw_act = f_parsed.get("action_long")
+    act_long_code = str(raw_act) if raw_act is not None else "N/A"
+
     dw_close = dw_dict.get("Close") or dw_dict.get("close") or "N/A"
     dw_bar_date = dw_dict.get("bar_date") or date_str
+
+    iv30_val = dw_dict.get("energy_iv30") or dw_dict.get("iv30") or f_parsed.get("energy_iv30") or f_parsed.get("iv30") or "N/A"
+    iv_rank_val = dw_dict.get("energy_ivrank") or dw_dict.get("iv_rank") or f_parsed.get("energy_ivrank") or f_parsed.get("iv_rank") or "N/A"
 
     ground_truth = (
         f"--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---\n"
@@ -161,7 +204,7 @@ def run_arbitration(
         f"  * Decoded Zone RR Flags: {zone_rr_flags} | Action Long Code: {act_long_code}\n"
         f"  * Moving Averages: MA20={f_parsed.get('ma20', 'N/A')}, MA50={f_parsed.get('ma50', 'N/A')}, MA200={f_parsed.get('ma200', 'N/A')}\n"
         f"  * Volume Profile: POC={f_parsed.get('vp_poc', 'N/A')}, VAL={f_parsed.get('vp_val', 'N/A')}, VAH={f_parsed.get('vp_vah', 'N/A')}\n"
-        f"  * Volatility: HV20={f_parsed.get('hv20', 'N/A')}%, IV30={f_parsed.get('iv30', 'N/A')}%, IV Rank={f_parsed.get('iv_rank', 'N/A')}%\n"
+        f"  * Volatility: HV20={f_parsed.get('hv20', 'N/A')}%, IV30={iv30_val}%, IV Rank={iv_rank_val}%\n"
         f"  * Pine Levels: Long Entry Zone Bot={dw_dict.get('Long Entry Zone Bot', 'N/A')}, "
         f"Long Entry Zone Top={dw_dict.get('Long Entry Zone Top', 'N/A')}, "
         f"Long Stop Loss={dw_dict.get('Long Stop Loss', 'N/A')}, "
@@ -197,27 +240,31 @@ def run_arbitration(
         use_openrouter=False,
         use_tools=False,
         disable_thinking=True,
-        max_tokens=3072,
+        max_tokens=4096,
     )
 
     if not judge_response:
         logger.warning(f"[{ticker}] Pass 2-JUDGE returned empty response.")
         return ""
 
-    clean_judge = judge_response.strip()
-    match_j = re.search(r"(?m)^#+\s+.*", clean_judge)
-    if match_j and match_j.start() > 0:
-        clean_judge = clean_judge[match_j.start():].strip()
-    if not re.search(r"(?m)^#\s+", clean_judge):
-        clean_judge = f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n" + clean_judge
+    raw_judge = judge_response.strip()
+
+    # Extract structured watch_levels JSON from raw response BEFORE any trimming
+    watch_json_match = re.search(
+        r"```(?:json)?(?::watch_levels)?\s*(\{.*?\})\s*```", raw_judge, re.DOTALL
+    )
 
     safe = ticker.replace(":", "_")
     arbitration_path = reports_dir / f"{safe}_arbitration.md"
 
-    # Extract structured watch_levels JSON and upsert to DB
-    watch_json_match = re.search(
-        r"```(?:json)?(?::watch_levels)?\s*(\{.*?\})\s*```", clean_judge, re.DOTALL
-    )
+    # Trim preamble before JSON block or heading
+    clean_judge = raw_judge
+    first_block = re.search(r"(?m)^(?:```json|#+\s+)", clean_judge)
+    if first_block and first_block.start() > 0:
+        clean_judge = clean_judge[first_block.start():].strip()
+    if not re.search(r"(?m)^#\s+", clean_judge):
+        clean_judge = f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n" + clean_judge
+
     if not watch_json_match:
         logger.warning(f"[{ticker}] Senior PM Arbitration missing watch_levels JSON block! Marking verdict = NO_LEVELS.")
         clean_judge += "\n\n> ⚠️ **VERDICT: NO_LEVELS** — Arbitration failed to emit structured watch_levels JSON block. Not persisted to watchlist."
@@ -264,11 +311,8 @@ def run_arbitration(
 
         logger.info(f"[{ticker}] Extracted structured watch levels -> {watch_path}")
 
-        upsert_watch_target(watch_data)
-        logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB.")
-
         sp = watch_data.get("shares_plan", {})
-        append_suggestion({
+        sugg_id = append_suggestion({
             "ticker": ticker,
             "date": date_str,
             "source": "judge",
@@ -287,6 +331,43 @@ def run_arbitration(
             "_datawindow": dw_dict,
             "notes": f"Judge directive: {watch_data.get('verdict')}",
         })
+        watch_data["suggestion_id"] = sugg_id
+
+        upsert_watch_target(watch_data)
+        logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB (suggestion_id={sugg_id}).")
+
+        # Record into last_researched table
+        try:
+            from src.tracking.watch_manager import record_last_researched
+            try:
+                ac_raw = dw_dict.get("Action Long Code") or dw_dict.get("action_long_code") or dw_dict.get("Action Code") or 0
+                ac = int(round(float(ac_raw)))
+            except (ValueError, TypeError):
+                ac = 0
+            iz = 1 if (dw_dict.get("Long In Zone") or dw_dict.get("in_zone")) else 0
+            try:
+                rr_mkt = float(dw_dict.get("Long RR At Market") or dw_dict.get("rr_at_market") or 0.0)
+            except (ValueError, TypeError):
+                rr_mkt = 0.0
+            try:
+                st_val = float(sp.get("tactical_stop") or dw_dict.get("Long Stop Loss") or 0.0)
+            except (ValueError, TypeError):
+                st_val = 0.0
+            try:
+                tgt_val = float(sp.get("target_1") or dw_dict.get("Long Target") or 0.0)
+            except (ValueError, TypeError):
+                tgt_val = 0.0
+            record_last_researched(
+                ticker=ticker,
+                date_str=date_str,
+                action_code=ac,
+                in_zone=iz,
+                rr_at_market=rr_mkt,
+                stop=st_val,
+                target=tgt_val,
+            )
+        except Exception as e_rec:
+            logger.debug(f"[{ticker}] Failed recording last_researched: {e_rec}")
 
     except Exception as e:
         logger.warning(f"[{ticker}] Failed to process watch levels JSON: {e}")

@@ -415,3 +415,63 @@ def get_per_source_stats(since: Optional[str] = None) -> List[Dict[str, Any]]:
                     "read": len(scored_rows) >= 30,
                 })
             return stats
+
+
+def get_main_record_stats() -> Dict[str, Any]:
+    """Return metrics for the canonical Main Record:
+    source='judge', gate_status='PASS', kind='NEW',
+    lanes in ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2'),
+    dated >= '2026-09-23'. Everything else is reported separately.
+    """
+    with _db_lock:
+        with _get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            try:
+                rows = cursor.execute(
+                    """
+                    SELECT * FROM suggestions
+                    WHERE source = 'judge'
+                      AND COALESCE(gate_status, 'PASS') = 'PASS'
+                      AND COALESCE(kind, 'NEW') = 'NEW'
+                      AND setup_lane IN ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2')
+                      AND date >= '2026-09-23'
+                    ORDER BY date ASC, ticker ASC
+                    """
+                ).fetchall()
+            except Exception:
+                return {}
+
+            total = len(rows)
+            taken_count = sum(1 for r in rows if r["taken"])
+            filled_count = sum(1 for r in rows if (r["fill_price"] is not None and r["fill_price"] > 0) or (r["exit_reason"] and r["exit_reason"] != "NOT_FILLED"))
+            fill_rate = round(filled_count / total * 100, 1) if total > 0 else 0.0
+
+            scored_rows = [r for r in rows if r["r_net"] is not None]
+            if scored_rows:
+                r_vals = [float(r["r_net"]) for r in scored_rows]
+                mean_r = round(statistics.mean(r_vals), 4)
+                median_r = round(statistics.median(r_vals), 4)
+                win_pct = round(sum(1 for r in r_vals if r > 0) / len(r_vals) * 100, 1)
+                stopped_pct = round(sum(1 for r in scored_rows if r["exit_reason"] == "STOP_BREACHED") / len(scored_rows) * 100, 1)
+            else:
+                mean_r = None
+                median_r = None
+                win_pct = 0.0
+                stopped_pct = 0.0
+
+            return {
+                "source": "judge",
+                "label": "Main Record (>= 2026-09-23)",
+                "total": total,
+                "n": total,
+                "filled_count": filled_count,
+                "fill_rate": fill_rate,
+                "scored_count": len(scored_rows),
+                "mean_r": mean_r,
+                "median_r": median_r,
+                "win_rate_pct": win_pct,
+                "stop_out_pct": stopped_pct,
+                "flag_n30": len(scored_rows) >= 30,
+            }
+

@@ -72,6 +72,11 @@ def load_state() -> dict:
         return {}
 
 
+def list_open() -> list[dict]:
+    """Return list of open position dicts from data/positions.json."""
+    return list(load_state().values())
+
+
 def _save_state(state: dict) -> None:
     POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = POSITIONS_FILE.with_suffix(".json.tmp")

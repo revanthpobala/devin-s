@@ -144,57 +144,83 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
     def _is_held_in_portfolio(sym: str) -> bool:
         sym = sym.upper().strip()
         try:
-            from src.tracking.position_state import load_positions
-            positions = load_positions()
-            if any(p.get("ticker", "").upper() == sym for p in positions.values()):
-                return True
+            from src.tracking.position_state import list_open
+            for p in list_open():
+                if str(p.get("ticker", "")).upper() == sym:
+                    return True
         except Exception:
             pass
         try:
-            from src.clients.schwab_client import get_account_positions
-            pos_list = get_account_positions()
-            if any(p.get("symbol", "").upper() == sym for p in pos_list):
-                return True
+            from src.clients.schwab_client import get_all_active_positions
+            for p in get_all_active_positions():
+                if str(p.get("ticker", "")).upper() == sym:
+                    return True
         except Exception:
             pass
         return False
 
     def _has_recent_unchanged_research(sym: str, target_date: str, dw: dict) -> bool:
         try:
+            from src.tracking.watch_manager import get_last_researched
+            rec = get_last_researched(sym)
+            if not rec:
+                return False
+
+            last_dt_str = rec.get("last_researched_date")
+            if not last_dt_str:
+                return False
+
             from datetime import datetime
             t_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
-            rep_base = config.BASE_DIR / "reports"
-            if not rep_base.exists():
+            r_dt = datetime.strptime(last_dt_str, "%Y-%m-%d").date()
+            diff_days = (t_dt - r_dt).days
+
+            # Only skip if within 3 trading days (~5 calendar days)
+            if not (0 <= diff_days <= 5):
                 return False
-            for d in sorted(rep_base.iterdir(), reverse=True):
-                if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name) and d.name != target_date:
-                    try:
-                        r_dt = datetime.strptime(d.name, "%Y-%m-%d").date()
-                    except Exception:
-                        continue
-                    diff_days = (t_dt - r_dt).days
-                    if 0 <= diff_days <= 5:  # within 3 trading days
-                        arb_p = d / f"{sym}_arbitration.md"
-                        sum_p = d / f"{sym}_summary.md"
-                        if arb_p.exists() or sum_p.exists():
-                            cur_stop = dw.get("Long Stop Loss") or dw.get("stop_loss")
-                            cur_tgt = dw.get("Long Target") or dw.get("target")
-                            wl_file = config.BASE_DIR / "data" / "triage" / d.name / "_DEEP_RESEARCH" / sym / f"{sym}_watch_levels.json"
-                            if not wl_file.exists():
-                                wl_file = config.BASE_DIR / "data" / "triage" / d.name / "force" / sym / f"{sym}_watch_levels.json"
-                            if wl_file.exists():
-                                try:
-                                    wl = json.loads(wl_file.read_text(encoding="utf-8"))
-                                    sp = wl.get("shares_plan") or {}
-                                    old_stop = sp.get("tactical_stop") or wl.get("stop_loss")
-                                    old_tgt = sp.get("target_1") or wl.get("target_1")
-                                    if cur_stop and old_stop and abs(float(cur_stop) - float(old_stop)) < 0.05:
-                                        if cur_tgt and old_tgt and abs(float(cur_tgt) - float(old_tgt)) < 0.05:
-                                            return True
-                                except Exception:
-                                    pass
+
+            # Compare action code, in-zone, R:R at market, stop and target
+            try:
+                cur_ac = int(round(float(dw.get("Action Long Code") or dw.get("action_long_code") or dw.get("Action Code") or 0)))
+            except (ValueError, TypeError):
+                cur_ac = 0
+            cur_iz = 1 if (dw.get("Long In Zone") or dw.get("in_zone")) else 0
+            try:
+                cur_rr_mkt = float(dw.get("Long RR At Market") or dw.get("rr_at_market") or 0.0)
+            except (ValueError, TypeError):
+                cur_rr_mkt = 0.0
+            try:
+                cur_stop = float(dw.get("Long Stop Loss") or dw.get("stop_loss") or dw.get("tactical_stop") or 0.0)
+            except (ValueError, TypeError):
+                cur_stop = 0.0
+            try:
+                cur_tgt = float(dw.get("Long Target") or dw.get("target_1") or dw.get("target") or 0.0)
+            except (ValueError, TypeError):
+                cur_tgt = 0.0
+
+            try:
+                old_ac = int(round(float(rec.get("action_code") or 0)))
+            except (ValueError, TypeError):
+                old_ac = 0
+            old_iz = int(rec.get("in_zone") or 0)
+            try:
+                old_rr_mkt = float(rec.get("rr_at_market") or 0.0)
+            except (ValueError, TypeError):
+                old_rr_mkt = 0.0
+            try:
+                old_stop = float(rec.get("stop") or 0.0)
+            except (ValueError, TypeError):
+                old_stop = 0.0
+            try:
+                old_tgt = float(rec.get("target") or 0.0)
+            except (ValueError, TypeError):
+                old_tgt = 0.0
+
+            if cur_ac == old_ac and cur_iz == old_iz:
+                if abs(cur_rr_mkt - old_rr_mkt) < 0.05 and abs(cur_stop - old_stop) < 0.05 and abs(cur_tgt - old_tgt) < 0.05:
+                    return True
         except Exception as e:
-            logger.debug(f"Error checking recent research for {sym}: {e}")
+            logger.debug(f"Error checking last_researched for {sym}: {e}")
         return False
 
     # ------------------------------------------------------------------
@@ -367,6 +393,18 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
 
         # 2. Resolve triage record
         triage_record, verdict_record = resolve_triage(ticker, dw_dict, raw_dir, deep_dir, tdir)
+        if not (isinstance(triage_record, dict) and triage_record.get("setup_lane")) and dw_dict:
+            try:
+                from src.logic.data_window_filter import run_data_window_filter
+                dw_filter_res = run_data_window_filter(ticker, dw_dict)
+                if dw_filter_res.get("setup_lane"):
+                    if not isinstance(triage_record, dict):
+                        triage_record = {}
+                    triage_record["setup_lane"] = dw_filter_res["setup_lane"]
+                    if not verdict_record:
+                        verdict_record = dw_filter_res
+            except Exception as e_dwf:
+                logger.debug(f"[{ticker}] DataWindowFilter triage lane derivation failed: {e_dwf}")
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
 
         # 3. Format deterministic blocks
@@ -452,7 +490,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             earnings_fact_block=ctx.earnings_fact_block, preloaded_block=preloaded_block,
             active_pos_block=active_pos_block,
         )
-        debate_result = run_debate(ticker, date_str, debate_payload, tdir)
+        debate_result = run_debate(ticker, date_str, debate_payload, tdir, dw_str=data_window_str)
         debate_block = format_debate_block(debate_result)
 
         # 9. Daily alerts + Pine benchmark
@@ -477,6 +515,32 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         )
 
         independent_dw_str = sanitize_dw_for_independent(dw_dict)
+
+        # Sanitize CSV and JSON for Model B so it never sees proprietary Pine script columns
+        ind_csv_path = paths["dw_csv"]
+        ind_json_path = paths["dw_json"]
+        try:
+            target_out_dir = tdir or (raw_dir / ticker) or raw_dir
+            if paths["dw_csv"].exists():
+                import pandas as pd
+                df_raw = pd.read_csv(paths["dw_csv"])
+                drop_cols = [c for c in df_raw.columns if any(b in c.lower() for b in [
+                    "action", "pine", "entry", "stop loss", "target", "score", "pressure",
+                    "rev zone", "ignition", "anchor", "sigma", "overextension", "gradient",
+                    "mask", "signal pack", "premove", "fade gate", "bible", "pillar",
+                    "zone 0", "buy score", "sell score", "prob"
+                ])]
+                df_clean = df_raw.drop(columns=drop_cols, errors="ignore")
+                ind_csv_clean = target_out_dir / f"{ticker.replace(':', '_')}_datawindow_independent.csv"
+                df_clean.to_csv(ind_csv_clean, index=False)
+                ind_csv_path = ind_csv_clean
+
+            ind_json_clean = target_out_dir / f"{ticker.replace(':', '_')}_datawindow_independent.json"
+            ind_json_clean.write_text(independent_dw_str, encoding="utf-8")
+            ind_json_path = ind_json_clean
+        except Exception as e_ind_art:
+            logger.debug(f"[{ticker}] Failed creating sanitized Model B artifacts: {e_ind_art}")
+
         independent_user_prompt = build_independent_user_prompt(
             ticker=ticker, date_str=date_str, independent_dw_str=independent_dw_str,
             live_quote_block=ctx.live_quote_block, news_dossier=news_dossier,
@@ -484,7 +548,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             institutional_block=ctx.institutional_block, grounded_block=ctx.grounded_block,
             macro_grounded_block=ctx.macro_grounded_block,
             earnings_fact_block=ctx.earnings_fact_block,
-            csv_path=paths["dw_csv"], dw_path=paths["dw_json"],
+            csv_path=ind_csv_path, dw_path=ind_json_path,
         )
 
         # 11. Image paths

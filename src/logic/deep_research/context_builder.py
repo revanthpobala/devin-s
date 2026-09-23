@@ -581,7 +581,7 @@ def build_independent_user_prompt(
 
         --- QUANTITATIVE SANDBOX & 1-YEAR HISTORICAL DATAFRAME (`df`) ---
         The quantitative sandbox (`execute_python_code`) pre-loads:
-        - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`)
+        - `df`: 300 daily bars historical dataframe (CSV File: `{csv_path}`)
         - `dw`: Latest closed bar dictionary (JSON File: `{dw_path}`)
         - `np`, `pd`, `scipy`, `stats`, `talib` (all 161 TA-Lib indicator & candlestick C-routines), `math`, `json`, `datetime`
         - Live tools: `fetch_options_chain`, `detect_candlestick_patterns`, `run_quantitative_plugin`.

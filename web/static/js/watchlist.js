@@ -401,16 +401,16 @@ window.AppWatchlist = {
         actCount++;
       }
 
-      const pnl$ = Number(t.trade_dollar_pnl || 0);
+      const rVal = Number(t.r_multiple !== undefined && t.r_multiple !== null ? t.r_multiple : (t.trade_dollar_pnl || 0));
 
       if (st === 'TARGET_HIT' || st === 'COMPLETED') {
         wonCount++;
-        wonDollars += pnl$;
+        wonDollars += rVal;
       } else if (st === 'INVALIDATED' || st === 'STOP_BREACHED' || st === 'STOPPED') {
         lostCount++;
-        lostDollars += pnl$;
+        lostDollars += rVal;
       } else if (st === 'IN_TRADE' || st === 'IN_ZONE') {
-        activeDollars += pnl$;
+        activeDollars += rVal;
       }
     });
 
@@ -501,7 +501,7 @@ window.AppWatchlist = {
           <th onclick="AppWatchlist.setSort('ticker')">TICKER ${sortIndicator('ticker')}</th>
           <th onclick="AppWatchlist.setSort('date')">DATE ${sortIndicator('date')}</th>
           <th onclick="AppWatchlist.setSort('last_price')">LIVE SPOT ${sortIndicator('last_price')}</th>
-          <th onclick="AppWatchlist.setSort('trade_dollar_pnl')">SUGGESTED TRADE / P&L ($$) ${sortIndicator('trade_dollar_pnl')}</th>
+          <th onclick="AppWatchlist.setSort('r_multiple')">SUGGESTED TRADE / R-MULTIPLE ${sortIndicator('r_multiple')}</th>
           <th>ENTRY ZONE</th>
           <th onclick="AppWatchlist.setSort('distance_to_entry_pct')">DIST % ${sortIndicator('distance_to_entry_pct')}</th>
           <th onclick="AppWatchlist.setSort('tactical_stop')">TACTICAL STOP ${sortIndicator('tactical_stop')}</th>
@@ -556,47 +556,50 @@ window.AppWatchlist = {
 
     // Dynamic Outcome / Profit & Loss Badge by Suggested Trades
     let pnlHtml = '-';
-    const trade$ = Number(t.trade_dollar_pnl || 0);
-    const rocVal = Number(t.trade_roc_pct || 0);
+    const rVal = Number(t.r_multiple !== undefined && t.r_multiple !== null ? t.r_multiple : (t.trade_dollar_pnl || 0));
     const tradeLabel = t.trade_label || (t.trade_type === 'OPTIONS' ? 'Options Spread' : 'Shares');
 
     if (statusUpper === 'TARGET_HIT' || statusUpper === 'COMPLETED') {
-      const win$Str = Math.abs(trade$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      const rStr = Math.abs(rVal).toFixed(2);
       pnlHtml = `
         <div style="display:flex; flex-direction:column; gap:2px;">
           <span class="pill" style="color:#10b981; background:rgba(16,185,129,0.18); border:1px solid #10b981; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Realized win on suggested trade ${tradeLabel}">
-            +$${win$Str} WIN 🏆
+            +${rStr} R WIN 🏆
           </span>
           <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
-            ${tradeLabel} (+${rocVal.toFixed(0)}% ROC)
+            ${tradeLabel}
           </span>
         </div>
       `;
     } else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED' || statusUpper === 'STOPPED') {
-      const loss$Str = Math.abs(trade$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      const isZeroR = (Math.abs(rVal) < 0.01);
+      const lossStr = isZeroR ? '0.00 R UNFILLED' : `-${Math.abs(rVal).toFixed(2)} R STOP 🛑`;
+      const pillColor = isZeroR ? '#94a3b8' : '#f43f5e';
+      const pillBg = isZeroR ? 'rgba(148,163,184,0.18)' : 'rgba(244,63,94,0.18)';
+      const pillBorder = isZeroR ? '#94a3b8' : '#f43f5e';
       pnlHtml = `
         <div style="display:flex; flex-direction:column; gap:2px;">
-          <span class="pill" style="color:#f43f5e; background:rgba(244,63,94,0.18); border:1px solid #f43f5e; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Defined stop loss on suggested trade ${tradeLabel}">
-            -$${loss$Str} STOP 🛑
+          <span class="pill" style="color:${pillColor}; background:${pillBg}; border:1px solid ${pillBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="${isZeroR ? 'Invalidated before fill' : 'Defined stop loss'} on ${tradeLabel}">
+            ${lossStr}
           </span>
           <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
-            ${tradeLabel} (-100% Risk)
+            ${tradeLabel}
           </span>
         </div>
       `;
     } else if ((statusUpper === 'IN_TRADE' || statusUpper === 'IN_ZONE') && spot > 0) {
-      const pnlSign = trade$ >= 0 ? '+' : '-';
-      const pnlColor = trade$ >= 0 ? '#10b981' : '#f43f5e';
-      const pnlBg = trade$ >= 0 ? 'rgba(16,185,129,0.14)' : 'rgba(244,63,94,0.14)';
-      const pnlBorder = trade$ >= 0 ? 'rgba(16,185,129,0.45)' : 'rgba(244,63,94,0.45)';
-      const live$Str = Math.abs(trade$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      const pnlSign = rVal >= 0 ? '+' : '-';
+      const pnlColor = rVal >= 0 ? '#10b981' : '#f43f5e';
+      const pnlBg = rVal >= 0 ? 'rgba(16,185,129,0.14)' : 'rgba(244,63,94,0.14)';
+      const pnlBorder = rVal >= 0 ? 'rgba(16,185,129,0.45)' : 'rgba(244,63,94,0.45)';
+      const rStr = Math.abs(rVal).toFixed(2);
       pnlHtml = `
         <div style="display:flex; flex-direction:column; gap:2px;">
           <span class="pill" style="color:${pnlColor}; background:${pnlBg}; border:1px solid ${pnlBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Live theoretical value on suggested trade ${tradeLabel}">
-            ${pnlSign}$${live$Str} LIVE ⚡
+            ${pnlSign}${rStr} R LIVE ⚡
           </span>
           <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
-            ${tradeLabel} (${pnlSign}${Math.abs(rocVal).toFixed(0)}% ROC)
+            ${tradeLabel}
           </span>
         </div>
       `;

@@ -90,7 +90,22 @@ def get_suggested_trades_endpoint():
         rep_root = config.BASE_DIR / "reports"
         with get_db() as conn:
             c = conn.cursor()
-            rows = c.execute("SELECT * FROM watch_targets ORDER BY date DESC, updated_at DESC").fetchall()
+            try:
+                rows = c.execute(
+                    """
+                    SELECT wt.rowid as id, wt.*, 
+                           s.gate_status, s.setup_lane, s.kind, s.atr_at_signal, s.rr_at_market_at_signal
+                    FROM watch_targets wt
+                    LEFT JOIN suggestions s ON (wt.suggestion_id IS NOT NULL AND s.id = wt.suggestion_id)
+                                            OR (wt.suggestion_id IS NULL AND s.ticker = wt.ticker AND s.date = wt.date)
+                    WHERE wt.is_active IS NULL OR wt.is_active = 1
+                    ORDER BY wt.date DESC, wt.updated_at DESC
+                    """
+                ).fetchall()
+            except Exception:
+                rows = c.execute(
+                    "SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1 ORDER BY date DESC, updated_at DESC"
+                ).fetchall()
 
         trades = []
         company_names = get_company_names_dict()
@@ -158,6 +173,19 @@ def get_suggested_trades_endpoint():
             t["stop_risk_pct"] = stop_risk_pct
             t["rr_ratio"] = rr_ratio
             t["has_report"] = has_report
+            t["gate_status"] = t.get("gate_status") or "PASS"
+            t["setup_lane"] = t.get("setup_lane") or "DEFAULT"
+            t["kind"] = t.get("kind") or "NEW"
+            atr_val = t.get("atr_at_signal") or (raw.get("indicators", {}).get("RSI2 ATR14") if raw else None)
+            try:
+                atr_num = float(atr_val) if atr_val is not None else 0.0
+            except (ValueError, TypeError):
+                atr_num = 0.0
+            if atr_num > 0 and stop_loss is not None and entry_mid is not None:
+                t["stop_in_atr"] = round(abs(entry_mid - stop_loss) / atr_num, 2)
+            else:
+                t["stop_in_atr"] = None
+            t["rr_at_market"] = t.get("rr_at_market_at_signal") or rr_ratio
             trades.append(t)
 
         summary = {
@@ -351,11 +379,11 @@ def update_suggestion_taken_endpoint(
 
 
 @router.get("/api/scoreboard")
-def get_scoreboard(since: Optional[str] = Query(None)):
+def get_scoreboard(since: Optional[str] = None):
     """Return unified empirical scoreboard for Intraday and Swing suggestions."""
     try:
         from src.tracking.intraday_stats import generate_postmortem_stats
-        from src.tracking.suggestions_ledger import get_per_source_stats
+        from src.tracking.suggestions_ledger import get_per_source_stats, get_main_record_stats
 
         stats = generate_postmortem_stats(since=since)
         intraday_data = {
@@ -368,9 +396,11 @@ def get_scoreboard(since: Optional[str] = Query(None)):
         }
 
         swing_data = get_per_source_stats(since=since)
+        main_record_data = get_main_record_stats()
         return {
             "intraday": intraday_data,
             "swing": swing_data,
+            "main_record": main_record_data,
         }
     except Exception as e:
         logger.error(f"Error generating scoreboard: {e}", exc_info=True)

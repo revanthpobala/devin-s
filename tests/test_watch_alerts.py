@@ -317,25 +317,69 @@ def test_floor_proximity_buffer(tmp_path):
             assert res[0]["last_alert_type"] == "ENTRY_TRIGGERED"
 
 
-def test_research_queue_date_resolution():
+def test_research_queue_date_resolution(tmp_path):
+    import json
+    from unittest.mock import patch
     from run_ui import get_research_queue
-    # 1. Default call auto-resolves to latest raw date (e.g. 2026-09-03)
-    res = get_research_queue()
-    assert "date" in res
-    assert "queue" in res
-    assert len(res["queue"]) > 0
 
-    # 2. Scraped tickers ready for research are marked deep_only
-    deep_only_items = [q for q in res["queue"] if q["action"] == "deep_only"]
-    for item in deep_only_items:
-        assert item["status"] == "READY_FOR_RESEARCH"
-        assert item["has_chart"] is True
-        assert item["has_report"] is False
+    # Create mock raw directories
+    d1 = tmp_path / "data" / "raw" / "2026-09-23"
+    d1.mkdir(parents=True)
+    d2 = tmp_path / "data" / "raw" / "2026-08-20"
+    d2.mkdir(parents=True)
 
-    # 3. Explicit historical date lookup
-    hist_res = get_research_queue(date="2026-08-20")
-    assert hist_res["date"] == "2026-08-20"
-    assert len(hist_res["queue"]) > 0
+    # 1. Qualified candidate: Scraped + PASS triage + send_for_deep_research = True
+    aapl_dir = d1 / "AAPL"
+    aapl_dir.mkdir()
+    (aapl_dir / "AAPL_datawindow.json").write_text("{}", encoding="utf-8")
+    (aapl_dir / "AAPL_chart.png").write_bytes(b"fake_chart")
+    (aapl_dir / "AAPL_thesis.json").write_text(
+        json.dumps({"triage": {"triage": "PASS", "send_for_deep_research": True}}),
+        encoding="utf-8",
+    )
+
+    # 2. Disqualified candidate: Scraped + CUT triage (send_for_deep_research = False)
+    msft_dir = d1 / "MSFT"
+    msft_dir.mkdir()
+    (msft_dir / "MSFT_datawindow.json").write_text("{}", encoding="utf-8")
+    (msft_dir / "MSFT_chart.png").write_bytes(b"fake_chart")
+    (msft_dir / "MSFT_thesis.json").write_text(
+        json.dumps({"triage": {"triage": "CUT", "send_for_deep_research": False}}),
+        encoding="utf-8",
+    )
+
+    # 3. Screener survivor needing scrape
+    (d1 / "survivors.json").write_text(json.dumps([{"Symbol": "NVDA"}]), encoding="utf-8")
+
+    # 4. Historical date survivor
+    (d2 / "survivors.json").write_text(json.dumps([{"Symbol": "AMZN"}]), encoding="utf-8")
+
+    with patch("src.config.BASE_DIR", tmp_path):
+        # Default auto-resolves to latest raw date
+        res = get_research_queue()
+        assert res["date"] == "2026-09-23"
+        q_tickers = {item["ticker"]: item for item in res["queue"]}
+        
+        # Qualified candidate is marked deep_only and READY_FOR_RESEARCH
+        assert "AAPL" in q_tickers
+        assert q_tickers["AAPL"]["action"] == "deep_only"
+        assert q_tickers["AAPL"]["status"] == "READY_FOR_RESEARCH"
+        assert q_tickers["AAPL"]["has_chart"] is True
+        assert q_tickers["AAPL"]["has_report"] is False
+
+        # Disqualified candidate should not be in queue
+        assert "MSFT" not in q_tickers
+
+        # Survivor needing scrape is marked full and NEEDS_SCRAPE
+        assert "NVDA" in q_tickers
+        assert q_tickers["NVDA"]["action"] == "full"
+        assert q_tickers["NVDA"]["status"] == "NEEDS_SCRAPE"
+
+        # Explicit historical date lookup
+        hist_res = get_research_queue(date="2026-08-20")
+        assert hist_res["date"] == "2026-08-20"
+        hist_tickers = [item["ticker"] for item in hist_res["queue"]]
+        assert "AMZN" in hist_tickers
 
 
 def test_extract_watch_levels_options_menu(tmp_path):
@@ -584,7 +628,7 @@ def test_embedded_path_demotes_unscaled_credit(tmp_path):
 
 
 def test_sync_reports_to_watchlist_skips_tastytrade_on_gate_rejection():
-    """Verify Tastytrade alerts are NOT set if the report levels fail the validation gate."""
+    """Verify Tastytrade alerts are NOT set and upsert is skipped if the report levels fail the validation gate."""
     from run_watch_alerts import sync_reports_to_watchlist
 
     fake_data = {
@@ -607,8 +651,10 @@ def test_sync_reports_to_watchlist_skips_tastytrade_on_gate_rejection():
         mock_tt_cls.return_value = mock_tt
 
         count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="BADTICKER", sync_tastytrade=True)
-        assert count == 1
+        # Rejected plans are not upserted to watchlist
+        assert count == 0
         assert fake_data["verdict"] == "REJECTED_BY_GATE"
+        mock_upsert.assert_not_called()
         mock_tt.sync_watch_levels.assert_not_called()
 
 
@@ -620,6 +666,8 @@ def test_sync_reports_to_watchlist_defaults_tastytrade_disabled():
         "ticker": "GOODTICKER",
         "date": "2026-09-23",
         "side": "LONG",
+        "current_price": 100.5,
+        "atr_14": 3.0,
         "shares_plan": {
             "entry_zone_low": 100.0,
             "entry_zone_high": 101.0,
@@ -629,12 +677,13 @@ def test_sync_reports_to_watchlist_defaults_tastytrade_disabled():
     }
 
     with patch("run_watch_alerts.extract_watch_levels_from_report", return_value=fake_data), \
-         patch("run_watch_alerts.upsert_watch_target"), \
+         patch("run_watch_alerts.upsert_watch_target") as mock_upsert, \
          patch("run_watch_alerts.TastytradeClient") as mock_tt_cls:
 
         # Default behavior: Tastytrade alerts are NOT generated until explicitly instructed
         count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="GOODTICKER")
         assert count == 1
+        mock_upsert.assert_called_once()
         mock_tt_cls.assert_not_called()
 
 

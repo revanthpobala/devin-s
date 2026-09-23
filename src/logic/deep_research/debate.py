@@ -51,6 +51,7 @@ def run_debate(
     date_str: str,
     debate_payload: str,
     tdir: Path,
+    dw_str: str = "",
 ) -> DebateResult:
     """Run Bull/Bear debate + rebuttals (local LLM, 2 workers each round).
 
@@ -62,7 +63,14 @@ def run_debate(
 
     safe = ticker.replace(":", "_")
     cache_file = tdir / f"{safe}_debate_v2.json"
-    payload_hash = hashlib.sha256(debate_payload.encode("utf-8")).hexdigest()[:16]
+    
+    # Hash only the Data Window string
+    hash_target = dw_str
+    if not hash_target and "DATA PAYLOAD:" in debate_payload:
+        hash_target = debate_payload.split("DATA PAYLOAD:")[1].strip()
+    elif not hash_target:
+        hash_target = debate_payload
+    payload_hash = hashlib.sha256(hash_target.encode("utf-8")).hexdigest()[:16]
 
     if cache_file.exists():
         try:

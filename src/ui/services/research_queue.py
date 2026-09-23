@@ -381,9 +381,9 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                 cmd.append("--force")
             _run_subproc(cmd, "Scrape phase")
 
-        # Step 1b: Triage pass for mode == 'full'
+        # Step 1b: Triage pass for mode in ("full", "scrape_deep", "deep_only")
         proceed_to_deep = True
-        if mode == "full" and not force:
+        if mode in ("full", "scrape_deep", "deep_only") and not force:
             _log_both(f"⚖️ [1b/3] Running Local Triage...")
             triage_cmd = [py_exe, "run_local_research.py"]
             if date and date.strip():
@@ -391,22 +391,26 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             triage_cmd.extend(["--ticker", ticker_u])
             _run_subproc(triage_cmd, "Triage phase")
 
-            # Check triage verdict
+            # Check triage verdict and send_for_deep_research flag
             t_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
             th_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json"
+            if not th_path.exists():
+                th_path = config.BASE_DIR / "data" / "triage" / t_date / "force" / ticker_u / f"{ticker_u}_thesis.json"
             if not th_path.exists():
                 th_path = config.BASE_DIR / "data" / "raw" / t_date / ticker_u / f"{ticker_u}_thesis.json"
             triage_pass = False
             if th_path.exists():
                 try:
+                    is_forced = "force" in th_path.parts
                     th_json = json.loads(th_path.read_text(encoding="utf-8"))
                     tr = th_json.get("triage") or {}
                     v = tr.get("triage") if isinstance(tr, dict) else str(tr)
-                    triage_pass = (v == "PASS")
+                    send_flag = bool(th_json.get("send_for_deep_research") or (isinstance(tr, dict) and tr.get("send_for_deep_research")) or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research")))
+                    triage_pass = is_forced or ((v == "PASS") and send_flag)
                 except Exception:
                     pass
             if not triage_pass:
-                _log_both(f"⏹️ [Triage Gate] {ticker_u} verdict is not PASS. Deep research skipped to preserve slots.")
+                _log_both(f"⏹️ [Triage Gate] {ticker_u} did not qualify (PASS + send_for_deep_research). Deep research skipped to preserve slots.")
                 proceed_to_deep = False
 
         # Step 2: Deep Research (Model A & Model B Parallel + PM Arbitration)

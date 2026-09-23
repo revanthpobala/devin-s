@@ -310,11 +310,16 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                         r_mult = round(max_prof / max_loss, 2)
                         notes = f"Target reached: {r_mult:+.2f}R on {struct}"
                     else:
-                        r_mult = round((t1 - entry) / risk_amt, 2) if risk_amt > 0 else 1.5
+                        gain = (t1 - entry) if side == "LONG" else (entry - t1)
+                        r_mult = round(gain / risk_amt, 2) if risk_amt > 0 else 0.0
                         notes = f"Target 1 reached: {r_mult:+.2f}R at ${t1:.2f} vs fill ${entry:.2f}"
                 elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
-                    r_mult = -1.0
-                    notes = f"Stop breached: -1.00R at ${stop:.2f} vs fill ${entry:.2f}"
+                    if eval_res.get("was_filled"):
+                        r_mult = -1.0
+                        notes = f"Stop breached: -1.00R at ${stop:.2f} vs fill ${entry:.2f}"
+                    else:
+                        r_mult = 0.0
+                        notes = "Invalidated before fill: 0.00R (never filled)"
                 elif status in ("IN_TRADE", "IN_ZONE"):
                     if is_options and max_loss > 0:
                         r_mult = 0.0

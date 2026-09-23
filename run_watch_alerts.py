@@ -177,6 +177,12 @@ def sync_reports_to_watchlist(
                                     break
                             except Exception:
                                 pass
+            if not dw_dict:
+                dw_dict = {
+                    "RSI2 ATR14": data.get("atr_14") or data.get("atr") or data.get("rsi2_atr14"),
+                    "Close": data.get("current_price") or data.get("spot") or data.get("close"),
+                    "setup_lane": data.get("setup_lane") or data.get("lane"),
+                }
 
             from src.logic.level_validation import validate_levels
             plan = {
@@ -185,16 +191,48 @@ def sync_reports_to_watchlist(
                 "ticker": t,
                 "date": date_str,
                 "side": data.get("side", "LONG"),
+                "setup_lane": data.get("setup_lane") or data.get("lane") or dw_dict.get("setup_lane"),
+                "spot": data.get("current_price") or data.get("spot") or dw_dict.get("Close"),
             }
             _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"), ticker=t, date_str=date_str)
             if not _ok:
-                logger.warning(
-                    f"[{t}] Level gate FAILED: {'; '.join(_reasons)} — "
-                    f"logged as REJECTED_BY_GATE but still upserting for measurement."
-                )
                 data["verdict"] = "REJECTED_BY_GATE"
-                data["_gate_reasons"] = _reasons
-                rejected_list.append({"ticker": t, "reasons": _reasons})
+            verdict_str = str(data.get("verdict") or "").upper()
+            source_str = str(data.get("source") or "").lower()
+
+            if (
+                not _ok
+                or source_str == "fallback"
+                or verdict_str in ("NO_LEVELS", "REJECTED", "REJECTED_BY_GATE")
+            ):
+                fail_reasons = list(_reasons)
+                if source_str == "fallback":
+                    fail_reasons.append("source is fallback regex")
+                if verdict_str in ("NO_LEVELS", "REJECTED", "REJECTED_BY_GATE"):
+                    fail_reasons.append(f"verdict is {verdict_str}")
+                logger.warning(
+                    f"[{t}] Plan rejected: {'; '.join(fail_reasons)} — SKIPPING upsert to watch_targets."
+                )
+                from src.tracking.suggestions_ledger import log_rejected_plan
+                log_rejected_plan(t, date_str, plan, fail_reasons)
+                rejected_list.append({"ticker": t, "reasons": fail_reasons})
+                continue
+
+            if not data.get("suggestion_id"):
+                try:
+                    from src.tracking.watch_manager import _get_connection, _db_lock
+                    with _db_lock:
+                        with _get_connection() as sconn:
+                            scur = sconn.cursor()
+                            srow = scur.execute(
+                                "SELECT id FROM suggestions WHERE ticker = ? AND date = ? ORDER BY id DESC LIMIT 1",
+                                (t, date_str)
+                            ).fetchone()
+                            if srow:
+                                data["suggestion_id"] = srow[0]
+                except Exception:
+                    pass
+
             upsert_watch_target(data)
             count += 1
             indexed_list.append(t)
