@@ -666,15 +666,6 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
             else "STAND ASIDE"))
         )
 
-        # Label non-vetoed Intraday ENTRY pushes as UNPROVEN until
-        # the go/no-go replay threshold (Phase 0 item 5) clears.
-        if (
-            strategy == "Intraday"
-            and verdict == "GO"
-            and not is_exit
-        ):
-            decision = f"{decision}  [UNPROVEN]"
-
         return {
             "symbol": symbol,
             "strategy": strategy,

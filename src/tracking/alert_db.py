@@ -909,7 +909,14 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
                         target_2=COALESCE(intraday_signals.target_2, excluded.target_2),
                         veto_reason=COALESCE(excluded.veto_reason, intraday_signals.veto_reason),
                         llm_verdict=CASE
-                            WHEN excluded.llm_verdict IS NOT NULL AND TRIM(excluded.llm_verdict) != '' THEN excluded.llm_verdict
+                            WHEN excluded.llm_verdict IS NOT NULL AND TRIM(excluded.llm_verdict) != '' THEN
+                                CASE
+                                    WHEN intraday_signals.llm_verdict IS NOT NULL
+                                         AND TRIM(intraday_signals.llm_verdict) != ''
+                                         AND (intraday_signals.llm_verdict LIKE 'GATE:%' OR intraday_signals.llm_verdict LIKE 'VETO:%') THEN
+                                        intraday_signals.llm_verdict
+                                    ELSE excluded.llm_verdict
+                                END
                             ELSE intraday_signals.llm_verdict
                         END,
                         exit_r=COALESCE(excluded.exit_r, intraday_signals.exit_r),
@@ -1081,8 +1088,8 @@ def get_day_session_record(date: Optional[str] = None) -> tuple[int, int]:
             return wins, losses
 
 
-def format_llm_verdict(decision: Optional[str] = None, risk_veto_header: Optional[str] = None) -> str:
-    """Format verdict as TAKE, VETO:<first 80 chars of reason>, or GATE:<rule>."""
+def format_llm_verdict(decision: Optional[str] = None, risk_veto_header: Optional[str] = None) -> Optional[str]:
+    """Format verdict as TAKE, VETO:<first 80 chars of reason>, GATE:<rule>, or None."""
     if risk_veto_header:
         hdr_up = str(risk_veto_header).upper()
         if "GRADE" in hdr_up:
@@ -1090,6 +1097,8 @@ def format_llm_verdict(decision: Optional[str] = None, risk_veto_header: Optiona
         if "EXHAUSTION" in hdr_up or "10:30-11:30" in hdr_up:
             return "GATE:time"
         if "LUNCH" in hdr_up:
+            return "GATE:time"
+        if "LATE DAY" in hdr_up or "LATE-DAY" in hdr_up or "CUTOFF" in hdr_up:
             return "GATE:time"
         if "COUNTER-STAGE" in hdr_up or "STAGE 4" in hdr_up or "STAGE 2" in hdr_up or "REGIME" in hdr_up:
             return "GATE:stage"
@@ -1103,21 +1112,26 @@ def format_llm_verdict(decision: Optional[str] = None, risk_veto_header: Optiona
 
     text = str(decision or "").strip()
     if not text:
-        return "TAKE"
+        return None
 
     if text.startswith("GATE:"):
         return text
     if text.startswith("VETO:"):
         return text[:85]
-    if text.upper() == "TAKE" or text.upper().startswith("TAKE"):
-        return "TAKE"
 
     t_up = text.upper()
+    if t_up == "TAKE" or t_up.startswith("TAKE"):
+        return "TAKE"
+    if any(tok in t_up for tok in ("BUY CALLS", "ENTER CALLS", "TAKE CALLS", "BUY PUTS", "ENTER PUTS", "TAKE PUTS", "GO (CALLS", "GO (PUTS")):
+        return "TAKE"
+
     if "GRADE" in t_up:
         return "GATE:grade"
     if "EXHAUSTION" in t_up or "10:30-11:30" in t_up:
         return "GATE:time"
     if "LUNCH" in t_up:
+        return "GATE:time"
+    if "LATE DAY" in t_up or "LATE-DAY" in t_up or "CUTOFF" in t_up:
         return "GATE:time"
     if "COUNTER-STAGE" in t_up or "STAGE 4" in t_up or "STAGE 2" in t_up:
         return "GATE:stage"

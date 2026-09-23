@@ -97,9 +97,9 @@ def compute_group_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     wins = 0
     stops = 0
     for r in records:
-        val = r.get("exit_r")
+        val = r.get("pine_exit_r")
         if val is None:
-            val = r.get("pine_exit_r") or r.get("replay_r")
+            val = r.get("exit_r") or r.get("replay_r")
         if val is not None:
             try:
                 r_num = float(val)
