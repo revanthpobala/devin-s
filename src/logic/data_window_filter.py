@@ -846,6 +846,11 @@ def run_data_window_filter(
         triage = "WATCH"
         reason = W["reason"] if W["reason"] != "setup" else "constructible_watch"
 
+    # EV/buy-score gate: PASS with positive ev_r but buy score < 65 -> WATCH
+    if triage == "PASS" and W["ev_r"] is not None and W["ev_r"] > 0 and (W["score"] or 0.0) < 65:
+        triage = "WATCH"
+        reason = "low_buy_score"
+
     # Soft demotions / caution flags
     flags = list(W["flags"])
     if act_code in _ACTION_SOFT_CAUTION_CODES:
@@ -993,7 +998,7 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
 # ---------------------------------------------------------------------------
 # 5. RANK — sort candidates for deep research selection
 # ---------------------------------------------------------------------------
-def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float, float, float]:
+def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, float, float, float, float]:
     """THE single ranking key for deep-research selection.
 
     Priority order (all derived from the gem/bible measured rules, NOT from
@@ -1026,7 +1031,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float,
     adjacent candidates without distorting the extension tiebreak.
     """
     if not rec:
-        return (0, 0, -1e9, -1e9, 0.0, 0.0)
+        return (0, 0, 0, -1e9, -1e9, 0.0, 0.0)
 
     # Unpack nested triage dict if outer record passed
     if isinstance(rec.get("triage"), dict):
@@ -1038,10 +1043,11 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float,
     # already excluded from the paid pass upstream (_deep_research_gate), so this
     # is a belt-and-braces guard: if one ever reaches here, sort it last.
     if rec.get("no_fresh_long"):
-        return (0, 0, -1e9, -1e9, 0.0, 0.0)
+        return (0, 0, 0, -1e9, -1e9, 0.0, 0.0)
 
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
+    is_rsi2 = 1 if rec.get("mode") == "RSI2_LONG" else 0
 
     # rr_at_market: the measured alpha field (gem ⚖️ R:R callout). 0 = invalid
     # (4.5% of bars); treat as the lowest possible value so it sorts last.
@@ -1069,7 +1075,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, float,
 
     conviction = float(rec.get("conviction") or 0.0)
 
-    return (is_pass, is_rev_buy, rr_mkt, ev_r, ext_pct, conviction)
+    return (is_pass, is_rev_buy, is_rsi2, rr_mkt, ev_r, ext_pct, conviction)
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""
