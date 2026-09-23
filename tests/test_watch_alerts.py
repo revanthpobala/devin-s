@@ -612,4 +612,31 @@ def test_sync_reports_to_watchlist_skips_tastytrade_on_gate_rejection():
         mock_tt.sync_watch_levels.assert_not_called()
 
 
+def test_sync_reports_to_watchlist_defaults_tastytrade_disabled():
+    from run_watch_alerts import sync_reports_to_watchlist
+    from unittest.mock import patch, MagicMock
+
+    fake_data = {
+        "ticker": "GOODTICKER",
+        "date": "2026-09-23",
+        "side": "LONG",
+        "shares_plan": {
+            "entry_zone_low": 100.0,
+            "entry_zone_high": 101.0,
+            "tactical_stop": 95.0,
+            "target_1": 115.0,
+        },
+    }
+
+    with patch("run_watch_alerts.extract_watch_levels_from_report", return_value=fake_data), \
+         patch("run_watch_alerts.upsert_watch_target"), \
+         patch("run_watch_alerts.TastytradeClient") as mock_tt_cls:
+
+        # Default behavior: Tastytrade alerts are NOT generated until explicitly instructed
+        count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="GOODTICKER")
+        assert count == 1
+        mock_tt_cls.assert_not_called()
+
+
+
 

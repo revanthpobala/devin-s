@@ -45,9 +45,18 @@ logger = logging.getLogger(__name__)
 
 
 def sync_reports_to_watchlist(
-    target_date: Optional[str] = None, target_ticker: Optional[str] = None, sync_tastytrade: bool = True
+    target_date: Optional[str] = None,
+    target_ticker: Optional[str] = None,
+    sync_tastytrade: Optional[bool] = None,
 ) -> int:
-    """Discover all generated research reports and index their structured levels into SQLite & Tastytrade."""
+    """Discover all generated research reports and index their structured levels into SQLite & Tastytrade.
+    
+    NOTE: Tastytrade cloud quote alert generation is strictly gated. By default, alerts are NOT generated
+    after deep research unless explicitly enabled via sync_tastytrade=True or ENABLE_TASTYTRADE_ALERTS=1.
+    """
+    if sync_tastytrade is None:
+        sync_tastytrade = os.getenv("ENABLE_TASTYTRADE_ALERTS", "0").lower() in ("1", "true", "yes")
+
     date_str = target_date or datetime.now().strftime("%Y-%m-%d")
     reports_dir = config.BASE_DIR / "reports" / date_str
     count = 0
@@ -481,6 +490,12 @@ def run_watch_loop(poll_interval: int = 60, sync_sheets: bool = True):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Watchlist Trigger & Price Alert Engine")
     parser.add_argument("--sync", action="store_true", help="Sync/index research reports into Watchlist DB")
+    parser.add_argument(
+        "--sync-tastytrade",
+        action="store_true",
+        default=False,
+        help="Explicitly enable Tastytrade cloud quote alert generation (default: False)",
+    )
     parser.add_argument("--date", type=str, default=datetime.now().strftime("%Y-%m-%d"), help="Target date (YYYY-MM-DD)")
     parser.add_argument("--ticker", type=str, default=None, help="Target specific ticker")
     parser.add_argument("--once", action="store_true", help="Run a single evaluation cycle and exit")
@@ -492,8 +507,11 @@ if __name__ == "__main__":
 
     # Index reports
     if args.sync or not get_all_watch_targets():
-        indexed = sync_reports_to_watchlist(args.date, args.ticker)
-        logger.info(f"Indexed {indexed} report(s) into Watchlist DB.")
+        should_sync_tt = args.sync_tastytrade or (
+            os.getenv("ENABLE_TASTYTRADE_ALERTS", "0").lower() in ("1", "true", "yes")
+        )
+        indexed = sync_reports_to_watchlist(args.date, args.ticker, sync_tastytrade=should_sync_tt)
+        logger.info(f"Indexed {indexed} report(s) into Watchlist DB (Tastytrade alerts: {'ENABLED' if should_sync_tt else 'DISABLED'}).")
 
     if args.loop:
         run_watch_loop(poll_interval=args.interval, sync_sheets=not args.no_sheets)
