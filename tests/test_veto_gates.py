@@ -260,7 +260,7 @@ def test_day_pause_fires_after_three_losses(tmp_path: Path, monkeypatch: pytest.
     # when score is below A+ (88). A+ clears it (see test_day_pause_a_plus_clears_pause).
     db_path = _make_stop_db(tmp_path, 3, [40, 30, 20])
     monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
-    dt = datetime.now(ET).replace(second=0, microsecond=0)
+    dt = datetime.now(ET).replace(hour=10, minute=0, second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=85,
         current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
@@ -273,7 +273,7 @@ def test_day_pause_does_not_fire_after_two_losses(tmp_path: Path, monkeypatch: p
     # 2 losses is below the threshold of 3 — no pause.
     db_path = _make_stop_db(tmp_path, 2, [40, 20])
     monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
-    dt = datetime.now(ET).replace(second=0, microsecond=0)
+    dt = datetime.now(ET).replace(hour=10, minute=0, second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=90,
         current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
@@ -333,7 +333,7 @@ def test_day_pause_below_a_plus_does_not_clear(tmp_path: Path, monkeypatch: pyte
     # Grade B (score < 88) does NOT clear DAY PAUSE even with 3 losses.
     db_path = _make_stop_db(tmp_path, 3, [40, 30, 20])
     monkeypatch.setattr(alert_db, "DB_PATH", str(db_path))
-    dt = datetime.now(ET).replace(second=0, microsecond=0)
+    dt = datetime.now(ET).replace(hour=10, minute=0, second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=85,
         current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",

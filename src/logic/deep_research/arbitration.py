@@ -224,8 +224,14 @@ def run_arbitration(
             from src.logic.level_validation import validate_levels
             from src.tracking.watch_manager import upsert_watch_target
             from src.tracking.suggestions_ledger import append_suggestion
-            plan = {**watch_data.get("shares_plan", {}), "options_plan": watch_data.get("options_plan", {})}
-            _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"))
+            plan = {
+                **watch_data.get("shares_plan", {}),
+                "options_plan": watch_data.get("options_plan", {}),
+                "ticker": ticker,
+                "date": date_str,
+                "side": watch_data.get("side", "LONG"),
+            }
+            _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
             if not _ok:
                 logger.warning(
                     f"[{ticker}] Level gate FAILED: {'; '.join(_reasons)} — "

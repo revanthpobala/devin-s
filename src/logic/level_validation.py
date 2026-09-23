@@ -157,7 +157,13 @@ def _compute_atr14_from_bars(ticker: str, date_str: str) -> float:
     return 0.0
 
 
-def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tuple[bool, List[str]]:
+def validate_levels(
+    plan: Dict[str, Any],
+    dw: Dict[str, Any],
+    side: str,
+    ticker: Optional[str] = None,
+    date_str: Optional[str] = None,
+) -> Tuple[bool, List[str]]:
     """Validate trade levels before persisting.
 
     Checks:
@@ -172,6 +178,8 @@ def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tupl
     """
     reasons: List[str] = []
     side = (side or "LONG").upper()
+    ticker = (ticker or str(plan.get("ticker") or dw.get("ticker") or "")).strip().upper()
+    date_str = date_str or str(plan.get("date") or dw.get("date") or "")
 
     entry_low = float(plan.get("entry_low") or plan.get("entry_zone_low") or 0.0)
     entry_high = float(plan.get("entry_high") or plan.get("entry_zone_high") or 0.0)
@@ -219,8 +227,6 @@ def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tupl
         stop_dist = abs(mid - stop)
         atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR")
         if atr <= 0:
-            ticker = str(plan.get("ticker") or dw.get("ticker") or "").strip().upper()
-            date_str = str(plan.get("date") or dw.get("date") or "")
             atr = _compute_atr14_from_bars(ticker, date_str)
 
         if atr > 0:

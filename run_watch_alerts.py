@@ -140,8 +140,14 @@ def sync_reports_to_watchlist(
                                 pass
 
             from src.logic.level_validation import validate_levels
-            plan = {**data.get("shares_plan", {}), "options_plan": data.get("options_plan", {})}
-            _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"))
+            plan = {
+                **data.get("shares_plan", {}),
+                "options_plan": data.get("options_plan", {}),
+                "ticker": t,
+                "date": date_str,
+                "side": data.get("side", "LONG"),
+            }
+            _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"), ticker=t, date_str=date_str)
             if not _ok:
                 logger.warning(
                     f"[{t}] Level gate FAILED: {'; '.join(_reasons)} — "

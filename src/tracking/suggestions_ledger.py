@@ -78,8 +78,10 @@ def append_suggestion(data: Dict[str, Any]) -> int:
         "target_1": target_1,
         "target_2": target_2,
         "options_plan": data.get("options_plan") or shares_plan.get("options_plan") or {},
+        "ticker": ticker,
+        "date": date_str,
     }
-    ok, reasons = validate_levels(val_plan, dw, side)
+    ok, reasons = validate_levels(val_plan, dw, side, ticker=ticker, date_str=date_str)
     gate_status = "PASS" if ok else "REJECTED_BY_GATE"
     gate_reasons = "; ".join(reasons) if not ok else None
     if not ok:
