@@ -316,8 +316,11 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
             date=str(rec.get("opened_at", ""))[:10],
         )
         try:
+            from src.tracking.alert_db import get_day_session_r
             from src.tracking.alert_evaluator import format_intraday_exit_push, notify_push
-            exit_push = format_intraday_exit_push(ticker, exit_r=exit_r, session_r=exit_r, reason=rec.get("exit_reason", ""))
+            date_today = str(rec.get("opened_at", ""))[:10]
+            session_r = get_day_session_r(date_today)
+            exit_push = format_intraday_exit_push(ticker, exit_r=exit_r, session_r=session_r, reason=rec.get("exit_reason", ""))
             notify_push(exit_push)
         except Exception as e_epush:
             logger.debug(f"Failed to emit exit push for {ticker}: {e_epush}")

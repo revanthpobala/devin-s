@@ -291,3 +291,98 @@ def test_format_push_null_grade_score():
     push_msg = format_intraday_entry_push(alert)
     assert "Grade NULL" in push_msg
     assert "Score NULL" in push_msg
+
+
+def test_two_exit_sources_pine_and_monitor(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+
+    db_file = tmp_path / "test_two_exits.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    adb.upsert_intraday_signal({
+        "trade_id": "TRADE_DUAL",
+        "ticker": "AAPL",
+        "date": "2026-09-23",
+        "entry_px": 150.0,
+        "taken": 1,
+    })
+
+    # 1. Main.py writes Pine exit r
+    ok1 = adb.record_intraday_exit(
+        trade_id="TRADE_DUAL",
+        pine_exit_r=1.25,
+        exit_why="Pine exit condition",
+    )
+    assert ok1 is True
+
+    # 2. Position monitor writes its own calculated exit_r
+    ok2 = adb.record_intraday_exit(
+        trade_id="TRADE_DUAL",
+        exit_r=0.95,
+        exit_why="Stop ratcheted BE+",
+    )
+    assert ok2 is True
+
+    signals = adb.get_intraday_signals()
+    s = signals[0]
+    assert s["pine_exit_r"] == 1.25
+    assert s["exit_r"] == 0.95
+    assert s["exit_why"] == "Stop ratcheted BE+"
+
+
+def test_closed_trade_not_overwritten_when_no_open_entry(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+
+    db_file = tmp_path / "test_no_overwrite.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    # Entry already closed
+    adb.upsert_intraday_signal({
+        "trade_id": "TRADE_CLOSED",
+        "ticker": "AMD",
+        "date": "2026-09-23",
+        "entry_px": 100.0,
+        "exit_r": 2.0,
+        "exit_why": "Target hit",
+    })
+
+    # Another exit arriving without trade_id should NOT overwrite TRADE_CLOSED
+    ok = adb.record_intraday_exit(
+        trade_id=None,
+        exit_r=-1.0,
+        exit_why="Phantom exit",
+        ticker="AMD",
+        date="2026-09-23",
+    )
+    assert ok is False
+
+    signals = adb.get_intraday_signals()
+    assert len(signals) == 1
+    assert signals[0]["exit_r"] == 2.0
+    assert signals[0]["exit_why"] == "Target hit"
+
+
+def test_get_day_session_r_cumulative(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+
+    db_file = tmp_path / "test_session_r.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    adb.upsert_intraday_signal({
+        "trade_id": "T1", "ticker": "AAPL", "date": "2026-09-23",
+        "entry_px": 150.0, "exit_r": 1.25,
+    })
+    adb.upsert_intraday_signal({
+        "trade_id": "T2", "ticker": "MSFT", "date": "2026-09-23",
+        "entry_px": 400.0, "exit_r": -0.50,
+    })
+    adb.upsert_intraday_signal({
+        "trade_id": "T3", "ticker": "NVDA", "date": "2026-09-23",
+        "entry_px": 120.0, "exit_r": 1.75,
+    })
+
+    total_r = adb.get_day_session_r("2026-09-23")
+    assert total_r == 2.50

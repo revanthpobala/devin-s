@@ -450,11 +450,11 @@ def process_alert_enrichment(alert: dict, sheets=None):
                 from src.tracking.alert_db import get_canonical_trade_id, record_intraday_exit, upsert_intraday_signal
                 tid = get_canonical_trade_id(alert)
                 if is_exit:
-                    exit_r_val = float(alert.get("exit_r")) if alert.get("exit_r") is not None else None
+                    pine_exit_r_val = float(alert.get("exit_r")) if alert.get("exit_r") is not None else None
                     exit_why_val = str(alert.get("exit_why") or alert.get("reason") or alert.get("plan") or "EXIT")
                     record_intraday_exit(
                         trade_id=tid,
-                        exit_r=exit_r_val,
+                        pine_exit_r=pine_exit_r_val,
                         exit_why=exit_why_val,
                         ticker=symbol,
                         date=date_str,

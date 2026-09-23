@@ -959,6 +959,7 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
 def record_intraday_exit(
     trade_id: Optional[str] = None,
     exit_r: Optional[float] = None,
+    pine_exit_r: Optional[float] = None,
     exit_why: str = "",
     ticker: Optional[str] = None,
     date: Optional[str] = None,
@@ -976,52 +977,55 @@ def record_intraday_exit(
                     cur.execute(
                         """
                         UPDATE intraday_signals
-                        SET exit_r = ?,
-                            exit_why = ?,
+                        SET exit_r = COALESCE(?, exit_r),
+                            pine_exit_r = COALESCE(?, pine_exit_r),
+                            exit_why = CASE WHEN ? != '' THEN ? ELSE exit_why END,
                             updated_at = ?
                         WHERE trade_id = ?
                         """,
-                        (exit_r, exit_why, now_iso, trade_id),
+                        (exit_r, pine_exit_r, exit_why, exit_why, now_iso, trade_id),
                     )
                     if cur.rowcount > 0:
                         updated = True
 
                 if not updated and ticker:
-                    # Pair with the latest open ENTRY row for that symbol and date (where exit_r is NULL)
-                    cur.execute(
-                        """
-                        UPDATE intraday_signals
-                        SET exit_r = ?,
-                            exit_why = ?,
-                            updated_at = ?
-                        WHERE id = (
-                            SELECT id FROM intraday_signals
-                            WHERE ticker = ?
-                              AND (date = ? OR ? IS NULL)
-                              AND exit_r IS NULL
-                            ORDER BY id DESC LIMIT 1
-                        )
-                        """,
-                        (exit_r, exit_why, now_iso, ticker.upper(), date, date),
-                    )
-                    if cur.rowcount > 0:
-                        updated = True
-                    else:
-                        # Fallback to latest row if no open row found
+                    if exit_r is not None:
+                        # Pair with the latest open ENTRY row for that symbol and date (where exit_r is NULL)
                         cur.execute(
                             """
                             UPDATE intraday_signals
                             SET exit_r = ?,
-                                exit_why = ?,
+                                exit_why = CASE WHEN ? != '' THEN ? ELSE exit_why END,
                                 updated_at = ?
                             WHERE id = (
                                 SELECT id FROM intraday_signals
                                 WHERE ticker = ?
                                   AND (date = ? OR ? IS NULL)
+                                  AND exit_r IS NULL
                                 ORDER BY id DESC LIMIT 1
                             )
                             """,
-                            (exit_r, exit_why, now_iso, ticker.upper(), date, date),
+                            (exit_r, exit_why, exit_why, now_iso, ticker.upper(), date, date),
+                        )
+                        if cur.rowcount > 0:
+                            updated = True
+                    elif pine_exit_r is not None:
+                        # Pair with the latest ENTRY row for that symbol and date where pine_exit_r is NULL
+                        cur.execute(
+                            """
+                            UPDATE intraday_signals
+                            SET pine_exit_r = ?,
+                                exit_why = CASE WHEN ? != '' THEN ? ELSE exit_why END,
+                                updated_at = ?
+                            WHERE id = (
+                                SELECT id FROM intraday_signals
+                                WHERE ticker = ?
+                                  AND (date = ? OR ? IS NULL)
+                                  AND pine_exit_r IS NULL
+                                ORDER BY id DESC LIMIT 1
+                            )
+                            """,
+                            (pine_exit_r, exit_why, exit_why, now_iso, ticker.upper(), date, date),
                         )
                         if cur.rowcount > 0:
                             updated = True
@@ -1031,6 +1035,25 @@ def record_intraday_exit(
             except Exception as e:
                 logger.warning(f"Failed to record intraday exit for {trade_id or ticker}: {e}")
                 return False
+
+
+def get_day_session_r(date: Optional[str] = None) -> float:
+    """Calculate the cumulative realized R for the session today from intraday_signals."""
+    d_str = date or get_eastern_now().strftime("%Y-%m-%d")
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT SUM(exit_r)
+                FROM intraday_signals
+                WHERE date = ? AND exit_r IS NOT NULL
+                """,
+                (d_str,),
+            )
+            row = cur.fetchone()
+            val = row[0] if row and row[0] is not None else 0.0
+            return round(float(val), 2)
 
 
 def get_intraday_signals(
