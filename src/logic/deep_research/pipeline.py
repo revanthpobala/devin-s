@@ -456,10 +456,10 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             reports_dir.mkdir(parents=True, exist_ok=True)
 
             clean_response, _ = save_model_a_report(
-                ticker, date_str, p2.response, tdir, out_path, reports_dir, _drift_checker
+                ticker, date_str, p2.response, tdir, out_path, reports_dir, _drift_checker, dw_dict=dw_dict
             )
             clean_ind_response = save_model_b_report(
-                ticker, date_str, p2.ind_response, tdir, reports_dir
+                ticker, date_str, p2.ind_response, tdir, reports_dir, dw_dict=dw_dict
             )
 
             run_arbitration(

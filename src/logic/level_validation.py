@@ -114,6 +114,49 @@ def _pine_drift(
     return drifts
 
 
+def _compute_atr14_from_bars(ticker: str, date_str: str) -> float:
+    """Compute 14-period ATR from historical daily bars up to date_str."""
+    if not ticker:
+        return 0.0
+    try:
+        from datetime import datetime, timedelta
+        from src.tracking.execution_validator import get_bars_since_date
+        try:
+            d_obj = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        except Exception:
+            d_obj = datetime.now().date()
+        start_date = (d_obj - timedelta(days=45)).strftime("%Y-%m-%d")
+        bars = get_bars_since_date(ticker, start_date)
+        if bars is None or len(bars) < 2:
+            return 0.0
+
+        if hasattr(bars, "index"):
+            idx_strs = [str(x)[:10] for x in bars.index]
+            sub_mask = [d <= str(date_str)[:10] for d in idx_strs]
+            sub = bars[sub_mask]
+            if len(sub) < 2:
+                sub = bars
+        else:
+            sub = bars
+
+        trs = []
+        for i in range(1, len(sub)):
+            prev_close = float(sub.iloc[i-1].get("Close", sub.iloc[i-1].get("close", 0.0)))
+            high = float(sub.iloc[i].get("High", sub.iloc[i].get("high", 0.0)))
+            low = float(sub.iloc[i].get("Low", sub.iloc[i].get("low", 0.0)))
+            if high > 0 and low > 0 and prev_close > 0:
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                trs.append(tr)
+
+        if len(trs) >= 14:
+            return round(sum(trs[-14:]) / 14.0, 4)
+        elif trs:
+            return round(sum(trs) / len(trs), 4)
+    except Exception as e:
+        logger.debug(f"Failed to compute fallback ATR14 for {ticker}: {e}")
+    return 0.0
+
+
 def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tuple[bool, List[str]]:
     """Validate trade levels before persisting.
 
@@ -174,16 +217,24 @@ def validate_levels(plan: Dict[str, Any], dw: Dict[str, Any], side: str) -> Tupl
     mid = _zone_midpoint(entry_low, entry_high)
     if mid > 0 and stop > 0:
         stop_dist = abs(mid - stop)
-        atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14")
+        atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR")
         if atr <= 0:
-            reasons.append("atr_unavailable")
-        else:
+            ticker = str(plan.get("ticker") or dw.get("ticker") or "").strip().upper()
+            date_str = str(plan.get("date") or dw.get("date") or "")
+            atr = _compute_atr14_from_bars(ticker, date_str)
+
+        if atr > 0:
             dist_in_atr = stop_dist / atr
             if dist_in_atr < LEVEL_ATR_STOP_MIN:
                 reasons.append(
                     f"stop distance {dist_in_atr:.4f} ATR from zone midpoint "
                     f"below minimum {LEVEL_ATR_STOP_MIN} ATR"
                 )
+        else:
+            logger.debug(
+                f"[validate_levels] ATR unavailable for {plan.get('ticker', 'UNKNOWN')}; "
+                f"skipping stop-distance check without failing gate."
+            )
 
     # ── 4. Pine drift ──────────────────────────────────────────
     drifts = _pine_drift(plan, dw, side)

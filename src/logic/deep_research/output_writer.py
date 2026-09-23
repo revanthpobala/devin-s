@@ -106,6 +106,7 @@ def save_model_a_report(
     out_path: Path,
     reports_dir: Path,
     drift_checker,
+    dw_dict: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, ReportMetrics]:
     """Clean, validate and persist Model A output. Returns (clean_text, metrics)."""
     if not response:
@@ -134,6 +135,24 @@ def save_model_a_report(
     digest_path = reports_dir / f"{ticker}_summary.md"
     digest_path.write_text(text, encoding="utf-8")
 
+    if not dw_dict:
+        cand_dw = out_dir / f"{ticker}_datawindow.json"
+        if cand_dw.exists():
+            try:
+                import json
+                dw_dict = json.loads(cand_dw.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if not dw_dict:
+            cand_th = out_dir / f"{ticker}_thesis.json"
+            if cand_th.exists():
+                try:
+                    import json
+                    th_data = json.loads(cand_th.read_text(encoding="utf-8"))
+                    dw_dict = th_data.get("data_window") or th_data.get("_datawindow") or th_data
+                except Exception:
+                    pass
+
     metrics = extract_metrics(text)
     try:
         from src.tracking.suggestions_ledger import append_suggestion
@@ -150,6 +169,7 @@ def save_model_a_report(
             "entry_high": e_val,
             "stop": s_val,
             "target_1": t_val,
+            "_datawindow": dw_dict or {},
             "notes": f"Model A conviction={metrics.conviction}",
         })
     except Exception as e_sugg:
@@ -164,6 +184,7 @@ def save_model_b_report(
     ind_response: str,
     out_dir: Path,
     reports_dir: Path,
+    dw_dict: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Clean, validate and persist Model B (independent) output. Returns clean text."""
     if not ind_response:
@@ -185,6 +206,24 @@ def save_model_b_report(
     ind_triage_path = out_dir / f"{ticker}_independent_thesis.md"
     ind_triage_path.write_text(text, encoding="utf-8")
 
+    if not dw_dict:
+        cand_dw = out_dir / f"{ticker}_datawindow.json"
+        if cand_dw.exists():
+            try:
+                import json
+                dw_dict = json.loads(cand_dw.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if not dw_dict:
+            cand_th = out_dir / f"{ticker}_thesis.json"
+            if cand_th.exists():
+                try:
+                    import json
+                    th_data = json.loads(cand_th.read_text(encoding="utf-8"))
+                    dw_dict = th_data.get("data_window") or th_data.get("_datawindow") or th_data
+                except Exception:
+                    pass
+
     try:
         b_metrics = extract_metrics(text)
         from src.tracking.suggestions_ledger import append_suggestion
@@ -201,6 +240,7 @@ def save_model_b_report(
             "entry_high": e_val,
             "stop": s_val,
             "target_1": t_val,
+            "_datawindow": dw_dict or {},
             "notes": f"Model B conviction={b_metrics.conviction}",
         })
     except Exception as e_sugg:

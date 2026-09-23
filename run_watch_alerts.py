@@ -91,7 +91,7 @@ def sync_reports_to_watchlist(
                         if line.strip():
                             obj = json.loads(line)
                             if (obj.get("ticker") or "").upper() == safe_sym:
-                                dw_dict = obj.get("data_window") or obj.get("data") or {}
+                                dw_dict = obj.get("raw") or obj.get("data_window") or obj.get("data") or {}
                                 if dw_dict:
                                     break
                 except Exception:

@@ -20,6 +20,26 @@ _BARS_CACHE: Dict[str, Tuple[float, Any]] = {}
 _BARS_CACHE_TTL = 60.0  # seconds
 
 
+def _get_last_closed_session_date() -> str:
+    """Return YYYY-MM-DD of the most recent completed market session."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    try:
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now_et = datetime.now()
+
+    # If today is Mon-Fri and past 16:15 ET, today's regular session has closed
+    if now_et.weekday() < 5 and (now_et.hour > 16 or (now_et.hour == 16 and now_et.minute >= 15)):
+        return now_et.strftime("%Y-%m-%d")
+
+    # Otherwise step back to previous weekday
+    d = now_et.date() - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
 def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
     """
     Fetch daily OHLC bars for a symbol from start_date to today (inclusive).
@@ -54,12 +74,13 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
             # Negative cache hit — avoids hitting network every second for unavailable data
             return None
 
-    # 1. Check local datawindow CSV first
+    # 1. Check local datawindow CSV first — only if it contains up to the last closed session
     try:
         from src import config
         import pandas as pd
         raw_root = config.BASE_DIR / "data" / "raw"
         if raw_root.exists():
+            last_closed = _get_last_closed_session_date()
             for d in sorted(raw_root.glob("*/"), reverse=True):
                 cand = d / sym / f"{sym}_datawindow.csv"
                 if cand.exists():
@@ -68,7 +89,9 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
                     time_col = col_map.get("time") or col_map.get("date")
                     if time_col and "close" in col_map:
                         df_csv["date_str"] = df_csv[time_col].astype(str).str.slice(0, 10)
-                        if (df_csv["date_str"] >= start_date).any():
+                        last_csv_date = str(df_csv["date_str"].max())[:10]
+                        # A CSV scraped on signal day only holds the signal bar; require it to cover up to last closed session
+                        if last_csv_date >= last_closed and (df_csv["date_str"] >= start_date).any():
                             sub = df_csv[df_csv["date_str"] >= start_date].copy()
                             sub.set_index("date_str", inplace=True)
                             rename_cols = {}
@@ -533,6 +556,7 @@ def evaluate_setup_lifecycle_bars(
         "hit_stop": hit_stop,
         "hit_recovery": hit_recovery,
         "unrealized_pnl_pct": unrealized_pnl_pct,
+        "bars_held": bars_held,
         "notes": notes,
         "is_terminal": is_terminal,
         "is_reclaimed": is_reclaimed,
