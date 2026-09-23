@@ -1,3 +1,4 @@
+
 # Stan Weinstein Stage Analysis & Moving Average Confluence
 
 ## Overview
@@ -39,3 +40,4 @@ This skill governs the classification of market cycles according to Stan Weinste
   - **Triple Green (↑ ↑ ↑):** Full size long calls permitted.
   - **Triple Red (↓ ↓ ↓):** Full size short puts permitted.
   - **Mixed / Conflicted Arrows:** High risk of whipsaw. Cut position sizing by 50% or demand Grade A conviction ($\ge 85$).
+- **Rule 1.2 (0DTE):** The weekly stage is context, never a veto, for a same-day hold. Grade-A intraday entries against the stage measured +0.05R (n=46) vs +0.06R with it (Sep 4–22 2026). The Stage 2/4 buy/short rules above apply to swing and LEAP entries only.

@@ -1,3 +1,4 @@
+
 # Intraday Exit Management, Veto Protocol & Dynamic Trade Protection
 
 ## Overview
@@ -20,7 +21,7 @@ When an alert fires or when evaluating whether to close an open position, the sy
 
 ### Tier 2: Catastrophic Risk Circuit Breaker (CONFIRM_EXIT — Mandatory)
 - **Breach Condition:**
-  - If unrealized drawdown reaches **$\ge 1.25 \times \text{5m ATR}$** or **$\ge 2.5\%$ drawdown from entry price** ($30\%$ on option premium).
+  - The card's intrabar catastrophe stop: adverse move **$\ge 1.75R$** from entry (`exit_why = catastrophe stop`), or $30\%$ loss on option premium. Earlier cuts (1.25R, 1.0R) measured worse on Sep 4–22 2026 data.
 - **Directive:** **MANDATORY CONFIRM_EXIT VIA MARKET ORDER**.
 - **Execution Rules:**
   - Zero debate, zero discretionary overrides, zero "waiting for the candle to close".
@@ -68,7 +69,7 @@ Many retail traders get stopped out by market-maker liquidity sweeps (stop hunts
 |---|---|---|---|
 | Price reached Target 1 | Spot $\ge T_1$ (Long) | **SCALE_TRIM** | Take 50% profit off table; move runner stop to BE+ max($0.05, 0.1×ATR). |
 | Price reached Target 2 | Spot $\ge T_2$ (Long) | **CONFIRM_EXIT** | Close 100% of remaining position. Setup completed. |
-| Drawdown $> 1.25\times$ ATR or $>2.5\%$ | Drawdown $\ge 2.5\%$ | **CONFIRM_EXIT** | Catastrophic stop triggered. Immediate market exit. |
+| Drawdown $\ge 1.75R$ | Card catastrophe stop | **CONFIRM_EXIT** | Catastrophic stop triggered. Immediate market exit. |
 | Intra-bar wick tap | Wick probed stop, 5m body held | **VETO_HOLD** | Invalidation line held on close; retain position with hard stop. |
 | Confirmed 5m candle close below stop | 5m Close $<$ Stop | **CONFIRM_EXIT** | Structural invalidation confirmed. Exit trade now. |
 | Stagnant $>35$ min in 11:15–12:45 MT chop | Entry $\pm 0.3\%$ | **TIME_STOP_KILL** | Theta bleed risk. Close at scratch/BE before IV decay. |
@@ -87,3 +88,4 @@ When Rev Chat evaluates an alert or is asked "should I exit?", Copilot MUST form
    - `[🛑 Confirm Exit & Close Now](action:ask?prompt=Close+position+immediately)`
    - `[🛡️ Veto Alert & Hold with Stop at $[Price]](action:ask?prompt=Keep+holding+with+hard+stop+at+$[Price])`
    - `[⚡ Scale 50% & Trail Runner](action:ask?prompt=Scale+half+position+and+trail+stop)`
+
