@@ -38,6 +38,11 @@ class ModifyAlertRequest(BaseModel):
     expires_at: Optional[str] = None
 
 
+class SyncTickerAlertsRequest(BaseModel):
+    ticker: str
+    date: Optional[str] = None
+
+
 @router.get("/api/watch-targets")
 def get_watch_targets():
     """Fetch active stalking targets and enrich with tactical trade ideas and real-time Schwab quotes."""
@@ -467,6 +472,31 @@ def get_tastytrade_alerts():
         return {"alerts": alerts, "count": len(alerts)}
     except Exception as e:
         return {"alerts": [], "count": 0, "error": str(e)}
+
+
+@router.post("/api/tastytrade-alerts/sync-ticker")
+def sync_ticker_tastytrade_alerts(req: SyncTickerAlertsRequest):
+    """Sync a researched ticker's structured watch levels directly into Tastytrade cloud quote alerts on demand."""
+    ticker_clean = req.ticker.strip().upper()
+    if not ticker_clean:
+        raise HTTPException(status_code=400, detail="Ticker is required")
+    try:
+        from run_watch_alerts import sync_reports_to_watchlist
+        count = sync_reports_to_watchlist(
+            target_date=req.date,
+            target_ticker=ticker_clean,
+            sync_tastytrade=True,
+        )
+        return {
+            "success": True,
+            "ticker": ticker_clean,
+            "date": req.date,
+            "indexed_count": count,
+            "message": f"Successfully synced Tastytrade cloud quote alerts for {ticker_clean}",
+        }
+    except Exception as e:
+        logger.error(f"Error syncing Tastytrade alerts for {ticker_clean}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/tastytrade-alerts/create")

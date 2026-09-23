@@ -1555,6 +1555,59 @@ window.AppSwing = {
     }
   },
 
+  async syncTastytradeAlertsForCurrentDossier(event) {
+    if (event) event.stopPropagation();
+    const ticker = window.AppState.activeChatTicker || (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : null);
+    if (!ticker) {
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast('⚠️ No active ticker selected in dossier', 'warning');
+      } else {
+        alert('No active ticker selected in dossier');
+      }
+      return;
+    }
+    const date = (window.AppState.currentReportData ? window.AppState.currentReportData.date : null) || (window.AppState ? window.AppState.currentArchiveDate : null);
+
+    // UI Loading state across all sync buttons
+    const btnHeader = document.getElementById('btn-modal-sync-tt');
+    const btnPane = document.getElementById('btn-pane-sync-tt');
+    const origHeaderText = btnHeader ? btnHeader.innerHTML : '';
+    const origPaneText = btnPane ? btnPane.innerHTML : '';
+    if (btnHeader) { btnHeader.disabled = true; btnHeader.innerHTML = '⏳ Syncing...'; }
+    if (btnPane) { btnPane.disabled = true; btnPane.innerHTML = '⏳ Registering alerts...'; }
+
+    try {
+      const res = await fetch('/api/tastytrade-alerts/sync-ticker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: ticker, date: date }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || data.error || 'Failed to sync Tastytrade alerts');
+      }
+
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`✅ Tastytrade cloud quote alerts registered for $${ticker}!`, 'success');
+      }
+      if (btnHeader) { btnHeader.innerHTML = '✅ TT Alerts Set'; }
+      if (btnPane) { btnPane.innerHTML = '✅ Tastytrade Alerts Set'; }
+      setTimeout(() => {
+        if (btnHeader) { btnHeader.disabled = false; btnHeader.innerHTML = origHeaderText; }
+        if (btnPane) { btnPane.disabled = false; btnPane.innerHTML = origPaneText; }
+      }, 4000);
+    } catch (e) {
+      console.error(`[Tastytrade] Failed to sync alerts for ${ticker}:`, e);
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`❌ Error: ${e.message}`, 'error');
+      } else {
+        alert(`Failed to set Tastytrade alerts: ${e.message}`);
+      }
+      if (btnHeader) { btnHeader.disabled = false; btnHeader.innerHTML = origHeaderText; }
+      if (btnPane) { btnPane.disabled = false; btnPane.innerHTML = origPaneText; }
+    }
+  },
+
   async fetchLiveOptionSpread(ticker, optPlan) {
     if (!ticker || !optPlan || !optPlan.expiration || !optPlan.short_strike || !optPlan.long_strike) return;
     try {
@@ -1835,7 +1888,10 @@ window.AppSwing = {
               Report Date: <strong>${date}</strong> • Spot at Report: <strong>${spotPx}</strong> • Live Price: <strong style="color:#059669;">${livePx}</strong>
             </div>
           </div>
-          <div style="display:flex; gap:8px;">
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button class="btn" onclick="AppSwing.syncTastytradeAlertsForCurrentDossier(event)" style="padding:6px 14px; font-size:12px; font-weight:800; background:linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color:#fff; border:1px solid #38bdf8; cursor:pointer; display:inline-flex; align-items:center; gap:6px;" title="Register Entry, Stop, and Target cloud quote alerts with Tastytrade for this reviewed trade plan">
+              📲 Set Tastytrade Alerts
+            </button>
             <button class="btn" onclick="AppSwing.askCopilotExecutionPlan(event)" style="padding:6px 14px; font-size:12px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer;">
               ⚡ Plan Execution with Copilot
             </button>
