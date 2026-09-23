@@ -787,7 +787,6 @@ if __name__ == "__main__":
     parser.add_argument("--no-auto-deep", dest="auto_deep", action="store_false", help="Disable autonomous deep research")
     parser.add_argument("--max-deep", type=int, default=3, help="Max deep research runs per day")
     parser.add_argument("--max-slots", type=int, default=3, help="Max concurrent deep research slots (default 3)")
-    parser.add_argument("--max-slots", type=int, default=3, help="Max concurrent deep research slots (default 3)")
     parser.add_argument("--min-score", type=float, default=60.0, help="Minimum priority score for deep research")
     parser.add_argument("--market-hours-only", action="store_true", help="Only scan during market hours")
     parser.add_argument("--once", action="store_true", help="Run a single scan cycle and exit")

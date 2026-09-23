@@ -19,7 +19,7 @@ This skill governs hard capital protection rules, stop loss geometry, and catast
 ## 2. Dynamic Trailing Stop Discipline
 - **Rule 2.5:**
   - **Target 1 Reached:** Scale 50% of position size. Move the stop on remaining contracts to **Break-Even + 0.05 pts (BE+)** immediately.
-  - **Target 2 Reached:** Scale an additional 25% of position size. Trail stop to Target 1 level.
+  - **Target 2 / Peak ≥ 2.0×ATR:** Trail runner to protect ≥65% of peak gains. Remaining position rides with trailing stop until trend invalidation.
   - **Runner Management:** Let remaining 25% ride with trailing 5-period EMA or previous bar low/high until trend invalidation.
   - **Never turn a winning trade that hit Target 1 into a loss.**
 

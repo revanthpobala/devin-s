@@ -1970,7 +1970,7 @@ Guidelines:
 13. Desk Self-Analysis, Empirical Post-Mortem & Active Rule Formulation:
    - When the user asks to analyze intraday trades, review session performance, or formulate rules:
      (a) Quantitative Self-Analysis: Review session trades. Compute Expectancy E = (WinRate * AvgWin) - (LossRate * AvgLoss), Profit Factor, Max Adverse Excursion (MAE), and identify Loss Clustering (e.g. midday chop traps, widened stops, chased extensions).
-     (b) Self-Improvement & Rule Formulation: Formulate testable, concrete risk rules directly addressing the bleed (e.g. banning entries during 11:30-12:30 MT lull, capping initial stop at 1.25x ATR).
+     (b) Self-Improvement & Rule Formulation: Formulate testable, concrete risk rules directly addressing the bleed (e.g. banning entries during 11:15-12:45 MT lull, capping initial stop at 1.25x ATR).
      (c) Present the rule in a structured, actionable markdown skill format so the user can easily copy or save it into the active skills directory (`skills/`).
 14. Live Tool Execution Efficiency:
    - Real-time market quotes, unified options chain (Calls + Puts), and Tastytrade IV Rank are already pre-loaded in your context below.

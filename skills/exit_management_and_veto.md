@@ -14,7 +14,7 @@ When an alert fires or when evaluating whether to close an open position, the sy
   - **Runner Protection:** Ratchet the stop on the remaining 50% to **Break-Even + max($0.05, 0.1×ATR) buffer (BE+)**.
   - **Rule 4.1.1 (Golden Lock):** A trade that has hit Target 1 is NEVER permitted to turn into a negative trade.
 - **Target 2 Reached ($R \ge 3.0$ or Technical Exhaustion):**
-  - **Action:** **CONFIRM_EXIT**. Close remaining contracts. Full profit captured.
+  - **Action:** **TRAIL RUNNER** — Trail stop to protect ≥65% of peak gains (peak ≥ 2.0×ATR). Remaining position rides with trailing stop until trend invalidation.
 
 ---
 
