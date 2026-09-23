@@ -32,7 +32,8 @@ def validate_strike_geometry(
     if not spot_price or spot_price <= 0:
         return False, ["Missing or invalid spot price"]
 
-    exp_move_dist = (spot_price * (exp_move_pct_21b / 100.0)) if exp_move_pct_21b else None
+    pct = (exp_move_pct_21b / 100.0) if (exp_move_pct_21b and exp_move_pct_21b > 1.0) else exp_move_pct_21b
+    exp_move_dist = (spot_price * pct) if pct else None
     max_allowed_dist = (1.5 * exp_move_dist) if exp_move_dist else None
 
     # 1. Credit spread and naked short leg OTM checks
@@ -44,6 +45,11 @@ def validate_strike_geometry(
                 f"Bull put credit spread short strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Credit spreads must be strictly OTM."
             )
+        elif exp_move_dist and (spot_price - short_strike) < (1.25 * exp_move_dist - 0.05):
+            defects.append(
+                f"Bull put credit spread short strike (${short_strike:.2f}) is within 1.25x ExpMove "
+                f"({(spot_price - short_strike)/exp_move_dist:.2f}x EM vs required >= 1.25x EM)."
+            )
     elif "BEAR_CALL" in strat or "CALL_CREDIT" in strat:
         if short_strike is None or long_strike is None:
             defects.append("Malformed bear call credit spread: missing required strikes")
@@ -51,6 +57,11 @@ def validate_strike_geometry(
             defects.append(
                 f"Bear call credit spread short strike (${short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                 f"Credit spreads must be strictly OTM."
+            )
+        elif exp_move_dist and (short_strike - spot_price) < (1.25 * exp_move_dist - 0.05):
+            defects.append(
+                f"Bear call credit spread short strike (${short_strike:.2f}) is within 1.25x ExpMove "
+                f"({(short_strike - spot_price)/exp_move_dist:.2f}x EM vs required >= 1.25x EM)."
             )
     elif "SHORT_PUT" in strat or "PUT_SALE" in strat or "CASH_SECURED" in strat or "CSP" in strat or "COVERED_PUT" in strat:
         if short_strike is None:
@@ -78,6 +89,11 @@ def validate_strike_geometry(
                 defects.append(
                     f"Jade Lizard short put (${extra_short_strike:.2f}) is ITM/ATM vs spot (${spot_price:.2f}). "
                     f"Short put must be strictly OTM."
+                )
+            elif exp_move_dist and (spot_price - extra_short_strike) < (1.25 * exp_move_dist - 0.05):
+                defects.append(
+                    f"Jade Lizard short put (${extra_short_strike:.2f}) is within 1.25x ExpMove "
+                    f"({(spot_price - extra_short_strike)/exp_move_dist:.2f}x EM vs required >= 1.25x EM)."
                 )
             if short_strike <= spot_price:
                 defects.append(

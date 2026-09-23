@@ -54,7 +54,7 @@ def get_watch_targets():
 
         with get_db() as conn:
             c = conn.cursor()
-            rows = c.execute("SELECT * FROM watch_targets").fetchall()
+            rows = c.execute("SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1").fetchall()
             targets = []
 
             for r in rows:
@@ -178,10 +178,10 @@ def get_watch_targets():
             except Exception as q_err:
                 logger.debug(f"Error enriching watch targets with Schwab quotes: {q_err}")
 
-            # Calculate Suggested Trade P&L, ROC %, and performance summary
-            won_dollars = []
-            lost_dollars = []
-            active_dollars = []
+            # Calculate Suggested Trade R-Multiples and performance summary
+            won_r = []
+            lost_r = []
+            active_r = []
             actionable_count = 0
 
             for item in targets:
@@ -203,9 +203,6 @@ def get_watch_targets():
                 struct = op.get("structure") or item.get("options_structure") or "NONE"
                 max_prof = float(op.get("max_profit") or 0.0)
                 max_loss = float(op.get("max_loss") or 0.0)
-                long_k = float(op.get("long_strike") or 0.0)
-                short_k = float(op.get("short_strike") or 0.0)
-                debit = float(op.get("target_debit") or 0.0)
                 is_options = bool(struct and struct != "NONE" and (max_prof > 0 or max_loss > 0))
 
                 trade_type = "OPTIONS" if is_options else "SHARES"
@@ -229,78 +226,47 @@ def get_watch_targets():
                         pnl_pct = round(((live_px - entry_mid) / entry_mid) * 100.0, 2)
                 item["pnl_pct"] = pnl_pct
 
-                # 2. SUGGESTED TRADE DOLLAR P&L & ROC %
-                trade_dollar_pnl = 0.0
-                trade_roc_pct = 0.0
+                # 2. SUGGESTED TRADE R-MULTIPLE
+                eff_entry = item.get("fill_price") or entry_mid
+                trade_r = 0.0
+                risk_amt = abs(eff_entry - tactical_stop) if (eff_entry and tactical_stop) else 0.0
 
                 if status in ("TARGET_HIT", "COMPLETED"):
-                    if is_options and max_prof > 0:
-                        trade_dollar_pnl = max_prof
-                        trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
+                    if is_options and max_loss > 0:
+                        trade_r = round(max_prof / max_loss, 2)
                     else:
                         t_exit = target_2 if (target_2 and target_2 > 0) else target_1
-                        eff_entry = item.get("fill_price") or entry_mid
-                        if t_exit and eff_entry and eff_entry > 0:
-                            sh_gain = (t_exit - eff_entry) if side == "LONG" else (eff_entry - t_exit)
-                            trade_dollar_pnl = round(sh_gain * 100, 2)
-                            trade_roc_pct = round((sh_gain / eff_entry * 100), 2)
-                    won_dollars.append(trade_dollar_pnl)
+                        if t_exit and eff_entry and risk_amt > 0:
+                            gain = (t_exit - eff_entry) if side == "LONG" else (eff_entry - t_exit)
+                            trade_r = round(gain / risk_amt, 2)
+                        else:
+                            trade_r = 1.5
+                    won_r.append(trade_r)
 
                 elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
-                    if is_options and max_loss > 0:
-                        trade_dollar_pnl = -max_loss
-                        trade_roc_pct = -100.0
-                    else:
-                        eff_entry = item.get("fill_price") or entry_mid
-                        if tactical_stop and eff_entry and eff_entry > 0:
-                            sh_loss = (tactical_stop - eff_entry) if side == "LONG" else (eff_entry - tactical_stop)
-                            trade_dollar_pnl = round(sh_loss * 100, 2)
-                            trade_roc_pct = round((sh_loss / eff_entry * 100), 2)
-                    lost_dollars.append(trade_dollar_pnl)
+                    trade_r = -1.0
+                    lost_r.append(trade_r)
 
                 elif status in ("IN_TRADE", "IN_ZONE") and live_px and live_px > 0:
-                    if is_options and (max_prof > 0 or max_loss > 0):
-                        if "PUT" in struct:
-                            if live_px >= short_k:
-                                trade_dollar_pnl = max_prof
-                                trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
-                            elif live_px <= long_k:
-                                trade_dollar_pnl = -max_loss
-                                trade_roc_pct = -100.0
-                            elif short_k > long_k:
-                                ratio = (live_px - long_k) / (short_k - long_k)
-                                trade_dollar_pnl = round(max_prof * ratio - max_loss * (1.0 - ratio), 2)
-                                trade_roc_pct = round((trade_dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
-                        else:
-                            if live_px >= short_k:
-                                trade_dollar_pnl = max_prof
-                                trade_roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
-                            elif live_px <= long_k:
-                                trade_dollar_pnl = -max_loss
-                                trade_roc_pct = -100.0
-                            else:
-                                spread_val = (live_px - long_k) * 100.0
-                                trade_dollar_pnl = round(spread_val - (debit * 100.0), 2)
-                                trade_roc_pct = round((trade_dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
+                    if is_options and max_loss > 0:
+                        trade_r = 0.0
                     else:
-                        eff_entry = item.get("fill_price") or entry_mid
-                        if eff_entry and eff_entry > 0:
-                            sh_gain = (live_px - eff_entry) if side == "LONG" else (eff_entry - live_px)
-                            trade_dollar_pnl = round(sh_gain * 100, 2)
-                            trade_roc_pct = round((sh_gain / eff_entry * 100), 2)
-                    active_dollars.append(trade_dollar_pnl)
+                        if eff_entry and risk_amt > 0:
+                            unrealized_gain = (live_px - eff_entry) if side == "LONG" else (eff_entry - live_px)
+                            trade_r = round(unrealized_gain / risk_amt, 2)
+                    active_r.append(trade_r)
 
                 item["trade_type"] = trade_type
                 item["trade_label"] = trade_label
-                item["trade_dollar_pnl"] = trade_dollar_pnl
-                item["trade_roc_pct"] = trade_roc_pct
-                item["modeled_dollar_pnl"] = trade_dollar_pnl
-                item["modeled_roc_pct"] = trade_roc_pct
-                item["is_modeled"] = True
-                item["accounting_mode"] = "HYPOTHETICAL_100_SHARES_OR_SINGLE_SPREAD"
+                item["r_multiple"] = trade_r
+                item["trade_dollar_pnl"] = 0.0
+                item["trade_roc_pct"] = 0.0
+                item["modeled_dollar_pnl"] = 0.0
+                item["modeled_roc_pct"] = 0.0
+                item["is_modeled"] = False
+                item["accounting_mode"] = "R_MULTIPLE"
                 item["trade_max_profit"] = max_prof
                 item["trade_max_loss"] = max_loss
-                item["realized_pnl_pct"] = trade_roc_pct
 
                 # Risk to Reward ratio
                 rr_ratio = None
@@ -319,27 +285,22 @@ def get_watch_targets():
                 if is_actionable:
                     actionable_count += 1
 
-            total_resolved = len(won_dollars) + len(lost_dollars)
-            win_rate = round((len(won_dollars) / total_resolved) * 100.0, 1) if total_resolved > 0 else 0.0
-
-            total_won_dollars = round(sum(won_dollars), 2)
-            total_lost_dollars = round(sum(lost_dollars), 2)
-            total_active_dollars = round(sum(active_dollars), 2)
-            net_dollar_profit = round(total_won_dollars + total_lost_dollars + total_active_dollars, 2)
+            total_resolved = len(won_r) + len(lost_r)
+            win_rate = round((len(won_r) / total_resolved) * 100.0, 1) if total_resolved > 0 else 0.0
+            total_r = round(sum(won_r) + sum(lost_r) + sum(active_r), 2)
+            mean_r = round((sum(won_r) + sum(lost_r)) / total_resolved, 2) if total_resolved > 0 else 0.0
 
             performance_summary = {
                 "total_targets": len(targets),
-                "won_count": len(won_dollars),
-                "lost_count": len(lost_dollars),
-                "active_count": len(active_dollars),
+                "won_count": len(won_r),
+                "lost_count": len(lost_r),
+                "active_count": len(active_r),
                 "actionable_count": actionable_count,
                 "win_rate": win_rate,
-                "total_won_dollars": total_won_dollars,
-                "total_lost_dollars": total_lost_dollars,
-                "total_active_dollars": total_active_dollars,
-                "net_dollar_profit": net_dollar_profit,
-                "is_modeled": True,
-                "accounting_mode": "HYPOTHETICAL_100_SHARES_OR_SINGLE_SPREAD",
+                "total_r": total_r,
+                "mean_r": mean_r,
+                "is_modeled": False,
+                "accounting_mode": "R_MULTIPLE",
             }
 
             return {"targets": targets, "count": len(targets), "performance": performance_summary}
@@ -350,27 +311,31 @@ def get_watch_targets():
 
 @router.post("/api/watch-targets/delete")
 def delete_watch_target_post(data: dict):
-    """Delete / Untrack a stalking target from the SQLite watch database."""
+    """Soft delete / Untrack a stalking target from the SQLite watch database."""
     try:
+        row_id = data.get("id") or data.get("row_id")
         ticker = (data.get("ticker") or "").upper().strip()
         date = (data.get("date") or "").strip()
-        if not ticker:
-            raise HTTPException(status_code=400, detail="Ticker symbol required")
+        if not ticker and not row_id:
+            raise HTTPException(status_code=400, detail="Ticker symbol or row id required")
 
         with get_db() as conn:
             c = conn.cursor()
-            if date:
-                c.execute("DELETE FROM watch_targets WHERE ticker = ? AND date = ?", (ticker, date))
+            if row_id:
+                c.execute("UPDATE watch_targets SET is_active = 0 WHERE rowid = ?", (row_id,))
+            elif date:
+                c.execute("UPDATE watch_targets SET is_active = 0 WHERE ticker = ? AND date = ?", (ticker, date))
             else:
-                c.execute("DELETE FROM watch_targets WHERE ticker = ?", (ticker,))
+                c.execute("UPDATE watch_targets SET is_active = 0 WHERE ticker = ?", (ticker,))
             conn.commit()
 
-        append_log(f"🗑️ Untracked and removed {ticker} ({date or 'all dates'}) from Watchlist.")
-        return {"status": "ok", "deleted": ticker}
+        target_label = ticker or f"id {row_id}"
+        append_log(f"🗑️ Soft deleted and untracked {target_label} ({date or 'all dates'}) from Watchlist.")
+        return {"status": "ok", "deleted": target_label}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed deleting watch target: {e}")
+        logger.error(f"Failed soft-deleting watch target: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -387,24 +352,75 @@ def poll_watch_targets():
 
 @router.post("/api/watch-targets/status")
 def set_watch_target_status_endpoint(data: dict):
-    """Manually update the status of a watch target (e.g. IN_TRADE, STALKING, TARGET_HIT)."""
+    """Manually update the status and user_taken of a watch target by row ID or ticker."""
     try:
+        row_id = data.get("id") or data.get("row_id")
         ticker = (data.get("ticker") or "").upper().strip()
         new_status = (data.get("status") or "").upper().strip()
-        if not ticker or not new_status:
-            raise HTTPException(status_code=400, detail="Ticker and status are required")
-        if new_status not in ("STALKING", "IN_ZONE", "IN_TRADE", "TARGET_HIT", "INVALIDATED", "MISSED_RUNAWAY"):
+        user_taken = data.get("user_taken")
+        if user_taken is None:
+            if new_status == "IN_TRADE":
+                user_taken = 1
+            elif new_status == "STALKING":
+                user_taken = 0
+
+        if not ticker and not row_id:
+            raise HTTPException(status_code=400, detail="Ticker or row ID required")
+        if new_status and new_status not in ("STALKING", "IN_ZONE", "IN_TRADE", "TARGET_HIT", "INVALIDATED", "MISSED_RUNAWAY"):
             raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}")
 
-        from src.tracking.watch_manager import update_target_live_state, _get_connection, _db_lock, _now_iso
+        from src.tracking.watch_manager import _get_connection, _db_lock, _now_iso
         with _db_lock:
             with _get_connection() as conn:
                 c = conn.cursor()
-                c.execute("UPDATE watch_targets SET status = ?, updated_at = ? WHERE ticker = ?", (new_status, _now_iso(), ticker))
+                now_str = _now_iso()
+                if row_id:
+                    if new_status:
+                        c.execute(
+                            "UPDATE watch_targets SET status = ?, user_taken = COALESCE(?, user_taken), updated_at = ? WHERE rowid = ?",
+                            (new_status, user_taken, now_str, row_id)
+                        )
+                    else:
+                        c.execute(
+                            "UPDATE watch_targets SET user_taken = ?, updated_at = ? WHERE rowid = ?",
+                            (user_taken, now_str, row_id)
+                        )
+                    # Sync to suggestions ledger if exists and user_taken specified
+                    if user_taken is not None:
+                        try:
+                            c.execute(
+                                """
+                                UPDATE suggestions SET taken = ?
+                                WHERE id = ? OR (
+                                    ticker = (SELECT ticker FROM watch_targets WHERE rowid = ?) AND
+                                    date = (SELECT date FROM watch_targets WHERE rowid = ?)
+                                )
+                                """,
+                                (user_taken, row_id, row_id, row_id)
+                            )
+                        except Exception:
+                            pass
+                else:
+                    if new_status:
+                        c.execute(
+                            "UPDATE watch_targets SET status = ?, user_taken = COALESCE(?, user_taken), updated_at = ? WHERE ticker = ?",
+                            (new_status, user_taken, now_str, ticker)
+                        )
+                    else:
+                        c.execute(
+                            "UPDATE watch_targets SET user_taken = ?, updated_at = ? WHERE ticker = ?",
+                            (user_taken, now_str, ticker)
+                        )
+                    if user_taken is not None:
+                        try:
+                            c.execute("UPDATE suggestions SET taken = ? WHERE ticker = ?", (user_taken, ticker))
+                        except Exception:
+                            pass
                 conn.commit()
 
-        append_log(f"⚡ Watchlist target {ticker} status manually updated to {new_status}.")
-        return {"status": "ok", "ticker": ticker, "new_status": new_status}
+        target_label = ticker or f"id {row_id}"
+        append_log(f"⚡ Watchlist target {target_label} updated: status={new_status}, user_taken={user_taken}.")
+        return {"status": "ok", "ticker": target_label, "new_status": new_status, "user_taken": user_taken}
     except HTTPException:
         raise
     except Exception as e:

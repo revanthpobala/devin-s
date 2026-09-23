@@ -19,6 +19,7 @@ from src.tracking.watch_manager import _get_connection, _db_lock, _now_iso
 
 logger = logging.getLogger(__name__)
 
+SCORER_VERSION = 2
 MAX_HOLDING_BARS = 21
 ROUND_TRIP_FEES_BPS = 10  # 10bps = 0.10%
 
@@ -28,11 +29,21 @@ def _load_suggestions(
     source: Optional[str] = None,
     scored: bool = False,
 ) -> List[Dict[str, Any]]:
+    from src.tracking.suggestions_ledger import ensure_suggestions_schema
     with _db_lock:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
+            ensure_suggestions_schema(conn)
             cursor = conn.cursor()
-            sql = "SELECT * FROM suggestions WHERE 1=1"
+
+            # P3: Score only verdict IN ('ENTER', 'STALK'), complete levels, kind='NEW', gate_status='PASS'
+            sql = """
+                SELECT * FROM suggestions
+                WHERE (verdict IS NULL OR verdict IN ('ENTER', 'STALK'))
+                  AND (kind IS NULL OR kind = 'NEW')
+                  AND (entry_low IS NOT NULL AND stop IS NOT NULL AND target_1 IS NOT NULL)
+                  AND (gate_status IS NULL OR gate_status = 'PASS')
+            """
             params: List[Any] = []
             if ticker:
                 sql += " AND ticker = ?"
@@ -41,10 +52,12 @@ def _load_suggestions(
                 sql += " AND source = ?"
                 params.append(source)
             if scored:
-                sql += " AND scored_at IS NOT NULL"
+                sql += " AND scored_at IS NOT NULL AND scorer_version = ?"
+                params.append(SCORER_VERSION)
             else:
-                sql += " AND scored_at IS NULL"
-            sql += " ORDER BY date ASC"
+                sql += " AND (scored_at IS NULL OR scorer_version IS NULL OR scorer_version != ?)"
+                params.append(SCORER_VERSION)
+            sql += " ORDER BY date ASC, ticker ASC"
             rows = cursor.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
 
@@ -63,7 +76,7 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     entry_type = (row.get("entry_type") or "LIMIT").upper()
 
     if not ticker or not date_str:
-        return {**row, "r_net": None, "mae_r": None, "scored_at": _now_iso()}
+        return {**row, "r_net": None, "mae_r": None, "scored_at": _now_iso(), "scorer_version": SCORER_VERSION}
 
     from src.tracking.execution_validator import get_bars_since_date
 
@@ -72,19 +85,28 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug(f"No bars for {ticker} since {date_str}; cannot score.")
         return row
 
+    # P2: RSI2 lane scored with its own rules (next-open entry, EMA5 recovery exit, 10-bar max)
+    setup_lane = row.get("setup_lane") or ""
+    is_rsi2 = (setup_lane == "RSI2") or (entry_type in ("NEXT_OPEN", "RSI2")) or (row.get("notes") or "").startswith("rsi2")
+    holding_bars = 10 if is_rsi2 else MAX_HOLDING_BARS
+    e_type = "NEXT_OPEN" if is_rsi2 else entry_type
+    strat_id = "RSI2" if is_rsi2 else None
+
+    # P2: no fake live bar; pass live_price=0.0
     eval_res = evaluate_setup_lifecycle_bars(
         bars=bars,
         setup_date=date_str,
         side=side,
-        entry_type=entry_type,
+        entry_type=e_type,
+        strategy_id=strat_id,
         entry_low=entry_low,
         entry_high=entry_high,
         breakout_level=breakout_level,
         stop_loss=stop,
         target_1=target_1,
         target_2=target_2,
-        live_price=float(bars.iloc[-1].get("Close", bars.iloc[-1].get("close", 0.0))),
-        max_holding_bars=MAX_HOLDING_BARS,
+        live_price=0.0,
+        max_holding_bars=holding_bars,
         skip_setup_bar=True,
     )
 
@@ -106,37 +128,55 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
                 "r_net": None,
                 "mae_r": None,
                 "scored_at": _now_iso(),
+                "scorer_version": SCORER_VERSION,
             }
         else:
             # Fewer than 5 bars passed; leave scored_at NULL so it can fill later
             return row
 
-    # 2. Setup filled: determine exact fill_price and fill_date
-    if row.get("your_fill") and float(row["your_fill"]) > 0:
-        fill_price = float(row["your_fill"])
-    elif entry_type == "BREAKOUT" and breakout_level > 0:
-        fill_price = breakout_level
+    # 2. Setup filled: ignore your_fill; breakout uses validator gap fill
+    if entry_type == "BREAKOUT":
+        fill_price = float(eval_res.get("fill_price") or breakout_level)
     else:
-        # For LIMIT, use fill price from validator, or entry_high (LONG) / entry_low (SHORT)
         fill_price = float(eval_res.get("fill_price") or (entry_high if side == "LONG" else entry_low))
 
     fill_date = eval_res.get("fill_date") or date_str
-    risk = abs(fill_price - stop)
-    if risk <= 0:
-        return {
-            **row,
-            "fill_date": fill_date,
-            "fill_price": fill_price,
-            "r_net": None,
-            "mae_r": None,
-            "scored_at": _now_iso(),
-        }
+
+    # Risk = planned entry_high - stop; stop >= fill means INVALID_GEOMETRY
+    if side == "LONG":
+        risk = (entry_high - stop) if entry_high > 0 else (fill_price - stop)
+        if stop >= fill_price or risk <= 0:
+            return {
+                **row,
+                "fill_date": fill_date,
+                "fill_price": fill_price,
+                "exit_reason": "INVALID_GEOMETRY",
+                "gross_r": None,
+                "r_net": None,
+                "mae_r": None,
+                "scored_at": _now_iso(),
+                "scorer_version": SCORER_VERSION,
+            }
+    else:
+        risk = (stop - entry_low) if entry_low > 0 else (stop - fill_price)
+        if stop <= fill_price or risk <= 0:
+            return {
+                **row,
+                "fill_date": fill_date,
+                "fill_price": fill_price,
+                "exit_reason": "INVALID_GEOMETRY",
+                "gross_r": None,
+                "r_net": None,
+                "mae_r": None,
+                "scored_at": _now_iso(),
+                "scorer_version": SCORER_VERSION,
+            }
 
     is_terminal = eval_res.get("is_terminal", False)
     bars_held = eval_res.get("bars_held", 0)
 
-    # 3. Immature: if fewer than 21 bars have passed since fill and has not exited, leave scored_at NULL
-    if not is_terminal and bars_held < MAX_HOLDING_BARS:
+    # 3. Immature: if fewer than max holding bars have passed since fill and has not exited, leave scored_at NULL
+    if not is_terminal and bars_held < holding_bars:
         return {
             **row,
             "fill_date": fill_date,
@@ -152,15 +192,15 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         exit_price = float(bars.iloc[-1].get("Close", bars.iloc[-1].get("close", fill_price)))
     exit_reason = eval_res.get("exit_reason") or eval_res.get("status") or "MAX_HOLDING_EXPIRED"
 
-    # 5. Compute gross R, fee (10bps expressed in R), and net R
+    # 5. Compute gross R, fee (Cost 0.0005*(fill+exit)/risk), and net R
     if side == "LONG":
         gross_r = (exit_price - fill_price) / risk
     else:
         gross_r = (fill_price - exit_price) / risk
 
-    # 10bps round-trip fee expressed in R: (0.001 * fill_price) / risk
-    fee_r = (0.001 * fill_price) / risk
-    r_net = gross_r - fee_r
+    # Cost 0.0005*(fill+exit)/risk
+    cost_r = (0.0005 * (fill_price + exit_price)) / risk
+    r_net = gross_r - cost_r
 
     # 6. Compute MAE as worst adverse excursion between fill and exit divided by risk
     held_bars = bars
@@ -195,6 +235,7 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         "r_net": round(r_net, 4),
         "mae_r": round(mae_r, 4),
         "scored_at": _now_iso(),
+        "scorer_version": SCORER_VERSION,
     }
 
 
@@ -226,30 +267,58 @@ def _upsert_scored(row: Dict[str, Any]) -> None:
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE suggestions
-                SET fill_date=?, fill_price=?, exit_date=?, exit_price=?,
-                    exit_reason=?, bars_held=?, gross_r=?, r_net=?, mae_r=?, scored_at=?
-                WHERE ticker=? AND date=? AND source=? AND report_hash=?
-                """,
-                (
-                    row.get("fill_date"),
-                    row.get("fill_price"),
-                    row.get("exit_date"),
-                    row.get("exit_price"),
-                    row.get("exit_reason"),
-                    row.get("bars_held"),
-                    row.get("gross_r"),
-                    row.get("r_net"),
-                    row.get("mae_r"),
-                    row.get("scored_at"),
-                    row["ticker"],
-                    row["date"],
-                    row["source"],
-                    row.get("report_hash"),
-                ),
-            )
+            try:
+                cursor.execute("ALTER TABLE suggestions ADD COLUMN scorer_version INTEGER DEFAULT 1")
+            except Exception:
+                pass
+            if row.get("id"):
+                cursor.execute(
+                    """
+                    UPDATE suggestions
+                    SET fill_date=?, fill_price=?, exit_date=?, exit_price=?,
+                        exit_reason=?, bars_held=?, gross_r=?, r_net=?, mae_r=?, scored_at=?, scorer_version=?
+                    WHERE id=?
+                    """,
+                    (
+                        row.get("fill_date"),
+                        row.get("fill_price"),
+                        row.get("exit_date"),
+                        row.get("exit_price"),
+                        row.get("exit_reason"),
+                        row.get("bars_held"),
+                        row.get("gross_r"),
+                        row.get("r_net"),
+                        row.get("mae_r"),
+                        row.get("scored_at"),
+                        row.get("scorer_version", SCORER_VERSION),
+                        row["id"],
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE suggestions
+                    SET fill_date=?, fill_price=?, exit_date=?, exit_price=?,
+                        exit_reason=?, bars_held=?, gross_r=?, r_net=?, mae_r=?, scored_at=?, scorer_version=?
+                    WHERE ticker=? AND date=? AND source=?
+                    """,
+                    (
+                        row.get("fill_date"),
+                        row.get("fill_price"),
+                        row.get("exit_date"),
+                        row.get("exit_price"),
+                        row.get("exit_reason"),
+                        row.get("bars_held"),
+                        row.get("gross_r"),
+                        row.get("r_net"),
+                        row.get("mae_r"),
+                        row.get("scored_at"),
+                        row.get("scorer_version", SCORER_VERSION),
+                        row["ticker"],
+                        row["date"],
+                        row["source"],
+                    ),
+                )
             conn.commit()
 
 
@@ -258,8 +327,9 @@ def _compute_stats() -> Dict[str, Any]:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+            # P2: filter gate_status='PASS'
             rows = cursor.execute(
-                "SELECT * FROM suggestions WHERE r_net IS NOT NULL AND exit_reason != 'NOT_FILLED'"
+                "SELECT * FROM suggestions WHERE r_net IS NOT NULL AND exit_reason != 'NOT_FILLED' AND (gate_status = 'PASS' OR gate_status IS NULL)"
             ).fetchall()
             if not rows:
                 return {}

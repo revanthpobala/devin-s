@@ -127,8 +127,7 @@ def format_active_position_block(ticker: str) -> str:
             f"Provide an explicit 'Active Holding Playbook' covering:\n"
             f"  1. Profit scale-out at Target 1 / Target 2\n"
             f"  2. Stop advance to protect capital / trail to breakeven\n"
-            f"  3. Covered call yield opportunities (if 100+ shares held)\n"
-            f"  4. Add-on limit zone if expanding position size."
+            f"  3. Covered call yield opportunities (if 100+ shares held)"
         )
     except Exception as e:
         logger.debug(f"format_active_position_block failed for {ticker}: {e}")

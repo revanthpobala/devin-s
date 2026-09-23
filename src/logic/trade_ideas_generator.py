@@ -136,16 +136,29 @@ def generate_trade_ideas_for_target(target: Dict[str, Any], position: Optional[D
 
     else:
         # STALKING / IN-ZONE CANDIDATE
-        ez_low = float(target.get("entry_zone_low") or spot)
-        ez_high = float(target.get("entry_zone_high") or spot)
-        stop = float(target.get("tactical_stop") or (spot * 0.95))
-        t1 = float(target.get("target_1") or (spot * 1.05))
-        t2 = float(target.get("target_2") or (spot * 1.10))
+        ez_low = float(target.get("entry_zone_low") or 0.0)
+        ez_high = float(target.get("entry_zone_high") or 0.0)
+        stop = float(target.get("tactical_stop") or 0.0)
+        t1 = float(target.get("target_1") or 0.0)
+        t2 = float(target.get("target_2") or 0.0)
         opt_summary = target.get("options_summary") or "Defined-risk call debit spread"
+
+        if ez_low <= 0 or ez_high <= 0 or stop <= 0 or t1 <= 0 or stop >= ez_low or ez_high >= t1:
+            ideas.append({
+                "id": "invalid_geometry",
+                "category": "INVALID GEOMETRY",
+                "badge": "INVALID SETUP",
+                "color": "amber",
+                "title": "Invalid or Incomplete Trade Levels",
+                "action": "Deterministic trade levels are missing or invalid (stop >= entry or entry >= target). No trade recommended.",
+                "metrics": f"Entry: ${ez_low:.2f}–${ez_high:.2f} | Stop: ${stop:.2f} | Target: ${t1:.2f}",
+                "rationale": "Level gate requires valid stop < entry_low <= entry_high < target_1.",
+            })
+            return ideas
 
         risk_per_sh = abs(ez_high - stop)
         reward_per_sh = abs(t1 - ez_high)
-        rr_ratio = (reward_per_sh / risk_per_sh) if risk_per_sh > 0 else 2.0
+        rr_ratio = (reward_per_sh / risk_per_sh) if risk_per_sh > 0 else 0.0
 
         ideas.append({
             "id": "limit_entry",

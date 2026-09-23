@@ -168,7 +168,7 @@ window.AppTrades = {
         const st = (t.status || '').toUpperCase();
         if (this._activeFilter === 'IN_ZONE') return st === 'IN_ZONE' || st === 'ENTER';
         if (this._activeFilter === 'STALKING') return st === 'STALKING';
-        if (this._activeFilter === 'TARGET_HIT') return st === 'TARGET_HIT' || st === 'IN_TRADE' || st === 'COMPLETED';
+        if (this._activeFilter === 'TARGET_HIT') return st === 'TARGET_HIT' || st === 'COMPLETED';
         if (this._activeFilter === 'STOP_BREACHED') return st === 'STOP_BREACHED' || st === 'STOPPED' || st === 'INVALIDATED';
         return st === this._activeFilter;
       });
@@ -278,11 +278,12 @@ window.AppTrades = {
 
       // Plan / Structure Pill with One-Click Modal Trigger
       let structureBtn = '';
+      const rowIdParam = t.id || t.row_id || sym;
       if (t.options_structure && t.options_structure !== 'NONE') {
         const optClean = t.options_structure.replace(/_/g, ' ');
         structureBtn = `
           <button class="pill cyan" 
-                  onclick="event.stopPropagation(); AppTrades.openPlanModal('${sym}')"
+                  onclick="event.stopPropagation(); AppTrades.openPlanModal('${rowIdParam}', '${sym}')"
                   style="font-size:10px; padding:3px 9px; font-weight:700; cursor:pointer; border:1px solid rgba(6,182,212,0.4); background:rgba(6,182,212,0.12); display:inline-flex; align-items:center; gap:4px; transition:all 0.15s ease;"
                   onmouseover="this.style.background='rgba(6,182,212,0.25)'"
                   onmouseout="this.style.background='rgba(6,182,212,0.12)'"
@@ -293,7 +294,7 @@ window.AppTrades = {
       } else {
         structureBtn = `
           <button class="pill" 
-                  onclick="event.stopPropagation(); AppTrades.openPlanModal('${sym}')"
+                  onclick="event.stopPropagation(); AppTrades.openPlanModal('${rowIdParam}', '${sym}')"
                   style="font-size:10px; padding:3px 8px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:4px; background:var(--bg-subtle); border:1px solid var(--border); transition:all 0.15s ease;"
                   onmouseover="this.style.borderColor='var(--blue)'"
                   onmouseout="this.style.borderColor='var(--border)'"
@@ -466,9 +467,16 @@ window.AppTrades = {
   /**
    * Open the detailed Trade Position & Execution Modal
    */
-  openPlanModal(ticker) {
-    const sym = String(ticker || '').toUpperCase().trim();
-    const trade = this._trades.find(t => (t.ticker || '').toUpperCase() === sym);
+  openPlanModal(rowIdOrTicker, tickerSym = null) {
+    let trade = null;
+    if (rowIdOrTicker && (!isNaN(rowIdOrTicker) || typeof rowIdOrTicker === 'number')) {
+      const idNum = Number(rowIdOrTicker);
+      trade = this._trades.find(t => t.id === idNum || t.row_id === idNum);
+    }
+    if (!trade) {
+      const sym = String(tickerSym || rowIdOrTicker || '').toUpperCase().trim();
+      trade = this._trades.find(t => (t.ticker || '').toUpperCase() === sym);
+    }
     if (!trade) return;
 
     this._selectedTrade = trade;
@@ -710,16 +718,21 @@ window.AppTrades = {
     const btn = document.getElementById('btn-copy-trade-order');
 
     let orderStr = '';
-    if (t.options_structure && t.options_structure !== 'NONE' && opt.long_strike) {
-      // Option order syntax (e.g. BUY +1 VERTICAL AMZN 18 SEP 26 260/270 CALL @3.38 LMT)
-      const struct = opt.structure || t.options_structure;
+    if (t.options_structure && t.options_structure !== 'NONE' && (opt.long_strike || opt.short_strike)) {
+      const struct = String(opt.structure || t.options_structure || '').toUpperCase();
       const exp = opt.expiration || 'EXP';
-      const debit = opt.target_debit ? `@${opt.target_debit} LMT` : 'MKT';
-      orderStr = `BUY +1 VERTICAL ${sym} ${exp} ${opt.long_strike}/${opt.short_strike || ''} CALL ${debit}`;
+      const isPut = struct.includes('PUT');
+      const optType = isPut ? 'PUT' : 'CALL';
+      const isCredit = struct.includes('CREDIT') || struct.includes('BEAR_CALL') || struct.includes('BULL_PUT');
+      const action = isCredit ? 'SELL -1' : 'BUY +1';
+      const priceTag = isCredit ? (opt.target_credit ? `@${opt.target_credit} CR` : 'CR LMT') : (opt.target_debit ? `@${opt.target_debit} LMT` : 'LMT');
+      const strikes = (opt.long_strike && opt.short_strike) ? `${opt.long_strike}/${opt.short_strike}` : (opt.long_strike || opt.short_strike);
+      orderStr = `${action} VERTICAL ${sym} ${exp} ${strikes} ${optType} ${priceTag}`;
     } else {
-      // Stock limit order syntax
       const mid = t.entry_midpoint || t.entry_zone_low || t.last_price || 0;
-      orderStr = `BUY 100 ${sym} @ ${Number(mid).toFixed(2)} LMT GTC`;
+      const sideAction = (t.side === 'SHORT') ? 'SELL SHORT' : 'BUY';
+      const entryType = (t.shares_plan && t.shares_plan.entry_type === 'BREAKOUT') ? 'STP LMT' : 'LMT';
+      orderStr = `${sideAction} ${sym} @ ${Number(mid).toFixed(2)} ${entryType} GTC`;
     }
 
     navigator.clipboard.writeText(orderStr).then(() => {

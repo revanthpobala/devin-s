@@ -259,6 +259,7 @@ def sanitize_dw_for_independent(dw: dict) -> str:
         "bible", "pillar", "entry at market", "mtf long", "mtf short",
         "zone 0 long", "zone 0 short", "_premove", "_long_zone",
         "_consecutive_bars_in_long_zone", "_long_anchor_name",
+        "buy score", "sell score", "dir prob", "directional probability", "direction prob",
     ]
 
     def is_proprietary(key: str) -> bool:
@@ -512,7 +513,7 @@ def build_user_prompt(
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Act as Senior Quantitative Portfolio Manager and EMIT a single-pass, high-conviction trade thesis:
-        - ACCURATE STRUCTURAL R:R: Calculate mathematical R:R as `(Target 1 - Entry) / (Entry - Tactical Stop)`. If price is testing a defended structural floor (e.g. Doji low, Gap floor, MA20) with tactical R:R >= 2.0, evaluate it as an actionable floor-defense limit entry rather than blindly disqualifying it on the distant macro zone.
+        - ACCURATE STRUCTURAL R:R: Calculate mathematical R:R as `(Target 1 - Entry) / (Entry - Tactical Stop)`. Adhere strictly to validated zone geometry, stop levels, and measured R:R requirements; do not override or invent artificial floors to bypass zone rules.
         - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected 14-120 day trading range.
         - OPTIONS PLAN (DUAL HORIZON): Evaluate both Tactical Swing (21-45 DTE credit/debit) AND Multi-Quarter / LEAPS (90-365+ DTE Deep ITM Calls). If IV Rank > 70% and IV/HV spread is positive, explicitly favor defined-risk credit spreads (e.g. Bull Put Spread) over buying expensive extrinsic premium.
         - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) with strict binary invalidation ("The ONE Thing").

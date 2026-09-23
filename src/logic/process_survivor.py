@@ -211,9 +211,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         except (ValueError, TypeError):
             det_ev_r = None
 
-    quality_pass = det_pass or (
-        det == "WATCH" and det_conv is not None and det_conv >= min_watch_conv
-    )
+    quality_pass = det_pass
     plan = (
         triage.get("long_plan") if triage.get("chosen_side") == "long" else triage.get("short_plan")
     )

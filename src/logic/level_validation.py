@@ -49,16 +49,15 @@ def _zone_midpoint(entry_low: float, entry_high: float) -> float:
 
 
 def _planned_rr(entry_low: float, entry_high: float, stop: float, target_1: float, side: str) -> float:
-    """Planned R:R from zone midpoint."""
-    mid = _zone_midpoint(entry_low, entry_high)
-    if not mid:
+    """Planned R:R from entry_high (worst-case fill for LONG)."""
+    if not entry_high or not target_1 or not stop:
         return 0.0
     if side == "LONG":
-        risk = mid - stop
-        reward = target_1 - mid
+        risk = entry_high - stop
+        reward = target_1 - entry_high
     else:
-        risk = stop - mid
-        reward = mid - target_1
+        risk = stop - entry_low
+        reward = entry_low - target_1
     if risk > 0 and reward > 0:
         return round(reward / risk, 4)
     return 0.0
@@ -187,62 +186,111 @@ def validate_levels(
     target_1 = float(plan.get("target_1") or 0.0)
     target_2 = float(plan.get("target_2") or 0.0)
 
+    # ── Reject SHORT ──────────────────────────────────────────
+    if side != "LONG":
+        reasons.append("SHORT side rejected — measured edge is long-only post-COVID")
+        return False, reasons
+
     # ── 1. Level ordering ──────────────────────────────────────
-    if side == "LONG":
-        t2_ok = (target_1 <= target_2) if target_2 > 0 else True
-        if not (stop < entry_low <= entry_high < target_1 and t2_ok):
-            if stop >= entry_low:
-                reasons.append(f"stop ${stop:.4f} >= entry_low ${entry_low:.4f}")
-            if entry_low > entry_high:
-                reasons.append(f"entry_low ${entry_low:.4f} > entry_high ${entry_high:.4f}")
-            if entry_high >= target_1:
-                reasons.append(f"entry_high ${entry_high:.4f} >= target_1 ${target_1:.4f}")
-            if target_2 > 0 and target_1 > target_2:
-                reasons.append(f"target_1 ${target_1:.4f} > target_2 ${target_2:.4f}")
-    else:
-        t2_ok = (target_2 <= target_1) if target_2 > 0 else True
-        if not (t2_ok and target_1 < entry_low <= entry_high < stop):
-            if target_2 > 0 and not (target_2 <= target_1):
-                reasons.append(f"target_2 ${target_2:.4f} > target_1 ${target_1:.4f}")
-            if not (target_1 < entry_low):
-                reasons.append(f"target_1 ${target_1:.4f} >= entry_low ${entry_low:.4f}")
-            if entry_low > entry_high:
-                reasons.append(f"entry_low ${entry_low:.4f} > entry_high ${entry_high:.4f}")
-            if not (entry_high < stop):
-                reasons.append(f"entry_high ${entry_high:.4f} >= stop ${stop:.4f}")
+    t2_ok = (target_1 <= target_2) if target_2 > 0 else True
+    if not (stop < entry_low <= entry_high < target_1 and t2_ok):
+        if stop >= entry_low:
+            reasons.append(f"stop ${stop:.4f} >= entry_low ${entry_low:.4f}")
+        if entry_low > entry_high:
+            reasons.append(f"entry_low ${entry_low:.4f} > entry_high ${entry_high:.4f}")
+        if entry_high >= target_1:
+            reasons.append(f"entry_high ${entry_high:.4f} >= target_1 ${target_1:.4f}")
+        if target_2 > 0 and target_1 > target_2:
+            reasons.append(f"target_1 ${target_1:.4f} > target_2 ${target_2:.4f}")
 
     if not entry_low or not entry_high or not stop or not target_1:
         reasons.append("missing required levels (entry_low, entry_high, stop, target_1)")
 
-    # ── 2. R:R floor ───────────────────────────────────────────
+    # ── 2. ATR14 presence (hard fail if missing) ───────────────
+    atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR", "wilder_atr14")
+    if atr <= 0:
+        atr = _compute_atr14_from_bars(ticker, date_str)
+    if atr <= 0:
+        reasons.append("missing ATR14 — hard fail")
+
+    # ── 3. Stop placement from entry_low & Pine stop ───────────
+    if atr > 0 and entry_low > 0:
+        pine_stop = _dw_num(dw, "Long Stop Loss", "rsi2 fixed stop", "long_stop_loss")
+        max_allowed_stop = entry_low - (LEVEL_ATR_STOP_MIN * atr)
+        if pine_stop > 0:
+            max_allowed_stop = min(max_allowed_stop, pine_stop + 0.05)
+        if stop > max_allowed_stop:
+            reasons.append(
+                f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} "
+                f"(must be <= min(entry_low - {LEVEL_ATR_STOP_MIN}*ATR, Pine stop))"
+            )
+
+    # ── 4. R:R floor & At-Market R:R ───────────────────────────
     rr = _planned_rr(entry_low, entry_high, stop, target_1, side)
     if rr > 0 and rr < LEVEL_RR_FLOOR:
         reasons.append(
-            f"planned R:R {rr:.4f} from zone midpoint below floor {LEVEL_RR_FLOOR}"
+            f"planned R:R {rr:.4f} from entry_high below floor {LEVEL_RR_FLOOR}"
         )
 
-    # ── 3. Stop distance ───────────────────────────────────────
-    mid = _zone_midpoint(entry_low, entry_high)
-    if mid > 0 and stop > 0:
-        stop_dist = abs(mid - stop)
-        atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR")
-        if atr <= 0:
-            atr = _compute_atr14_from_bars(ticker, date_str)
+    spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
+    if spot <= 0:
+        spot = float(plan.get("spot") or plan.get("price") or 0.0)
+    if spot > stop and target_1 > spot:
+        rr_at_market = round((target_1 - spot) / (spot - stop), 4)
+    else:
+        rr_at_market = 0.0
+    plan["rr_at_market"] = rr_at_market
 
-        if atr > 0:
-            dist_in_atr = stop_dist / atr
-            if dist_in_atr < LEVEL_ATR_STOP_MIN:
-                reasons.append(
-                    f"stop distance {dist_in_atr:.4f} ATR from zone midpoint "
-                    f"below minimum {LEVEL_ATR_STOP_MIN} ATR"
-                )
-        else:
-            logger.debug(
-                f"[validate_levels] ATR unavailable for {plan.get('ticker', 'UNKNOWN')}; "
-                f"skipping stop-distance check without failing gate."
+    setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()
+    exempt_lanes = ("RSI2", "CODE20", "OVERSOLD")
+    if setup_lane not in exempt_lanes:
+        if rr_at_market < 2.0:
+            reasons.append(
+                f"at-market R:R {rr_at_market:.2f} below 2.0 floor for lane {setup_lane or 'DEFAULT'}"
             )
 
-    # ── 4. Pine drift ──────────────────────────────────────────
+    # ── 5. OVERSOLD geometry constraint ────────────────────────
+    if setup_lane == "OVERSOLD":
+        pine_stop = _dw_num(dw, "Long Stop Loss", "rsi2 fixed stop")
+        pine_target = _dw_num(dw, "Long Target", "Long Target T1 Waypoint")
+        if pine_stop > 0 and abs(stop - pine_stop) > 0.05:
+            reasons.append(
+                f"OVERSOLD lane requires stop to match Pine Long Stop Loss (${pine_stop:.2f}), got ${stop:.2f}"
+            )
+        if pine_target > 0 and abs(target_1 - pine_target) > 0.05:
+            reasons.append(
+                f"OVERSOLD lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
+            )
+
+    # ── 6. Target 1 ceiling vs 21b Expected Move ───────────────
+    close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
+    exp_move_pct = _dw_num(dw, "Exp Move % (21b)", "Exp Move Pct 21b", "exp_move_pct", "exp_move")
+    if exp_move_pct > 1.0:
+        exp_move_pct = exp_move_pct / 100.0
+    if close_px > 0 and exp_move_pct > 0 and target_1 > 0:
+        max_t1 = close_px * (1.0 + 1.5 * exp_move_pct)
+        if target_1 > round(max_t1 + 0.05, 2):
+            reasons.append(
+                f"target_1 ${target_1:.2f} exceeds 1.5x 21b expected move ceiling ${max_t1:.2f}"
+            )
+
+    # ── 7. Earnings inside 21 bars (reject NEW) ────────────────
+    kind = str(plan.get("kind") or "NEW").upper()
+    if kind == "NEW" and ticker:
+        try:
+            from src.clients.earnings_client import get_next_earnings_days
+            days_to_earnings = get_next_earnings_days(ticker)
+            dw_days = _dw_num(dw, "earnings_days", "days_to_earnings", "bars_to_earnings")
+            if dw_days > 0 and (days_to_earnings is None or dw_days < days_to_earnings):
+                days_to_earnings = int(dw_days)
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 30:
+                reasons.append(
+                    f"earnings inside 21 bars ({days_to_earnings} calendar days away) — fail for NEW"
+                )
+        except Exception as e:
+            logger.debug(f"Earnings lookup failed in validate_levels: {e}")
+
+    # ── 8. Pine drift ──────────────────────────────────────────
     drifts = _pine_drift(plan, dw, side)
     for d in drifts:
         reasons.append(

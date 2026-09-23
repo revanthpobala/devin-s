@@ -105,6 +105,136 @@ def _get_snapshot_val(snapshot: Dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def derive_datawindow_fields(
+    snapshot: Dict[str, Any], df: Optional[pd.DataFrame] = None
+) -> Dict[str, Any]:
+    """Derive missing Pine fields from bitpacks and OHLC history:
+    - RSI2 Protocol Version = 2 when absent
+    - Action Long Code = Context Action Pack % 32; Action Short Code = (pack // 32) % 32; Entry At Market = pack // 1024
+    - RSI2 ATR14 = Wilder ATR(14) (RMA of true range, alpha=1/14)
+    - RSI2 RSI2 = Wilder RSI(2)
+    - Long RR At Market = (Long Target - close) / (close - Long Stop Loss) only if close > stop and target > close
+    - Prev Ext Z = previous row's Ext Z Self Relative (for OVERSOLD first-bar flag)
+    """
+    # 1. Protocol Version
+    proto_val = _get_snapshot_val(snapshot, "RSI2 Protocol Version", "rsi2_protocol_version", "protocol version")
+    if proto_val is not None:
+        try:
+            p_int = int(float(proto_val))
+            snapshot["_protocol_version"] = p_int
+            snapshot["RSI2 Protocol Version"] = p_int
+        except Exception:
+            snapshot["_protocol_version"] = 2
+            snapshot["RSI2 Protocol Version"] = 2
+    else:
+        snapshot["_protocol_version"] = 2
+        snapshot["RSI2 Protocol Version"] = 2
+
+    # 2. Context Action Pack -> Action Long/Short Code & Entry At Market
+    act_pack = _get_snapshot_val(snapshot, "Context Action Pack", "context_action_pack", "context action pack")
+    if act_pack is not None:
+        try:
+            p_val = int(float(act_pack))
+            snapshot["Action Long Code"] = p_val % 32
+            snapshot["Action Short Code"] = (p_val // 32) % 32
+            snapshot["Entry At Market"] = p_val // 1024
+            snapshot["action_long"] = p_val % 32
+            snapshot["action_short"] = (p_val // 32) % 32
+            snapshot["_action_long_code"] = p_val % 32
+            snapshot["_action_short_code"] = (p_val // 32) % 32
+            snapshot["_entry_at_market"] = p_val // 1024
+        except Exception:
+            pass
+
+    # 3. OHLC derivations (RSI2 ATR14, RSI2 RSI2, Prev Ext Z)
+    if df is not None and not df.empty and len(df) >= 2:
+        c_col = next((c for c in df.columns if c.lower() in ("close", "c") or c.lower().endswith(": close")), None)
+        h_col = next((c for c in df.columns if c.lower() in ("high", "h") or c.lower().endswith(": high")), None)
+        l_col = next((c for c in df.columns if c.lower() in ("low", "l") or c.lower().endswith(": low")), None)
+
+        if c_col and h_col and l_col:
+            try:
+                highs = pd.to_numeric(df[h_col], errors="coerce")
+                lows = pd.to_numeric(df[l_col], errors="coerce")
+                closes = pd.to_numeric(df[c_col], errors="coerce")
+
+                # Wilder ATR(14)
+                prev_c = closes.shift(1)
+                tr0 = highs - lows
+                tr1 = (highs - prev_c).abs()
+                tr2 = (lows - prev_c).abs()
+                tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
+                atr14 = tr.ewm(alpha=1.0 / 14.0, adjust=False).mean()
+                atr_val = round(float(atr14.iloc[-1]), 4)
+                snapshot["RSI2 ATR14"] = atr_val
+                snapshot["rsi2_atr14"] = atr_val
+
+                # Wilder RSI(2)
+                delta = closes.diff()
+                gain = delta.clip(lower=0.0)
+                loss = (-delta).clip(lower=0.0)
+                avg_gain = gain.ewm(alpha=1.0 / 2.0, adjust=False).mean()
+                avg_loss = loss.ewm(alpha=1.0 / 2.0, adjust=False).mean()
+                last_g = float(avg_gain.iloc[-1])
+                last_l = float(avg_loss.iloc[-1])
+                if last_l == 0.0:
+                    rsi2_val = 100.0 if last_g > 0.0 else 50.0
+                else:
+                    rsi2_val = round(100.0 - (100.0 / (1.0 + (last_g / last_l))), 2)
+                snapshot["RSI2 RSI2"] = rsi2_val
+                snapshot["rsi2_val"] = rsi2_val
+
+                if "close" not in snapshot and "Close" not in snapshot:
+                    snapshot["close"] = float(closes.iloc[-1])
+            except Exception:
+                pass
+
+        # Prev Ext Z
+        ext_z_col = next(
+            (c for c in df.columns if c.lower() in ("ext z self relative", "ext_z_self", "ext z self")),
+            None,
+        )
+        if ext_z_col and len(df) >= 2:
+            try:
+                prev_ez = float(df[ext_z_col].iloc[-2])
+                snapshot["Prev Ext Z"] = prev_ez
+                snapshot["prev_ext_z"] = prev_ez
+            except Exception:
+                pass
+
+    # 4. Long RR At Market
+    try:
+        curr_c = _get_snapshot_val(snapshot, "close", "Close", "price", "spot_price")
+        stop_v = _get_snapshot_val(
+            snapshot, "Long Stop Loss", "long stop loss", "rsi2 fixed stop", "long_stop_loss", "stop_loss", "stop"
+        )
+        target_v = _get_snapshot_val(
+            snapshot,
+            "Long Target",
+            "long target",
+            "Long Target T1 Waypoint",
+            "rsi2 fixed target",
+            "long_target",
+            "target_1",
+            "target",
+        )
+        if curr_c is not None and stop_v is not None and target_v is not None:
+            c_f = float(curr_c)
+            s_f = float(stop_v)
+            t_f = float(target_v)
+            if c_f > s_f and t_f > c_f:
+                rr_mkt = round((t_f - c_f) / (c_f - s_f), 4)
+                snapshot["Long RR At Market"] = rr_mkt
+                snapshot["long_rr_at_market"] = rr_mkt
+            else:
+                snapshot.pop("Long RR At Market", None)
+                snapshot.pop("long_rr_at_market", None)
+    except Exception:
+        pass
+
+    return snapshot
+
+
 def decode_and_enrich_datawindow(
     snapshot: Dict[str, Any], df: pd.DataFrame, ticker: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -353,11 +483,9 @@ def decode_and_enrich_datawindow(
     except Exception:
         pass
 
-    # 10. Protocol 2 & RSI2 Event Pack Decoding
+    # 10. Protocol 2 & RSI2 Event Pack Decoding + Missing Pine Fields Derivations
     try:
-        proto_val = _get_snapshot_val(snapshot, "RSI2 Protocol Version", "rsi2_protocol_version", "protocol version")
-        if proto_val is not None:
-            snapshot["_protocol_version"] = int(float(proto_val))
+        snapshot = derive_datawindow_fields(snapshot, df)
 
         events_pack_val = _get_snapshot_val(snapshot, "RSI2 Events Pack", "rsi2_events_pack", "events pack")
         if events_pack_val is not None:

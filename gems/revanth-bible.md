@@ -196,8 +196,9 @@ Row 8 tells you the state; these four tell you whether anything is *tradeable*. 
 
 | callout | gate | **[M]** | note |
 |---|---|---|---|
-| **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Long In Zone` + `Long RR At Market ≥ 2` + fade off + no 🛑 | **+0.116R**, 4/4 eras, 12/12 sectors, 69.9% of 519 names, n=39,740 | fires on **2.29% of bars** — an event, not a state |
-| same, **deep teal + LARGE** | as above but `Long RR At Market ≥ 5` | **+0.252R**, 4/4 eras, both ticker halves, 60.3% of 156 names, n=3,884 | ~10% of the above |
+| **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Long In Zone` + `Long RR At Market ≥ 2` + fade off + no 🛑 | **+0.08R**, post-COVID, win ~30% | Base R:R setup lane |
+| same, **deep teal + LARGE** | as above but `Long RR At Market ≥ 3` | **+0.13R**, post-COVID, win ~25% | Strong tier (tier 3) |
+| **🔵 OVERSOLD** | `Ext Z Self Relative ≤ −2.0` + `Action Long Code != 18` | **+0.06R**, post-COVID, win ~51% | Measured Pine oversold geometry |
 | **🚫 DO NOT CHASE** | fade gate (`Signal Pack` bit 2 = 0) | **−0.038R** era-stable | a measured **avoid** |
 | **⚠️ CHASE · R:R `X`** | buy signal while `Long In Zone = 0` | **−0.023R** | chart label off by default; gate still in `Signal Pack` bit 0 |
 

@@ -1917,7 +1917,7 @@
                 <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">PLAN LEVELS / STRIKES</th>
                 <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">STATUS</th>
                 <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">SPOT & DIST</th>
-                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">DOLLAR P&L</th>
+                <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">R-MULTIPLE</th>
                 <th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">ROC %</th>
                 <th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">OUTCOME NOTES</th>
               </tr>
@@ -2254,125 +2254,7 @@
   </div>
 
 
-  <!-- ================================================================
-       Suggested Trades Audit & Win/Loss Performance Trail Modal
-       ================================================================ -->
-  <div class="modal-overlay" id="modal-watchlist-audit" style="display:none; align-items:flex-start; justify-content:center; z-index:1200; padding:24px 12px; overflow-y:auto; background:rgba(2,6,20,0.85); backdrop-filter:blur(6px);" onclick="if(event.target===this) AppWatchlist.closeAuditModal()">
-    <div class="audit-modal-container" onclick="event.stopPropagation()">
 
-      <!-- Modal Header -->
-      <div class="audit-modal-header">
-        <div style="display:flex; flex-direction:column; gap:2px;">
-          <span class="audit-modal-title">📊 Suggested Trades Audit &amp; Performance Trail</span>
-          <span class="audit-modal-subtitle">Every trade prescribed by the research pipeline — options spreads, equity entries, and more. On-demand attribution for self-improvement.</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
-          <span style="font-size:11px; color:#475569; font-weight:500;">Last evaluated: <span id="modal-audit-evaluated-time" style="color:#64748b;">—</span></span>
-          <button id="btn-re-evaluate-audit" class="btn secondary" onclick="AppWatchlist.triggerAuditEvaluation()" style="padding:6px 14px; font-size:12px; font-weight:700; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.07); display:flex; align-items:center; gap:6px;" title="Re-evaluate active setups against live quotes and persist to SQLite">
-            <span class="btn-re-evaluate-spinner" id="re-evaluate-spinner"></span>
-            <span id="re-evaluate-icon">🔄</span>
-            <span>Re-Evaluate Now</span>
-          </button>
-          <button class="btn secondary" onclick="AppWatchlist.closeAuditModal()" style="padding:6px 10px; font-size:13px; font-weight:800; color:#94a3b8;" title="Close">✕</button>
-        </div>
-      </div>
-
-      <!-- Modal Body -->
-      <div class="audit-modal-body">
-
-        <!-- 5 KPI Cards -->
-        <div id="modal-audit-kpi-strip">
-          <!-- Rendered by renderAuditKpis() -->
-          <div class="perf-kpi-card win-rate">
-            <span class="perf-kpi-title">🏆 Win Rate</span>
-            <div class="perf-kpi-val" style="color:#10b981;">—<span class="perf-kpi-sub">Loading…</span></div>
-          </div>
-          <div class="perf-kpi-card avg-win">
-            <span class="perf-kpi-title">📈 Avg Win</span>
-            <div class="perf-kpi-val" style="color:#34d399;">—<span class="perf-kpi-sub">Loading…</span></div>
-          </div>
-          <div class="perf-kpi-card avg-loss">
-            <span class="perf-kpi-title">📉 Avg Loss</span>
-            <div class="perf-kpi-val" style="color:#f87171;">—<span class="perf-kpi-sub">Loading…</span></div>
-          </div>
-          <div class="perf-kpi-card net-alpha">
-            <span class="perf-kpi-title">💰 Net Profit</span>
-            <div class="perf-kpi-val" style="color:#fbbf24;">—<span class="perf-kpi-sub">Loading…</span></div>
-          </div>
-          <div class="perf-kpi-card actionable">
-            <span class="perf-kpi-title">⚡ Actionable Now</span>
-            <div class="perf-kpi-val" style="color:#f59e0b;">—<span class="perf-kpi-sub">Loading…</span></div>
-          </div>
-        </div>
-
-        <!-- Filter Controls Row -->
-        <div class="audit-controls-bar">
-          <!-- Filter Tab Pills -->
-          <div class="audit-tab-pills" id="audit-modal-filter-tabs">
-            <button class="audit-tab-btn active" data-audit-tab="ALL"      onclick="AppWatchlist.setAuditTab('ALL')">      All <span id="audit-tab-count-all">0</span></button>
-            <button class="audit-tab-btn"        data-audit-tab="ACTIVE"   onclick="AppWatchlist.setAuditTab('ACTIVE')">   ⚡ Active <span id="audit-tab-count-active">0</span></button>
-            <button class="audit-tab-btn"        data-audit-tab="WON"      onclick="AppWatchlist.setAuditTab('WON')">      🏁 Won <span id="audit-tab-count-won">0</span></button>
-            <button class="audit-tab-btn"        data-audit-tab="STOPPED"  onclick="AppWatchlist.setAuditTab('STOPPED')">  🛑 Stopped <span id="audit-tab-count-stopped">0</span></button>
-            <button class="audit-tab-btn"        data-audit-tab="STALKING" onclick="AppWatchlist.setAuditTab('STALKING')"> ⏳ Stalking <span id="audit-tab-count-stalking">0</span></button>
-            <button class="audit-tab-btn"        data-audit-tab="OPTIONS"  onclick="AppWatchlist.setAuditTab('OPTIONS')">  📋 Options <span id="audit-tab-count-options">0</span></button>
-            <button class="audit-tab-btn"        data-audit-tab="SHARES"   onclick="AppWatchlist.setAuditTab('SHARES')">   📈 Shares <span id="audit-tab-count-shares">0</span></button>
-          </div>
-
-          <!-- Search & Window Controls (pushed right) -->
-          <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
-            <label style="font-size:11px; color:#475569; font-weight:600;">Window:</label>
-            <select class="select-audit-pagesize" id="select-audit-window" onchange="AppWatchlist.setAuditWindow(this.value)" title="Performance calculation window">
-              <option value="0">All Time</option>
-              <option value="10">Last 10</option>
-              <option value="25">Last 25</option>
-              <option value="50">Last 50</option>
-              <option value="100" selected>Last 100</option>
-            </select>
-            <input type="text" id="audit-search-input" class="audit-search-input" placeholder="🔍 Search ticker, structure…" oninput="AppWatchlist.setAuditSearch(this.value)">
-          </div>
-        </div>
-
-        <!-- Audit Table -->
-        <div class="audit-table-wrapper">
-          <div style="overflow-x:auto;">
-            <table class="audit-table" id="audit-table">
-              <thead>
-                <tr>
-                  <th>Ticker / Date</th>
-                  <th>Type &amp; Structure</th>
-                  <th>Key Levels</th>
-                  <th>Status</th>
-                  <th style="text-align:right;">Spot / Dist%</th>
-                  <th style="text-align:right;">P&amp;L ($)</th>
-                  <th style="text-align:right;">ROC %</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody id="audit-table-tbody">
-                <tr><td colspan="8" style="text-align:center; padding:40px; color:#475569;">Click <strong>Re-Evaluate Now</strong> to load suggested trades audit…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Pagination Footer -->
-        <div class="audit-pagination-bar">
-          <button class="audit-page-btn" id="btn-audit-page-first" onclick="AppWatchlist.setAuditPage(1)" title="First page" disabled>«</button>
-          <button class="audit-page-btn" id="btn-audit-page-prev"  onclick="AppWatchlist.prevAuditPage()" title="Previous page" disabled>‹</button>
-          <span id="audit-pagination-range" style="font-size:12px; color:#64748b; padding:0 4px;">No trades</span>
-          <button class="audit-page-btn" id="btn-audit-page-next" onclick="AppWatchlist.nextAuditPage()" title="Next page" disabled>›</button>
-          <button class="audit-page-btn" id="btn-audit-page-last" onclick="AppWatchlist.setAuditPage('last')" title="Last page" disabled>»</button>
-          <span style="margin-left:4px; font-size:11px; color:#475569;">Page <span id="audit-current-page">1</span> / <span id="audit-total-pages">1</span></span>
-          <select class="select-audit-pagesize" id="select-audit-pagesize" onchange="AppWatchlist.setAuditPageSize(this.value)" style="margin-left:8px;" title="Rows per page">
-            <option value="10" selected>10 / page</option>
-            <option value="25">25 / page</option>
-            <option value="50">50 / page</option>
-          </select>
-        </div>
-
-      </div><!-- /audit-modal-body -->
-    </div><!-- /audit-modal-container -->
-  </div><!-- /#modal-watchlist-audit -->
 
   <!-- ================================================================
        Intraday TradingView Alerts PnL & AI Attribution Modal

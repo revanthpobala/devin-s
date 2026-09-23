@@ -133,15 +133,44 @@ def resolve_artifact_paths(ticker: str, tdir: Path, raw_dir: Path) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 def load_data_window(ticker: str, dw_path: Path) -> dict:
-    """Load and return the data window JSON dict, or ``{}`` on failure."""
+    """Load and return the data window JSON dict, or ``{}`` on failure.
+    Injects derived missing Pine fields (RSI2 ATR14, RSI2 RSI2, Long RR At Market,
+    Action Long/Short Code, Protocol Version, Prev Ext Z).
+    """
+    dw_path = Path(dw_path)
     if not dw_path.exists():
         logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
         return {}
     try:
-        return json.loads(dw_path.read_text(encoding="utf-8"))
+        dw_dict = json.loads(dw_path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning(f"[{ticker}] Error loading data window: {e}")
         return {}
+
+    # Look for sibling or related datawindow CSV for OHLC derivations
+    df = None
+    safe = ticker.replace(":", "_")
+    csv_candidates = [
+        dw_path.with_suffix(".csv"),
+        dw_path.parent / f"{safe}_datawindow.csv",
+        dw_path.parent / f"{ticker}_datawindow.csv",
+    ]
+    for cand in csv_candidates:
+        if cand.exists():
+            try:
+                import pandas as pd
+                df = pd.read_csv(cand)
+                break
+            except Exception:
+                pass
+
+    try:
+        from src.data.csv_adapter import derive_datawindow_fields
+        dw_dict = derive_datawindow_fields(dw_dict, df)
+    except Exception as e:
+        logger.debug(f"[{ticker}] derive_datawindow_fields notice: {e}")
+
+    return dw_dict
 
 
 def resolve_triage(

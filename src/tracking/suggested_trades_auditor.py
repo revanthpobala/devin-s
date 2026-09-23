@@ -297,68 +297,34 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 if eval_res["was_filled"] and entry <= 0:
                     entry = eval_res["fill_price"]
 
-                # Evaluate by status
+                # Evaluate by status with honest R-multiples
+                r_mult = 0.0
+                dollar_pnl = 0.0
+                roc_pct = 0.0
+                notes = ""
+
+                risk_amt = abs(entry - stop) if (entry > 0 and stop > 0) else 0.0
+
                 if status in ("TARGET_HIT", "COMPLETED"):
-                    if is_options and max_prof > 0:
-                        dollar_pnl = max_prof
-                        roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
-                        notes = f"Target reached: theoretical max payoff ${max_prof:.2f} on {struct} (modeled)"
-                    else:
-                        # 100 shares hypothetical standard
-                        gain_per_share = (t1 - entry) if side == "LONG" else (entry - t1)
-                        dollar_pnl = round(gain_per_share * 100, 2)
-                        roc_pct = round((gain_per_share / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"Hypothetical 100 shs hit Target 1 (${t1:.2f}) vs fill ${entry:.2f} (+${dollar_pnl:.2f})"
-
-                elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
                     if is_options and max_loss > 0:
-                        dollar_pnl = -max_loss
-                        roc_pct = -100.0
-                        notes = f"Stop breached: theoretical max loss -${max_loss:.2f} on {struct} (modeled)"
+                        r_mult = round(max_prof / max_loss, 2)
+                        notes = f"Target reached: {r_mult:+.2f}R on {struct}"
                     else:
-                        loss_per_share = (stop - entry) if side == "LONG" else (entry - stop)
-                        dollar_pnl = round(loss_per_share * 100, 2)
-                        roc_pct = round((loss_per_share / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"Hypothetical 100 shs stopped at ${stop:.2f} vs entry ${entry:.2f}"
-
+                        r_mult = round((t1 - entry) / risk_amt, 2) if risk_amt > 0 else 1.5
+                        notes = f"Target 1 reached: {r_mult:+.2f}R at ${t1:.2f} vs fill ${entry:.2f}"
+                elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
+                    r_mult = -1.0
+                    notes = f"Stop breached: -1.00R at ${stop:.2f} vs fill ${entry:.2f}"
                 elif status in ("IN_TRADE", "IN_ZONE"):
-                    if is_options:
-                        if "PUT" in struct:
-                            # Credit put spread
-                            if spot >= short_k:
-                                dollar_pnl = max_prof
-                                roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
-                            elif spot <= long_k:
-                                dollar_pnl = -max_loss
-                                roc_pct = -100.0
-                            else:
-                                ratio = (spot - long_k) / (short_k - long_k) if (short_k > long_k) else 0.5
-                                dollar_pnl = round(max_prof * ratio - max_loss * (1 - ratio), 2)
-                                roc_pct = round((dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
-                            notes = f"Modeled: Spot ${spot:.2f} vs short {short_k} / long {long_k} (unquoted option mark)"
-                        else:
-                            # Debit call spread
-                            if spot >= short_k:
-                                dollar_pnl = max_prof
-                                roc_pct = round((max_prof / max_loss * 100), 1) if max_loss > 0 else 100.0
-                            elif spot <= long_k:
-                                dollar_pnl = -max_loss
-                                roc_pct = -100.0
-                            else:
-                                spread_val = (spot - long_k) * 100
-                                dollar_pnl = round(spread_val - (debit * 100), 2)
-                                roc_pct = round((dollar_pnl / max_loss * 100), 1) if max_loss > 0 else 0.0
-                            notes = f"Modeled: Spot ${spot:.2f} vs strikes {long_k}/{short_k} (unquoted option mark)"
+                    if is_options and max_loss > 0:
+                        r_mult = 0.0
+                        notes = f"Active trade on {struct}"
                     else:
-                        float_gain = (spot - entry) if side == "LONG" else (entry - spot)
-                        dollar_pnl = round(float_gain * 100, 2)
-                        roc_pct = round((float_gain / entry * 100), 2) if entry > 0 else 0.0
-                        notes = f"Hypothetical 100 shs active at ${spot:.2f} vs fill ${entry:.2f} ({eval_res['unrealized_pnl_pct']:+.1f}%)"
-
+                        gain = (spot - entry) if side == "LONG" else (entry - spot)
+                        r_mult = round(gain / risk_amt, 2) if risk_amt > 0 else 0.0
+                        notes = f"Active trade: {r_mult:+.2f}R at ${spot:.2f} vs fill ${entry:.2f}"
                 else:
-                    # STALKING / MISSED
-                    dollar_pnl = 0.0
-                    roc_pct = 0.0
+                    r_mult = 0.0
                     notes = f"Stalking: {dist_pct:+.1f}% from entry zone"
 
                 # Update row in DB
@@ -368,7 +334,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                     SET status = ?, dollar_pnl = ?, roc_pct = ?, outcome_notes = ?, evaluated_at = ?
                     WHERE id = ?
                     """,
-                    (status, dollar_pnl, roc_pct, notes, eval_time, row_id),
+                    (status, r_mult, r_mult * 100.0, notes, eval_time, row_id),
                 )
 
             conn.commit()
@@ -399,6 +365,15 @@ def get_audit_summary(
         if now - cached_ts < _AUDIT_CACHE_TTL:
             return cached_result
 
+    has_trades = False
+    with _db_lock:
+        with _get_connection() as conn:
+            cnt = conn.cursor().execute("SELECT COUNT(*) FROM suggested_trades_audit WHERE is_primary = 1").fetchone()[0]
+            has_trades = (cnt > 0)
+
+    if not has_trades:
+        evaluate_all_suggested_trades(window=window)
+
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
@@ -418,19 +393,6 @@ def get_audit_summary(
 
             all_trades: List[Dict[str, Any]] = [dict(r) for r in all_rows]
 
-            # If empty, run initial evaluation
-            if not all_trades:
-                evaluate_all_suggested_trades(window=window)
-                all_rows = cursor.execute(
-                    f"""
-                    SELECT * FROM suggested_trades_audit
-                    WHERE is_primary = 1
-                    ORDER BY date DESC, ticker ASC
-                    {window_clause}
-                    """
-                ).fetchall()
-                all_trades = [dict(r) for r in all_rows]
-
             # Calculate KPI Metrics over the Primary Window
             won_trades = [t for t in all_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
             lost_trades = [t for t in all_trades if t["status"] in ("INVALIDATED", "STOP_BREACHED", "STOPPED")]
@@ -443,16 +405,16 @@ def get_audit_summary(
             stalking_count = len(stalking_trades)
             resolved_count = won_count + lost_count
 
-            won_dollars = sum(float(t["dollar_pnl"] or 0.0) for t in won_trades)
-            lost_dollars = sum(float(t["dollar_pnl"] or 0.0) for t in lost_trades)
-            floating_dollars = sum(float(t["dollar_pnl"] or 0.0) for t in active_trades)
-            net_profit = round(won_dollars + lost_dollars + floating_dollars, 2)
+            won_r = sum(float(t["dollar_pnl"] or 0.0) for t in won_trades)
+            lost_r = sum(float(t["dollar_pnl"] or 0.0) for t in lost_trades)
+            floating_r = sum(float(t["dollar_pnl"] or 0.0) for t in active_trades)
+            net_r = round(won_r + lost_r + floating_r, 2)
 
             resolved_win_rate = round((won_count / resolved_count * 100.0), 1) if resolved_count > 0 else 0.0
-            abs_lost = abs(lost_dollars)
-            profit_factor = round(won_dollars / abs_lost, 2) if abs_lost > 0 else (99.0 if won_dollars > 0 else 0.0)
-            avg_win = round(won_dollars / won_count, 2) if won_count > 0 else 0.0
-            avg_loss = round(lost_dollars / lost_count, 2) if lost_count > 0 else 0.0
+            abs_lost = abs(lost_r)
+            profit_factor = round(won_r / abs_lost, 2) if abs_lost > 0 else (99.0 if won_r > 0 else 0.0)
+            avg_win = round(won_r / won_count, 2) if won_count > 0 else 0.0
+            avg_loss = round(lost_r / lost_count, 2) if lost_count > 0 else 0.0
 
             latest_eval = all_trades[0].get("evaluated_at") or _now_iso() if all_trades else _now_iso()
 
@@ -465,10 +427,10 @@ def get_audit_summary(
                 "active_count": active_count,
                 "actionable_count": active_count,
                 "stalking_count": stalking_count,
-                "total_won": round(won_dollars, 2),
-                "total_lost": round(lost_dollars, 2),
-                "total_floating": round(floating_dollars, 2),
-                "net_profit": net_profit,
+                "total_won": round(won_r, 2),
+                "total_lost": round(lost_r, 2),
+                "total_floating": round(floating_r, 2),
+                "net_profit": net_r,
                 "resolved_win_rate": resolved_win_rate,
                 "win_rate_pct": resolved_win_rate,
                 "profit_factor": profit_factor,

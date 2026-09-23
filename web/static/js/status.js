@@ -355,7 +355,7 @@ window.AppStatus = {
 
   async restartResearch(ticker, mode = 'full', date = '') {
     try {
-      const res = await window.AppApi.triggerResearch(ticker, mode, date, true);
+      const res = await window.AppApi.triggerResearch(ticker, mode, date, false);
       if (res.status === 'started') {
         alert(`🚀 Restarted deep research for ${ticker} in open slot!`);
       } else if (res.status === 'queued') {

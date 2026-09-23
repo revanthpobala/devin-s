@@ -1317,22 +1317,6 @@ def run_autonomous_screener_pipeline(
 
             # 1c. Ensure Data Window exists for local research (zero browser — synthesize from screener metrics if no prior scrape)
             dw_json = raw_ticker_dir / f"{sym}_datawindow.json"
-            dw_csv = raw_ticker_dir / f"{sym}_datawindow.csv"
-            if not dw_json.exists():
-                # Search recent dates in data/raw for existing datawindow
-                raw_root = config.BASE_DIR / "data" / "raw"
-                for d in sorted(raw_root.iterdir(), reverse=True):
-                    if d.is_dir() and d.name != t_date and d.name.startswith("202"):
-                        src_dw = d / sym / f"{sym}_datawindow.json"
-                        src_csv = d / sym / f"{sym}_datawindow.csv"
-                        if src_dw.exists():
-                            import shutil
-                            shutil.copy2(str(src_dw), str(dw_json))
-                            if src_csv.exists():
-                                shutil.copy2(str(src_csv), str(dw_csv))
-                            logger.info(f"⚡ [{sym}] Reused historical datawindow from {d.name} for local research.")
-                            break
-
             # If no real TradingView Data Window exists, write a TYPED screener feature payload
             # (observed Schwab metrics, source="SCHWAB_SCAN"). We deliberately do NOT fabricate a
             # Data Window: the deterministic filter treats this as research-interested (WATCH) and
@@ -1373,8 +1357,13 @@ def run_autonomous_screener_pipeline(
             if thesis_path.exists():
                 try:
                     rec = json.loads(thesis_path.read_text(encoding="utf-8"))
-                    send_to_deep = bool(rec.get("send_for_deep_research", False))
-                    triage_verdict = str(rec.get("triage", "WATCH"))
+                    llm_d = rec.get("llm_data") or {}
+                    triage_d = rec.get("triage") or {}
+                    if isinstance(triage_d, dict):
+                        triage_verdict = str(triage_d.get("triage", "WATCH"))
+                    else:
+                        triage_verdict = str(triage_d)
+                    send_to_deep = bool(llm_d.get("send_for_deep_research", rec.get("send_for_deep_research", False))) and (triage_verdict == "PASS")
                 except Exception:
                     pass
 

@@ -19,28 +19,7 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
         "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
-        "Output in this exact markdown format:\n\n"
-        f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
-        "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
-        "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
-        "## 🔴 THE CASE AGAINST (Bear Cross-Examination & Traps)\n"
-        "[The strongest risk arguments, hidden traps, and friction points synthesized across both reports for why this trade should be avoided or hedged]\n\n"
-        "## ⚖️ THE JUDGE'S FINAL RULING\n"
-        "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
-        "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
-        "* **Floor Defense & Proximity Rule:** [If defending an indisputable structural Put Wall, VP POC, or gap floor, DO NOT demand an exact tick fill. Expand entry_zone_high by +1.0% to catch institutional front-running (e.g. $300 Put Wall -> $300.00–$303.00 entry zone), and use a local tactical stop just below the floor to yield >4:1 R:R].\n"
-        "* **Tiered Options Directives:** Always provide a 3-tiered options menu across durations and account structures:\n"
-        "  1. Tactical 30-45 DTE Defined Risk Spread (primary directional vehicle; mark options_plan.actionable = true ONLY if R:R >= 2.5:1 AND the short strike is at ≥1.25× Expected Move (Exp Move Pct 21b) AND outside major GEX Put/Call walls — IV Rank > 50 alone does NOT justify selling premium. If the strike is unscaled (inside 1.25× EM), mark actionable = false and lead with equity/debit by side; do not force a credit just because IV is rich).\n"
-        "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
-        "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put / Floor Bull Put Spread below Put Wall floor).\n"
-        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / STALK / CASH_SKIP]** (Conviction: X/10)\n\n"
-        "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
-        "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, Breakout Trigger Level & Stop, R:R]\n"
-        "* **Options Directives (Tiered Menu):**\n"
-        "  - **Primary Tactical Spread (30-45 DTE):** [Structure, Expiry, Strikes, Net Debit/Credit, Max Loss, Break-Even, R:R]\n"
-        "  - **Secular Trend LEAPS (6-12 Months):** [Expiry, Deep ITM Strike (0.75-0.85 Delta), Target Debit, Rationale]\n"
-        "  - **Income / Floor Support Structure:** [Covered Call / PMCC if holding position, or CSP / Bull Put Spread below Put Wall floor]\n"
-        "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n\n"
+        "Output in this exact markdown format (JSON BLOCK MUST COME FIRST):\n\n"
         "```json:watch_levels\n"
         "{\n"
         f'  "ticker": "{ticker}",\n'
@@ -102,8 +81,29 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         '    "rationale": "Short explanation"\n'
         '  },\n'
         '  "status": "STALKING|IN_ZONE|IN_TRADE|INVALIDATED"\n'
-        "}\n"
-        "```\n"
+        '}\n'
+        '```\n\n'
+        f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
+        "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
+        "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
+        "## 🔴 THE CASE AGAINST (Bear Cross-Examination & Traps)\n"
+        "[The strongest risk arguments, hidden traps, and friction points synthesized across both reports for why this trade should be avoided or hedged]\n\n"
+        "## ⚖️ THE JUDGE'S FINAL RULING\n"
+        "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
+        "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
+        "* **Floor Defense & Proximity Rule:** [If defending an indisputable structural Put Wall, VP POC, or gap floor, DO NOT demand an exact tick fill. Expand entry_zone_high by +1.0% to catch institutional front-running (e.g. $300 Put Wall -> $300.00–$303.00 entry zone), and use a local tactical stop just below the floor to yield >4:1 R:R].\n"
+        "* **Tiered Options Directives:** Always provide a 3-tiered options menu across durations and account structures:\n"
+        "  1. Tactical 30-45 DTE Defined Risk Spread (primary directional vehicle; mark options_plan.actionable = true ONLY if R:R >= 2.5:1 AND the short strike is at ≥1.25× Expected Move (Exp Move Pct 21b) AND outside major GEX Put/Call walls — IV Rank > 50 alone does NOT justify selling premium. If the strike is unscaled (inside 1.25× EM), mark actionable = false and lead with equity/debit by side; do not force a credit just because IV is rich).\n"
+        "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
+        "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put / Floor Bull Put Spread below Put Wall floor).\n"
+        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / STALK / CASH_SKIP]** (Conviction: X/10)\n\n"
+        "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
+        "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, Breakout Trigger Level & Stop, R:R]\n"
+        "* **Options Directives (Tiered Menu):**\n"
+        "  - **Primary Tactical Spread (30-45 DTE):** [Structure, Expiry, Strikes, Net Debit/Credit, Max Loss, Break-Even, R:R]\n"
+        "  - **Secular Trend LEAPS (6-12 Months):** [Expiry, Deep ITM Strike (0.75-0.85 Delta), Target Debit, Rationale]\n"
+        "  - **Income / Floor Support Structure:** [Covered Call / PMCC if holding position, or CSP / Bull Put Spread below Put Wall floor]\n"
+        "* **The ONE Thing Invalidation:** [The single binary price condition that kills the trade immediately]\n"
     )
 
 
@@ -123,6 +123,8 @@ def run_arbitration(
     tdir: Path,
     raw_dir: Path,
     reports_dir: Path,
+    kind: str = "NEW",
+    setup_lane: str | None = None,
 ) -> str:
     """Run Pass 2-JUDGE locally, write ``{ticker}_arbitration.md``, extract watch_levels.
 
@@ -136,9 +138,18 @@ def run_arbitration(
 
     judge_sys_prompt = _build_judge_sys_prompt(ticker)
 
+    atr14_val = dw_dict.get("Wilder ATR 14") or f_parsed.get("atr14") or "N/A"
+    exp_move_val = dw_dict.get("Exp Move Pct 21b") or f_parsed.get("exp_move_pct") or "N/A"
+    zone_rr_flags = dw_dict.get("Zone RR Flags") or f_parsed.get("zone_rr_flags") or "N/A"
+    act_long_code = dw_dict.get("Action Long Code") or f_parsed.get("action_long") or "N/A"
+    dw_close = dw_dict.get("Close") or dw_dict.get("close") or "N/A"
+    dw_bar_date = dw_dict.get("bar_date") or date_str
+
     ground_truth = (
         f"--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---\n"
-        f"- Ticker: {ticker} | Date: {date_str}\n"
+        f"- Ticker: {ticker} | Date: {date_str} | DW Bar Date: {dw_bar_date} | DW Close: {dw_close}\n"
+        f"- Position Mode: {kind} (MANAGE = already owned in portfolio; NEW = prospective entry)\n"
+        f"- Triage Lane & Setup: {setup_lane or 'STANDARD'}\n"
         f"{active_pos_block}\n"
         f"- Live Quote: {live_quote_block.strip() if live_quote_block else 'N/A'}\n"
         f"- Earnings Date & Event Risk: {earnings_fact_block.strip() if earnings_fact_block else 'N/A'}\n"
@@ -146,15 +157,19 @@ def run_arbitration(
         f"- Macro News & Fed/Yields: {macro_news.strip() if macro_news else 'N/A'}\n"
         f"- Macro Grounding: {macro_grounded_block.strip() if macro_grounded_block else 'N/A'}\n"
         f"- Key Technical & Volatility Ground Truths:\n"
+        f"  * Pine ATR(14): {atr14_val} | Exp Move Pct 21b: {exp_move_val}%\n"
+        f"  * Decoded Zone RR Flags: {zone_rr_flags} | Action Long Code: {act_long_code}\n"
         f"  * Moving Averages: MA20={f_parsed.get('ma20', 'N/A')}, MA50={f_parsed.get('ma50', 'N/A')}, MA200={f_parsed.get('ma200', 'N/A')}\n"
         f"  * Volume Profile: POC={f_parsed.get('vp_poc', 'N/A')}, VAL={f_parsed.get('vp_val', 'N/A')}, VAH={f_parsed.get('vp_vah', 'N/A')}\n"
         f"  * Volatility: HV20={f_parsed.get('hv20', 'N/A')}%, IV30={f_parsed.get('iv30', 'N/A')}%, IV Rank={f_parsed.get('iv_rank', 'N/A')}%\n"
-        f"  * 52W Milestones: 52W High={dw_dict.get('52 Week High', 'N/A')}, 52W Low={dw_dict.get('52 Week Low', 'N/A')}\n"
         f"  * Pine Levels: Long Entry Zone Bot={dw_dict.get('Long Entry Zone Bot', 'N/A')}, "
         f"Long Entry Zone Top={dw_dict.get('Long Entry Zone Top', 'N/A')}, "
         f"Long Stop Loss={dw_dict.get('Long Stop Loss', 'N/A')}, "
         f"Long Target={dw_dict.get('Long Target', 'N/A')}, "
-        f"Long RR At Market={dw_dict.get('Long RR At Market', 'N/A')}"
+        f"Long RR At Market={dw_dict.get('Long RR At Market', 'N/A')}\n"
+        f"- EMPIRICAL PRIORS & EVIDENCE DISCIPLINE:\n"
+        f"  * You must NOT cite or rely on Directional Probability or Buy Score (they are empirical noise).\n"
+        f"  * Evaluate solely based on measured structural zones, R:R tier (>= 3.0), and empirical priors."
     )
 
     judge_user_prompt = f"""
@@ -171,7 +186,7 @@ def run_arbitration(
                 MANDATE FOR THE SENIOR PM JUDGE:
                 1. Cross-examine Report A and Report B directly against the GROUND TRUTH MARKET FACTS.
                 2. Settle any discrepancies in price levels, earnings risk, or volatility regime between the two models.
-                3. Issue the final binding directive and output the exact json:watch_levels block.
+                3. Issue the final binding directive and output the exact json:watch_levels block FIRST.
                 4. If USER ACTIVE BROKER POSITION is present, issue an explicit 'Active Holding Playbook' covering profit scale-out at Target 1, advancing stop to breakeven, and covered call yield tactics.
                 """
 
@@ -198,69 +213,84 @@ def run_arbitration(
 
     safe = ticker.replace(":", "_")
     arbitration_path = reports_dir / f"{safe}_arbitration.md"
-    arbitration_path.write_text(clean_judge, encoding="utf-8")
-    logger.info(f"[{ticker}] Senior PM Arbitration generated at {arbitration_path}!")
 
     # Extract structured watch_levels JSON and upsert to DB
     watch_json_match = re.search(
         r"```(?:json)?(?::watch_levels)?\s*(\{.*?\})\s*```", clean_judge, re.DOTALL
     )
-    if watch_json_match:
-        try:
-            watch_data = json.loads(watch_json_match.group(1))
-            watch_data.setdefault("ticker", ticker)
-            watch_data.setdefault("date", date_str)
+    if not watch_json_match:
+        logger.warning(f"[{ticker}] Senior PM Arbitration missing watch_levels JSON block! Marking verdict = NO_LEVELS.")
+        clean_judge += "\n\n> ⚠️ **VERDICT: NO_LEVELS** — Arbitration failed to emit structured watch_levels JSON block. Not persisted to watchlist."
+        arbitration_path.write_text(clean_judge, encoding="utf-8")
+        return clean_judge
 
-            watch_path = tdir / f"{safe}_watch_levels.json"
-            watch_path.write_text(json.dumps(watch_data, indent=2), encoding="utf-8")
+    try:
+        watch_data = json.loads(watch_json_match.group(1))
+        watch_data.setdefault("ticker", ticker)
+        watch_data.setdefault("date", date_str)
+        watch_data["kind"] = kind
+        watch_data["setup_lane"] = setup_lane
 
-            raw_watch_path = raw_dir / safe / f"{safe}_watch_levels.json"
-            if raw_watch_path != watch_path:
-                raw_watch_path.parent.mkdir(parents=True, exist_ok=True)
-                raw_watch_path.write_text(json.dumps(watch_data, indent=2), encoding="utf-8")
+        from src.logic.level_validation import validate_levels
+        from src.tracking.watch_manager import upsert_watch_target
+        from src.tracking.suggestions_ledger import append_suggestion, log_rejected_plan
+        plan = {
+            **watch_data.get("shares_plan", {}),
+            "options_plan": watch_data.get("options_plan", {}),
+            "ticker": ticker,
+            "date": date_str,
+            "side": watch_data.get("side", "LONG"),
+            "kind": kind,
+            "setup_lane": setup_lane,
+        }
+        _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
+        if not _ok:
+            logger.warning(
+                f"[{ticker}] Level gate FAILED: {'; '.join(_reasons)} — "
+                f"NOT persisting to watch_targets or suggestions ledger."
+            )
+            log_rejected_plan(ticker, date_str, plan, _reasons)
+            clean_judge += f"\n\n> 🛑 **LEVEL GATE REJECTED**: {'; '.join(_reasons)}"
+            arbitration_path.write_text(clean_judge, encoding="utf-8")
+            return clean_judge
 
-            logger.info(f"[{ticker}] Extracted structured watch levels -> {watch_path}")
+        watch_path = tdir / f"{safe}_watch_levels.json"
+        watch_path.write_text(json.dumps(watch_data, indent=2), encoding="utf-8")
 
-            from src.logic.level_validation import validate_levels
-            from src.tracking.watch_manager import upsert_watch_target
-            from src.tracking.suggestions_ledger import append_suggestion
-            plan = {
-                **watch_data.get("shares_plan", {}),
-                "options_plan": watch_data.get("options_plan", {}),
-                "ticker": ticker,
-                "date": date_str,
-                "side": watch_data.get("side", "LONG"),
-            }
-            _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
-            if not _ok:
-                logger.warning(
-                    f"[{ticker}] Level gate FAILED: {'; '.join(_reasons)} — "
-                    f"logging as REJECTED_BY_GATE but still upserting for measurement."
-                )
-                watch_data["verdict"] = "REJECTED_BY_GATE"
-                watch_data["_gate_reasons"] = _reasons
-            upsert_watch_target(watch_data)
-            logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB.")
+        raw_watch_path = raw_dir / safe / f"{safe}_watch_levels.json"
+        if raw_watch_path != watch_path:
+            raw_watch_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_watch_path.write_text(json.dumps(watch_data, indent=2), encoding="utf-8")
 
-            sp = watch_data.get("shares_plan", {})
-            append_suggestion({
-                "ticker": ticker,
-                "date": date_str,
-                "source": "judge",
-                "side": watch_data.get("side", "LONG"),
-                "entry_type": sp.get("entry_type", "LIMIT"),
-                "entry_low": sp.get("entry_zone_low"),
-                "entry_high": sp.get("entry_zone_high"),
-                "breakout_level": sp.get("breakout_level"),
-                "stop": sp.get("tactical_stop"),
-                "target_1": sp.get("target_1"),
-                "target_2": sp.get("target_2"),
-                "planned_rr": sp.get("rr_ratio"),
-                "_datawindow": dw_dict,
-                "notes": f"Judge directive: {watch_data.get('verdict')}",
-            })
+        logger.info(f"[{ticker}] Extracted structured watch levels -> {watch_path}")
 
-        except Exception as e:
-            logger.warning(f"[{ticker}] Failed to parse embedded watch levels JSON: {e}")
+        upsert_watch_target(watch_data)
+        logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB.")
 
+        sp = watch_data.get("shares_plan", {})
+        append_suggestion({
+            "ticker": ticker,
+            "date": date_str,
+            "source": "judge",
+            "side": watch_data.get("side", "LONG"),
+            "entry_type": sp.get("entry_type", "LIMIT"),
+            "entry_low": sp.get("entry_zone_low"),
+            "entry_high": sp.get("entry_zone_high"),
+            "breakout_level": sp.get("breakout_level"),
+            "stop": sp.get("tactical_stop"),
+            "target_1": sp.get("target_1"),
+            "target_2": sp.get("target_2"),
+            "planned_rr": sp.get("rr_ratio"),
+            "verdict": watch_data.get("verdict"),
+            "setup_lane": setup_lane,
+            "kind": kind,
+            "_datawindow": dw_dict,
+            "notes": f"Judge directive: {watch_data.get('verdict')}",
+        })
+
+    except Exception as e:
+        logger.warning(f"[{ticker}] Failed to process watch levels JSON: {e}")
+
+    arbitration_path.write_text(clean_judge, encoding="utf-8")
+    logger.info(f"[{ticker}] Senior PM Arbitration generated at {arbitration_path}!")
     return clean_judge

@@ -278,7 +278,31 @@ def get_research_queue(date: Optional[str] = None):
         queue = []
         seen = set()
 
-        # 1. Check target_date raw/ folders for scraped candidates
+        # 1. Check target_date triage PASS or force candidates
+        triage_dir = config.BASE_DIR / "data" / "triage" / target_date
+        triage_pass_or_force = set()
+        for sub in ("_DEEP_RESEARCH", "force"):
+            s_dir = triage_dir / sub
+            if s_dir.exists():
+                for item in s_dir.iterdir():
+                    if item.is_dir():
+                        triage_pass_or_force.add(item.name.upper())
+
+        # Also inspect raw_root thesis files if available
+        if raw_root.exists():
+            for item in raw_root.iterdir():
+                if item.is_dir():
+                    sym = item.name.upper()
+                    th_file = item / f"{sym}_thesis.json"
+                    if th_file.exists():
+                        try:
+                            th_data = json.loads(th_file.read_text(encoding="utf-8"))
+                            triage_dict = th_data.get("triage", {})
+                            if (isinstance(triage_dict, dict) and triage_dict.get("triage") == "PASS") or th_data.get("llm_data", {}).get("send_for_deep_research") is True:
+                                triage_pass_or_force.add(sym)
+                        except Exception:
+                            pass
+
         if raw_root.exists():
             for item in raw_root.iterdir():
                 if item.is_dir():
@@ -287,14 +311,14 @@ def get_research_queue(date: Optional[str] = None):
                     has_chart = (item / f"{sym}_chart.png").exists() or (item / f"{sym}_chart_zoom.png").exists()
                     has_report = rep_root.exists() and (rep_root / f"{sym}_arbitration.md").exists()
 
-                    if has_dw and not has_report:
+                    if has_dw and not has_report and sym in triage_pass_or_force:
                         queue.append({
                             "ticker": sym,
                             "date": target_date,
                             "status": "READY_FOR_RESEARCH",
                             "action": "deep_only",
                             "action_label": "⚡ Run Deep Research",
-                            "reason": "Chart & Data Window ready on disk",
+                            "reason": "Triage PASS / Force candidate",
                             "has_chart": has_chart,
                             "has_report": False,
                         })
@@ -323,38 +347,6 @@ def get_research_queue(date: Optional[str] = None):
                         seen.add(sym)
             except Exception:
                 pass
-
-        # 3. Desk priority candidates if queue is small (<6)
-        priority_candidates = ["UBER", "NVDA", "META", "TSLA", "NFLX", "PLTR", "AMD"]
-        for p_sym in priority_candidates:
-            if p_sym not in seen and len(queue) < 6:
-                if rep_root.exists() and (rep_root / f"{p_sym}_arbitration.md").exists():
-                    continue
-                reports_base = config.BASE_DIR / "reports"
-                already_has_recent_report = False
-                if reports_base.exists():
-                    latest_rep_dirs = sorted(
-                        [d for d in reports_base.iterdir() if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)],
-                        reverse=True,
-                    )[:2]
-                    for d in latest_rep_dirs:
-                        if (d / f"{p_sym}_arbitration.md").exists():
-                            already_has_recent_report = True
-                            break
-                if already_has_recent_report:
-                    continue
-
-                queue.append({
-                    "ticker": p_sym,
-                    "date": now_date,
-                    "status": "READY_TO_LAUNCH",
-                    "action": "full",
-                    "action_label": "🚀 Scrape & Run",
-                    "reason": "Desk Priority",
-                    "has_chart": False,
-                    "has_report": False,
-                })
-                seen.add(p_sym)
 
         return {"date": target_date, "queue": queue}
     except Exception as e:

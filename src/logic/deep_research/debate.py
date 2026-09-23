@@ -58,20 +58,25 @@ def run_debate(
     Returns a :class:`DebateResult`.
     """
     import concurrent.futures
+    import hashlib
 
     safe = ticker.replace(":", "_")
     cache_file = tdir / f"{safe}_debate_v2.json"
+    payload_hash = hashlib.sha256(debate_payload.encode("utf-8")).hexdigest()[:16]
 
     if cache_file.exists():
-        logger.info(f"[{ticker}] Found cached Multi-Agent Debate — skipping to Pass 2...")
         try:
             d = json.loads(cache_file.read_text(encoding="utf-8"))
-            return DebateResult(
-                bull_case=d.get("bull_case", ""),
-                bear_case=d.get("bear_case", ""),
-                bull_rebuttal=d.get("bull_rebuttal", ""),
-                bear_rebuttal=d.get("bear_rebuttal", ""),
-            )
+            if d.get("payload_hash") == payload_hash:
+                logger.info(f"[{ticker}] Found cached Multi-Agent Debate with matching DW hash — skipping to Pass 2...")
+                return DebateResult(
+                    bull_case=d.get("bull_case", ""),
+                    bear_case=d.get("bear_case", ""),
+                    bull_rebuttal=d.get("bull_rebuttal", ""),
+                    bear_rebuttal=d.get("bear_rebuttal", ""),
+                )
+            else:
+                logger.info(f"[{ticker}] Cached debate has stale payload hash ({d.get('payload_hash')} != {payload_hash}), re-running debate...")
         except Exception as e:
             logger.warning(f"[{ticker}] Failed to read cached debate ({e}), recomputing...")
 
@@ -103,6 +108,7 @@ def run_debate(
     try:
         cache_file.write_text(
             json.dumps({
+                "payload_hash": payload_hash,
                 "bull_case": bull_case,
                 "bear_case": bear_case,
                 "bull_rebuttal": bull_rebuttal,

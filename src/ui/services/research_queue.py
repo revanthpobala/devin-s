@@ -381,6 +381,34 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                 cmd.append("--force")
             _run_subproc(cmd, "Scrape phase")
 
+        # Step 1b: Triage pass for mode == 'full'
+        proceed_to_deep = True
+        if mode == "full" and not force:
+            _log_both(f"⚖️ [1b/3] Running Local Triage...")
+            triage_cmd = [py_exe, "run_local_research.py"]
+            if date and date.strip():
+                triage_cmd.append(date.strip())
+            triage_cmd.extend(["--ticker", ticker_u])
+            _run_subproc(triage_cmd, "Triage phase")
+
+            # Check triage verdict
+            t_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
+            th_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json"
+            if not th_path.exists():
+                th_path = config.BASE_DIR / "data" / "raw" / t_date / ticker_u / f"{ticker_u}_thesis.json"
+            triage_pass = False
+            if th_path.exists():
+                try:
+                    th_json = json.loads(th_path.read_text(encoding="utf-8"))
+                    tr = th_json.get("triage") or {}
+                    v = tr.get("triage") if isinstance(tr, dict) else str(tr)
+                    triage_pass = (v == "PASS")
+                except Exception:
+                    pass
+            if not triage_pass:
+                _log_both(f"⏹️ [Triage Gate] {ticker_u} verdict is not PASS. Deep research skipped to preserve slots.")
+                proceed_to_deep = False
+
         # Step 2: Deep Research (Model A & Model B Parallel + PM Arbitration)
         date_to_use = date.strip() if (date and date.strip()) else None
         if not date_to_use:
@@ -394,7 +422,7 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         if not date_to_use:
             date_to_use = datetime.now().strftime("%Y-%m-%d")
 
-        if mode in ("full", "deep_only", "scrape_deep"):
+        if proceed_to_deep and mode in ("full", "deep_only", "scrape_deep"):
             with get_db() as conn:
                 conn.cursor().execute(
                     "UPDATE active_research_jobs SET stage = 'DEEP_RESEARCH', status = 'RUNNING', stage_detail = 'Starting' WHERE job_id = ?",
@@ -416,7 +444,7 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                 raise RuntimeError(f"Deep research completed but generated no report files in reports/{rep_chk_date}/")
 
         # Step 3: Sync Watch Alerts in Background (Targeted to ticker)
-        if mode in ("full", "scrape_deep", "deep_only"):
+        if proceed_to_deep and mode in ("full", "scrape_deep", "deep_only"):
             _log_both(f"🔔 [3/3] Syncing Watch Levels & Tastytrade Cloud Alerts for {ticker_u}...")
 
             def _bg_watch_sync(t_sym, d_sync):

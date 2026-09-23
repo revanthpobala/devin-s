@@ -141,6 +141,62 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             return raw_dir / safe
         return None
 
+    def _is_held_in_portfolio(sym: str) -> bool:
+        sym = sym.upper().strip()
+        try:
+            from src.tracking.position_state import load_positions
+            positions = load_positions()
+            if any(p.get("ticker", "").upper() == sym for p in positions.values()):
+                return True
+        except Exception:
+            pass
+        try:
+            from src.clients.schwab_client import get_account_positions
+            pos_list = get_account_positions()
+            if any(p.get("symbol", "").upper() == sym for p in pos_list):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _has_recent_unchanged_research(sym: str, target_date: str, dw: dict) -> bool:
+        try:
+            from datetime import datetime
+            t_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+            rep_base = config.BASE_DIR / "reports"
+            if not rep_base.exists():
+                return False
+            for d in sorted(rep_base.iterdir(), reverse=True):
+                if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name) and d.name != target_date:
+                    try:
+                        r_dt = datetime.strptime(d.name, "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    diff_days = (t_dt - r_dt).days
+                    if 0 <= diff_days <= 5:  # within 3 trading days
+                        arb_p = d / f"{sym}_arbitration.md"
+                        sum_p = d / f"{sym}_summary.md"
+                        if arb_p.exists() or sum_p.exists():
+                            cur_stop = dw.get("Long Stop Loss") or dw.get("stop_loss")
+                            cur_tgt = dw.get("Long Target") or dw.get("target")
+                            wl_file = config.BASE_DIR / "data" / "triage" / d.name / "_DEEP_RESEARCH" / sym / f"{sym}_watch_levels.json"
+                            if not wl_file.exists():
+                                wl_file = config.BASE_DIR / "data" / "triage" / d.name / "force" / sym / f"{sym}_watch_levels.json"
+                            if wl_file.exists():
+                                try:
+                                    wl = json.loads(wl_file.read_text(encoding="utf-8"))
+                                    sp = wl.get("shares_plan") or {}
+                                    old_stop = sp.get("tactical_stop") or wl.get("stop_loss")
+                                    old_tgt = sp.get("target_1") or wl.get("target_1")
+                                    if cur_stop and old_stop and abs(float(cur_stop) - float(old_stop)) < 0.05:
+                                        if cur_tgt and old_tgt and abs(float(cur_tgt) - float(old_tgt)) < 0.05:
+                                            return True
+                                except Exception:
+                                    pass
+        except Exception as e:
+            logger.debug(f"Error checking recent research for {sym}: {e}")
+        return False
+
     # ------------------------------------------------------------------
     # Resolve ticker list
     # ------------------------------------------------------------------
@@ -216,14 +272,6 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             matches = glob.glob(str(tdir / f"{t}_*.png")) or glob.glob(str(raw_dir / f"{t}_*.png"))
             if matches:
                 chart_files.append(matches[0])
-
-        # Fallback: discover all chart files in raw_dir
-        if not chart_files and raw_dir.exists():
-            for sub_p in sorted(raw_dir.glob("*/")):
-                if sub_p.is_dir() and not sub_p.name.startswith((".", "NASDAQ_", "NYSE_", "BATS_", "AMEX_")):
-                    t_matches = glob.glob(str(sub_p / "*_chart.png"))
-                    if t_matches:
-                        chart_files.append(t_matches[0])
 
         chart_files = list(dict.fromkeys(chart_files))
 
@@ -306,6 +354,15 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 f"[{ticker}] No valid Data Window found on disk for {date_str} at {paths['dw_json']}. "
                 f"Aborting to prevent hallucinated thesis."
             )
+            continue
+
+        # Check holding (MANAGE vs NEW)
+        is_held = _is_held_in_portfolio(ticker)
+        kind = "MANAGE" if is_held else "NEW"
+
+        # Skip if researched within 3 trading days and key levels unchanged
+        if _has_recent_unchanged_research(ticker, date_str, dw_dict):
+            logger.info(f"[{ticker}] Already researched within 3 trading days with unchanged key levels. Skipping deep research.")
             continue
 
         # 2. Resolve triage record
@@ -472,6 +529,8 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 macro_grounded_block=ctx.macro_grounded_block,
                 active_pos_block=active_pos_block,
                 tdir=tdir, raw_dir=raw_dir, reports_dir=reports_dir,
+                kind=kind,
+                setup_lane=(triage_record.get("setup_lane") if isinstance(triage_record, dict) else None),
             )
 
         except Exception as e:

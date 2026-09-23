@@ -65,8 +65,12 @@ def _load_or_fetch_quote(ticker: str, quote_path: Path, tdir: Path, date_str: st
     from src.clients import options_client
 
     if quote_path.exists():
+        import time as _time
         try:
-            return json.loads(quote_path.read_text(encoding="utf-8")).get("quote", "")
+            if _time.time() - quote_path.stat().st_mtime < 300:
+                q = json.loads(quote_path.read_text(encoding="utf-8")).get("quote", "")
+                if q:
+                    return q
         except Exception:
             pass
 

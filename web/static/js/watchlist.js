@@ -1539,9 +1539,9 @@ window.AppWatchlist = {
             <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
               ${statusBadge}
               ${st === 'IN_TRADE' ? `
-                <button class="btn secondary" onclick="AppWatchlist.updateTargetStatus('${t.ticker}', 'STALKING')" style="padding:3px 7px; font-size:10.5px; font-weight:700; color:#4b5563; background:#f3f4f6; border:1px solid #d1d5db; cursor:pointer;" title="Reset back to Stalking">↩️ Reset</button>
+                <button class="btn secondary" onclick="AppWatchlist.updateTargetStatus('${t.ticker}', 'STALKING', ${t.id || t.row_id || 'null'})" style="padding:3px 7px; font-size:10.5px; font-weight:700; color:#4b5563; background:#f3f4f6; border:1px solid #d1d5db; cursor:pointer;" title="Reset back to Stalking">↩️ Reset</button>
               ` : (st === 'STALKING' || st === 'IN_ZONE') ? `
-                <button class="btn secondary" onclick="AppWatchlist.updateTargetStatus('${t.ticker}', 'IN_TRADE')" style="padding:3px 7px; font-size:10.5px; font-weight:700; color:#059669; background:#ecfdf5; border:1px solid #a7f3d0; cursor:pointer;" title="Mark as Filled in Broker / Active Trade">✅ Filled</button>
+                <button class="btn secondary" onclick="AppWatchlist.updateTargetStatus('${t.ticker}', 'IN_TRADE', ${t.id || t.row_id || 'null'})" style="padding:3px 7px; font-size:10.5px; font-weight:700; color:#059669; background:#ecfdf5; border:1px solid #a7f3d0; cursor:pointer;" title="Mark as Filled in Broker / Active Trade">✅ Filled</button>
               ` : ''}
               ${ideas.length > 0 ? `
                 <button class="btn secondary" onclick="AppWatchlist.toggleTradeIdeas('${sym}')" style="padding:3px 8px; font-size:11px; font-weight:700; color:#3730a3; background:#eef2ff; border-color:#c7d2fe;" title="Toggle Structured Trade Ideas">💡 Ideas (${ideas.length})</button>
@@ -1810,18 +1810,19 @@ window.AppWatchlist = {
     }
   },
 
-  async updateTargetStatus(ticker, newStatus) {
-    if (!ticker || !newStatus) return;
+  async updateTargetStatus(ticker, newStatus, rowId = null) {
+    if (!ticker && !rowId) return;
     try {
+      const userTaken = (newStatus === 'IN_TRADE') ? 1 : 0;
       const res = await fetch('/api/watch-targets/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, status: newStatus }),
+        body: JSON.stringify({ ticker, status: newStatus, id: rowId, row_id: rowId, user_taken: userTaken }),
       });
       const data = await res.json();
       if (res.ok && data.status === 'ok') {
         if (window.AppStatus && window.AppStatus.showToast) {
-          window.AppStatus.showToast(`⚡ ${ticker} status updated to ${newStatus}`);
+          window.AppStatus.showToast(`⚡ ${ticker || 'Target'} status updated to ${newStatus}`);
         }
         await this.loadWatchlist();
       } else {
@@ -2085,7 +2086,7 @@ window.AppWatchlist = {
       <div class="perf-kpi-card avg-win">
         <span class="perf-kpi-title">📈 Avg Win (${winNote})</span>
         <div class="perf-kpi-val" style="color:#34d399;">
-          +$${avgWin.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          +${avgWin.toFixed(2)} R
           <span class="perf-kpi-sub">${wonCount} Trades Hit</span>
         </div>
       </div>
@@ -2093,15 +2094,15 @@ window.AppWatchlist = {
       <div class="perf-kpi-card avg-loss" style="cursor:pointer;" onclick="AppWatchlist.setAuditTab('STOPPED')" title="Click to filter to stopped trades">
         <span class="perf-kpi-title">📉 Avg Loss (Defined Risk)</span>
         <div class="perf-kpi-val" style="color:#f87171;">
-          -$${Math.abs(avgLoss).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          -${Math.abs(avgLoss).toFixed(2)} R
           <span class="perf-kpi-sub">${lostCount} Stopped</span>
         </div>
       </div>
 
       <div class="perf-kpi-card net-alpha">
-        <span class="perf-kpi-title">💰 Net Profit (${winNote})</span>
+        <span class="perf-kpi-title">💰 Net Return (${winNote})</span>
         <div class="perf-kpi-val" style="color:${netColor};">
-          ${netSign}$${Math.abs(net).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          ${netSign}${Math.abs(net).toFixed(2)} R
           <span class="perf-kpi-sub">(${pf} Profit Factor)</span>
         </div>
       </div>
@@ -2183,7 +2184,7 @@ window.AppWatchlist = {
       const rocSign = roc > 0 ? '+' : (roc < 0 ? '-' : '');
       const isZero = (pnl === 0 && (st === 'STALKING' || st === 'MISSED_RUNAWAY'));
       const pnlColor = isZero ? 'var(--text-muted)' : (pnl >= 0 ? '#10b981' : '#f87171');
-      const pnlDisplay = isZero ? '--' : `${pnlSign}$${Math.abs(pnl).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+      const pnlDisplay = isZero ? '--' : `${pnlSign}${Math.abs(pnl).toFixed(2)} R`;
       const rocDisplay = isZero ? '--' : `${rocSign}${Math.abs(roc).toFixed(1)}%`;
 
       return `

@@ -111,11 +111,16 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
         yf_l.propagate = False
         import yfinance as yf
         import pandas as pd
-        df = yf.download(sym, start=start_date, progress=False)
+        df = yf.download(sym, start=start_date, progress=False, auto_adjust=False)
         if df is not None and not df.empty:
             if hasattr(df, "columns") and isinstance(df.columns, pd.MultiIndex):
                 df = df.copy()
                 df.columns = [c[0] for c in df.columns]
+            last_closed = _get_last_closed_session_date()
+            if hasattr(df, "index"):
+                idx_strs = [str(x)[:10] for x in df.index]
+                sub_mask = [d <= last_closed for d in idx_strs]
+                df = df[sub_mask]
             _BARS_CACHE[sym] = (now, df)
             return df
         else:
@@ -196,15 +201,14 @@ def evaluate_setup_lifecycle_bars(
     # Sort chronological
     bar_records.sort(key=lambda r: r["date"])
 
-    # If live intraday session extremes are provided, append as current partial bar
-    if (session_low is not None and session_low > 0) or (session_high is not None and session_high > 0) or live_px > 0:
+    # If live intraday session extremes are provided, append as current partial bar only when live_px > 0
+    if live_px > 0 and ((session_low is not None and session_low > 0) or (session_high is not None and session_high > 0)):
         cur_l = float(session_low) if (session_low is not None and session_low > 0) else live_px
         cur_h = float(session_high) if (session_high is not None and session_high > 0) else live_px
-        cur_c = live_px if live_px > 0 else cur_h
-        cur_o = cur_c if cur_c > 0 else ((cur_l + cur_h) / 2.0 if (cur_l > 0 and cur_h > 0) else cur_l)
+        cur_c = live_px
+        cur_o = (cur_l + cur_h) / 2.0
         today_str = datetime.now().strftime("%Y-%m-%d")
-        
-        # If the last record is already today, update its bounds; otherwise append
+
         if bar_records and bar_records[-1]["date"] == today_str:
             bar_records[-1]["high"] = max(bar_records[-1]["high"], cur_h)
             bar_records[-1]["low"] = min(bar_records[-1]["low"], cur_l)
@@ -227,10 +231,10 @@ def evaluate_setup_lifecycle_bars(
     max_high = max(all_highs) if all_highs else live_px
 
     # State machine variables
-    was_filled = (curr_st == "IN_TRADE")
-    fill_price = (entry_high if side == "LONG" else entry_low) if was_filled else 0.0
-    fill_date: Optional[str] = setup_date if was_filled else None
-    activation_date: Optional[str] = setup_date if was_filled else None
+    was_filled = False
+    fill_price = 0.0
+    fill_date: Optional[str] = None
+    activation_date: Optional[str] = None
     exit_date: Optional[str] = None
     exit_price: Optional[float] = None
     hit_t1 = False
@@ -281,7 +285,7 @@ def evaluate_setup_lifecycle_bars(
             pot_fill = 0.0
 
             if is_next_open_model:
-                if setup_date and b_date <= setup_date:
+                if setup_date and b_date <= setup_date and len(bar_records) > 1:
                     # Setup bar forming/closing; eligible opening is strictly the next session
                     continue
                 # Single next-open execution: must fill at open, or expire if ceiling exceeded
@@ -343,8 +347,8 @@ def evaluate_setup_lifecycle_bars(
                     status = "INVALIDATED"
                     is_terminal = True
                     hit_stop = True
-                    exit_date = b_date
-                    exit_price = b_open if (side == "LONG" and b_open <= stop_loss) else stop_loss
+                    exit_date = None
+                    exit_price = None
                     notes = f"Invalidated: breached stop (${stop_loss:.2f}) on {b_date} prior to entry fill"
                     continue
             else:
@@ -373,6 +377,24 @@ def evaluate_setup_lifecycle_bars(
                 status = "IN_TRADE"
                 bars_held = 1
 
+                # Check gap stop on entry bar
+                if side == "LONG" and stop_loss > 0 and b_open <= stop_loss:
+                    status = "STOP_BREACHED"
+                    hit_stop = True
+                    is_terminal = True
+                    exit_date = b_date
+                    exit_price = b_open
+                    notes = f"Gap stop at open (${b_open:.2f}) on entry bar {b_date}"
+                    continue
+                elif side == "SHORT" and stop_loss > 0 and b_open >= stop_loss:
+                    status = "STOP_BREACHED"
+                    hit_stop = True
+                    is_terminal = True
+                    exit_date = b_date
+                    exit_price = b_open
+                    notes = f"Gap stop at open (${b_open:.2f}) on entry bar {b_date}"
+                    continue
+
                 # Evaluate same-bar stop and target following fill
                 if bar_hit_stop and bar_hit_target:
                     # Path-accurate frozen convention: stop checked before target
@@ -392,20 +414,18 @@ def evaluate_setup_lifecycle_bars(
                     notes = f"Stop breached (${stop_loss:.2f}) on entry bar {b_date}"
                     continue
                 elif bar_hit_target:
-                    status = "TARGET_HIT"
-                    if bar_hit_t2:
-                        hit_t2 = True
-                        hit_t1 = True
-                        hit_target_level = "T2"
-                        exit_price = target_2
-                    else:
+                    # Target on fill bar only if filled at open
+                    if pot_fill == b_open:
+                        status = "TARGET_HIT"
                         hit_t1 = True
                         hit_target_level = "T1"
                         exit_price = target_1
-                    is_terminal = True
-                    exit_date = b_date
-                    notes = f"Target {hit_target_level} reached on entry bar {b_date}"
-                    continue
+                        is_terminal = True
+                        exit_date = b_date
+                        notes = f"Target {hit_target_level} reached on entry bar {b_date} (filled at open)"
+                        continue
+                    else:
+                        notes = f"Filled limit at ${pot_fill:.2f} on {b_date}"
 
                 if is_next_open_model and bar.get("ema5") is not None:
                     if side == "LONG" and b_close > bar["ema5"]:
@@ -512,17 +532,15 @@ def evaluate_setup_lifecycle_bars(
     # 3. Post-walk status resolution if still non-terminal
     if not is_terminal:
         if was_filled:
-            # Active in trade
-            if entry_low > 0 and entry_high > 0 and entry_low <= live_px <= entry_high:
-                status = "IN_ZONE"
-                notes = f"Spot in entry zone [${entry_low:.2f} - ${entry_high:.2f}]"
-            else:
-                status = "IN_TRADE"
-                notes = f"Active position holding above stop (${stop_loss:.2f})"
+            status = "IN_TRADE"
+            notes = f"Active position holding above stop (${stop_loss:.2f})"
         else:
             # Order never filled
-            # If live price is directly inside entry zone right now
-            if entry_low > 0 and entry_high > 0 and entry_low <= live_px <= entry_high:
+            if len(bar_records) >= 5:
+                status = "NOT_FILLED"
+                is_terminal = True
+                notes = "Expired: setup did not fill within 5 bars"
+            elif entry_low > 0 and entry_high > 0 and live_px > 0 and entry_low <= live_px <= entry_high:
                 status = "IN_ZONE"
                 notes = f"Spot in entry zone [${entry_low:.2f} - ${entry_high:.2f}]"
             else:

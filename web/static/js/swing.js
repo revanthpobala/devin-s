@@ -28,7 +28,7 @@ window.AppSwing = {
     const modeSelect = document.getElementById('mode-select');
     const mode = modeSelect ? modeSelect.value : 'full';
     const targetDate = dateOverride || null;
-    const force = (forceOverride !== null && forceOverride !== undefined) ? forceOverride : true;
+    const force = (forceOverride !== null && forceOverride !== undefined) ? forceOverride : false;
 
     try {
       let startedCount = 0;

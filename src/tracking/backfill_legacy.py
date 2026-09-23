@@ -41,7 +41,11 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                 if not ticker or not date_val:
                     continue
 
-                is_modeled = 1 if trade_type == "OPTIONS" else 0
+                # P3: No options rows
+                if trade_type == "OPTIONS":
+                    continue
+
+                is_modeled = 0
                 report_hash = _row_hash(
                     ticker, date_val, trade_type, trade_structure
                 )
@@ -65,8 +69,8 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                             ticker, date, source, report_hash, side, entry_type,
                             entry_low, entry_high, breakout_level, stop,
                             target_1, target_2, planned_rr, atr_at_signal,
-                            taken, your_fill, notes, is_modeled, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            taken, your_fill, notes, is_modeled, gate_status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(ticker, date, source, report_hash) DO NOTHING
                         """,
                         (
@@ -88,6 +92,7 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                             your_fill if your_fill > 0 else None,
                             f"Backfill from suggested_trades_audit: {trade_type} {trade_structure}",
                             is_modeled,
+                            "LEGACY_UNGATED",
                             _now_iso(),
                         ),
                     )

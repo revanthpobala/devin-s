@@ -18,7 +18,7 @@ from src import config
 logger = logging.getLogger(__name__)
 
 DB_PATH = config.BASE_DIR / "data" / "research_watch.db"
-_db_lock = threading.Lock()
+_db_lock = threading.RLock()
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -81,6 +81,10 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN options_actionable BOOLEAN DEFAULT 0")
             if "options_entry_trigger" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN options_entry_trigger TEXT")
+            if "is_active" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN is_active INTEGER DEFAULT 1")
+            if "user_taken" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN user_taken INTEGER DEFAULT 0")
 
             cursor.execute(
                 """

@@ -195,8 +195,9 @@ Use the following measurements only when the identified setup, supplied fields a
 
 | callout | exact gate | **[M]** measured | how to use it |
 |---|---|---|---|
-| **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Zone RR Flags Pack` bit 0 **and** `Long RR At Market ≥ 2` **and** `Signal Pack` bit 2 = 1 **and** no 🛑 | **+0.116R**, 4/4 eras, **12/12 sectors**, 69.9% of 519 names, n=39,740 | The one long rule. Fires on **2.29% of bars** — it is an EVENT |
-| **⚖️ R:R `X`@mkt** in **deep teal (#00695C, size.normal)** | same, but `Long RR At Market ≥ 5` | **+0.252R**, 4/4 eras, both ticker halves, 60.3% of 156 names, n=3,884 | The loud tier. ~10% of the above |
+| **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Zone RR Flags Pack` bit 0 **and** `Long RR At Market ≥ 2` **and** `Signal Pack` bit 2 = 1 **and** no 🛑 | **+0.08R**, post-COVID, win ~30% | The base long rule |
+| **⚖️ R:R `X`@mkt** in **deep teal (#00695C, size.normal)** | same, but `Long RR At Market ≥ 3` | **+0.13R**, post-COVID, win ~25% | The loud tier (tier 3) |
+| **🔵 OVERSOLD** | `Ext Z Self Relative ≤ −2.0` **and** `Action Long Code != 18` (not toxic) | **+0.06R**, post-COVID, win ~51% | Extreme oversold reversion; requires exact Pine levels |
 | **🚫 DO NOT CHASE** | the fade gate (`Signal Pack` bit 2 == 0: `extZ >= 1.5` or `STRETCHED (12)`, `EXTENDED (11)`, `BLOW-OFF (16)`, `VOL THRUST (16)`) | **−0.038R**, era-stable | A measured **AVOID**. Do not open a fresh long |
 | **⚠️ CHASE · R:R `X`** | buy signal fired while `Long In Zone == 0` | **−0.023R** | Missed it. The printed R:R is the **at-market** one |
 

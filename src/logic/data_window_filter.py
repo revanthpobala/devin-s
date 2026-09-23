@@ -76,9 +76,26 @@ HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 # Win rate FALLS as the ratio rises (34% at >=2, 23% at >=5): the edge is payoff, not hit rate.
 # User specification: R:R >= 1.5 is accepted for the PASS lane.
 RR_MKT_PASS = float(os.getenv("RR_MKT_PASS", "2.0"))
-RR_MKT_STRONG = 5.0
+RR_MKT_STRONG = 3.0
 # Set RR_LANE_ENABLED=0 to restore code-20-only PASS behaviour for an A/B comparison.
 RR_LANE_ENABLED = os.getenv("RR_LANE_ENABLED", "1") not in ("0", "false", "False")
+
+# Measured lanes, post-COVID (Mar-2020 to Jul-2026, 529 tickers, path-accurate 21 bars)
+LANE_PRIORS = {
+    "rr_at_market_lane_strong": (25.0, 0.13),
+    "rr_at_market_lane": (30.0, 0.08),
+    "reversal_buy_lane": (45.0, 0.08),
+    "oversold_lane": (51.0, 0.06),
+    "rsi2_setup_lane": (61.0, 0.06),
+}
+
+LANE_TO_SETUP_LANE = {
+    "rr_at_market_lane_strong": "RR_SETUP_STRONG",
+    "rr_at_market_lane": "RR_SETUP",
+    "reversal_buy_lane": "CODE20",
+    "oversold_lane": "OVERSOLD",
+    "rsi2_setup_lane": "RSI2",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -166,13 +183,10 @@ _FIELD_LABELS = {
     "rsi2_protocol": ("rsi2 protocol version", "protocol version",),
     "rsi2_events_pack": ("rsi2 events pack", "events pack",),
     "rsi2_exit_fill": ("rsi2 exit fill",),
-    "rsi2_matured": ("rsi2 matured trades",),
-    "rsi2_win_pct": ("rsi2 matured win pct",),
-    "rsi2_mean_r": ("rsi2 matured mean r",),
-    "rsi2_mean_stress_r": ("rsi2 matured mean r 10bps",),
     "rsi2_net_r": ("rsi2 exit net r",),
     "rsi2_val": ("rsi2 rsi2", "rsi2",),
     "rsi2_atr14": ("rsi2 atr14",),
+    "prev_ext_z": ("prev ext z", "prev_ext_z",),
     "golden_cross": ("golden cross",),
     "death_cross": ("death cross",),
     "zone0_long": ("zone 0 long",),
@@ -593,23 +607,10 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
     else:
         mode = "NONE"
 
-    if side == ev_side:
-        dir_p = f.get("dir_prob")
-        if mode == "RSI2_LONG" and f.get("rsi2_win_pct") is not None:
-            win_prob = f["rsi2_win_pct"]
-            ev_r = f.get("rsi2_mean_stress_r") if f.get("rsi2_mean_stress_r") is not None else f.get("rsi2_mean_r")
-        elif dir_p is not None:
-            win_prob = dir_p if side == "long" else (100.0 - dir_p)
-            if rr is not None and rr > 0:
-                ev_r = ((win_prob / 100.0) * rr) - (1.0 - (win_prob / 100.0))
-            else:
-                ev_r = None
-        else:
-            win_prob = None
-            ev_r = None
-    else:
-        win_prob = None
-        ev_r = None
+    # Post-COVID: stop using Dir Prob and per-stock RSI2 stats for win_prob / ev_r (both measured no edge).
+    # Replaced by empirical LANE_PRIORS assigned after triage decides.
+    win_prob = None
+    ev_r = None
 
     return {
         "side": side,
@@ -835,6 +836,17 @@ def run_data_window_filter(
     elif is_rsi2_setup and not no_fresh_long:
         triage = "PASS"
         reason = "rsi2_setup_lane"
+    # OVERSOLD branch: extZ <= -2.0, act_code != 18, valid stop < price < target
+    elif (
+        W["side"] == "long"
+        and ext_z_self <= -2.0
+        and act_code != 18
+        and W["stop"] is not None
+        and W["target"] is not None
+        and W["stop"] < price < W["target"]
+    ):
+        triage = "PASS"
+        reason = "oversold_lane"
     elif no_fresh_long:
         # Negative for BUYING, but not unbuildable -- and measurably the best premium-SELLING state.
         triage = "WATCH"
@@ -846,6 +858,9 @@ def run_data_window_filter(
 
     # Soft demotions / caution flags
     flags = list(W["flags"])
+    prev_ez = f.get("prev_ext_z")
+    if prev_ez is not None and prev_ez > -2.0 and ext_z_self <= -2.0:
+        flags.append("oversold_first_bar")
     if act_code in _ACTION_SOFT_CAUTION_CODES:
         flags.append("soft_caution_action")
     if fade_long == 1.0:
@@ -912,6 +927,17 @@ def run_data_window_filter(
     except Exception:
         rank_model_score = None
 
+    # Assign post-COVID empirical priors for PASS lanes; None for WATCH/CUT
+    if triage == "PASS" and reason in LANE_PRIORS:
+        win_prob, ev_r = LANE_PRIORS[reason]
+    else:
+        win_prob, ev_r = None, None
+
+    if triage == "WATCH":
+        setup_lane = "WATCH_SHADOW"
+    else:
+        setup_lane = LANE_TO_SETUP_LANE.get(reason)
+
     verdict = {
         "ticker": ticker,
         "bar_date": str(bar_date) if bar_date is not None else None,
@@ -919,12 +945,15 @@ def run_data_window_filter(
         "mode": W["mode"],
         "triage": triage,
         "reason": reason,
+        "setup_lane": setup_lane,
         "conviction": conviction,
         "conviction_str": conviction_str,
         "rev": W["rev"],
         "rr": W["rr"],
-        "ev_r": W["ev_r"],
-        "win_prob": W["win_prob"],
+        "ev_r": ev_r,
+        "win_prob": win_prob,
+        "lane_prior_win": win_prob,
+        "lane_prior_ev": ev_r,
         "in_zone": W["in_zone"],
         "missed": W["missed"],
         "dir_prob": f["dir_prob"],

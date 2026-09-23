@@ -588,6 +588,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     result = {
         "ticker": safe_ticker,
         "date": date_str,
+        "source": "fallback",
         "side": side,
         "spot_price": spot_price,
         "verdict": verdict,
