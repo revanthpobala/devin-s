@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -44,6 +45,24 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+class SyncResult(int):
+    """An int subclass representing the count of indexed targets, enriched with sync metadata."""
+    def __new__(
+        cls,
+        count: int,
+        indexed: Optional[List[str]] = None,
+        rejected: Optional[List[Dict[str, Any]]] = None,
+        tt_alerts_count: int = 0,
+        tt_synced: Optional[List[str]] = None,
+    ):
+        obj = super().__new__(cls, count)
+        obj.indexed = indexed or []
+        obj.rejected = rejected or []
+        obj.tt_alerts_count = tt_alerts_count
+        obj.tt_synced = tt_synced or []
+        return obj
+
+
 def sync_reports_to_watchlist(
     target_date: Optional[str] = None,
     target_ticker: Optional[str] = None,
@@ -57,9 +76,29 @@ def sync_reports_to_watchlist(
     if sync_tastytrade is None:
         sync_tastytrade = os.getenv("ENABLE_TASTYTRADE_ALERTS", "0").lower() in ("1", "true", "yes")
 
+    if target_ticker and not target_date:
+        safe_sym = target_ticker.strip().upper().replace(":", "_")
+        reports_base = config.BASE_DIR / "reports"
+        if reports_base.exists():
+            for d in sorted([p for p in reports_base.iterdir() if p.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", p.name)], reverse=True):
+                if (d / f"{safe_sym}_summary.md").exists() or (d / f"{safe_sym}_arbitration.md").exists():
+                    target_date = d.name
+                    break
+        if not target_date:
+            raw_base = config.BASE_DIR / "data" / "raw"
+            if raw_base.exists():
+                for d in sorted([p for p in raw_base.iterdir() if p.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", p.name)], reverse=True):
+                    if (d / safe_sym).exists():
+                        target_date = d.name
+                        break
+
     date_str = target_date or datetime.now().strftime("%Y-%m-%d")
     reports_dir = config.BASE_DIR / "reports" / date_str
     count = 0
+    indexed_list: List[str] = []
+    rejected_list: List[Dict[str, Any]] = []
+    tt_synced_list: List[str] = []
+    tt_alerts_total = 0
 
     if target_ticker:
         tickers = [target_ticker.strip().upper()]
@@ -155,8 +194,10 @@ def sync_reports_to_watchlist(
                 )
                 data["verdict"] = "REJECTED_BY_GATE"
                 data["_gate_reasons"] = _reasons
+                rejected_list.append({"ticker": t, "reasons": _reasons})
             upsert_watch_target(data)
             count += 1
+            indexed_list.append(t)
 
             # Sync to Tastytrade cloud alerts: ONLY after deep research levels pass the validation gate
             if tasty_client and _ok and data.get("verdict") != "REJECTED_BY_GATE":
@@ -164,12 +205,20 @@ def sync_reports_to_watchlist(
                     tt_alerts = tasty_client.sync_watch_levels(data)
                     if tt_alerts:
                         logger.info(f"[{t}] Registered {len(tt_alerts)} cloud alert(s) in Tastytrade.")
+                        tt_alerts_total += len(tt_alerts)
+                        tt_synced_list.append(t)
                 except Exception as e_tt:
                     logger.warning(f"[{t}] Tastytrade alert sync failed: {e_tt}")
             elif tasty_client and not _ok:
                 logger.info(f"[{t}] Skipped Tastytrade cloud alert registration because level validation failed.")
 
-    return count
+    return SyncResult(
+        count,
+        indexed=indexed_list,
+        rejected=rejected_list,
+        tt_alerts_count=tt_alerts_total,
+        tt_synced=tt_synced_list,
+    )
 
 
 def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:

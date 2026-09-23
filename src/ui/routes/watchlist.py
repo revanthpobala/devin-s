@@ -480,19 +480,51 @@ def sync_ticker_tastytrade_alerts(req: SyncTickerAlertsRequest):
     ticker_clean = req.ticker.strip().upper()
     if not ticker_clean:
         raise HTTPException(status_code=400, detail="Ticker is required")
+    target_date = req.date.strip() if req.date and req.date.strip() else None
     try:
         from run_watch_alerts import sync_reports_to_watchlist
-        count = sync_reports_to_watchlist(
-            target_date=req.date,
+        result = sync_reports_to_watchlist(
+            target_date=target_date,
             target_ticker=ticker_clean,
             sync_tastytrade=True,
+        )
+        count = int(result)
+        if count == 0:
+            return {
+                "success": False,
+                "ticker": ticker_clean,
+                "date": target_date,
+                "indexed_count": 0,
+                "error": f"No research reports or watch levels found to index for {ticker_clean}",
+                "message": f"No research reports or watch levels found to index for {ticker_clean}",
+            }
+
+        rejected_list = getattr(result, "rejected", [])
+        ticker_rejected = next((r for r in rejected_list if r.get("ticker") == ticker_clean), None)
+        if ticker_rejected:
+            reasons = "; ".join(ticker_rejected.get("reasons", []))
+            return {
+                "success": False,
+                "ticker": ticker_clean,
+                "date": target_date,
+                "indexed_count": count,
+                "error": f"Levels rejected by validation gate: {reasons}. Tastytrade cloud alerts not registered.",
+                "message": f"Levels rejected by validation gate: {reasons}. Tastytrade cloud alerts not registered.",
+            }
+
+        tt_count = getattr(result, "tt_alerts_count", 0)
+        msg = (
+            f"Successfully synced {tt_count} Tastytrade cloud quote alert(s) for {ticker_clean}"
+            if tt_count > 0
+            else f"Watch levels indexed for {ticker_clean}"
         )
         return {
             "success": True,
             "ticker": ticker_clean,
-            "date": req.date,
+            "date": target_date,
             "indexed_count": count,
-            "message": f"Successfully synced Tastytrade cloud quote alerts for {ticker_clean}",
+            "tt_alerts_count": tt_count,
+            "message": msg,
         }
     except Exception as e:
         logger.error(f"Error syncing Tastytrade alerts for {ticker_clean}: {e}", exc_info=True)

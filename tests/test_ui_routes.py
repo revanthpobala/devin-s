@@ -104,3 +104,63 @@ def test_logs_buffer(client):
     assert response.status_code == 200
     data = response.json()
     assert "logs" in data
+
+
+def test_sync_ticker_tastytrade_alerts_not_indexed(client, monkeypatch):
+    from run_watch_alerts import SyncResult
+    import run_watch_alerts
+
+    monkeypatch.setattr(
+        run_watch_alerts,
+        "sync_reports_to_watchlist",
+        lambda **kwargs: SyncResult(0),
+    )
+
+    response = client.post("/api/tastytrade-alerts/sync-ticker", json={"ticker": "NONEXISTENT", "date": "2026-09-23"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is False
+    assert data["indexed_count"] == 0
+    assert "No research reports or watch levels found" in data["message"]
+
+
+def test_sync_ticker_tastytrade_alerts_gate_rejected(client, monkeypatch):
+    from run_watch_alerts import SyncResult
+    import run_watch_alerts
+
+    monkeypatch.setattr(
+        run_watch_alerts,
+        "sync_reports_to_watchlist",
+        lambda **kwargs: SyncResult(
+            1,
+            indexed=["BADTICKER"],
+            rejected=[{"ticker": "BADTICKER", "reasons": ["stop $110.00 >= entry_low $100.00"]}],
+        ),
+    )
+
+    response = client.post("/api/tastytrade-alerts/sync-ticker", json={"ticker": "BADTICKER", "date": "2026-09-23"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is False
+    assert data["indexed_count"] == 1
+    assert "rejected by validation gate" in data["message"]
+
+
+def test_sync_ticker_tastytrade_alerts_success(client, monkeypatch):
+    from run_watch_alerts import SyncResult
+    import run_watch_alerts
+
+    monkeypatch.setattr(
+        run_watch_alerts,
+        "sync_reports_to_watchlist",
+        lambda **kwargs: SyncResult(1, indexed=["AAPL"], tt_alerts_count=3, tt_synced=["AAPL"]),
+    )
+
+    response = client.post("/api/tastytrade-alerts/sync-ticker", json={"ticker": "AAPL", "date": "2026-09-23"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["indexed_count"] == 1
+    assert data["tt_alerts_count"] == 3
+    assert "Successfully synced 3 Tastytrade cloud quote alert(s)" in data["message"]
+
