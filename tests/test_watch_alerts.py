@@ -15,6 +15,13 @@ from src.tracking import watch_manager
 from run_watch_alerts import evaluate_watch_cycle
 
 
+@pytest.fixture(autouse=True)
+def _mock_watch_alerts_network():
+    with patch("src.clients.quote_router.quote_router.get_watchlist_quotes_batch", return_value={}), \
+         patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
+        yield
+
+
 def test_watch_manager_crud(tmp_path):
     # Point DB_PATH to temporary test database
     test_db = tmp_path / "test_watch.db"
@@ -208,7 +215,7 @@ def test_missed_runaway_and_breakout_triggers(tmp_path):
         hood_payload_no_bo["ticker"] = "HOOD_RUNAWAY"
         watch_manager.upsert_watch_target(hood_payload_no_bo)
 
-        with patch("run_watch_alerts.get_current_price", return_value=120.0):
+        with patch("run_watch_alerts.get_current_price", return_value=120.0), patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
             res = evaluate_watch_cycle(sync_sheets=False)
             hood_r = next(r for r in res if r["ticker"] == "HOOD_RUNAWAY")
             assert hood_r["status"] == "MISSED_RUNAWAY"

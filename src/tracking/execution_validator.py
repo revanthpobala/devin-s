@@ -25,8 +25,14 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
     Fetch daily OHLC bars for a symbol from start_date to today (inclusive).
     Uses in-memory cache with 60s TTL, verifying that the cached range covers start_date.
     """
-    sym = symbol.upper().strip()
+    sym = (symbol or "").upper().strip()
     if not sym or sym.startswith("^"):
+        return None
+
+    # If start_date is today or later, today's daily bar is not yet a closed historical bar in Yahoo Finance.
+    # evaluate_setup_lifecycle_bars handles live intraday session extremes via session_low / session_high / live_price.
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if start_date >= today_str:
         return None
 
     now = time.time()
@@ -44,8 +50,42 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
                         return sub
             except Exception:
                 pass
+        elif df is None:
+            # Negative cache hit — avoids hitting network every second for unavailable data
+            return None
 
+    # 1. Check local datawindow CSV first
     try:
+        from src import config
+        import pandas as pd
+        raw_root = config.BASE_DIR / "data" / "raw"
+        if raw_root.exists():
+            for d in sorted(raw_root.glob("*/"), reverse=True):
+                cand = d / sym / f"{sym}_datawindow.csv"
+                if cand.exists():
+                    df_csv = pd.read_csv(cand)
+                    col_map = {c.lower(): c for c in df_csv.columns}
+                    time_col = col_map.get("time") or col_map.get("date")
+                    if time_col and "close" in col_map:
+                        df_csv["date_str"] = df_csv[time_col].astype(str).str.slice(0, 10)
+                        if (df_csv["date_str"] >= start_date).any():
+                            sub = df_csv[df_csv["date_str"] >= start_date].copy()
+                            sub.set_index("date_str", inplace=True)
+                            rename_cols = {}
+                            for orig, standard in [("open", "Open"), ("high", "High"), ("low", "Low"), ("close", "Close")]:
+                                if orig in col_map:
+                                    rename_cols[col_map[orig]] = standard
+                            sub.rename(columns=rename_cols, inplace=True)
+                            _BARS_CACHE[sym] = (now, sub)
+                            return sub
+    except Exception as e_csv:
+        logger.debug(f"Local CSV check failed for {sym}: {e_csv}")
+
+    # 2. Fallback to yfinance with silenced logger
+    try:
+        yf_l = logging.getLogger("yfinance")
+        yf_l.setLevel(logging.CRITICAL)
+        yf_l.propagate = False
         import yfinance as yf
         import pandas as pd
         df = yf.download(sym, start=start_date, progress=False)
@@ -55,8 +95,11 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
                 df.columns = [c[0] for c in df.columns]
             _BARS_CACHE[sym] = (now, df)
             return df
+        else:
+            _BARS_CACHE[sym] = (now, None)
     except Exception as e:
         logger.debug(f"Failed fetching historical bars for {sym} via yfinance: {e}")
+        _BARS_CACHE[sym] = (now, None)
 
     return None
 

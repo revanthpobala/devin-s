@@ -133,7 +133,7 @@ class TastytradeClient:
                 logger.warning(f"Tastytrade get_quote_alerts returned HTTP {resp.status_code}: {resp.text}")
                 return []
         except Exception as e:
-            logger.error(f"Failed to retrieve Tastytrade quote alerts: {e}")
+            logger.debug(f"Failed to retrieve Tastytrade quote alerts: {e}")
             return []
 
     def create_quote_alert(
@@ -413,7 +413,7 @@ class TastytradeClient:
                 logger.warning(f"Tastytrade market-metrics returned HTTP {resp.status_code}: {resp.text}")
                 return []
         except Exception as e:
-            logger.error(f"Error fetching Tastytrade market metrics for {sym_str}: {e}")
+            logger.debug(f"Error fetching Tastytrade market metrics for {sym_str}: {e}")
             return []
 
     def get_realtime_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -437,7 +437,7 @@ class TastytradeClient:
             if not dxlink_url or not token:
                 return None
         except Exception as e:
-            logger.error(f"Failed to fetch DXLink quote token: {e}")
+            logger.debug(f"Failed to fetch DXLink quote token: {e}")
             return None
 
         def _safe_float(v):

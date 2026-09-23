@@ -37,6 +37,10 @@ from src.tracking.watch_manager import (
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] (WatchAlerts) %(message)s"
 )
+yf_log = logging.getLogger("yfinance")
+yf_log.setLevel(logging.CRITICAL)
+yf_log.propagate = False
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

@@ -109,28 +109,36 @@ def parse_event_condition(pred_item: Any) -> Tuple[Optional[str], Optional[float
 
 def get_historical_price_history(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     """Fetch daily OHLC history between start_date and end_date."""
+    today_str = date.today().isoformat()
+    if start_date >= end_date or start_date >= today_str:
+        return pd.DataFrame()
+
     # 1. Check local datawindow CSV first
     raw_root = config.BASE_DIR / "data" / "raw"
-    for d in sorted(raw_root.glob("*/"), reverse=True):
-        cand = d / ticker / f"{ticker}_datawindow.csv"
-        if cand.exists():
-            try:
-                df = pd.read_csv(cand)
-                col_map = {c.lower(): c for c in df.columns}
-                if "close" in col_map:
-                    time_col = col_map.get("time") or col_map.get("date")
-                    if time_col:
-                        time_s = df[time_col].astype(str).str.slice(0, 10)
-                        mask = (time_s >= start_date) & (time_s <= end_date)
-                        filtered = df[mask]
-                        if not filtered.empty:
-                            return filtered
-                    return pd.DataFrame()
-            except Exception:
-                pass
+    if raw_root.exists():
+        for d in sorted(raw_root.glob("*/"), reverse=True):
+            cand = d / ticker / f"{ticker}_datawindow.csv"
+            if cand.exists():
+                try:
+                    df = pd.read_csv(cand)
+                    col_map = {c.lower(): c for c in df.columns}
+                    if "close" in col_map:
+                        time_col = col_map.get("time") or col_map.get("date")
+                        if time_col:
+                            time_s = df[time_col].astype(str).str.slice(0, 10)
+                            mask = (time_s >= start_date) & (time_s <= end_date)
+                            filtered = df[mask]
+                            if not filtered.empty:
+                                return filtered
+                        return pd.DataFrame()
+                except Exception:
+                    pass
 
-    # 2. Fallback to yfinance historical prices
+    # 2. Fallback to yfinance historical prices with silenced logger
     try:
+        yf_l = logging.getLogger("yfinance")
+        yf_l.setLevel(logging.CRITICAL)
+        yf_l.propagate = False
         import yfinance as yf
         t = yf.Ticker(ticker)
         hist = t.history(start=start_date, end=end_date)

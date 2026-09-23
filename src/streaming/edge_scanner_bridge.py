@@ -509,7 +509,7 @@ class EdgeScannerBridge:
 
             except (websockets.ConnectionClosed, ConnectionRefusedError, OSError) as e:
                 if self.running:
-                    logger.warning(f"⚠️ Edge Scanner WebSocket disconnected ({e}). Retrying in {retry_delay:.1f}s...")
+                    logger.debug(f"⚠️ Edge Scanner WebSocket disconnected ({e}). Retrying in {retry_delay:.1f}s...")
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 1.5, 30.0)
             except Exception as e:
