@@ -80,7 +80,7 @@ Classify the news relative to the alert direction:
     - `iv_rank >= 50` $\rightarrow$ *Candidate* sellers' market — but a credit is primary ONLY if the short strike sits at ≥1.25× Expected Move AND outside the major GEX Put/Call wall. If either fails, treat as a debit/equity name by side (do not sell premium on IV Rank alone).
     - `iv_rank < 35` $\rightarrow$ Option buyers' market (buy debit/LEAPS).
 3. **Catalyst Check**: If news strongly CONTRADICTS $\rightarrow$ `CUT` (no edge).
-4. **R:R Check**: If upside potential < 1.5x downside risk $\rightarrow$ `CUT` or `WATCH`.
+4. **R:R Check**: Use `Long RR At Market` (reward:risk from the current close, not the zone entry). Below 2.0 $\rightarrow$ `CUT` or `WATCH`; at 2.0 or above it is the only measured edge (+0.12R in-zone).
 
 ### STEP 3 — TACTICAL LEVELS & DEFINED-RISK VEHICLE
 - **Tactical Stop**: State the exact dollar kill level. If `CUT`, output 0.0 or the immediate invalidation level.
