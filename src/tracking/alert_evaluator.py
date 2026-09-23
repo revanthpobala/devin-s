@@ -193,17 +193,15 @@ def evaluate_risk_vetoes(
     # Explicit action->side mapping (None for exits/neutral so side gates are skipped).
     side = _action_side(action)
 
-    # 1. Grade-A Hard Quality Gate (hard veto below GRADE_B_VETO_THRESHOLD, default 65)
-    grade_clean = str(grade or "A").upper().strip()
-    grade_b_threshold = _env_int("GRADE_B_VETO_THRESHOLD", 65)
-    if score < grade_b_threshold:
-        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (GRADE B / LOW CONVICTION)"
+    # 1. Grade-A Hard Quality Gate (hard veto on grade != A)
+    grade_clean = str(grade or "A").upper()
+    if grade_clean != "A":
+        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (GRADE {grade_clean})"
         pb = (
             f"{hdr}\n\n"
-            f"⛔ QUALITY VETO: Setup grade '{grade_clean}' with score {score}/100 is below the "
-            f"hard-veto threshold {grade_b_threshold}/100 (true Grade C/D territory).\n"
-            f"Grade-B range (score >= {grade_b_threshold}) is routed to the LLM for the "
-            f"catalyst call; only sub-threshold setups are hard-blocked from 0DTE execution."
+            f"⛔ HARD VETO: Setup grade '{grade_clean}' — only Grade A entries "
+            f"are eligible for 0DTE execution. Grade B/C/D are held for further review.\n"
+            f"Score {score}/100 does not override the grade gate."
         )
         return hdr, pb
 
@@ -666,6 +664,15 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
             else ("EXIT" if "EXIT" in decision
             else "STAND ASIDE"))
         )
+
+        # Label non-vetoed Intraday ENTRY pushes as UNPROVEN until
+        # the go/no-go replay threshold (Phase 0 item 5) clears.
+        if (
+            strategy == "Intraday"
+            and verdict == "GO"
+            and not is_exit
+        ):
+            decision = f"{decision}  [UNPROVEN]"
 
         return {
             "symbol": symbol,

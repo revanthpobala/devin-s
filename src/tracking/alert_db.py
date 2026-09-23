@@ -229,6 +229,36 @@ def init_alert_db():
             if "trade_id" not in alert_cols:
                 cursor.execute("ALTER TABLE alerts ADD COLUMN trade_id TEXT;")
 
+            # intraday_signals shadow ledger table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intraday_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id TEXT,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    entry_ts TEXT,
+                    grade TEXT,
+                    score REAL,
+                    align TEXT,
+                    side TEXT DEFAULT 'LONG',
+                    entry_type TEXT DEFAULT 'LIMIT',
+                    entry_price REAL,
+                    stop REAL,
+                    target_1 REAL,
+                    target_2 REAL,
+                    veto_reason TEXT,
+                    pine_exit_r REAL,
+                    replay_r REAL,
+                    taken BOOLEAN DEFAULT 0,
+                    your_fill REAL,
+                    is_modeled INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(trade_id, ticker, date)
+                )
+                """
+            )
+
             # Additive migration for positions table
             cursor.execute("PRAGMA table_info(positions);")
             pos_cols = {r[1] for r in cursor.fetchall()}
@@ -756,4 +786,156 @@ def get_unrouted_alerts() -> List[Dict[str, Any]]:
                 """
             )
             return [dict(r) for r in cur.fetchall()]
+
+
+def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
+    """Insert or update an intraday signal in the shadow ledger."""
+    trade_id = signal.get("trade_id") or ""
+    ticker = (signal.get("ticker") or "").strip().upper()
+    date = signal.get("date") or ""
+    if not ticker or not date:
+        return False
+
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO intraday_signals (
+                        trade_id, ticker, date, entry_ts, grade, score, align,
+                        side, entry_type, entry_price, stop, target_1, target_2,
+                        veto_reason, pine_exit_r, replay_r, taken, your_fill,
+                        is_modeled, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(trade_id, ticker, date) DO UPDATE SET
+                        grade=excluded.grade,
+                        score=excluded.score,
+                        align=excluded.align,
+                        side=excluded.side,
+                        entry_type=excluded.entry_type,
+                        entry_price=excluded.entry_price,
+                        stop=excluded.stop,
+                        target_1=excluded.target_1,
+                        target_2=excluded.target_2,
+                        veto_reason=excluded.veto_reason,
+                        pine_exit_r=excluded.pine_exit_r,
+                        replay_r=excluded.replay_r,
+                        taken=excluded.taken,
+                        your_fill=excluded.your_fill,
+                        is_modeled=excluded.is_modeled
+                    """,
+                    (
+                        trade_id,
+                        ticker,
+                        date,
+                        signal.get("entry_ts"),
+                        signal.get("grade"),
+                        signal.get("score"),
+                        signal.get("align"),
+                        signal.get("side", "LONG"),
+                        signal.get("entry_type", "LIMIT"),
+                        signal.get("entry_price"),
+                        signal.get("stop"),
+                        signal.get("target_1"),
+                        signal.get("target_2"),
+                        signal.get("veto_reason"),
+                        signal.get("pine_exit_r"),
+                        signal.get("replay_r"),
+                        1 if signal.get("taken") else 0,
+                        signal.get("your_fill"),
+                        signal.get("is_modeled", 0),
+                        get_eastern_now().isoformat(timespec="seconds"),
+                    ),
+                )
+                conn.commit()
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to upsert intraday signal: {e}")
+                return False
+
+
+def get_intraday_signals(
+    ticker: Optional[str] = None,
+    date: Optional[str] = None,
+    vetoed: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
+    """Query intraday signals with optional filters."""
+    with _db_lock:
+        with _get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            sql = "SELECT * FROM intraday_signals WHERE 1=1"
+            params: List[Any] = []
+            if ticker:
+                sql += " AND ticker = ?"
+                params.append(ticker.upper())
+            if date:
+                sql += " AND date = ?"
+                params.append(date)
+            if vetoed is True:
+                sql += " AND veto_reason IS NOT NULL"
+            elif vetoed is False:
+                sql += " AND veto_reason IS NULL"
+            sql += " ORDER BY date ASC, id ASC"
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_intraday_signal_stats() -> Dict[str, Any]:
+    """Compute shadow ledger stats: R by grade, veto counts, etc."""
+    with _db_lock:
+        with _get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            result = {}
+
+            # Total signals
+            cur.execute("SELECT COUNT(*) FROM intraday_signals")
+            result["total"] = cur.fetchone()[0]
+
+            # Vetoed vs non-vetoed
+            cur.execute("SELECT COUNT(*) FROM intraday_signals WHERE veto_reason IS NOT NULL")
+            result["vetoed"] = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM intraday_signals WHERE veto_reason IS NULL")
+            result["non_vetoed"] = cur.fetchone()[0]
+
+            # R stats by grade (non-vetoed only)
+            cur.execute(
+                """
+                SELECT grade,
+                    COUNT(*) as n,
+                    AVG(replay_r) as mean_r,
+                    AVG(CASE WHEN replay_r > 0 THEN 1.0 ELSE 0.0 END) as win_rate
+                FROM intraday_signals
+                WHERE veto_reason IS NULL AND replay_r IS NOT NULL
+                GROUP BY grade
+                """
+            )
+            result["r_by_grade"] = [
+                {
+                    "grade": r["grade"],
+                    "n": r["n"],
+                    "mean_r": round(r["mean_r"], 4) if r["mean_r"] is not None else None,
+                    "win_rate": round(r["win_rate"] * 100, 1) if r["win_rate"] is not None else None,
+                }
+                for r in cur.fetchall()
+            ]
+
+            # Veto reasons
+            cur.execute(
+                """
+                SELECT veto_reason, COUNT(*) as n
+                FROM intraday_signals
+                WHERE veto_reason IS NOT NULL
+                GROUP BY veto_reason
+                ORDER BY n DESC
+                """
+            )
+            result["veto_reasons"] = [
+                {"reason": r["veto_reason"], "n": r["n"]}
+                for r in cur.fetchall()
+            ]
+
+            return result
 

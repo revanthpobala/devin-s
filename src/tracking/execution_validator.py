@@ -80,6 +80,7 @@ def evaluate_setup_lifecycle_bars(
     max_holding_bars: Optional[int] = None,
     strategy_id: Optional[str] = None,
     opening_ceiling: Optional[float] = None,
+    skip_setup_bar: bool = False,
 ) -> Dict[str, Any]:
     """
     Pure chronological bar-walking evaluation helper.
@@ -107,6 +108,8 @@ def evaluate_setup_lifecycle_bars(
             for idx, row in bars.iterrows():
                 d_str = str(idx)[:10]
                 if setup_date and d_str < setup_date:
+                    continue
+                if skip_setup_bar and setup_date and d_str == setup_date:
                     continue
                 o = float(row.get("Open") if "Open" in row else row.get("open", 0.0))
                 h = float(row.get("High") if "High" in row else row.get("high", 0.0))
@@ -514,6 +517,7 @@ def evaluate_setup_lifecycle(
     max_holding_bars: Optional[int] = None,
     strategy_id: Optional[str] = None,
     opening_ceiling: Optional[float] = None,
+    skip_setup_bar: bool = False,
 ) -> Dict[str, Any]:
     """
     Public seam for setup lifecycle evaluation.
@@ -543,5 +547,6 @@ def evaluate_setup_lifecycle(
         max_holding_bars=max_holding_bars,
         strategy_id=strategy_id,
         opening_ceiling=opening_ceiling,
+        skip_setup_bar=skip_setup_bar,
     )
 

@@ -317,6 +317,19 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
             logger.debug(f"Failed to mark email {email_id} as read: {e_mark}")
 
     # 5. Enqueue for background asynchronous enrichment
+    # Mute Daily NEUTRAL: skip LLM enrichment, store only, plus EOD digest.
+    raw_action = str(alert.get("action", "")).upper().strip()
+    raw_side = str(alert.get("side", "")).upper().strip()
+    is_daily_neutral = (
+        strategy == "Daily"
+        and raw_action == "NEUTRAL"
+    )
+    if is_daily_neutral:
+        logger.debug(f"[MUTED] Daily NEUTRAL for {symbol} — skipped enrichment.")
+        if alert.get("message_id"):
+            _update_routing_stage_db(alert["message_id"], "COMPLETED")
+        return True
+
     _enrichment_queue.put(alert)
     return True
 
@@ -517,13 +530,52 @@ class GmailIngestionThread(threading.Thread):
                 logger.info(f"📥 Found {len(alerts)} new alert(s) in Gmail. Ingesting immediately...")
                 for alert in alerts:
                     ingest_alert_fast(alert, self.gmail)
-            else:
-                logger.debug("No new TradingView alerts found in Gmail.")
+
+            # EOD digest for muted Daily NEUTRAL (once per day, after market close)
+            _maybe_log_eod_digest()
         finally:
             try:
                 self.gmail.disconnect()
             except Exception:
                 pass
+
+
+_last_digest_date: Optional[str] = None
+
+
+def _maybe_log_eod_digest():
+    """Log the Daily NEUTRAL digest once per day, after market close."""
+    global _last_digest_date
+    try:
+        from src.tracking.alert_db import get_eastern_date_str, DB_PATH
+        import sqlite3
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        if now_et.hour < 16:
+            return  # Only after market close (4 PM ET)
+        today = get_eastern_date_str()
+        if today == _last_digest_date:
+            return
+        _last_digest_date = today
+        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM alerts WHERE date=? AND strategy='Daily' AND action='NEUTRAL'",
+                (today,),
+            )
+            muted_count = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM alerts WHERE date=? AND strategy='Daily' AND action!='NEUTRAL'",
+                (today,),
+            )
+            daily_count = cur.fetchone()[0]
+        logger.info(
+            f"[EOD DIGEST] Daily NEUTRAL muted: {muted_count} | Daily non-NEUTRAL: {daily_count} ({today})"
+        )
+    except Exception as e:
+        logger.debug(f"EOD digest failed: {e}")
 
 
 def run_tracker(force_run: bool = False):
@@ -552,6 +604,9 @@ def run_tracker(force_run: bool = False):
         for alert in alerts:
             ingest_alert_fast(alert, gmail)
 
+        # EOD digest for muted Daily NEUTRAL alerts
+        _log_daily_neutral_digest()
+
         # Drain enrichment queue for one-shot mode
         while not _enrichment_queue.empty():
             try:
@@ -565,6 +620,32 @@ def run_tracker(force_run: bool = False):
             gmail.disconnect()
         except Exception:
             pass
+
+
+def _log_daily_neutral_digest():
+    """Log one end-of-day digest line for muted Daily NEUTRAL alerts."""
+    try:
+        from src.tracking.alert_db import get_eastern_date_str, DB_PATH
+        import sqlite3
+        today = get_eastern_date_str()
+        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM alerts WHERE date=? AND strategy='Daily' AND action='NEUTRAL'",
+                (today,),
+            )
+            muted_count = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM alerts WHERE date=? AND strategy='Daily' AND action!='NEUTRAL'",
+                (today,),
+            )
+            daily_count = cur.fetchone()[0]
+        logger.info(
+            f"[EOD DIGEST] Daily NEUTRAL muted: {muted_count} | Daily non-NEUTRAL: {daily_count} ({today})"
+        )
+    except Exception as e:
+        logger.debug(f"EOD digest failed: {e}")
 
 
 def is_market_hours() -> bool:
