@@ -122,7 +122,7 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 **D) Time-of-day (read off the chart clock, ET):**
 - **9:30–10:00** opening drive — real but whippy; let the OR set.
 - **10:00–11:30** prime trend window.
-- **11:30–1:30** lunch chop — demand A-grade.
+- **1:15–2:45** lunch chop — demand A-grade.
 - **1:30–3:00** afternoon trend / pre-event drift.
 - **after 3:00** late — the card blocks new entries (`0DTE: no new entries`); manage only.
 - **into 3:45** the card force-flats (`EOD flat (0DTE)`) — do not open anything that needs hours.
@@ -139,8 +139,8 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 | BUY PUTS (in Stage 2) | Any | **⛔ STAND ASIDE (COUNTER-STAGE)** — Never buy PUTs into a Stage 2 Structural Advance. Institutional demand absorbs dips. |
 | BUY (Grade A) | **Scheduled print in < ~60–90 min** (CPI/FOMC/NFP) | **WAIT until after the release.** Do not buy premium into a binary — IV crush + whipsaw. |
 | BUY (Grade A) | Move is a **headline spike already extended** | **SKIP or wait for the pullback** to the PLAN entry. Don't chase the candle. |
-| BUY (10:30–11:30 ET) | Score < 90 | **⛔ STAND ASIDE (EXHAUSTION TRAP)** — Mid-morning trend extension & European close requires Grade A+ (Score ≥ 90). |
-| BUY (11:30–1:15 ET) | Score < 85 | **⛔ STAND ASIDE (LUNCH CHOP)** — Midday liquidity dead zone requires Grade A+ (Score ≥ 85). |
+| BUY (10:30–11:30 ET) | Score < 85 | **⛔ STAND ASIDE (EXHAUSTION TRAP)** — Mid-morning trend extension requires Grade A+ (Score ≥ 85). |
+| BUY (1:15–2:45 ET) | Score < 85 | **⛔ STAND ASIDE (LUNCH CHOP)** — Midday liquidity dead zone requires Grade A+ (Score ≥ 85). |
 | BUY | Catalyst directly **opposes** the side (e.g. hawkish surprise vs CALLS) | **SKIP** — the card is fighting the news. |
 | STAND ASIDE | A catalyst is now driving a clean move in the card's bias | **WAIT for the card to flip to BUY** (trigger + grade). Do not pre-empt its vetoes. |
 | HOLD (in trade) | +0.5R or ≥ 0.5×ATR×qty unrealized gain | **RATCHET TO BE+** (max($0.05, 0.1×ATR) buffer) — Capital preservation rule: never let a winning trade become a loss. |
@@ -150,8 +150,8 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 **Hard Institutional 0DTE Vetoes (override any BUY → STAND ASIDE/WAIT):**
 - **Grade-A Quality Gate**: Setup grade is 'B' or score < 80. (0DTE intraday requires Grade-A velocity).
 - **Weinstein Stage & MTF Alignment**: CALLS in Stage 4 Decline or PUTS in Stage 2 Advance. (Never fight the structural tide).
-- **Mid-Morning Exhaustion Window (10:30–11:30 AM ET)**: Score < 90 vetoed (European close stall).
-- **Lunch Chop Window (11:30 AM–1:15 PM ET)**: Score < 85 vetoed (liquidity dead zone).
+- **Mid-Morning Exhaustion Window (10:30–11:30 AM ET)**: Score < 85 vetoed (European close stall).
+- **Lunch Chop Window (1:15–2:45 PM ET)**: Score < 85 vetoed (liquidity dead zone).
 - **Scheduled Binary Events**: Within 60–90 min of high-impact macro prints (CPI/PPI/FOMC).
 - **Late-Day Cutoff**: After 3:00 PM ET no new entries (`0DTE: no new entries`); flat by 3:45 PM.
 - **Card Veto Rows**: Card Row 8 shows `DAY PAUSE`, `circuit breaker`, `chop regime`, `no counter-trend`. Respect them without exception.
@@ -169,7 +169,7 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 | BUY CALLS/PUTS | **B (65–79)** | Any | Any | **⛔ STAND ASIDE** | 0 (theta trap) |
 | BUY CALLS | Any | In Stage 4 Decline | Any | **⛔ STAND ASIDE** | 0 (counter-stage) |
 | BUY PUTS | Any | In Stage 2 Advance | Any | **⛔ STAND ASIDE** | 0 (counter-stage) |
-| BUY CALLS/PUTS | A (80–89) | 10:30–11:30 AM ET | Any | **⛔ STAND ASIDE** | 0 (need score ≥90) |
+| BUY CALLS/PUTS | A (80–89) | 10:30–11:30 AM ET | Any | **⛔ STAND ASIDE** | 0 (need score ≥85) |
 | BUY CALLS/PUTS | any | Any | catalyst opposes side | **SKIP** | 0 |
 | HOLD … (runner) | shows `+xR` | — | adverse headline | **Manage** Row 8 stop; bank early | trim |
 | STAND ASIDE | C/D or veto | — | — | **NO TRADE** (read Row 8) | 0 |
@@ -207,7 +207,7 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 | ↑ | ↑ | ↑ | Full stack — highest conviction CALLS |
 | ↓ | ↓ | ↓ | Full stack — highest conviction PUTS |
 | ↑ | ↑ | ↓ (or ↓↓↑) | 15m fighting the tide → the card's trend veto likely engaged; **skip / wait for 15m to realign** |
-| mixed (→) | — | aligned w/ side | Standard size; tradeable but not a layup |
+| mixed (→) | — | aligned w/ side | 50% size; tradeable but not a layup |
 
 ### E) Time-of-day (ET, read off chart clock) → action
 
@@ -215,7 +215,7 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 |--------|-------|--------|
 | 9:30–10:00 | opening drive | Let OR set; trade only A-grade ignition |
 | 10:00–11:30 | prime trend | Full menu — best window |
-| 11:30–1:30 | lunch chop | Demand A-grade; default skip B |
+| 1:15–2:45 | lunch chop | Demand A-grade; default skip B |
 | 1:30–3:00 | afternoon trend | Tradeable; mind pre-event drift |
 | 3:00–3:45 | late | Card blocks new entries — **manage only** |
 | ≥ 3:45 | EOD | Card force-flats — **no positions held** |
@@ -240,7 +240,7 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 - `BUY CALLS B(71)` + any regime → **⛔ STAND ASIDE** — Grade B / score < 80 vetoed for 0DTE execution.
 - `BUY CALLS A(92)` + Stage 4 Decline → **⛔ STAND ASIDE** — Counter-stage veto; never buy calls into structural decline.
 - `BUY PUTS A(88)` + Stage 4 Decline + 1:15pm + no print → **TAKE full.**
-- `BUY CALLS A(84)` + 10:45am (Mid-Morning Window) → **⛔ STAND ASIDE** — Score < 90 in the 10:30–11:30 ET exhaustion window.
+- `BUY CALLS A(84)` + 10:45am (Mid-Morning Window) → **⛔ STAND ASIDE** — Score < 85 in the 10:30–11:30 ET exhaustion window.
 - `BUY CALLS A(88)` + EXPANSION + 1:20pm + **FOMC 2:00pm** → **WAIT until 2:30**, then re-read the card.
 - `STAND ASIDE` + Row 8 `chop regime — need A-grade` + RANGE + lunch → **SKIP**, no exceptions.
 - `BUY CALLS A(82)` but **Move ✗** (no expansion) → **SKIP** — fails the 0DTE trio even though grade is fine.
