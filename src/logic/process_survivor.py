@@ -247,13 +247,10 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         except (ValueError, TypeError):
             rev_score = None
 
-    if is_reversion:
-        # A genuine Z1/Z0 reversal will almost always have a LOW trend-conviction
-        # (Buy/Sell) score by construction — that low score is what makes it a
-        # reversal, not a trend. Gate on the purpose-built Rev Zone metric instead.
-        # Missing rev_score is treated as PASS (same as trend mode) — the
-        # deterministic filter owns the verdict, and a missing score is not
-        # evidence against the setup.
+    # Phase 6: Stop gating PASS names on Buy Score or ev_r built from Dir Prob
+    if quality_pass:
+        conviction_ok = True
+    elif is_reversion:
         conviction_ok = rev_score is None or rev_score >= min_rev_zone
     else:
         conviction_ok = det_conv is None or det_conv >= min_conviction
@@ -279,16 +276,18 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     caution_floor = min_conviction + 10.0 if earnings_gate == "CAUTION" else 0.0
     caution_pass = det_conv is None or det_conv >= caution_floor
 
+    # Phase 6: PASS names are not blocked by ev_r or caution conviction floor
+    ev_r_ok = quality_pass or (det_ev_r is None or det_ev_r >= min_ev_r)
     send = bool(
         quality_pass
         and triage.get("pursue") is True
         and earnings_gate != "FAIL"
         and conviction_ok
-        and caution_pass
+        and (quality_pass or caution_pass)
         and has_plan
         and not blocked
         and not income_only
-        and (det_ev_r is None or det_ev_r >= min_ev_r)
+        and ev_r_ok
     )
     # Informational scalar (mirrors deep_research_sort_key's news penalty on the
     # ev axis so the logged number tracks the real ordering intent).
@@ -473,6 +472,33 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     except Exception as e:
         logger.error(f"[Prefilter-{worker_id}] Failed to cache thesis/triage JSON for {ticker}: {e}")
     _update_research_ledger(out_dir, result_dict)
+
+    # Phase 4: Log rule baseline (source="rule") to suggestions ledger
+    if triage.get("triage") in ("PASS", "WATCH"):
+        try:
+            from src.tracking.suggestions_ledger import append_suggestion
+            long_p = triage.get("long_plan") or {}
+            z = long_p.get("zone") or [None, None]
+            e_low = z[0] if isinstance(z, (list, tuple)) and len(z) > 0 else long_p.get("entry_zone_low")
+            e_high = z[1] if isinstance(z, (list, tuple)) and len(z) > 1 else long_p.get("entry_zone_high")
+            append_suggestion({
+                "ticker": ticker,
+                "date": today_str,
+                "source": "rule",
+                "side": str(triage.get("chosen_side") or "LONG").upper(),
+                "entry_type": "LIMIT",
+                "entry_low": float(e_low) if e_low else None,
+                "entry_high": float(e_high) if e_high else None,
+                "stop": float(long_p.get("stop")) if long_p.get("stop") else None,
+                "target_1": float(long_p.get("target")) if long_p.get("target") else None,
+                "target_2": float(long_p.get("target_2")) if long_p.get("target_2") else None,
+                "planned_rr": float(triage.get("rr")) if triage.get("rr") else None,
+                "_datawindow": data_window,
+                "notes": f"Rule triage: {triage.get('triage')} ({triage.get('reason')})",
+            })
+        except Exception as e_base:
+            logger.debug(f"[Prefilter-{worker_id}] Failed to log rule baseline for {ticker}: {e_base}")
+
     if not survivor.get("_row_index"):
         logger.warning(
             f"[Prefilter-{worker_id}] No _row_index for {ticker}; saved locally, not pushed to Sheets."

@@ -444,6 +444,34 @@ def process_alert_enrichment(alert: dict, sheets=None):
                             logger.warning(f"[veto-sync] 🛡️ {symbol} position opened by routing but vetoed by AI triage — closed at ${closed.get('exit_price')}.")
                 except Exception as e_vsync:
                     logger.debug(f"Veto sync check failed for {symbol}: {e_vsync}")
+        # Record into intraday_signals shadow ledger table (Phase 0)
+        if strategy == "Intraday":
+            try:
+                from src.tracking.alert_db import upsert_intraday_signal
+                tid = alert.get("trade_id") or f"{symbol}_{date_str}_{timestamp_str or ''}"
+                v_reason = None
+                if "STAND ASIDE" in llm_decision.upper() or "VETO" in llm_decision.upper():
+                    v_reason = llm_decision[:120]
+                upsert_intraday_signal({
+                    "trade_id": tid,
+                    "ticker": symbol,
+                    "date": date_str,
+                    "entry_ts": timestamp_str,
+                    "grade": alert.get("grade") or "A",
+                    "score": float(alert.get("score") or 0.0),
+                    "align": alert.get("align") or "",
+                    "side": "SHORT" if ("PUT" in str(alert.get("action", "")).upper() or str(alert.get("side", "")).upper() == "SHORT") else "LONG",
+                    "entry_type": "LIMIT",
+                    "entry_price": market_price or alert_price,
+                    "stop": float(alert.get("stop") or 0.0),
+                    "target_1": float(alert.get("t1") or alert.get("target_1") or 0.0),
+                    "target_2": float(alert.get("t2") or alert.get("target_2") or 0.0),
+                    "veto_reason": v_reason,
+                    "pine_exit_r": float(alert.get("exit_r")) if alert.get("exit_r") is not None else None,
+                })
+            except Exception as e_sig:
+                logger.debug(f"Failed to record intraday shadow signal for {symbol}: {e_sig}")
+
         if alert.get("message_id"):
             _update_routing_stage_db(alert["message_id"], "COMPLETED")
     except Exception as e_eval:

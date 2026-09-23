@@ -30,7 +30,9 @@ ET = ZoneInfo("America/New_York")
 
 # All tests start from the recalibrated defaults.
 @pytest.fixture(autouse=True)
-def default_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def default_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    empty_db = tmp_path_factory.mktemp("veto_empty") / "empty.db"
+    monkeypatch.setattr(alert_db, "DB_PATH", str(empty_db))
     monkeypatch.setenv("GRADE_B_VETO_THRESHOLD", "65")
     monkeypatch.setenv("MID_MORNING_MIN_SCORE", "85")
     monkeypatch.setenv("MAX_CONCURRENT_SAME_SIDE", "3")
@@ -60,36 +62,23 @@ def call(symbol: str, score: int, hour: int, minute: int = 0, grade: str = "A",
 # Gate 1: Grade-A quality gate (default: hard veto below 65, Grade-B 65-79 passes)
 # ---------------------------------------------------------------------------
 
-def test_grade_b_75_no_longer_vetoed():
+def test_grade_b_75_held_by_hard_gate():
     result = call("AAPL", 75, 9, 45, grade="B")
-    assert result is None, "Score 75 (Grade B) must pass the quality gate (new default 65)."
+    assert result is not None
+    assert "GRADE B" in result[0]
+    assert "HARD VETO" in result[1]
 
 
-def test_score_64_still_vetoed():
+def test_score_64_grade_c_held_by_hard_gate():
     result = call("AAPL", 64, 9, 45, grade="C")
     assert result is not None
-    assert "STAND ASIDE" in result[0]
-    assert "QUALITY VETO" in result[1]
+    assert "GRADE C" in result[0]
+    assert "HARD VETO" in result[1]
 
 
-def test_grade_b_threshold_env_respects_env():
-    # Raise the threshold back to 80 -> score 75 is vetoed again.
-    os.environ["GRADE_B_VETO_THRESHOLD"] = "80"
-    try:
-        result = call("AAPL", 75, 9, 45, grade="B")
-        assert result is not None
-    finally:
-        os.environ.pop("GRADE_B_VETO_THRESHOLD", None)
-
-
-def test_grade_b_threshold_env_looser():
-    # Lower the threshold to 50 -> score 60 (Grade C) now passes.
-    os.environ["GRADE_B_VETO_THRESHOLD"] = "50"
-    try:
-        result = call("AAPL", 60, 9, 45, grade="C")
-        assert result is None
-    finally:
-        os.environ.pop("GRADE_B_VETO_THRESHOLD", None)
+def test_grade_a_passes_quality_gate():
+    result = call("AAPL", 75, 9, 45, grade="A")
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +106,8 @@ def test_mid_morning_90_env_recovers_old_behavior():
 
 
 def test_mid_morning_outside_window_ignores_low_score():
-    # 09:45 is before 10:30 -> no mid-morning veto even at low score (>=65).
-    result = call("AAPL", 70, 9, 45, grade="B")
+    # 09:45 is before 10:30 -> no mid-morning veto even at low score (<85).
+    result = call("AAPL", 70, 9, 45, grade="A")
     assert result is None
 
 
@@ -274,7 +263,7 @@ def test_day_pause_fires_after_three_losses(tmp_path: Path, monkeypatch: pytest.
     dt = datetime.now(ET).replace(second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=85,
-        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="B",
+        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
     )
     assert result is not None
     assert "DAY PAUSE" in result[0]
@@ -347,7 +336,7 @@ def test_day_pause_below_a_plus_does_not_clear(tmp_path: Path, monkeypatch: pyte
     dt = datetime.now(ET).replace(second=0, microsecond=0)
     result = evaluate_risk_vetoes(
         symbol="AAPL", action="BUY CALLS", score=85,
-        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="B",
+        current_time_et=dt.strftime("%I:%M %p"), eastern_dt=dt, grade="A",
     )
     assert result is not None
     assert "DAY PAUSE" in result[0]
@@ -389,16 +378,16 @@ def test_day_pause_prior_day_losses_dont_fire(tmp_path: Path, monkeypatch: pytes
 # Counter-stage and excluded gates (regression: unchanged behavior)
 # ---------------------------------------------------------------------------
 
-def test_counter_stage_stg4_call_vetoed():
+def test_counter_stage_stg4_call_permitted_per_phase0():
+    # Per Phase 0, Weinstein stage veto is dropped for 0DTE intraday alerts
     result = call("AAPL", 90, 9, 45, align="stg4 decline")
-    assert result is not None
-    assert "COUNTER-STAGE" in result[0]
+    assert result is None
 
 
-def test_counter_stage_stg2_put_vetoed():
+def test_counter_stage_stg2_put_permitted_per_phase0():
+    # Per Phase 0, Weinstein stage veto is dropped for 0DTE intraday alerts
     result = call("AAPL", 90, 9, 45, side="SHORT", align="stg2 advance")
-    assert result is not None
-    assert "COUNTER-STAGE" in result[0]
+    assert result is None
 
 
 def test_excluded_ticker_vetoed(monkeypatch: pytest.MonkeyPatch):
@@ -483,8 +472,7 @@ def test_env_int_falls_back_on_bad_value(monkeypatch):
 
 
 def test_bad_grade_b_env_does_not_crash_vetoes(monkeypatch):
-    """A malformed GRADE_B_VETO_THRESHOLD in .env must degrade to the default (65), not raise."""
+    """A malformed GRADE_B_VETO_THRESHOLD in .env must degrade to the default, not raise."""
     monkeypatch.setenv("GRADE_B_VETO_THRESHOLD", "garbage")
-    # score 70 is above the default-65 threshold -> must pass, not crash.
-    result = call("AAPL", 70, 9, 45, grade="B")
+    result = call("AAPL", 70, 9, 45, grade="A")
     assert result is None

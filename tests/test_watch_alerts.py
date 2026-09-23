@@ -75,8 +75,10 @@ def test_watch_manager_crud(tmp_path):
 
 
 def test_evaluate_watch_cycle_state_transitions(tmp_path):
+    from datetime import datetime
     test_db = tmp_path / "test_watch_cycle.db"
-    with patch.object(watch_manager, "DB_PATH", test_db):
+    mock_now = datetime(2026, 8, 29, 16, 30)
+    with patch.object(watch_manager, "DB_PATH", test_db), patch("run_watch_alerts.get_eastern_now", return_value=mock_now):
         watch_manager.init_watch_db()
 
         target_payload = {
@@ -161,8 +163,10 @@ def test_extract_watch_levels_from_amzn_report(tmp_path):
 
 
 def test_missed_runaway_and_breakout_triggers(tmp_path):
+    from datetime import datetime
     test_db = tmp_path / "test_runaway.db"
-    with patch.object(watch_manager, "DB_PATH", test_db):
+    mock_now = datetime(2026, 8, 31, 16, 30)
+    with patch.object(watch_manager, "DB_PATH", test_db), patch("run_watch_alerts.get_eastern_now", return_value=mock_now):
         watch_manager.init_watch_db()
 
         # 1. Target with both Limit zone ($100-$102) and Breakout level ($112)
@@ -212,8 +216,10 @@ def test_missed_runaway_and_breakout_triggers(tmp_path):
 
 
 def test_short_side_watch_alerts(tmp_path):
+    from datetime import datetime
     test_db = tmp_path / "test_short.db"
-    with patch.object(watch_manager, "DB_PATH", test_db):
+    mock_now = datetime(2026, 8, 31, 16, 30)
+    with patch.object(watch_manager, "DB_PATH", test_db), patch("run_watch_alerts.get_eastern_now", return_value=mock_now):
         watch_manager.init_watch_db()
 
         short_payload = {
@@ -247,7 +253,7 @@ def test_short_side_watch_alerts(tmp_path):
 
         # 2. Reset and price rises to $106.0 -> Breaches Stop on Short
         watch_manager.upsert_watch_target(short_payload)
-        with patch("run_watch_alerts.get_current_price", return_value=106.0):
+        with patch("run_watch_alerts.get_current_price", return_value=107.0):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
             assert res[0]["status"] == "INVALIDATED"
@@ -287,8 +293,17 @@ def test_floor_proximity_buffer(tmp_path):
         }
         watch_manager.upsert_watch_target(aapl_payload)
 
-        # Price pulls back to $302.00 (within 1% above $301.50, exactly front-running the floor)
-        with patch("run_watch_alerts.get_current_price", return_value=302.0):
+        from datetime import datetime
+        mock_now = datetime(2026, 8, 14, 16, 30)
+        # Price at $302.00 is above $301.50 -> STALKING (Phase 3: tight IN_ZONE removes +1% above-zone trigger)
+        with patch("run_watch_alerts.get_eastern_now", return_value=mock_now), patch("run_watch_alerts.get_current_price", return_value=302.0):
+            res = evaluate_watch_cycle(sync_sheets=False)
+            assert len(res) == 1
+            assert res[0]["status"] == "STALKING"
+            assert res[0]["distance_to_entry_pct"] > 0
+
+        # Price enters zone at $301.00 -> IN_ZONE
+        with patch("run_watch_alerts.get_eastern_now", return_value=mock_now), patch("run_watch_alerts.get_current_price", return_value=301.0):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
             assert res[0]["status"] == "IN_ZONE"
@@ -559,6 +574,35 @@ def test_embedded_path_demotes_unscaled_credit(tmp_path):
     assert res["options_plan"]["short_strike"] == 0.0
     ts = res.get("options_menu", {}).get("tactical_spread", {})
     assert ts.get("structure") == "NONE"
+
+
+def test_sync_reports_to_watchlist_skips_tastytrade_on_gate_rejection():
+    """Verify Tastytrade alerts are NOT set if the report levels fail the validation gate."""
+    from run_watch_alerts import sync_reports_to_watchlist
+
+    fake_data = {
+        "ticker": "BADTICKER",
+        "date": "2026-09-23",
+        "side": "LONG",
+        "shares_plan": {
+            "entry_zone_low": 100.0,
+            "entry_zone_high": 105.0,
+            "tactical_stop": 110.0,  # inverted stop!
+            "target_1": 120.0,
+        },
+    }
+
+    with patch("run_watch_alerts.extract_watch_levels_from_report", return_value=fake_data), \
+         patch("run_watch_alerts.upsert_watch_target") as mock_upsert, \
+         patch("run_watch_alerts.TastytradeClient") as mock_tt_cls:
+        
+        mock_tt = MagicMock()
+        mock_tt_cls.return_value = mock_tt
+
+        count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="BADTICKER", sync_tastytrade=True)
+        assert count == 1
+        assert fake_data["verdict"] == "REJECTED_BY_GATE"
+        mock_tt.sync_watch_levels.assert_not_called()
 
 
 

@@ -436,7 +436,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             exp_dt = datetime.strptime(raw_exp.strip(), "%b %d, %Y")
             exp_date = exp_dt.strftime("%Y-%m-%d")
         except Exception:
-            exp_date = "2026-10-02"
+            exp_date = None
         opt_summary = f"{raw_exp} ${long_strike:.0f}/${short_strike:.0f} Bull Call Spread"
     else:
         # 2. Bull Put Spread regex (credit)
@@ -604,7 +604,9 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             "tactical_stop": tactical_stop,
             "target_1": target_1,
             "target_2": target_2,
-            "rr_ratio": 2.0 if (target_1 and entry_high and tactical_stop) else 0.0,
+                "rr_ratio": round(
+                    (target_1 - entry_high) / (entry_high - tactical_stop), 4
+                ) if (target_1 and entry_high and tactical_stop and entry_high > tactical_stop) else 0.0,
             "allocation_pct": 25.0,
         },
         "options_plan": {

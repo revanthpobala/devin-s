@@ -135,6 +135,25 @@ def save_model_a_report(
     digest_path.write_text(text, encoding="utf-8")
 
     metrics = extract_metrics(text)
+    try:
+        from src.tracking.suggestions_ledger import append_suggestion
+        e_val = float(metrics.entry) if metrics.entry else None
+        s_val = float(metrics.stop) if metrics.stop else None
+        t_val = float(metrics.target) if metrics.target else None
+        append_suggestion({
+            "ticker": ticker,
+            "date": date_str,
+            "source": "model_a",
+            "side": "LONG",
+            "entry_type": "LIMIT",
+            "entry_low": e_val,
+            "entry_high": e_val,
+            "stop": s_val,
+            "target_1": t_val,
+            "notes": f"Model A conviction={metrics.conviction}",
+        })
+    except Exception as e_sugg:
+        logger.debug(f"Failed to log Model A suggestion: {e_sugg}")
     logger.info(f"[{ticker}] Model A Summary generated successfully.")
     return text, metrics
 
@@ -166,5 +185,25 @@ def save_model_b_report(
     ind_triage_path = out_dir / f"{ticker}_independent_thesis.md"
     ind_triage_path.write_text(text, encoding="utf-8")
 
+    try:
+        b_metrics = extract_metrics(text)
+        from src.tracking.suggestions_ledger import append_suggestion
+        e_val = float(b_metrics.entry) if b_metrics.entry else None
+        s_val = float(b_metrics.stop) if b_metrics.stop else None
+        t_val = float(b_metrics.target) if b_metrics.target else None
+        append_suggestion({
+            "ticker": ticker,
+            "date": date_str,
+            "source": "model_b",
+            "side": "LONG",
+            "entry_type": "LIMIT",
+            "entry_low": e_val,
+            "entry_high": e_val,
+            "stop": s_val,
+            "target_1": t_val,
+            "notes": f"Model B conviction={b_metrics.conviction}",
+        })
+    except Exception as e_sugg:
+        logger.debug(f"Failed to log Model B suggestion: {e_sugg}")
     logger.info(f"[{ticker}] Independent Macro & Technical Summary generated at {ind_report_path}!")
     return text

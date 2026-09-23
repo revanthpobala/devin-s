@@ -25,6 +25,7 @@ from src.clients.price_client import get_current_price
 from src.clients.tastytrade_client import TastytradeClient
 from src.logic.report_level_extractor import extract_watch_levels_from_report
 from src.tracking.sheets_tracker import SheetsTracker
+from src.tracking.alert_db import get_eastern_now
 from src.tracking.watch_manager import (
     get_active_watch_targets,
     get_all_watch_targets,
@@ -67,17 +68,30 @@ def sync_reports_to_watchlist(
     for t in sorted(tickers):
         data = extract_watch_levels_from_report(t, date_str)
         if data:
+            from src.logic.level_validation import validate_levels
+            _ok, _reasons = validate_levels(
+                data.get("shares_plan", {}), data, data.get("side", "LONG")
+            )
+            if not _ok:
+                logger.warning(
+                    f"[{t}] Level gate FAILED: {'; '.join(_reasons)} — "
+                    f"logged as REJECTED_BY_GATE but still upserting for measurement."
+                )
+                data["verdict"] = "REJECTED_BY_GATE"
+                data["_gate_reasons"] = _reasons
             upsert_watch_target(data)
             count += 1
 
-            # Sync to Tastytrade cloud alerts
-            if tasty_client:
+            # Sync to Tastytrade cloud alerts: ONLY after deep research levels pass the validation gate
+            if tasty_client and _ok and data.get("verdict") != "REJECTED_BY_GATE":
                 try:
                     tt_alerts = tasty_client.sync_watch_levels(data)
                     if tt_alerts:
                         logger.info(f"[{t}] Registered {len(tt_alerts)} cloud alert(s) in Tastytrade.")
                 except Exception as e_tt:
                     logger.warning(f"[{t}] Tastytrade alert sync failed: {e_tt}")
+            elif tasty_client and not _ok:
+                logger.info(f"[{t}] Skipped Tastytrade cloud alert registration because level validation failed.")
 
     return count
 
@@ -155,18 +169,31 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         inv_cond = str(t.get("invalidation_condition") or "DAILY_CLOSE_BELOW").upper()
         is_stop_breached = False
         is_testing_floor = False
+        now_et = get_eastern_now()
+        is_after_close = (now_et.hour > 16) or (now_et.hour == 16 and now_et.minute >= 0)
+
         if inv_price and inv_price > 0:
             if side == "LONG":
                 if live_price <= inv_price:
-                    # Daily close defense: intraday probe within 1.5% is floor test, not immediate death
-                    if "CLOSE" in inv_cond and live_price > (inv_price * 0.985):
-                        is_testing_floor = True
+                    # Daily close defense: symmetric 1.0% band; only triggers close breach after 16:00 ET
+                    if "CLOSE" in inv_cond:
+                        if not is_after_close:
+                            is_testing_floor = True
+                        elif live_price > (inv_price * 0.99):
+                            is_testing_floor = True
+                        else:
+                            is_stop_breached = True
                     else:
                         is_stop_breached = True
             elif side == "SHORT":
                 if live_price >= inv_price:
-                    if "CLOSE" in inv_cond and live_price < (inv_price * 1.005):
-                        is_testing_floor = True
+                    if "CLOSE" in inv_cond:
+                        if not is_after_close:
+                            is_testing_floor = True
+                        elif live_price < (inv_price * 1.01):
+                            is_testing_floor = True
+                        else:
+                            is_stop_breached = True
                     else:
                         is_stop_breached = True
 
@@ -186,29 +213,19 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
 
         hit_breakout = False
         if breakout_level and breakout_level > 0:
-            if side == "LONG" and live_price >= breakout_level:
-                hit_breakout = True
-            elif side == "SHORT" and live_price <= breakout_level:
-                hit_breakout = True
+            # Breakouts require daily close above breakout_level
+            if is_after_close:
+                if side == "LONG" and live_price >= breakout_level:
+                    hit_breakout = True
+                elif side == "SHORT" and live_price <= breakout_level:
+                    hit_breakout = True
 
-        # Check Entry Zone / Floor Proximity (with 1.0% institutional front-running buffer)
+        # Check Entry Zone: strictly entry_low <= live_price <= entry_high (no 1% buffer, no stop-to-zone gap)
         hit_in_zone = False
         in_proximity_zone = False
         if entry_low and entry_high and entry_low > 0 and entry_high > 0:
             if entry_low <= live_price <= entry_high:
                 hit_in_zone = True
-            elif side == "LONG" and entry_high < live_price <= round(entry_high * 1.01, 2):
-                hit_in_zone = True
-                in_proximity_zone = True
-            elif side == "LONG" and inv_price and inv_price < live_price < entry_low:
-                hit_in_zone = True
-                in_proximity_zone = True
-            elif side == "SHORT" and round(entry_low * 0.99, 2) <= live_price < entry_low:
-                hit_in_zone = True
-                in_proximity_zone = True
-            elif side == "SHORT" and inv_price and entry_high < live_price < inv_price:
-                hit_in_zone = True
-                in_proximity_zone = True
 
         # A. Invalidation / Hard Stop Breach Check
         if is_stop_breached:
@@ -328,7 +345,21 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                 msg = f"[{ticker}] Bullish Reclaim! Price ${live_price:.2f} dipped and recovered above support level (${inv_price:.2f}). Thesis restored."
                 log_trigger_alert(ticker, alert_fired, msg, live_price)
             else:
-                new_status = "STALKING"
+                setup_date_str = str(t.get("date") or "")
+                is_expired = False
+                if setup_date_str:
+                    try:
+                        from datetime import datetime, timedelta
+                        s_dt = datetime.strptime(setup_date_str[:10], "%Y-%m-%d").date()
+                        t_dt = get_eastern_now().date()
+                        days_diff = (t_dt - s_dt).days
+                        if days_diff > 0:
+                            bus_days = sum(1 for d in range(days_diff) if (s_dt + timedelta(days=d)).weekday() < 5)
+                            if bus_days >= 5:
+                                is_expired = True
+                    except Exception:
+                        pass
+                new_status = "EXPIRED" if is_expired else "STALKING"
 
         # Update SQLite DB
         update_target_live_state(

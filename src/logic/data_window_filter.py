@@ -814,18 +814,12 @@ def run_data_window_filter(
         triage, reason = "CUT", "warmup_stage_0"       # no history: nothing is computable
     elif W["target"] is None and W["chased"]:
         triage, reason = "CUT", "chasing_without_target"  # no target: no plan to construct
-    elif is_rsi2_setup:
-        triage = "PASS"
-        reason = "rsi2_setup_lane"
-    elif act_code == 20:
+    # Code 20 (REVERSAL BUY): requires at-market R:R >= 2.0 per Phase 6
+    elif act_code == 20 and rr_mkt is not None and rr_mkt >= RR_MKT_PASS:
         triage = "PASS"
         reason = "reversal_buy_lane"
     # THE BREADTH-VERIFIED LANE. Mirrors the chart's slate/teal callout exactly: in long zone AND
-    # at-market R:R >= 2 AND fade off. +0.116R, 4/4 eras, 12/12 sectors, 69.9% of 519 names,
-    # n=39,740 -- the only rule here that survived both a sector and a ticker breadth test, and
-    # strictly better evidenced than the code-20 lane above it (whose breadth is unverifiable: only
-    # 8/19 names reach n>=30). Kept BELOW code 20 because code 20 never fires in-zone, so the two
-    # lanes are disjoint, and this preserves the existing 'is_rev_buy' sort tier.
+    # at-market R:R >= 2 AND fade off.
     elif (
         RR_LANE_ENABLED
         and W["side"] == "long"
@@ -837,6 +831,10 @@ def run_data_window_filter(
     ):
         triage = "PASS"
         reason = "rr_at_market_lane_strong" if rr_mkt >= RR_MKT_STRONG else "rr_at_market_lane"
+    # RSI2 branch ranked below at-market R:R lane; requires not no_fresh_long per Phase 6
+    elif is_rsi2_setup and not no_fresh_long:
+        triage = "PASS"
+        reason = "rsi2_setup_lane"
     elif no_fresh_long:
         # Negative for BUYING, but not unbuildable -- and measurably the best premium-SELLING state.
         triage = "WATCH"
@@ -845,11 +843,6 @@ def run_data_window_filter(
         # All other non-excluded setups clear to WATCH
         triage = "WATCH"
         reason = W["reason"] if W["reason"] != "setup" else "constructible_watch"
-
-    # EV/buy-score gate: PASS with positive ev_r but buy score < 65 -> WATCH
-    if triage == "PASS" and W["ev_r"] is not None and W["ev_r"] > 0 and (W["score"] or 0.0) < 65:
-        triage = "WATCH"
-        reason = "low_buy_score"
 
     # Soft demotions / caution flags
     flags = list(W["flags"])

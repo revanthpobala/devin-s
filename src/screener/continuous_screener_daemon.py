@@ -33,9 +33,9 @@ _daemon_instance: Optional[ContinuousScreenerDaemon] = None
 
 def enrich_candidates_with_tastytrade(
     candidates: List[Dict[str, Any]],
-    auto_alerts: bool = True,
+    auto_alerts: bool = False,
 ) -> int:
-    """Enrich candidates with Tastytrade IV metrics and auto-register 24/7 cloud price alerts."""
+    """Enrich candidates with Tastytrade IV metrics. Note: Cloud price alerts are registered only after deep research completes."""
     if not candidates:
         return 0
 
@@ -186,7 +186,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         self,
         poll_interval: int = DEFAULT_SCAN_INTERVAL,
         top_n: int = 10,
-        auto_alerts: bool = True,
+        auto_alerts: bool = False,
         market_hours_only: Optional[bool] = None,
         auto_deep_research: Optional[bool] = None,
         max_concurrent_slots: int = 3,
@@ -726,7 +726,7 @@ class ContinuousScreenerDaemon(threading.Thread):
 def start_continuous_screener_daemon(
     poll_interval: int = DEFAULT_SCAN_INTERVAL,
     top_n: int = 10,
-    auto_alerts: bool = True,
+    auto_alerts: bool = False,
     market_hours_only: bool = False,
     auto_deep_research: Optional[bool] = None,
     max_concurrent_slots: int = 3,
@@ -801,7 +801,7 @@ if __name__ == "__main__":
     daemon = ContinuousScreenerDaemon(
         poll_interval=args.interval,
         top_n=args.top,
-        auto_alerts=True,
+        auto_alerts=False,
         market_hours_only=args.market_hours_only,
         auto_deep_research=args.auto_deep,
         max_concurrent_slots=args.max_slots,

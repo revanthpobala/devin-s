@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, date
 from typing import Optional
 
@@ -18,6 +19,9 @@ from src.ui.state import get_db
 
 logger = logging.getLogger("ui_server")
 router = APIRouter(tags=["trades"])
+
+_SUGGESTED_CACHE: dict = {}
+_SUGGESTED_CACHE_TTL = 30  # 30 seconds
 
 
 @router.get("/api/trades/audit")
@@ -37,7 +41,7 @@ def get_trades_audit(
             page=page,
             page_size=page_size,
             window=window,
-            force_sync=True
+            force_sync=False
         )
     except Exception as e:
         logger.error(f"Error in get_trades_audit: {e}", exc_info=True)
@@ -50,8 +54,10 @@ def evaluate_trades_audit(
 ):
     """Triggers on-demand evaluation of suggested trades against live quotes and updates SQLite."""
     try:
-        from src.tracking.suggested_trades_auditor import evaluate_all_suggested_trades
+        from src.tracking.suggested_trades_auditor import evaluate_all_suggested_trades, _AUDIT_CACHE
         result = evaluate_all_suggested_trades(refresh_quotes=True, window=window)
+        _AUDIT_CACHE.clear()
+        _SUGGESTED_CACHE.clear()
         return {"success": True, "message": f"Successfully evaluated live quotes on demand for last {window} trades.", **result}
     except Exception as e:
         logger.error(f"Error in evaluate_trades_audit: {e}", exc_info=True)
@@ -62,6 +68,13 @@ def evaluate_trades_audit(
 def get_suggested_trades_endpoint():
     """Returns structured suggested trades from watch_targets with live PnL and outcome metrics."""
     try:
+        _cache_key = "suggested_trades"
+        _now = time.time()
+        if _cache_key in _SUGGESTED_CACHE:
+            _cached_ts, _cached_result = _SUGGESTED_CACHE[_cache_key]
+            if _now - _cached_ts < _SUGGESTED_CACHE_TTL:
+                return _cached_result
+
         rep_root = config.BASE_DIR / "reports"
         with get_db() as conn:
             c = conn.cursor()
@@ -142,7 +155,9 @@ def get_suggested_trades_endpoint():
             "target_hit": sum(1 for tr in trades if tr.get("status") in ("TARGET_HIT", "COMPLETED")),
             "stopped": sum(1 for tr in trades if tr.get("status") in ("STOP_BREACHED", "STOPPED", "INVALIDATED")),
         }
-        return {"trades": trades, "summary": summary}
+        result = {"trades": trades, "summary": summary}
+        _SUGGESTED_CACHE[_cache_key] = (_now, result)
+        return result
     except Exception as e:
         logger.error(f"Failed to fetch suggested trades: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -292,4 +307,32 @@ def calculate_options_spread_live(
         }
     except Exception as e:
         logger.error(f"Error calculating live options spread: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/trades/sources")
+def get_trades_per_source():
+    """Return performance metrics aggregated per research source from suggestions ledger."""
+    try:
+        from src.tracking.suggestions_ledger import get_per_source_stats
+        return {"success": True, "sources": get_per_source_stats()}
+    except Exception as e:
+        logger.error(f"Error fetching per-source stats: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "sources": []}
+
+
+@router.post("/api/trades/suggestions/{suggestion_id}/taken")
+def update_suggestion_taken_endpoint(
+    suggestion_id: int,
+    taken: bool = Query(...),
+    your_fill: Optional[float] = Query(None),
+    notes: Optional[str] = Query(None),
+):
+    """Toggle taken flag and optionally update your_fill/notes on a suggestion row."""
+    try:
+        from src.tracking.suggestions_ledger import update_suggestion_user_input
+        ok = update_suggestion_user_input(suggestion_id, taken=taken, your_fill=your_fill, notes=notes)
+        return {"success": ok}
+    except Exception as e:
+        logger.error(f"Error updating suggestion {suggestion_id}: {e}", exc_info=True)
         return {"success": False, "error": str(e)}

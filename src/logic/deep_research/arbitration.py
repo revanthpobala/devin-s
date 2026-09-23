@@ -149,7 +149,12 @@ def run_arbitration(
         f"  * Moving Averages: MA20={f_parsed.get('ma20', 'N/A')}, MA50={f_parsed.get('ma50', 'N/A')}, MA200={f_parsed.get('ma200', 'N/A')}\n"
         f"  * Volume Profile: POC={f_parsed.get('vp_poc', 'N/A')}, VAL={f_parsed.get('vp_val', 'N/A')}, VAH={f_parsed.get('vp_vah', 'N/A')}\n"
         f"  * Volatility: HV20={f_parsed.get('hv20', 'N/A')}%, IV30={f_parsed.get('iv30', 'N/A')}%, IV Rank={f_parsed.get('iv_rank', 'N/A')}%\n"
-        f"  * 52W Milestones: 52W High={dw_dict.get('52 Week High', 'N/A')}, 52W Low={dw_dict.get('52 Week Low', 'N/A')}"
+        f"  * 52W Milestones: 52W High={dw_dict.get('52 Week High', 'N/A')}, 52W Low={dw_dict.get('52 Week Low', 'N/A')}\n"
+        f"  * Pine Levels: Long Entry Zone Bot={dw_dict.get('Long Entry Zone Bot', 'N/A')}, "
+        f"Long Entry Zone Top={dw_dict.get('Long Entry Zone Top', 'N/A')}, "
+        f"Long Stop Loss={dw_dict.get('Long Stop Loss', 'N/A')}, "
+        f"Long Target={dw_dict.get('Long Target', 'N/A')}, "
+        f"Long RR At Market={dw_dict.get('Long RR At Market', 'N/A')}"
     )
 
     judge_user_prompt = f"""
@@ -216,9 +221,37 @@ def run_arbitration(
 
             logger.info(f"[{ticker}] Extracted structured watch levels -> {watch_path}")
 
+            from src.logic.level_validation import validate_levels
             from src.tracking.watch_manager import upsert_watch_target
+            from src.tracking.suggestions_ledger import append_suggestion
+            _ok, _reasons = validate_levels(watch_data, dw_dict, watch_data.get("side", "LONG"))
+            if not _ok:
+                logger.warning(
+                    f"[{ticker}] Level gate FAILED: {'; '.join(_reasons)} — "
+                    f"logging as REJECTED_BY_GATE but still upserting for measurement."
+                )
+                watch_data["verdict"] = "REJECTED_BY_GATE"
+                watch_data["_gate_reasons"] = _reasons
             upsert_watch_target(watch_data)
             logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB.")
+
+            sp = watch_data.get("shares_plan", {})
+            append_suggestion({
+                "ticker": ticker,
+                "date": date_str,
+                "source": "judge",
+                "side": watch_data.get("side", "LONG"),
+                "entry_type": sp.get("entry_type", "LIMIT"),
+                "entry_low": sp.get("entry_zone_low"),
+                "entry_high": sp.get("entry_zone_high"),
+                "breakout_level": sp.get("breakout_level"),
+                "stop": sp.get("tactical_stop"),
+                "target_1": sp.get("target_1"),
+                "target_2": sp.get("target_2"),
+                "planned_rr": sp.get("rr_ratio"),
+                "_datawindow": dw_dict,
+                "notes": f"Judge directive: {watch_data.get('verdict')}",
+            })
 
         except Exception as e:
             logger.warning(f"[{ticker}] Failed to parse embedded watch levels JSON: {e}")

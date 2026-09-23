@@ -147,7 +147,7 @@ def main():
     daemon = ContinuousScreenerDaemon(
         poll_interval=args.interval,
         top_n=args.top,
-        auto_alerts=True,
+        auto_alerts=False,
         market_hours_only=args.market_hours_only,
         auto_deep_research=args.auto_deep,
         max_concurrent_slots=1,

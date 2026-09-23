@@ -6,6 +6,20 @@ import urllib.error
 BASE_URL = "http://127.0.0.1:8050"
 
 
+def _is_server_running() -> bool:
+    try:
+        with urllib.request.urlopen(f"{BASE_URL}/", timeout=1):
+            return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _is_server_running(),
+    reason="Cockpit server not running on http://127.0.0.1:8050 (run run_ui.py to execute live E2E tests)",
+)
+
+
 def _fetch(endpoint, method="GET", data=None, headers=None, timeout=10):
     url = f"{BASE_URL}{endpoint}"
     req_headers = {"Content-Type": "application/json"}

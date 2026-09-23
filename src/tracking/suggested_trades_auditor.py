@@ -12,6 +12,7 @@ and historical attribution without running on-the-fly calculations on every requ
 import json
 import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,9 @@ from typing import Any, Dict, List, Optional
 from src.tracking.watch_manager import _get_connection, _db_lock, _now_iso
 
 logger = logging.getLogger("suggested_trades_auditor")
+
+_AUDIT_CACHE: Dict[str, tuple[float, dict]] = {}
+_AUDIT_CACHE_TTL = 30  # 30 seconds
 
 
 def sync_suggested_trades_from_watch_targets() -> int:
@@ -63,13 +67,16 @@ def sync_suggested_trades_from_watch_targets() -> int:
                 target_1 = float(t.get("target_1") or sp.get("target_1") or 0.0)
                 target_2 = float(t.get("target_2") or sp.get("target_2") or 0.0)
 
-                # Determine mid entry price
-                if breakout_lvl > 0:
+                # Determine mid entry price (honor entry_type; do not use breakout_lvl for LIMIT entries)
+                entry_mode = str(t.get("entry_type") or sp.get("entry_type") or "LIMIT").upper()
+                if entry_mode == "BREAKOUT" and breakout_lvl > 0:
                     entry_price = breakout_lvl
                 elif entry_low > 0 and entry_high > 0:
                     entry_price = round((entry_low + entry_high) / 2.0, 2)
                 elif entry_low > 0:
                     entry_price = entry_low
+                elif breakout_lvl > 0:
+                    entry_price = breakout_lvl
                 else:
                     entry_price = last_price
 
@@ -261,17 +268,23 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 is_options = (trade_type == "OPTIONS")
 
                 from src.tracking.execution_validator import evaluate_setup_lifecycle
+                e_type = str(t.get("entry_type") or "LIMIT").upper()
+                bo_lvl = float(t.get("breakout_level") or 0.0)
                 eval_res = evaluate_setup_lifecycle(
                     ticker=t["ticker"],
                     setup_date=t.get("date") or "",
                     side=side,
+                    entry_type=e_type,
                     entry_low=entry_low,
                     entry_high=entry_high,
+                    breakout_level=bo_lvl,
                     stop_loss=stop,
                     target_1=t1,
                     target_2=float(t.get("target_2") or 0.0),
                     live_price=spot,
                     current_status=status,
+                    max_holding_bars=21,
+                    skip_setup_bar=True,
                 )
                 status = eval_res["status"]
                 if eval_res["was_filled"] and entry <= 0:
@@ -370,6 +383,14 @@ def get_audit_summary(
     """
     if force_sync:
         sync_suggested_trades_from_watch_targets()
+        _AUDIT_CACHE.clear()
+
+    cache_key = f"{tab}:{search or ''}:{page}:{page_size}:{window}"
+    now = time.time()
+    if cache_key in _AUDIT_CACHE:
+        cached_ts, cached_result = _AUDIT_CACHE[cache_key]
+        if now - cached_ts < _AUDIT_CACHE_TTL:
+            return cached_result
 
     with _db_lock:
         with _get_connection() as conn:
@@ -509,10 +530,12 @@ def get_audit_summary(
                 "window": window,
             }
 
-            return {
+            result = {
                 "success": True,
                 "summary": summary,
                 "tab_counts": tab_counts,
                 "pagination": pagination,
                 "trades": paged_trades,
             }
+            _AUDIT_CACHE[cache_key] = (time.time(), result)
+            return result

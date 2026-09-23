@@ -58,8 +58,36 @@ def find_live_research_pid(ticker: str, job_id: Optional[str] = None) -> Optiona
     return None
 
 
+def _watch_orphaned_job(jid: str, ticker_sym: str, pid: int, t_date: str):
+    """Monitor an alive process that was orphaned by UI restart until completion."""
+    import psutil
+    import time
+    try:
+        proc = psutil.Process(pid)
+        while proc.is_running():
+            time.sleep(5)
+    except (psutil.NoSuchProcess, Exception):
+        pass
+
+    rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_summary.md"
+    arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_arbitration.md"
+    new_status = "COMPLETED" if (rep_file.exists() or arb_file.exists()) else "FAILED"
+    new_err = None if new_status == "COMPLETED" else "Process exited without generating reports"
+    try:
+        with get_db() as conn:
+            conn.cursor().execute(
+                "UPDATE active_research_jobs SET status = ?, stage = CASE WHEN ? = 'COMPLETED' THEN 'DONE' ELSE 'ERROR' END, completed_at = ?, error_message = ? WHERE job_id = ?",
+                (new_status, new_status, datetime.now(timezone.utc).isoformat(), new_err, jid),
+            )
+            conn.commit()
+        logger.info(f"⚡ [Queue Recovery] Orphaned job {jid} ({ticker_sym}) resolved to {new_status}.")
+    except Exception as e:
+        logger.warning(f"Failed updating orphaned job {jid}: {e}")
+    dispatch_next_queued_job()
+
+
 def rehydrate_active_jobs():
-    """Check running jobs in DB on startup and mark dead ones as FAILED unless reports exist or process is running."""
+    """Check running jobs in DB on startup. Re-attach to alive jobs instead of killing them."""
     import psutil
     init_db()
     try:
@@ -73,15 +101,27 @@ def rehydrate_active_jobs():
                 t_date = r["target_date"] or datetime.now().strftime("%Y-%m-%d")
 
                 is_alive = False
+                effective_pid = None
                 if pid and psutil.pid_exists(pid):
                     is_alive = True
+                    effective_pid = pid
                 else:
                     live_pid = find_live_research_pid(ticker_sym, jid)
                     if live_pid:
                         is_alive = True
+                        effective_pid = live_pid
                         c.execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (live_pid, jid))
 
-                if not is_alive:
+                if is_alive and effective_pid:
+                    # Spawn watchdog thread to re-attach and await process exit
+                    logger.info(f"⚡ [Queue Recovery] Re-attaching to running research job {jid} for {ticker_sym} (PID {effective_pid}).")
+                    watcher = threading.Thread(
+                        target=_watch_orphaned_job,
+                        args=(jid, ticker_sym, effective_pid, t_date),
+                        daemon=True,
+                    )
+                    watcher.start()
+                else:
                     rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_summary.md"
                     arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_arbitration.md"
                     if rep_file.exists() or arb_file.exists():

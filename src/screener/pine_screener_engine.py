@@ -592,23 +592,30 @@ def evaluate_pine_screener_model(
     )
 
     # 8. Composite Conviction / Priority Score (0 to 100)
-    # Rewards Stage 2/1 basing (LONG) or Stage 4/1/5 (SHORT), Rev Zone >= 7,
-    # Volatility Squeeze, High R:R, and Bayesian buy/sell sigma.
+    # Phase 6: Rank on R:R and stop proximity; stage and squeeze are used for display only.
     score = 0.0
 
-    # A. Weinstein Stage (+20 pts, mirrored for SHORT)
-    if is_short:
-        if stage == 4:
-            score += 20.0
-        elif stage in (1, 5):
-            score += 15.0
-    else:
-        if stage == 2:
-            score += 20.0
-        elif stage in (1, 5):
-            score += 15.0
+    # A. Proxy Risk:Reward (Up to 50 pts — primary ranker)
+    if proxy_rr >= 3.5:
+        score += 50.0
+    elif proxy_rr >= 3.0:
+        score += 42.0
+    elif proxy_rr >= 2.5:
+        score += 34.0
+    elif proxy_rr >= 2.0:
+        score += 25.0
+    elif proxy_rr >= 1.5:
+        score += 15.0
 
-    # B. Reversal Zone / Connors Mean Reversion (+25 pts)
+    # B. Stop Proximity (ATRs Above Stop <= 1.0) (Up to 25 pts)
+    if atrs_up <= 0.5:
+        score += 25.0
+    elif atrs_up <= 1.0:
+        score += 18.0
+    elif atrs_up <= 1.5:
+        score += 10.0
+
+    # C. Reversal Zone / Connors Mean Reversion (Up to 25 pts)
     if is_short:
         if rev_short >= 7.0:
             score += 25.0
@@ -619,26 +626,6 @@ def evaluate_pine_screener_model(
             score += 25.0
         elif rev_long >= 5.0:
             score += 15.0
-
-    # C. Squeeze / Compression (+20 pts)
-    if sqz_on:
-        score += 20.0
-    elif vcp_energy == 2:
-        score += 18.0
-
-    # D. Proxy Risk:Reward (+20 pts)
-    if proxy_rr >= 3.0:
-        score += 20.0
-    elif proxy_rr >= 2.2:
-        score += 15.0
-    elif proxy_rr >= 1.8:
-        score += 10.0
-
-    # E. Stop Proximity (ATRs Above Stop <= 1.0) (+15 pts)
-    if atrs_up <= 0.5:
-        score += 15.0
-    elif atrs_up <= 1.0:
-        score += 10.0
 
     # F. Bayesian Sigma (buy_score/sell_score) (+5 pts each direction)
     # High buy_score confirms long conviction; high sell_score confirms short conviction.

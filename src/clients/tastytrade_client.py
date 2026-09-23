@@ -331,11 +331,16 @@ class TastytradeClient:
         matched_existing_ids = set()
         unmatched_specs = []
 
-        # Pass 1: Claim all EXACT matches first across all specs
+        # Pass 1: Claim all EXACT matches first across all specs (normalizing operator strings)
+        def _norm_op(raw_op: str) -> str:
+            if str(raw_op) in (">", ">=", "GreaterThanOrEqualTo", "above", "GT", "GE", "greater_than", "GreaterThan"):
+                return ">"
+            return "<"
+
         for spec in desired_specs:
             op, target_thresh, label = spec
             exact_match = next(
-                (a for a in ticker_alerts if a.get("operator") == op and round(float(a.get("threshold", 0)), 2) == target_thresh and a.get("alert-external-id") not in matched_existing_ids),
+                (a for a in ticker_alerts if _norm_op(a.get("operator", "")) == op and round(float(a.get("threshold", 0)), 2) == target_thresh and a.get("alert-external-id") not in matched_existing_ids),
                 None
             )
             if exact_match:
@@ -347,7 +352,7 @@ class TastytradeClient:
         # Pass 2: Modify remaining stale alerts or create new ones
         for op, target_thresh, label in unmatched_specs:
             stale_match = next(
-                (a for a in ticker_alerts if a.get("operator") == op and a.get("alert-external-id") not in matched_existing_ids),
+                (a for a in ticker_alerts if _norm_op(a.get("operator", "")) == op and a.get("alert-external-id") not in matched_existing_ids),
                 None
             )
 

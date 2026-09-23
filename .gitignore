@@ -56,3 +56,4 @@ pine-script-indicators/*
 reports/*
 .tv-state.json
 kalshi/*
+edge_scanner_tmp/

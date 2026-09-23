@@ -261,7 +261,7 @@ def get_active_watch_targets() -> List[Dict[str, Any]]:
             cursor.execute(
                 """
                 SELECT * FROM watch_targets 
-                WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE')
+                WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT')
                 ORDER BY date DESC, conviction DESC
                 """
             )

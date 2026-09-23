@@ -1355,7 +1355,7 @@ def run_autonomous_screener_pipeline(
             logger.info(f"[{sym}] 2/4: Running Local Research (Deterministic triage + Local Qwen)...")
             try:
                 cmd_local = [py_exe, "run_local_research.py", t_date, "--ticker", sym]
-                subprocess.run(cmd_local, cwd=config.BASE_DIR, check=True)
+                subprocess.run(cmd_local, cwd=config.BASE_DIR, check=True, timeout=300)
             except Exception as e_local:
                 logger.error(f"[{sym}] Local research error: {e_local}")
                 continue
@@ -1395,7 +1395,7 @@ def run_autonomous_screener_pipeline(
                         cmd_scrape = [py_exe, "run_swing_research.py", t_date, "--ticker", sym]
                         if headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"):
                             cmd_scrape.append("--headless")
-                        subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True)
+                        subprocess.run(cmd_scrape, cwd=config.BASE_DIR, check=True, timeout=600)
                     except Exception as e_scrape:
                         logger.error(f"[{sym}] Multimodal chart scrape notice: {e_scrape}")
                 else:
@@ -1408,10 +1408,10 @@ def run_autonomous_screener_pipeline(
                 deep_done = False
                 try:
                     cmd_deep = [py_exe, "run_deep_research.py", t_date, "--ticker", sym]
-                    subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True)
+                    subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True, timeout=600)
 
                     logger.info(f"[{sym}] Syncing research watch levels & Tastytrade cloud quote alerts...")
-                    subprocess.run([py_exe, "run_watch_alerts.py", "--sync", "--once"], cwd=config.BASE_DIR)
+                    subprocess.run([py_exe, "run_watch_alerts.py", "--sync", "--once"], cwd=config.BASE_DIR, timeout=120)
                     deep_done = True
                 except Exception as e_deep:
                     logger.error(f"[{sym}] Deep research error: {e_deep}")

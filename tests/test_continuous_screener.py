@@ -18,6 +18,12 @@ from src.screener.continuous_screener_daemon import (
 )
 
 
+def test_continuous_screener_default_auto_alerts_disabled():
+    """Verify Tastytrade cloud alerts are disabled by default on screener passes (only set after deep research)."""
+    daemon = ContinuousScreenerDaemon()
+    assert daemon.auto_alerts is False
+
+
 def test_continuous_screener_initialization_and_status():
     daemon = ContinuousScreenerDaemon(poll_interval=300, top_n=5, auto_alerts=True)
     assert daemon.poll_interval == 300

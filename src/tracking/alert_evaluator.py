@@ -205,28 +205,7 @@ def evaluate_risk_vetoes(
         )
         return hdr, pb
 
-    # 2. Weinstein Stage & Multi-Timeframe Alignment Gate (First Principles - Never Fight Structural Trend)
-    align_clean = str(align or "").lower()
-    is_stg4 = "stg4" in align_clean or "decline" in align_clean
-    is_stg2 = "stg2" in align_clean or "advance" in align_clean
-    if side == "LONG" and is_stg4:
-        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (COUNTER-STAGE: STAGE 4 DECLINE)"
-        pb = (
-            f"{hdr}\n\n"
-            f"⛔ REGIME VETO: Counter-trend CALL entry into a Stage 4 Structural Decline ({align}).\n"
-            f"Weekly & Daily trends are declining. Counter-trend intraday bounces in Stage 4 face immediate institutional supply.\n"
-            f"Execution discipline requires aligning with the structural trend."
-        )
-        return hdr, pb
-    if side == "SHORT" and is_stg2:
-        hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (COUNTER-STAGE: STAGE 2 ADVANCE)"
-        pb = (
-            f"{hdr}\n\n"
-            f"⛔ REGIME VETO: Counter-trend PUT entry into a Stage 2 Structural Advance ({align}).\n"
-            f"Weekly & Daily trends are advancing. Counter-trend pullbacks in Stage 2 get aggressively absorbed by institutional demand.\n"
-            f"Execution discipline requires aligning with the structural trend."
-        )
-        return hdr, pb
+    # 2. Weinstein Stage veto dropped for 0DTE per Phase 0 (11-day replay proved no edge in blocking counter-stage Grade A entries).
 
     # 3. Optional Explicit Ticker Exclusion (Configurable via env, default none)
     excluded_env = os.getenv("INTRADAY_EXCLUDED_TICKERS", "")

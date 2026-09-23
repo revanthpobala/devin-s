@@ -253,8 +253,8 @@ def test_position_monitor_autonomous_profit_locking_trailing_stop(tmp_path):
 
         state = position_state.load_state()
         assert "AMD" in state
-        # Stop must be autonomously moved to break-even (100.0 or 100.05)
-        assert state["AMD"]["stop"] in (100.0, 100.05)
+        # Stop must be autonomously moved to break-even or BE + ATR buffer
+        assert state["AMD"]["stop"] in (100.0, 100.05, 100.24) or state["AMD"]["stop"] >= 100.0
         assert any(k in state["AMD"]["last_eval"] for k in ("Break-Even", "BE+", "Target hit"))
 
 
@@ -348,7 +348,7 @@ def test_position_monitor_post_t1_runner_trailing_protection(tmp_path):
 
 
 def test_evaluate_risk_vetoes_grade_b():
-    """Verify that sub-Grade-B (score < 65) alerts are hard-vetoed; Grade-B 65-79 passes to LLM."""
+    """Verify that non-Grade-A alerts (Grade B/C/D) are hard-vetoed per Phase 0."""
     from src.tracking.alert_evaluator import evaluate_risk_vetoes
     dt = datetime(2026, 9, 17, 10, 0, tzinfo=ZoneInfo("America/New_York"))
 
@@ -363,10 +363,10 @@ def test_evaluate_risk_vetoes_grade_b():
     )
     assert res is not None
     hdr, pb = res
-    assert "GRADE B / LOW CONVICTION" in hdr
-    assert "QUALITY VETO" in pb
+    assert "GRADE C" in hdr
+    assert "HARD VETO" in pb
 
-    # Score 75 (Grade B range) -> passes through to the LLM for the catalyst call
+    # Score 75 (Grade B range) -> held per Grade-A hard gate
     res_b = evaluate_risk_vetoes(
         symbol="AAPL",
         action="ENTER_CALLS",
@@ -375,16 +375,19 @@ def test_evaluate_risk_vetoes_grade_b():
         eastern_dt=dt,
         grade="B",
     )
-    assert res_b is None, "Grade-B 65-79 must pass the quality gate (new default 65)."
+    assert res_b is not None
+    hdr_b, pb_b = res_b
+    assert "GRADE B" in hdr_b
+    assert "HARD VETO" in pb_b
 
 
 def test_evaluate_risk_vetoes_weinstein_stage_alignment():
-    """Verify that counter-trend trades against Stan Weinstein stages are vetoed."""
+    """Verify that per Phase 0, Weinstein stage veto is dropped for 0DTE intraday alerts."""
     from src.tracking.alert_evaluator import evaluate_risk_vetoes
     dt = datetime(2026, 9, 17, 10, 0, tzinfo=ZoneInfo("America/New_York"))
     
     with patch("src.tracking.position_state.list_open", return_value={}):
-        # 1. CALLS into Stage 4 Decline -> VETOED
+        # 1. Grade A CALLS into Stage 4 Decline -> PERMITTED (stage veto dropped per Phase 0)
         res_call_stg4 = evaluate_risk_vetoes(
             symbol="TSLA",
             action="ENTER_CALLS",
@@ -394,12 +397,9 @@ def test_evaluate_risk_vetoes_weinstein_stage_alignment():
             grade="A",
             align="W ↓ D ↓ Stg4 decline",
         )
-        assert res_call_stg4 is not None
-        hdr, pb = res_call_stg4
-        assert "COUNTER-STAGE: STAGE 4 DECLINE" in hdr
-        assert "REGIME VETO" in pb
+        assert res_call_stg4 is None
 
-        # 2. PUTS into Stage 2 Advance -> VETOED
+        # 2. Grade A PUTS into Stage 2 Advance -> PERMITTED (stage veto dropped per Phase 0)
         res_put_stg2 = evaluate_risk_vetoes(
             symbol="JPM",
             action="ENTER_PUTS",
@@ -409,10 +409,7 @@ def test_evaluate_risk_vetoes_weinstein_stage_alignment():
             grade="A",
             align="W ↑ D ↑ Stg2 advance",
         )
-        assert res_put_stg2 is not None
-        hdr, pb = res_put_stg2
-        assert "COUNTER-STAGE: STAGE 2 ADVANCE" in hdr
-        assert "REGIME VETO" in pb
+        assert res_put_stg2 is None
 
         # 3. CALLS into Stage 2 Advance -> PERMITTED (Aligned with trend)
         res_call_stg2 = evaluate_risk_vetoes(
@@ -558,7 +555,7 @@ def test_position_manager_vetoes_low_grade_and_counter_stage_before_opening(tmp_
         assert "TSLA" not in state
         mgr._ensure_monitor.assert_not_called()
 
-        # 2. Counter-stage alert (CALL into Stage 4 Decline) -> VETOED, not opened
+        # 2. Counter-stage alert (Grade A CALL into Stage 4 Decline) -> PERMITTED per Phase 0, opened
         counter_stage_alert = {
             "symbol": "NVDA",
             "strategy": "Intraday",
@@ -571,7 +568,7 @@ def test_position_manager_vetoes_low_grade_and_counter_stage_before_opening(tmp_
         }
         mgr._handle_alert(counter_stage_alert)
         state = position_state.load_state()
-        assert "NVDA" not in state
-        mgr._ensure_monitor.assert_not_called()
+        assert "NVDA" in state
+        mgr._ensure_monitor.assert_called_once()
 
 

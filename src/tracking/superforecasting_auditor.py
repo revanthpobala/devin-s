@@ -54,30 +54,57 @@ def extract_predictions_from_report(report_path: Path) -> List[Dict[str, Any]]:
         return []
 
 
-def parse_event_condition(event_desc: str) -> Tuple[Optional[str], Optional[float]]:
+def parse_event_condition(pred_item: Any) -> Tuple[Optional[str], Optional[float], str, Optional[float]]:
     """
-    Parses event text to determine operator and threshold.
-    Returns (condition_type, price_level)
-    e.g. 'closes above $14.50' -> ('ABOVE', 14.50)
-         'closes below $12.83' -> ('BELOW', 12.83)
-         'reaches Profit Target 1 of $104.92' -> ('ABOVE', 104.92)
-         'enters Pine Script Buy Zone [$90.00 – $93.00]' -> ('BELOW', 93.00)
+    Parses structured prediction dict or event text.
+    Returns (direction 'ABOVE'|'BELOW', price_level, eval_type 'TOUCH'|'CLOSE', before_level).
     """
-    desc = event_desc.lower()
+    if isinstance(pred_item, dict):
+        ev_type = str(pred_item.get("type", "")).lower()
+        level = pred_item.get("level")
+        before_lvl = pred_item.get("before_level")
+        if level is not None:
+            try:
+                lvl_f = float(level)
+                b_lvl_f = float(before_lvl) if before_lvl is not None else None
+                if ev_type in ("touch", "touches"):
+                    # Infer direction if not explicit
+                    return ("ABOVE", lvl_f, "TOUCH", b_lvl_f)
+                elif "close_below" in ev_type:
+                    return ("BELOW", lvl_f, "CLOSE", b_lvl_f)
+                elif "close_above" in ev_type:
+                    return ("ABOVE", lvl_f, "CLOSE", b_lvl_f)
+            except (ValueError, TypeError):
+                pass
+        desc = str(pred_item.get("event", "")).lower()
+    else:
+        desc = str(pred_item).lower()
+
     prices = [float(p) for p in re.findall(r"\$\s*([0-9]+\.?[0-9]*)", desc)]
     if not prices:
-        return None, None
+        return None, None, "CLOSE", None
 
-    if any(k in desc for k in ("enter", "zone", "pullback", "test")):
-        return "BELOW", max(prices)
+    is_touch = any(k in desc for k in ("touch", "reaches", "enter", "pullback")) or bool(re.search(r"\btest\b", desc))
+    eval_type = "TOUCH" if is_touch else "CLOSE"
+
+    before_level = None
+    before_m = re.search(r"before\s+(?:hitting\s+)?(?:stop\s+(?:loss\s+)?of\s+)?\$\s*([0-9]+\.?[0-9]*)", desc)
+    if before_m:
+        try:
+            before_level = float(before_m.group(1))
+        except ValueError:
+            pass
+
+    if any(k in desc for k in ("enter", "zone", "pullback")) or re.search(r"\btest\b", desc):
+        return "BELOW", max(prices), "TOUCH", before_level
 
     price = prices[0]
     if any(k in desc for k in ("above", "reclaim", "target", "high", "up to", "breakout")):
-        return "ABOVE", price
+        return "ABOVE", price, eval_type, before_level
     elif any(k in desc for k in ("below", "break", "down to", "low", "stop", "drop")):
-        return "BELOW", price
+        return "BELOW", price, eval_type, before_level
 
-    return None, price
+    return None, price, eval_type, before_level
 
 
 def get_historical_price_history(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -98,7 +125,7 @@ def get_historical_price_history(ticker: str, start_date: str, end_date: str) ->
                         filtered = df[mask]
                         if not filtered.empty:
                             return filtered
-                    return df
+                    return pd.DataFrame()
             except Exception:
                 pass
 
@@ -117,24 +144,24 @@ def get_historical_price_history(ticker: str, start_date: str, end_date: str) ->
 
 def evaluate_prediction_outcome(
     ticker: str,
-    event_desc: str,
+    pred_data: Any,
     report_date_str: str,
     target_date_str: str,
 ) -> Tuple[Optional[int], Optional[float]]:
     """
     Evaluates whether an event occurred between report_date and target_date.
+    Uses daily High/Low for TOUCH events and daily Close for CLOSE events.
+    Honors before_level (invalidates if before_level was touched first).
     Returns (actual_outcome 1/0, eval_price) or (None, None) if still pending.
     """
     today_str = date.today().isoformat()
-    # If horizon has not matured yet, it is still pending
     if today_str < target_date_str:
         return None, None
 
-    cond_type, target_price = parse_event_condition(event_desc)
+    cond_type, target_price, eval_type, before_lvl = parse_event_condition(pred_data)
     if not cond_type or target_price is None:
         return None, None
 
-    # Pull price history from report date to target date (+ 1 day buffer)
     try:
         t_end = (datetime.strptime(target_date_str, "%Y-%m-%d") + timedelta(days=2)).strftime("%Y-%m-%d")
         hist = get_historical_price_history(ticker, report_date_str, t_end)
@@ -143,25 +170,47 @@ def evaluate_prediction_outcome(
 
         col_map = {c.lower(): c for c in hist.columns}
         close_col = col_map.get("close")
+        high_col = col_map.get("high") or close_col
+        low_col = col_map.get("low") or close_col
+
         if not close_col:
             return None, None
 
-        closes = hist[close_col].dropna().values.astype(float)
-        if len(closes) == 0:
-            return None, None
+        eval_price = float(hist[close_col].dropna().values[-1]) if len(hist[close_col].dropna()) > 0 else 0.0
 
-        eval_price = float(closes[-1])
+        occurred = 0
+        for _, bar in hist.iterrows():
+            b_high = float(bar[high_col])
+            b_low = float(bar[low_col])
+            b_close = float(bar[close_col])
 
-        if cond_type == "ABOVE":
-            # Event occurred if ANY daily close exceeded the target price
-            occurred = int(bool(np.any(closes >= target_price)))
-        else:
-            # Event occurred if ANY daily close breached below the target price
-            occurred = int(bool(np.any(closes <= target_price)))
+            # Check before_level invalidation (e.g. stop hit before target)
+            if before_lvl is not None and before_lvl > 0:
+                if cond_type == "ABOVE" and b_low <= before_lvl:
+                    occurred = 0
+                    break
+                elif cond_type == "BELOW" and b_high >= before_lvl:
+                    occurred = 0
+                    break
+
+            if eval_type == "TOUCH":
+                if cond_type == "ABOVE" and b_high >= target_price:
+                    occurred = 1
+                    break
+                elif cond_type == "BELOW" and b_low <= target_price:
+                    occurred = 1
+                    break
+            else:
+                if cond_type == "ABOVE" and b_close >= target_price:
+                    occurred = 1
+                    break
+                elif cond_type == "BELOW" and b_close <= target_price:
+                    occurred = 1
+                    break
 
         return occurred, eval_price
     except Exception as e:
-        logger.debug(f"Evaluation failed for {ticker} {event_desc}: {e}")
+        logger.debug(f"Evaluation failed for {ticker} {pred_data}: {e}")
         return None, None
 
 
@@ -214,7 +263,7 @@ def run_superforecasting_audit() -> Dict[str, Any]:
                 target_date = (r_date + timedelta(days=h_days)).isoformat()
 
                 # Evaluate outcome if target date has passed
-                outcome, eval_price = evaluate_prediction_outcome(ticker, event_desc, report_date_str, target_date)
+                outcome, eval_price = evaluate_prediction_outcome(ticker, p, report_date_str, target_date)
                 brier_score = round((prob - outcome) ** 2, 4) if outcome is not None else None
                 eval_at = datetime.now().isoformat(timespec="seconds") if outcome is not None else None
 
