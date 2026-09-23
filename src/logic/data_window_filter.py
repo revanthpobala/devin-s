@@ -1054,7 +1054,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, f
 
     conviction = float(rec.get("conviction") or 0.0)
 
-    return (is_pass, is_rev_buy, rr_mkt, is_rsi2, ev_r, ext_pct, conviction)
+    return (is_pass, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""

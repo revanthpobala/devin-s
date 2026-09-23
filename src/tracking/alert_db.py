@@ -238,26 +238,50 @@ def init_alert_db():
                     ticker TEXT NOT NULL,
                     date TEXT NOT NULL,
                     entry_ts TEXT,
+                    hour INTEGER,
                     grade TEXT,
                     score REAL,
                     align TEXT,
                     side TEXT DEFAULT 'LONG',
                     entry_type TEXT DEFAULT 'LIMIT',
                     entry_price REAL,
+                    entry_px REAL,
                     stop REAL,
+                    entry_stop REAL,
                     target_1 REAL,
+                    entry_t1 REAL,
                     target_2 REAL,
                     veto_reason TEXT,
+                    llm_verdict TEXT,
+                    exit_r REAL,
+                    exit_why TEXT,
                     pine_exit_r REAL,
                     replay_r REAL,
                     taken BOOLEAN DEFAULT 0,
                     your_fill REAL,
                     is_modeled INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
+                    updated_at TEXT,
                     UNIQUE(trade_id, ticker, date)
                 )
                 """
             )
+
+            # Additive migration for intraday_signals table
+            cursor.execute("PRAGMA table_info(intraday_signals);")
+            sig_cols = {r[1] for r in cursor.fetchall()}
+            for col_name, col_type in [
+                ("hour", "INTEGER"),
+                ("entry_px", "REAL"),
+                ("entry_stop", "REAL"),
+                ("entry_t1", "REAL"),
+                ("llm_verdict", "TEXT"),
+                ("exit_r", "REAL"),
+                ("exit_why", "TEXT"),
+                ("updated_at", "TEXT"),
+            ]:
+                if col_name not in sig_cols:
+                    cursor.execute(f"ALTER TABLE intraday_signals ADD COLUMN {col_name} {col_type};")
 
             # Additive migration for positions table
             cursor.execute("PRAGMA table_info(positions);")
@@ -284,9 +308,12 @@ def init_alert_db():
             conn.commit()
 
 
+init_db = init_alert_db
+
 # Auto-initialize tables on module import, unless disabled or running in test runner
 if os.getenv("ALERT_DB_DISABLE_AUTO_INIT") != "1" and not os.getenv("PYTEST_CURRENT_TEST"):
     init_alert_db()
+
 
 
 
@@ -796,62 +823,150 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
     if not ticker or not date:
         return False
 
+    entry_px = signal.get("entry_px") if signal.get("entry_px") is not None else signal.get("entry_price")
+    entry_stop = signal.get("entry_stop") if signal.get("entry_stop") is not None else signal.get("stop")
+    entry_t1 = signal.get("entry_t1") if signal.get("entry_t1") is not None else signal.get("target_1")
+    exit_r = signal.get("exit_r") if signal.get("exit_r") is not None else signal.get("pine_exit_r")
+    exit_why = signal.get("exit_why")
+
+    # Resolve hour in ET
+    hour = signal.get("hour")
+    if hour is None:
+        entry_ts = str(signal.get("entry_ts") or "")
+        m_h = re.search(r"(\d{1,2}):\d{2}", entry_ts)
+        if m_h:
+            try:
+                hour = int(m_h.group(1))
+            except Exception:
+                hour = get_eastern_now().hour
+        else:
+            hour = get_eastern_now().hour
+    else:
+        try:
+            hour = int(hour)
+        except Exception:
+            hour = get_eastern_now().hour
+
     with _db_lock:
         with _get_connection() as conn:
             cur = conn.cursor()
             try:
+                now_iso = get_eastern_now().isoformat(timespec="seconds")
                 cur.execute(
                     """
                     INSERT INTO intraday_signals (
-                        trade_id, ticker, date, entry_ts, grade, score, align,
-                        side, entry_type, entry_price, stop, target_1, target_2,
-                        veto_reason, pine_exit_r, replay_r, taken, your_fill,
-                        is_modeled, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        trade_id, ticker, date, entry_ts, hour, grade, score, align,
+                        side, entry_type, entry_price, entry_px, stop, entry_stop,
+                        target_1, entry_t1, target_2, veto_reason, llm_verdict,
+                        exit_r, exit_why, pine_exit_r, replay_r, taken, your_fill,
+                        is_modeled, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(trade_id, ticker, date) DO UPDATE SET
+                        hour=excluded.hour,
                         grade=excluded.grade,
                         score=excluded.score,
                         align=excluded.align,
                         side=excluded.side,
                         entry_type=excluded.entry_type,
                         entry_price=excluded.entry_price,
+                        entry_px=excluded.entry_px,
                         stop=excluded.stop,
+                        entry_stop=excluded.entry_stop,
                         target_1=excluded.target_1,
+                        entry_t1=excluded.entry_t1,
                         target_2=excluded.target_2,
-                        veto_reason=excluded.veto_reason,
-                        pine_exit_r=excluded.pine_exit_r,
-                        replay_r=excluded.replay_r,
+                        veto_reason=COALESCE(excluded.veto_reason, intraday_signals.veto_reason),
+                        llm_verdict=COALESCE(excluded.llm_verdict, intraday_signals.llm_verdict),
+                        exit_r=COALESCE(excluded.exit_r, intraday_signals.exit_r),
+                        exit_why=COALESCE(excluded.exit_why, intraday_signals.exit_why),
+                        pine_exit_r=COALESCE(excluded.pine_exit_r, intraday_signals.pine_exit_r),
+                        replay_r=COALESCE(excluded.replay_r, intraday_signals.replay_r),
                         taken=excluded.taken,
-                        your_fill=excluded.your_fill,
-                        is_modeled=excluded.is_modeled
+                        your_fill=COALESCE(excluded.your_fill, intraday_signals.your_fill),
+                        is_modeled=excluded.is_modeled,
+                        updated_at=excluded.updated_at
                     """,
                     (
                         trade_id,
                         ticker,
                         date,
                         signal.get("entry_ts"),
+                        hour,
                         signal.get("grade"),
                         signal.get("score"),
                         signal.get("align"),
                         signal.get("side", "LONG"),
                         signal.get("entry_type", "LIMIT"),
-                        signal.get("entry_price"),
-                        signal.get("stop"),
-                        signal.get("target_1"),
+                        entry_px,
+                        entry_px,
+                        entry_stop,
+                        entry_stop,
+                        entry_t1,
+                        entry_t1,
                         signal.get("target_2"),
                         signal.get("veto_reason"),
+                        signal.get("llm_verdict"),
+                        exit_r,
+                        exit_why,
                         signal.get("pine_exit_r"),
                         signal.get("replay_r"),
                         1 if signal.get("taken") else 0,
                         signal.get("your_fill"),
                         signal.get("is_modeled", 0),
-                        get_eastern_now().isoformat(timespec="seconds"),
+                        now_iso,
+                        now_iso,
                     ),
                 )
                 conn.commit()
                 return True
             except Exception as e:
                 logger.warning(f"Failed to upsert intraday signal: {e}")
+                return False
+
+
+def record_intraday_exit(
+    trade_id: str,
+    exit_r: float,
+    exit_why: str = "",
+    ticker: Optional[str] = None,
+    date: Optional[str] = None,
+) -> bool:
+    """Update an intraday signal row with exit performance metrics."""
+    if not trade_id and not ticker:
+        return False
+    with _db_lock:
+        with _get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                now_iso = get_eastern_now().isoformat(timespec="seconds")
+                if trade_id:
+                    cur.execute(
+                        """
+                        UPDATE intraday_signals
+                        SET exit_r = ?,
+                            exit_why = ?,
+                            updated_at = ?
+                        WHERE trade_id = ?
+                        """,
+                        (exit_r, exit_why, now_iso, trade_id),
+                    )
+                if (not trade_id or cur.rowcount == 0) and ticker:
+                    # Fallback by ticker and date if trade_id was absent or not matched
+                    cur.execute(
+                        """
+                        UPDATE intraday_signals
+                        SET exit_r = ?,
+                            exit_why = ?,
+                            updated_at = ?
+                        WHERE ticker = ? AND (date = ? OR ? IS NULL)
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (exit_r, exit_why, now_iso, ticker.upper(), date, date),
+                    )
+                conn.commit()
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to record intraday exit for {trade_id or ticker}: {e}")
                 return False
 
 

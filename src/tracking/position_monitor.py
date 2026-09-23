@@ -877,11 +877,43 @@ class PositionManager:
             except Exception:
                 payload = {}
 
-        entry = alert.get("alert_price") or alert.get("market_price") or payload.get("price")
+        trade_id = payload.get("trade_id") or alert.get("trade_id") or alert.get("message_id") or f"{symbol}_{int(time.time())}"
+        entry_px = payload.get("entry_px") or alert.get("entry_px")
+        entry_stop = payload.get("entry_stop") or alert.get("entry_stop")
+        entry_t1 = payload.get("entry_t1") or alert.get("entry_t1")
+
+        entry = entry_px or alert.get("alert_price") or alert.get("market_price") or payload.get("price")
         try:
             entry = float(entry) if entry not in (None, "") else None
         except (TypeError, ValueError):
             entry = None
+
+        # Extract stop and target levels from alert or plan string (e.g. "In 165.60 · Stop 165.21 · T1 166.19")
+        stop = entry_stop or alert.get("stop") or payload.get("stop")
+        target = entry_t1 or alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target")
+        plan_str = str(alert.get("plan") or payload.get("plan") or "")
+        if not stop and plan_str:
+            m_stop = re.search(r"\b(?:Stop|SL)\s+([0-9]+(?:\.[0-9]+)?)\b", plan_str, re.IGNORECASE)
+            if m_stop:
+                try:
+                    stop = float(m_stop.group(1))
+                except (ValueError, TypeError):
+                    pass
+        if not target and plan_str:
+            m_target = re.search(r"\b(?:T1|Target|TP)\s+([0-9]+(?:\.[0-9]+)?)\b", plan_str, re.IGNORECASE)
+            if m_target:
+                try:
+                    target = float(m_target.group(1))
+                except (ValueError, TypeError):
+                    pass
+        try:
+            stop = float(stop) if stop not in (None, "") else None
+        except (ValueError, TypeError):
+            stop = None
+        try:
+            target = float(target) if target not in (None, "") else None
+        except (ValueError, TypeError):
+            target = None
 
         # Check institutional risk vetoes (Grade-A gate, Weinstein stage, time windows, max exposure)
         from src.tracking.alert_evaluator import evaluate_risk_vetoes, get_eastern_now
@@ -914,20 +946,61 @@ class PositionManager:
                     update_alert_llm(msg_id, hdr, pb, status="PROCESSED")
                 except Exception:
                     pass
+            # Record vetoed trade in intraday_signals shadow ledger
+            try:
+                from src.tracking.alert_db import upsert_intraday_signal
+                upsert_intraday_signal({
+                    "trade_id": trade_id,
+                    "ticker": symbol,
+                    "date": eastern_now.strftime("%Y-%m-%d"),
+                    "entry_ts": alert.get("timestamp") or eastern_now.isoformat(timespec="seconds"),
+                    "hour": eastern_now.hour,
+                    "grade": grade_val,
+                    "score": score_val,
+                    "align": align_val,
+                    "side": side,
+                    "entry_type": "LIMIT",
+                    "entry_px": entry,
+                    "entry_stop": stop,
+                    "entry_t1": target,
+                    "veto_reason": hdr,
+                    "taken": 0,
+                })
+            except Exception as e_sig:
+                logger.debug(f"Failed to record vetoed intraday signal for {symbol}: {e_sig}")
             return
 
         # AI Verdict Gate: never open a position the AI already vetoed in its persisted triage.
-        # (The enrichment worker may have written a STAND ASIDE verdict from the real Pine
-        # grade/score before this routing pass ran.)
         existing_verdict = str(alert.get("llm_decision") or "")
         if not existing_verdict and payload.get("verdict"):
             existing_verdict = str(payload.get("verdict"))
         if "STAND ASIDE" in existing_verdict.upper() or "DAY PAUSE" in existing_verdict.upper():
             logger.info(f"[manager] 🛡️ AI VETO GATE for {symbol}: persisted verdict '{existing_verdict[:60]}' — position NOT opened.")
+            try:
+                from src.tracking.alert_db import upsert_intraday_signal
+                upsert_intraday_signal({
+                    "trade_id": trade_id,
+                    "ticker": symbol,
+                    "date": eastern_now.strftime("%Y-%m-%d"),
+                    "entry_ts": alert.get("timestamp") or eastern_now.isoformat(timespec="seconds"),
+                    "hour": eastern_now.hour,
+                    "grade": grade_val,
+                    "score": score_val,
+                    "align": align_val,
+                    "side": side,
+                    "entry_type": "LIMIT",
+                    "entry_px": entry,
+                    "entry_stop": stop,
+                    "entry_t1": target,
+                    "veto_reason": f"AI VETO: {existing_verdict[:100]}",
+                    "llm_verdict": existing_verdict,
+                    "taken": 0,
+                })
+            except Exception:
+                pass
             return
 
         # If a position is already open for this symbol, the AI's verdict decides:
-        # a fresh TAKE verdict replaces it (latest alert wins); a STAND ASIDE closes it.
         if list_open().get(symbol):
             v_up = existing_verdict.upper()
             if "STAND ASIDE" in v_up or "DAY PAUSE" in v_up:
@@ -945,36 +1018,8 @@ class PositionManager:
                     logger.warning(f"[manager] 🛡️ AI VETO for {symbol}: open position closed at ${closed.get('exit_price')} ({existing_verdict[:60]})")
                 return
             elif not ("TAKE" in v_up or "GO" in v_up):
-                # No explicit TAKE and no veto — keep the existing position, don't replace it
                 logger.info(f"[manager] ⏸️ {symbol} already open; verdict '{existing_verdict[:40]}' has no TAKE signal — keeping existing position.")
                 return
-
-        # Extract stop and target levels from alert or plan string (e.g. "In 165.60 · Stop 165.21 · T1 166.19")
-        stop = alert.get("stop") or payload.get("stop")
-        target = alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target")
-        plan_str = str(alert.get("plan") or payload.get("plan") or "")
-        if not stop and plan_str:
-            m_stop = re.search(r"\b(?:Stop|SL)\s+([0-9]+(?:\.[0-9]+)?)\b", plan_str, re.IGNORECASE)
-            if m_stop:
-                try:
-                    stop = float(m_stop.group(1))
-                except (ValueError, TypeError):
-                    pass
-        if not target and plan_str:
-            m_target = re.search(r"\b(?:T1|Target|TP)\s+([0-9]+(?:\.[0-9]+)?)\b", plan_str, re.IGNORECASE)
-            if m_target:
-                try:
-                    target = float(m_target.group(1))
-                except (ValueError, TypeError):
-                    pass
-        try:
-            stop = float(stop) if stop not in (None, "") else None
-        except (ValueError, TypeError):
-            stop = None
-        try:
-            target = float(target) if target not in (None, "") else None
-        except (ValueError, TypeError):
-            target = None
 
         # Infallible guarantee: If stop or target are missing, derive via intraday ATR
         if (stop is None or target is None) and entry:
@@ -1012,8 +1057,32 @@ class PositionManager:
             alert_price=entry,
             raw_alert=alert,
             quantity=computed_qty,
+            trade_id=trade_id,
         )
         self._ensure_monitor(symbol)
+
+        # Record taken trade in intraday_signals shadow ledger
+        try:
+            from src.tracking.alert_db import upsert_intraday_signal
+            upsert_intraday_signal({
+                "trade_id": trade_id,
+                "ticker": symbol,
+                "date": eastern_now.strftime("%Y-%m-%d"),
+                "entry_ts": alert.get("timestamp") or eastern_now.isoformat(timespec="seconds"),
+                "hour": eastern_now.hour,
+                "grade": grade_val,
+                "score": score_val,
+                "align": align_val,
+                "side": side,
+                "entry_type": "LIMIT",
+                "entry_px": entry,
+                "entry_stop": stop,
+                "entry_t1": target,
+                "veto_reason": None,
+                "taken": 1,
+            })
+        except Exception as e_sig:
+            logger.debug(f"Failed to record taken intraday signal for {symbol}: {e_sig}")
 
     def _ensure_monitor(self, ticker: str):
         ticker = ticker.upper()

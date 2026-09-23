@@ -280,12 +280,16 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
         realized_prior = rec.get("realized_pnl", 0.0) or 0.0
         total_pnl = round(realized_prior + runner_pnl - fees - slippage, 2)
         rec["remaining_quantity"] = 0.0
-        rec["net_pnl"] = total_pnl
+        # Calculate exit_r on underlying
+        initial_stop = rec.get("initial_stop") or rec.get("stop") or 0.0
+        risk_dist = abs(entry - initial_stop) if entry and initial_stop else 0.0
+        exit_r = round(pts / risk_dist, 4) if risk_dist > 0 else 0.0
+        rec["exit_r"] = exit_r
 
         _save_state(state)
 
     try:
-        from src.tracking.alert_db import sync_position, record_trade_event
+        from src.tracking.alert_db import sync_position, record_trade_event, record_intraday_exit
         sync_position(ticker, rec)
         record_trade_event({
             "trade_id": rec.get("trade_id") or f"{ticker}_trade",
@@ -301,8 +305,16 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
             "multiplier": mult,
             "stop_level": rec.get("stop"),
             "target_level": rec.get("target"),
-            "details": {"exit_reason": rec["exit_reason"], "net_pnl": total_pnl, "runner_pnl": runner_pnl, "fees": fees, "slippage": slippage},
+            "details": {"exit_reason": rec["exit_reason"], "net_pnl": total_pnl, "runner_pnl": runner_pnl, "fees": fees, "slippage": slippage, "exit_r": exit_r},
         })
+        trade_id = rec.get("trade_id")
+        record_intraday_exit(
+            trade_id=trade_id,
+            exit_r=exit_r,
+            exit_why=rec["exit_reason"],
+            ticker=ticker,
+            date=str(rec.get("opened_at", ""))[:10],
+        )
     except Exception as e:
         logger.debug(f"Failed syncing closed position / event to alert_db: {e}")
 

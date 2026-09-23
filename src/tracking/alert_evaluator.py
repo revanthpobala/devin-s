@@ -205,8 +205,30 @@ def evaluate_risk_vetoes(
         )
         return hdr, pb
 
-    # 2. Weinstein Stage veto dropped for 0DTE per Phase 0 (11-day replay proved no edge in blocking counter-stage Grade A entries).
-
+    # 2. Weinstein Stage & Multi-Timeframe Alignment Gate (behind INTRADAY_STAGE_VETO, default 0)
+    intraday_stage_veto = os.getenv("INTRADAY_STAGE_VETO", "0").lower() in ("1", "true", "yes")
+    align_clean = str(align or "").lower()
+    is_stg4 = "stg4" in align_clean or "decline" in align_clean
+    is_stg2 = "stg2" in align_clean or "advance" in align_clean
+    if intraday_stage_veto:
+        if side == "LONG" and is_stg4:
+            hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (COUNTER-STAGE: STAGE 4 DECLINE)"
+            pb = (
+                f"{hdr}\n\n"
+                f"⛔ REGIME VETO: Counter-trend CALL entry into a Stage 4 Structural Decline ({align}).\n"
+                f"Weekly & Daily trends are declining. Counter-trend intraday bounces in Stage 4 face immediate institutional supply.\n"
+                f"Execution discipline requires aligning with the structural trend."
+            )
+            return hdr, pb
+        if side == "SHORT" and is_stg2:
+            hdr = f"[{symbol}] [{current_time_et}] — ⛔ STAND ASIDE (COUNTER-STAGE: STAGE 2 ADVANCE)"
+            pb = (
+                f"{hdr}\n\n"
+                f"⛔ REGIME VETO: Counter-trend PUT entry into a Stage 2 Structural Advance ({align}).\n"
+                f"Weekly & Daily trends are advancing. Counter-trend pullbacks in Stage 2 get aggressively absorbed by institutional demand.\n"
+                f"Execution discipline requires aligning with the structural trend."
+            )
+            return hdr, pb
     # 3. Optional Explicit Ticker Exclusion (Configurable via env, default none)
     excluded_env = os.getenv("INTRADAY_EXCLUDED_TICKERS", "")
     if excluded_env:
@@ -862,3 +884,52 @@ def evaluate_batch_pending(limit: int = 100, date_str: Optional[str] = None, for
         "count": evaluated_count,
         "message": f"Successfully evaluated {evaluated_count} alerts via local LLM.",
     }
+
+
+def format_intraday_entry_push(alert: Dict[str, Any], llm_note: str = "") -> str:
+    """Format single-block push notification for non-vetoed Grade-A ENTRY alert.
+
+    Format:
+    [UNPROVEN] TICKER SIDE · Entry $XX.XX · Stop $XX.XX (X.XX%) · T1 $XX.XX
+    Grade A · Score XX/100 · HH:MM AM/PM ET · Wrong if: <wrong_if>
+    Note: <one-line LLM note>
+    """
+    payload = alert.get("raw_payload") or alert.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+
+    ticker = (alert.get("symbol") or alert.get("ticker") or "").strip().upper()
+    side = "SHORT" if ("PUT" in str(alert.get("action", "")).upper() or str(alert.get("side", "")).upper() == "SHORT") else "LONG"
+
+    entry = float(payload.get("entry_px") or alert.get("entry_px") or alert.get("alert_price") or alert.get("market_price") or payload.get("price") or 0.0)
+    stop = float(payload.get("entry_stop") or alert.get("entry_stop") or alert.get("stop") or payload.get("stop") or 0.0)
+    t1 = float(payload.get("entry_t1") or alert.get("entry_t1") or alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target") or 0.0)
+
+    stop_pct = (abs(entry - stop) / entry * 100.0) if entry > 0 and stop > 0 else 0.0
+    grade = str(payload.get("grade") or alert.get("grade") or "A").upper()
+    score = int(float(payload.get("score") or alert.get("score") or 85))
+    time_et = alert.get("time_et") or alert.get("timestamp") or get_eastern_now().strftime("%I:%M %p ET")
+    wrong_if = str(payload.get("wrong_if") or alert.get("wrong_if") or "Confirmed stop / exit signal hit")
+
+    note_clean = (llm_note or "").strip().replace("\n", " ")
+    if len(note_clean) > 120:
+        note_clean = note_clean[:117] + "..."
+
+    lines = [
+        f"[UNPROVEN] {ticker} {side} · Entry ${entry:.2f} · Stop ${stop:.2f} ({stop_pct:.2f}%) · T1 ${t1:.2f}",
+        f"Grade {grade} · Score {score}/100 · {time_et} · Wrong if: {wrong_if}",
+    ]
+    if note_clean:
+        lines.append(f"Note: {note_clean}")
+    return "\n".join(lines)
+
+
+def format_intraday_exit_push(symbol: str, exit_r: float, session_r: float = 0.0, reason: str = "") -> str:
+    """Format single-line push notification for an intraday EXIT."""
+    sym = (symbol or "").strip().upper()
+    reason_str = f" ({reason})" if reason else ""
+    return f"[EXIT] {sym} · Exit: {exit_r:+.2f}R · Session: {session_r:+.2f}R{reason_str}"
+

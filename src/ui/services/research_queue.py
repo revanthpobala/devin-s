@@ -128,12 +128,33 @@ def rehydrate_active_jobs():
                         new_status = "COMPLETED"
                         new_err = None
                     else:
-                        new_status = "FAILED"
-                        new_err = "Server restarted while job was running"
-                    c.execute(
-                        "UPDATE active_research_jobs SET status = ?, stage = CASE WHEN ? = 'COMPLETED' THEN 'DONE' ELSE 'ERROR' END, completed_at = ?, error_message = ? WHERE job_id = ?",
-                        (new_status, new_status, datetime.now(timezone.utc).isoformat(), new_err, jid),
-                    )
+                        # Check heartbeat: only mark FAILED after stale heartbeat, NOT on server restart
+                        stale_seconds = int(os.getenv("RESEARCH_HEARTBEAT_TIMEOUT_S", "600"))
+                        log_file_p = Path(r["log_file"]) if r.get("log_file") else None
+                        last_active = None
+                        if log_file_p and log_file_p.exists():
+                            last_active = datetime.fromtimestamp(log_file_p.stat().st_mtime, tz=timezone.utc)
+                        elif r.get("started_at"):
+                            try:
+                                last_active = datetime.fromisoformat(r["started_at"])
+                            except Exception:
+                                pass
+
+                        is_stale = True
+                        if last_active:
+                            elapsed = (datetime.now(timezone.utc) - last_active).total_seconds()
+                            if elapsed < stale_seconds:
+                                is_stale = False
+
+                        if is_stale:
+                            new_status = "FAILED"
+                            new_err = f"Job failed: process exited and heartbeat stale (> {stale_seconds}s)"
+                            c.execute(
+                                "UPDATE active_research_jobs SET status = ?, stage = 'ERROR', completed_at = ?, error_message = ? WHERE job_id = ?",
+                                (new_status, datetime.now(timezone.utc).isoformat(), new_err, jid),
+                            )
+                        else:
+                            logger.info(f"⚡ [Queue Recovery] Preserving RUNNING state for job {jid} ({ticker_sym}) — heartbeat is not stale.")
             conn.commit()
     except Exception as e:
         logger.warning(f"Error rehydrating jobs from DB: {e}")

@@ -347,7 +347,7 @@ def run_local_research(
     # PRIORITISATION filter and must run here too, or the folder balloons.
     from src.logic.data_window_filter import rank_pass_tickers
 
-    cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
+    cap = int(os.getenv("DEEP_RESEARCH_CAP", "5"))
     deep_candidates, force_candidates = [], []
     for rec in all_thesis.values():
         ticker = rec.get("ticker")
