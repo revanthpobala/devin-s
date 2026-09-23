@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import os
+import re
 from src import config
 
 from contextlib import contextmanager
@@ -815,10 +816,41 @@ def get_unrouted_alerts() -> List[Dict[str, Any]]:
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_canonical_trade_id(alert: Dict[str, Any]) -> str:
+    """Return Pine trade_id if present; otherwise fallback to {symbol}_{date}_{entryTs}."""
+    raw_p = alert.get("raw_payload") or alert.get("body") or ""
+    payload = {}
+    if raw_p:
+        try:
+            payload = json.loads(raw_p) if isinstance(raw_p, str) else (raw_p if isinstance(raw_p, dict) else {})
+        except Exception:
+            payload = {}
+
+    tid = alert.get("trade_id") or payload.get("trade_id")
+    if tid:
+        return str(tid).strip()
+
+    sym = str(alert.get("symbol") or alert.get("ticker") or payload.get("symbol") or payload.get("ticker") or "UNKNOWN").strip().upper()
+    d_str = str(alert.get("date") or payload.get("date") or "").strip()
+    ts_str = str(alert.get("entry_ts") or alert.get("timestamp") or payload.get("timestamp") or payload.get("time") or "").strip()
+
+    if not d_str:
+        if ts_str and len(ts_str) >= 10 and ts_str[4] == "-" and ts_str[7] == "-":
+            d_str = ts_str[:10]
+        else:
+            d_str = get_eastern_now().strftime("%Y-%m-%d")
+
+    if not ts_str:
+        ts_str = get_eastern_now().strftime("%H:%M:%S")
+
+    ts_clean = ts_str.replace(" ", "_")
+    return f"{sym}_{d_str}_{ts_clean}"
+
+
 def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
     """Insert or update an intraday signal in the shadow ledger."""
     trade_id = signal.get("trade_id") or ""
-    ticker = (signal.get("ticker") or "").strip().upper()
+    ticker = (signal.get("ticker") or signal.get("symbol") or "").strip().upper()
     date = signal.get("date") or ""
     if not ticker or not date:
         return False
@@ -862,27 +894,27 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
                         is_modeled, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(trade_id, ticker, date) DO UPDATE SET
-                        hour=excluded.hour,
-                        grade=excluded.grade,
-                        score=excluded.score,
-                        align=excluded.align,
-                        side=excluded.side,
-                        entry_type=excluded.entry_type,
-                        entry_price=excluded.entry_price,
-                        entry_px=excluded.entry_px,
-                        stop=excluded.stop,
-                        entry_stop=excluded.entry_stop,
-                        target_1=excluded.target_1,
-                        entry_t1=excluded.entry_t1,
-                        target_2=excluded.target_2,
+                        hour=COALESCE(intraday_signals.hour, excluded.hour),
+                        grade=COALESCE(intraday_signals.grade, excluded.grade),
+                        score=COALESCE(intraday_signals.score, excluded.score),
+                        align=COALESCE(intraday_signals.align, excluded.align),
+                        side=COALESCE(intraday_signals.side, excluded.side),
+                        entry_type=COALESCE(intraday_signals.entry_type, excluded.entry_type),
+                        entry_price=COALESCE(intraday_signals.entry_price, excluded.entry_price),
+                        entry_px=COALESCE(intraday_signals.entry_px, excluded.entry_px),
+                        stop=COALESCE(intraday_signals.stop, excluded.stop),
+                        entry_stop=COALESCE(intraday_signals.entry_stop, excluded.entry_stop),
+                        target_1=COALESCE(intraday_signals.target_1, excluded.target_1),
+                        entry_t1=COALESCE(intraday_signals.entry_t1, excluded.entry_t1),
+                        target_2=COALESCE(intraday_signals.target_2, excluded.target_2),
                         veto_reason=COALESCE(excluded.veto_reason, intraday_signals.veto_reason),
                         llm_verdict=COALESCE(excluded.llm_verdict, intraday_signals.llm_verdict),
                         exit_r=COALESCE(excluded.exit_r, intraday_signals.exit_r),
                         exit_why=COALESCE(excluded.exit_why, intraday_signals.exit_why),
                         pine_exit_r=COALESCE(excluded.pine_exit_r, intraday_signals.pine_exit_r),
                         replay_r=COALESCE(excluded.replay_r, intraday_signals.replay_r),
-                        taken=excluded.taken,
-                        your_fill=COALESCE(excluded.your_fill, intraday_signals.your_fill),
+                        taken=MAX(intraday_signals.taken, excluded.taken),
+                        your_fill=COALESCE(intraday_signals.your_fill, excluded.your_fill),
                         is_modeled=excluded.is_modeled,
                         updated_at=excluded.updated_at
                     """,
@@ -925,8 +957,8 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
 
 
 def record_intraday_exit(
-    trade_id: str,
-    exit_r: float,
+    trade_id: Optional[str] = None,
+    exit_r: Optional[float] = None,
     exit_why: str = "",
     ticker: Optional[str] = None,
     date: Optional[str] = None,
@@ -939,6 +971,7 @@ def record_intraday_exit(
             cur = conn.cursor()
             try:
                 now_iso = get_eastern_now().isoformat(timespec="seconds")
+                updated = False
                 if trade_id:
                     cur.execute(
                         """
@@ -950,21 +983,51 @@ def record_intraday_exit(
                         """,
                         (exit_r, exit_why, now_iso, trade_id),
                     )
-                if (not trade_id or cur.rowcount == 0) and ticker:
-                    # Fallback by ticker and date if trade_id was absent or not matched
+                    if cur.rowcount > 0:
+                        updated = True
+
+                if not updated and ticker:
+                    # Pair with the latest open ENTRY row for that symbol and date (where exit_r is NULL)
                     cur.execute(
                         """
                         UPDATE intraday_signals
                         SET exit_r = ?,
                             exit_why = ?,
                             updated_at = ?
-                        WHERE ticker = ? AND (date = ? OR ? IS NULL)
-                        ORDER BY id DESC LIMIT 1
+                        WHERE id = (
+                            SELECT id FROM intraday_signals
+                            WHERE ticker = ?
+                              AND (date = ? OR ? IS NULL)
+                              AND exit_r IS NULL
+                            ORDER BY id DESC LIMIT 1
+                        )
                         """,
                         (exit_r, exit_why, now_iso, ticker.upper(), date, date),
                     )
+                    if cur.rowcount > 0:
+                        updated = True
+                    else:
+                        # Fallback to latest row if no open row found
+                        cur.execute(
+                            """
+                            UPDATE intraday_signals
+                            SET exit_r = ?,
+                                exit_why = ?,
+                                updated_at = ?
+                            WHERE id = (
+                                SELECT id FROM intraday_signals
+                                WHERE ticker = ?
+                                  AND (date = ? OR ? IS NULL)
+                                ORDER BY id DESC LIMIT 1
+                            )
+                            """,
+                            (exit_r, exit_why, now_iso, ticker.upper(), date, date),
+                        )
+                        if cur.rowcount > 0:
+                            updated = True
+
                 conn.commit()
-                return True
+                return updated
             except Exception as e:
                 logger.warning(f"Failed to record intraday exit for {trade_id or ticker}: {e}")
                 return False

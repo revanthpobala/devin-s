@@ -269,7 +269,18 @@ def main():
                     except Exception as e:
                         logger.warning(f"Error during RTH intraday position flattening: {e}")
 
-                    logger.info(f"RTH Closed: Launching Autonomous Schwab 1000 Screener & Research for {today_str}...")
+                    logger.info(f"RTH Closed: Launching Nightly Intraday Stats & Autonomous Screener for {today_str}...")
+                    try:
+                        stats_script = config.BASE_DIR / "scripts" / "run_nightly_intraday_stats.py"
+                        if stats_script.exists():
+                            subprocess.Popen(
+                                [python_exe, str(stats_script)],
+                                cwd=config.BASE_DIR,
+                            )
+                            logger.info("Nightly intraday stats job launched.")
+                    except Exception as e_stats:
+                        logger.error(f"Failed to launch nightly intraday stats: {e_stats}")
+
                     try:
                         eod_screener_date = today_str
                         screener_script = config.BASE_DIR / "src" / "screener" / "schwab_pre_move_scan.py"

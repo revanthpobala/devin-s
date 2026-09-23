@@ -909,8 +909,10 @@ def format_intraday_entry_push(alert: Dict[str, Any], llm_note: str = "") -> str
     t1 = float(payload.get("entry_t1") or alert.get("entry_t1") or alert.get("target") or alert.get("t1") or payload.get("t1") or payload.get("target") or 0.0)
 
     stop_pct = (abs(entry - stop) / entry * 100.0) if entry > 0 and stop > 0 else 0.0
-    grade = str(payload.get("grade") or alert.get("grade") or "A").upper()
-    score = int(float(payload.get("score") or alert.get("score") or 85))
+    grade_raw = payload.get("grade") or alert.get("grade")
+    grade_str = str(grade_raw).upper() if grade_raw else "NULL"
+    score_raw = payload.get("score") or alert.get("score")
+    score_str = f"{int(float(score_raw))}/100" if score_raw not in (None, "") else "NULL"
     time_et = alert.get("time_et") or alert.get("timestamp") or get_eastern_now().strftime("%I:%M %p ET")
     wrong_if = str(payload.get("wrong_if") or alert.get("wrong_if") or "Confirmed stop / exit signal hit")
 
@@ -920,7 +922,7 @@ def format_intraday_entry_push(alert: Dict[str, Any], llm_note: str = "") -> str
 
     lines = [
         f"[UNPROVEN] {ticker} {side} · Entry ${entry:.2f} · Stop ${stop:.2f} ({stop_pct:.2f}%) · T1 ${t1:.2f}",
-        f"Grade {grade} · Score {score}/100 · {time_et} · Wrong if: {wrong_if}",
+        f"Grade {grade_str} · Score {score_str} · {time_et} · Wrong if: {wrong_if}",
     ]
     if note_clean:
         lines.append(f"Note: {note_clean}")
@@ -932,4 +934,14 @@ def format_intraday_exit_push(symbol: str, exit_r: float, session_r: float = 0.0
     sym = (symbol or "").strip().upper()
     reason_str = f" ({reason})" if reason else ""
     return f"[EXIT] {sym} · Exit: {exit_r:+.2f}R · Session: {session_r:+.2f}R{reason_str}"
+
+
+def notify_push(message: str) -> None:
+    """Dispatch push notification to logger and scratch UI message board."""
+    logger.info(f"📢 [PUSH] {message}")
+    try:
+        from src.ui.services.messages_db import store_message
+        store_message("Push", message)
+    except Exception as e:
+        logger.debug(f"Failed writing push to UI board: {e}")
 

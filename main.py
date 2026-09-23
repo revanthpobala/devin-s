@@ -447,28 +447,45 @@ def process_alert_enrichment(alert: dict, sheets=None):
         # Record into intraday_signals shadow ledger table (Phase 0)
         if strategy == "Intraday":
             try:
-                from src.tracking.alert_db import upsert_intraday_signal
-                tid = alert.get("trade_id") or f"{symbol}_{date_str}_{timestamp_str or ''}"
-                v_reason = None
-                if "STAND ASIDE" in llm_decision.upper() or "VETO" in llm_decision.upper():
-                    v_reason = llm_decision[:120]
-                upsert_intraday_signal({
-                    "trade_id": tid,
-                    "ticker": symbol,
-                    "date": date_str,
-                    "entry_ts": timestamp_str,
-                    "grade": alert.get("grade") or "A",
-                    "score": float(alert.get("score") or 0.0),
-                    "align": alert.get("align") or "",
-                    "side": "SHORT" if ("PUT" in str(alert.get("action", "")).upper() or str(alert.get("side", "")).upper() == "SHORT") else "LONG",
-                    "entry_type": "LIMIT",
-                    "entry_price": market_price or alert_price,
-                    "stop": float(alert.get("stop") or 0.0),
-                    "target_1": float(alert.get("t1") or alert.get("target_1") or 0.0),
-                    "target_2": float(alert.get("t2") or alert.get("target_2") or 0.0),
-                    "veto_reason": v_reason,
-                    "pine_exit_r": float(alert.get("exit_r")) if alert.get("exit_r") is not None else None,
-                })
+                from src.tracking.alert_db import get_canonical_trade_id, record_intraday_exit, upsert_intraday_signal
+                tid = get_canonical_trade_id(alert)
+                if is_exit:
+                    exit_r_val = float(alert.get("exit_r")) if alert.get("exit_r") is not None else None
+                    exit_why_val = str(alert.get("exit_why") or alert.get("reason") or alert.get("plan") or "EXIT")
+                    record_intraday_exit(
+                        trade_id=tid,
+                        exit_r=exit_r_val,
+                        exit_why=exit_why_val,
+                        ticker=symbol,
+                        date=date_str,
+                    )
+                else:
+                    v_reason = None
+                    if "STAND ASIDE" in llm_decision.upper() or "VETO" in llm_decision.upper():
+                        v_reason = llm_decision[:120]
+                    grade_val = alert.get("grade") or None
+                    score_raw = alert.get("score")
+                    score_val = float(score_raw) if score_raw not in (None, "") else None
+                    stop_raw = alert.get("stop")
+                    t1_raw = alert.get("t1") or alert.get("target_1")
+                    t2_raw = alert.get("t2") or alert.get("target_2")
+                    upsert_intraday_signal({
+                        "trade_id": tid,
+                        "ticker": symbol,
+                        "date": date_str,
+                        "entry_ts": timestamp_str,
+                        "grade": grade_val,
+                        "score": score_val,
+                        "align": alert.get("align") or "",
+                        "side": "SHORT" if ("PUT" in str(alert.get("action", "")).upper() or str(alert.get("side", "")).upper() == "SHORT") else "LONG",
+                        "entry_type": "LIMIT",
+                        "entry_price": market_price or alert_price,
+                        "stop": float(stop_raw) if stop_raw not in (None, "") else None,
+                        "target_1": float(t1_raw) if t1_raw not in (None, "") else None,
+                        "target_2": float(t2_raw) if t2_raw not in (None, "") else None,
+                        "veto_reason": v_reason,
+                        "pine_exit_r": float(alert.get("exit_r")) if alert.get("exit_r") is not None else None,
+                    })
             except Exception as e_sig:
                 logger.debug(f"Failed to record intraday shadow signal for {symbol}: {e_sig}")
 

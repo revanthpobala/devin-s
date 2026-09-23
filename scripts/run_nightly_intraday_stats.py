@@ -17,6 +17,6 @@ if __name__ == "__main__":
     print("Running Nightly Intraday Stats Job...")
     out = regenerate_postmortem_markdown()
     if out:
-        print("Successfully regenerated skills/postmortem_learnings.md with empirical metrics.")
+        print("Successfully generated skills/postmortem_live.md with empirical metrics.")
     else:
         print("No intraday signals found in database to process.")

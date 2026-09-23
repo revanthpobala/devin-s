@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src import config
-from src.tracking.alert_db import DB_PATH, get_eastern_now
+from src.tracking import alert_db
+from src.tracking.alert_db import get_eastern_now
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def compute_group_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Calculate n, mean R, win rate, and stop rate for a list of signal dicts."""
     n = len(records)
     if n == 0:
-        return {"n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0}
+        return {"n": 0, "scored_n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0}
 
     r_values = []
     wins = 0
@@ -84,7 +85,7 @@ def compute_group_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def generate_postmortem_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
     """Load all intraday_signals and generate structured multi-factor R attribution."""
-    path = db_path or DB_PATH
+    path = db_path or alert_db.DB_PATH
     if not path.exists():
         logger.warning(f"Database file not found at {path}")
         return {}
@@ -177,14 +178,30 @@ def generate_postmortem_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
     }
 
 
-def regenerate_postmortem_markdown(output_path: Optional[Path] = None) -> str:
-    """Run aggregation and write skills/postmortem_learnings.md."""
-    stats = generate_postmortem_stats()
+def regenerate_postmortem_markdown(
+    output_path: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> str:
+    """Run aggregation and write skills/postmortem_live.md (and skills/postmortem_learnings.md if n_grade_a >= 200)."""
+    stats = generate_postmortem_stats(db_path=db_path)
     if not stats:
-        logger.info("No intraday signals found to compile postmortem stats.")
-        return ""
+        stats = {
+            "total_count": 0,
+            "by_grade": {},
+            "by_hour": {},
+            "by_score": {},
+            "by_veto": {},
+            "go_no_go": {
+                "n_grade_a": 0,
+                "mean_grade_a_r": 0.0,
+                "positive_days": 0,
+                "total_days": 0,
+                "day_win_rate": 0.0,
+                "status": "INSUFFICIENT SAMPLE (0/200 pairs)",
+            },
+        }
 
-    out_file = output_path or (config.BASE_DIR / "skills" / "postmortem_learnings.md")
+    out_file = output_path or (config.BASE_DIR / "skills" / "postmortem_live.md")
     now_str = get_eastern_now().strftime("%Y-%m-%d %H:%M ET")
 
     lines = [
@@ -272,7 +289,17 @@ def regenerate_postmortem_markdown(output_path: Optional[Path] = None) -> str:
     content = "\n".join(lines)
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(content, encoding="utf-8")
-    logger.info(f"Successfully regenerated {out_file} with empirical postmortem stats.")
+    logger.info(f"Successfully generated {out_file} with empirical live stats.")
+
+    # Only replace postmortem_learnings.md once there are at least 200 scored grade-A rows
+    if output_path is None:
+        learnings_file = config.BASE_DIR / "skills" / "postmortem_learnings.md"
+        if stats.get("go_no_go", {}).get("n_grade_a", 0) >= 200:
+            learnings_file.write_text(content, encoding="utf-8")
+            logger.info(f"Threshold reached (n>=200)! Replaced {learnings_file} with empirical stats.")
+        else:
+            logger.info(f"Live stats written to {out_file}; preserved benchmark {learnings_file} (n < 200).")
+
     return content
 
 

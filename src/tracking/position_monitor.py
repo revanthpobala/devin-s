@@ -877,7 +877,8 @@ class PositionManager:
             except Exception:
                 payload = {}
 
-        trade_id = payload.get("trade_id") or alert.get("trade_id") or alert.get("message_id") or f"{symbol}_{int(time.time())}"
+        from src.tracking.alert_db import get_canonical_trade_id
+        trade_id = get_canonical_trade_id(alert)
         entry_px = payload.get("entry_px") or alert.get("entry_px")
         entry_stop = payload.get("entry_stop") or alert.get("entry_stop")
         entry_t1 = payload.get("entry_t1") or alert.get("entry_t1")
@@ -919,11 +920,10 @@ class PositionManager:
         from src.tracking.alert_evaluator import evaluate_risk_vetoes, get_eastern_now
         eastern_now = get_eastern_now()
         current_time_et = eastern_now.strftime("%I:%M %p ET")
-        try:
-            score_val = int(float(payload.get("score") or alert.get("score") or 85))
-        except (ValueError, TypeError):
-            score_val = 85
-        grade_val = str(payload.get("grade") or alert.get("grade") or "A").upper()
+        score_raw = payload.get("score") or alert.get("score")
+        score_val = int(float(score_raw)) if score_raw not in (None, "") else None
+        grade_raw = payload.get("grade") or alert.get("grade")
+        grade_val = str(grade_raw).upper() if grade_raw else None
         align_val = str(payload.get("align") or alert.get("align") or "")
 
         risk_veto = evaluate_risk_vetoes(
@@ -1081,6 +1081,13 @@ class PositionManager:
                 "veto_reason": None,
                 "taken": 1,
             })
+            if grade_val == "A":
+                try:
+                    from src.tracking.alert_evaluator import format_intraday_entry_push, notify_push
+                    push_msg = format_intraday_entry_push(alert, llm_note=existing_verdict or "")
+                    notify_push(push_msg)
+                except Exception as e_push:
+                    logger.debug(f"Failed to emit entry push for {symbol}: {e_push}")
         except Exception as e_sig:
             logger.debug(f"Failed to record taken intraday signal for {symbol}: {e_sig}")
 

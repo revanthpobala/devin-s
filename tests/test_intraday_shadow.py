@@ -171,9 +171,123 @@ def test_postmortem_stats_generation(tmp_path, monkeypatch):
     assert stats["by_grade"]["A"]["scored_n"] == 2
     assert stats["by_grade"]["A"]["mean_r"] == 0.25
 
-    # Test markdown regeneration
-    out_md = tmp_path / "postmortem_learnings.md"
-    content = regenerate_postmortem_markdown(out_md)
-    assert "## 1. Go / No-Go Decision Gate" in content
+    # Test markdown regeneration with db_path and output_path
+    out_md = tmp_path / "postmortem_live.md"
+    content = regenerate_postmortem_markdown(out_md, db_path=db_file)
+    assert "## 1. Go / No-Go Decision Gate (n ≥ 200 Pairs)" in content
     assert "Grade A" in content
     assert "GRADE VETO (NOT GRADE A)" in content
+
+
+def test_canonical_trade_id_helper():
+    from src.tracking.alert_db import get_canonical_trade_id
+
+    # Pine trade_id present in root or payload
+    assert get_canonical_trade_id({"trade_id": "PINE_123"}) == "PINE_123"
+    assert get_canonical_trade_id({"raw_payload": '{"trade_id": "PINE_456"}'}) == "PINE_456"
+
+    # Fallback to symbol_date_ts
+    tid = get_canonical_trade_id({
+        "symbol": "aapl",
+        "date": "2026-09-23",
+        "timestamp": "10:30:00",
+    })
+    assert tid == "AAPL_2026-09-23_10:30:00"
+
+
+def test_conflict_preserves_entry_and_taken(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+
+    db_file = tmp_path / "test_conflict.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    # 1. First write ENTRY
+    adb.upsert_intraday_signal({
+        "trade_id": "TRADE_CONF",
+        "ticker": "TSLA",
+        "date": "2026-09-23",
+        "entry_px": 250.0,
+        "stop": 245.0,
+        "target_1": 260.0,
+        "grade": "A",
+        "score": 90,
+        "taken": 1,
+    })
+
+    # 2. Subsequent write with NULL / exit data should NOT clobber entry fields or reset taken
+    adb.upsert_intraday_signal({
+        "trade_id": "TRADE_CONF",
+        "ticker": "TSLA",
+        "date": "2026-09-23",
+        "entry_px": None,
+        "stop": None,
+        "exit_r": 2.0,
+        "exit_why": "Target hit",
+        "taken": 0,
+    })
+
+    signals = adb.get_intraday_signals()
+    s = signals[0]
+    assert s["entry_px"] == 250.0
+    assert s["stop"] == 245.0
+    assert s["taken"] == 1
+    assert s["exit_r"] == 2.0
+
+
+def test_exit_without_trade_id_pairs_latest_open_entry(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+
+    db_file = tmp_path / "test_open_exit.db"
+    monkeypatch.setattr(adb, "DB_PATH", db_file)
+    adb.init_db()
+
+    # Two entries for same symbol today: first already exited, second still open
+    adb.upsert_intraday_signal({
+        "trade_id": "TRADE_OLD",
+        "ticker": "META",
+        "date": "2026-09-23",
+        "entry_px": 500.0,
+        "exit_r": 0.5,
+        "exit_why": "Scale 1",
+    })
+    adb.upsert_intraday_signal({
+        "trade_id": "TRADE_NEW",
+        "ticker": "META",
+        "date": "2026-09-23",
+        "entry_px": 510.0,
+        "exit_r": None,
+    })
+
+    # Exit arriving with NO trade_id should pair with TRADE_NEW (the open row)
+    ok = adb.record_intraday_exit(
+        trade_id=None,
+        exit_r=1.5,
+        exit_why="Full exit",
+        ticker="META",
+        date="2026-09-23",
+    )
+    assert ok is True
+
+    signals = adb.get_intraday_signals()
+    old_row = next(r for r in signals if r["trade_id"] == "TRADE_OLD")
+    new_row = next(r for r in signals if r["trade_id"] == "TRADE_NEW")
+    assert old_row["exit_r"] == 0.5
+    assert new_row["exit_r"] == 1.5
+    assert new_row["exit_why"] == "Full exit"
+
+
+def test_format_push_null_grade_score():
+    from src.tracking.alert_evaluator import format_intraday_entry_push
+
+    alert = {
+        "symbol": "XYZ",
+        "action": "BUY CALLS",
+        "entry_px": 50.0,
+        "stop": 48.0,
+        "target_1": 55.0,
+        # grade and score missing
+    }
+    push_msg = format_intraday_entry_push(alert)
+    assert "Grade NULL" in push_msg
+    assert "Score NULL" in push_msg
