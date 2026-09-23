@@ -510,12 +510,19 @@ def test_by_llm_present_with_correct_means(tmp_path, monkeypatch):
         "llm_verdict": "GATE:grade", "exit_r": -1.0,
     })
 
+    # Insert UNKNOWN row: no verdict, no veto_reason, not taken
+    adb.upsert_intraday_signal({
+        "trade_id": "T_U1", "ticker": "UNKN", "date": "2026-09-23",
+        "exit_r": 0.3,
+    })
+
     stats = generate_postmortem_stats(db_path=db_file)
     assert "by_llm" in stats
     by_llm = stats["by_llm"]
     assert "TAKE" in by_llm
     assert "VETO" in by_llm
     assert "GATE" in by_llm
+    assert "UNKNOWN" in by_llm
 
     assert by_llm["TAKE"]["scored_n"] == 2
     assert by_llm["TAKE"]["mean_r"] == 1.5
@@ -523,6 +530,8 @@ def test_by_llm_present_with_correct_means(tmp_path, monkeypatch):
     assert by_llm["VETO"]["mean_r"] == -0.75
     assert by_llm["GATE"]["scored_n"] == 1
     assert by_llm["GATE"]["mean_r"] == -1.0
+    assert by_llm["UNKNOWN"]["scored_n"] == 1
+    assert by_llm["UNKNOWN"]["mean_r"] == 0.3
 
 
 def test_no_read_stub_prints_when_n_under_30(tmp_path, monkeypatch):

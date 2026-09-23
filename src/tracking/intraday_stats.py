@@ -362,12 +362,14 @@ def generate_postmortem_stats(
                 else:
                     llm_cat = "VETO"
             else:
-                llm_cat = "TAKE"
+                llm_cat = "UNKNOWN"
         by_llm[llm_cat].append(row)
 
         # Track Grade-A Go/No-Go condition
         if grade == "A":
-            r_val = row.get("exit_r") if row.get("exit_r") is not None else row.get("pine_exit_r")
+            r_val = row.get("pine_exit_r")
+            if r_val is None:
+                r_val = row.get("exit_r")
             if r_val is not None:
                 try:
                     r_f = float(r_val)
@@ -411,7 +413,7 @@ def generate_postmortem_stats(
         "by_veto": {v: _with_read_flag(compute_group_stats(rows_v)) for v, rows_v in sorted(by_veto.items())},
         "by_llm": {
             k: _with_read_flag(compute_group_stats(by_llm.get(k, [])))
-            for k in ["TAKE", "VETO", "GATE"]
+            for k in ["TAKE", "VETO", "GATE", "UNKNOWN"]
         },
         "go_no_go": {
             "n_grade_a": n_a,
