@@ -401,16 +401,24 @@ window.AppWatchlist = {
         actCount++;
       }
 
-      const rVal = Number(t.r_multiple !== undefined && t.r_multiple !== null ? t.r_multiple : (t.trade_dollar_pnl || 0));
+      const isFilled = Boolean(t.fill_price || t.was_filled || t.user_taken);
+      const hasR = t.r_multiple !== undefined && t.r_multiple !== null;
+      const rVal = hasR ? Number(t.r_multiple) : 0;
 
       if (st === 'TARGET_HIT' || st === 'COMPLETED') {
-        wonCount++;
-        wonDollars += rVal;
-      } else if (st === 'INVALIDATED' || st === 'STOP_BREACHED' || st === 'STOPPED') {
-        lostCount++;
-        lostDollars += rVal;
+        if (hasR) {
+          wonCount++;
+          wonDollars += rVal;
+        }
+      } else if (st === 'STOP_BREACHED' || st === 'STOPPED' || (st === 'INVALIDATED' && isFilled)) {
+        if (hasR) {
+          lostCount++;
+          lostDollars += rVal;
+        }
       } else if (st === 'IN_TRADE' || st === 'IN_ZONE') {
-        activeDollars += rVal;
+        if (hasR) {
+          activeDollars += rVal;
+        }
       }
     });
 
@@ -435,7 +443,7 @@ window.AppWatchlist = {
       <div class="perf-kpi-card avg-win">
         <span class="perf-kpi-title">📈 Avg Win (Suggested Trades)</span>
         <div class="perf-kpi-val" style="color:#34d399;">
-          +$${Number(avgWin$).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          +${Number(avgWin$).toFixed(2)}R
           <span class="perf-kpi-sub">${wonCount} Spreads Hit</span>
         </div>
       </div>
@@ -443,7 +451,7 @@ window.AppWatchlist = {
       <div class="perf-kpi-card avg-loss" style="cursor:pointer;" onclick="AppWatchlist.setFilterTab('INVALIDATED')" title="Click to view all stopped trades">
         <span class="perf-kpi-title">📉 Avg Loss (Defined Risk)</span>
         <div class="perf-kpi-val" style="color:#f87171;">
-          -$${Math.abs(Number(avgLoss$)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          -${Math.abs(Number(avgLoss$)).toFixed(2)}R
           <span class="perf-kpi-sub">${lostCount} Stopped</span>
         </div>
       </div>
@@ -451,7 +459,7 @@ window.AppWatchlist = {
       <div class="perf-kpi-card net-alpha">
         <span class="perf-kpi-title">💰 Net Profit (Suggested Trades)</span>
         <div class="perf-kpi-val" style="color:${netColor};">
-          ${netSign}$${Math.abs(Number(netDollars)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+          ${netSign}${Math.abs(Number(netDollars)).toFixed(2)}R
           <span class="perf-kpi-sub">(${profitFactor} Profit Factor)</span>
         </div>
       </div>
@@ -803,9 +811,12 @@ window.AppWatchlist = {
       const invalidCount = groupTargets.filter(t => ['INVALIDATED', 'STOP_BREACHED'].includes((t.status || '').toUpperCase())).length;
       const targetHitCount = groupTargets.filter(t => ['TARGET_HIT', 'COMPLETED'].includes((t.status || '').toUpperCase())).length;
 
-      const dateNetDollars = groupTargets.reduce((acc, t) => acc + Number(t.trade_dollar_pnl || 0), 0);
-      const datePnlSign = dateNetDollars >= 0 ? '+' : '-';
-      const datePnlColor = dateNetDollars >= 0 ? '#10b981' : '#f43f5e';
+      const dateNetR = groupTargets.reduce((acc, t) => {
+        const val = t.r_multiple !== undefined && t.r_multiple !== null ? Number(t.r_multiple) : 0;
+        return acc + val;
+      }, 0);
+      const datePnlSign = dateNetR >= 0 ? '+' : '-';
+      const datePnlColor = dateNetR >= 0 ? '#10b981' : '#f43f5e';
 
       const groupId = `date-${dateStr}`;
       const isCollapsed = this._collapsedGroups.has(groupId);
@@ -819,7 +830,7 @@ window.AppWatchlist = {
               <span class="watch-group-icon">📅</span>
               <span class="watch-group-name">Research Date: <strong>${dateStr}</strong></span>
               <span class="pill cyan" style="font-size:10.5px; padding:2px 8px; font-weight:700;">${groupTargets.length} ${groupTargets.length === 1 ? 'Target' : 'Targets'}</span>
-              ${dateNetDollars !== 0 ? `<span class="pill" style="font-size:10px; padding:2px 7px; font-weight:800; color:${datePnlColor}; background:rgba(${dateNetDollars >= 0 ? '16,185,129' : '244,63,94'},0.12); border:1px solid ${datePnlColor}; font-family:'JetBrains Mono',monospace;">${datePnlSign}$${Math.abs(dateNetDollars).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} P&L</span>` : ''}
+              ${dateNetR !== 0 ? `<span class="pill" style="font-size:10px; padding:2px 7px; font-weight:800; color:${datePnlColor}; background:rgba(${dateNetR >= 0 ? '16,185,129' : '244,63,94'},0.12); border:1px solid ${datePnlColor}; font-family:'JetBrains Mono',monospace;">${datePnlSign}${Math.abs(dateNetR).toFixed(2)}R</span>` : ''}
               ${targetHitCount > 0 ? `<span class="badge target_hit" style="font-size:10px; padding:2px 7px;">🏁 ${targetHitCount} Hit</span>` : ''}
               ${inZoneCount > 0 ? `<span class="badge in_zone" style="font-size:10px; padding:2px 7px;">🎯 ${inZoneCount} In Zone</span>` : ''}
               ${inTradeCount > 0 ? `<span class="badge in_trade" style="font-size:10px; padding:2px 7px;">💼 ${inTradeCount} In Trade</span>` : ''}
@@ -906,11 +917,11 @@ window.AppWatchlist = {
       else if (statusUpper === 'MISSED_RUNAWAY') { statusBadgeClass = 'missed_runaway'; statusIcon = '🏃'; }
 
       let tickerPnlBadge = '';
-      const pDollar = Number(primary.trade_dollar_pnl || 0);
-      if (pDollar !== 0) {
-        const rSign = pDollar >= 0 ? '+' : '-';
-        const rColor = pDollar >= 0 ? '#10b981' : '#f43f5e';
-        tickerPnlBadge = `<span class="pill" style="font-size:10px; padding:2px 7px; font-weight:800; color:${rColor}; background:rgba(${pDollar >= 0 ? '16,185,129' : '244,63,94'},0.12); border:1px solid ${rColor}; font-family:'JetBrains Mono',monospace;">${rSign}$${Math.abs(pDollar).toFixed(0)} (${primary.trade_label || ''})</span>`;
+      const pR = primary.r_multiple !== undefined && primary.r_multiple !== null ? Number(primary.r_multiple) : 0;
+      if (pR !== 0) {
+        const rSign = pR >= 0 ? '+' : '-';
+        const rColor = pR >= 0 ? '#10b981' : '#f43f5e';
+        tickerPnlBadge = `<span class="pill" style="font-size:10px; padding:2px 7px; font-weight:800; color:${rColor}; background:rgba(${pR >= 0 ? '16,185,129' : '244,63,94'},0.12); border:1px solid ${rColor}; font-family:'JetBrains Mono',monospace;">${rSign}${Math.abs(pR).toFixed(2)}R (${primary.trade_label || ''})</span>`;
       }
 
       const ideasCount = (primary.trade_ideas || []).length;

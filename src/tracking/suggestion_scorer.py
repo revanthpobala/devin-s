@@ -51,10 +51,10 @@ def _load_suggestions(
             if source:
                 sql += " AND source = ?"
                 params.append(source)
-            if scored:
+            if scored is True:
                 sql += " AND scored_at IS NOT NULL AND scorer_version = ?"
                 params.append(SCORER_VERSION)
-            else:
+            elif scored is False:
                 sql += " AND (scored_at IS NULL OR scorer_version IS NULL OR scorer_version != ?)"
                 params.append(SCORER_VERSION)
             sql += " ORDER BY date ASC, ticker ASC"
@@ -64,8 +64,24 @@ def _load_suggestions(
 
 def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     """Score a single suggestion row according to honest lifecycle validation."""
-    ticker = row["ticker"]
-    date_str = row["date"]
+    # 6. Clear all outcome fields before scoring so a stale v1 row is never returned unchanged
+    row = {
+        **row,
+        "fill_date": None,
+        "fill_price": None,
+        "exit_date": None,
+        "exit_price": None,
+        "exit_reason": None,
+        "bars_held": 0,
+        "gross_r": None,
+        "r_net": None,
+        "mae_r": None,
+        "scored_at": None,
+        "scorer_version": SCORER_VERSION,
+    }
+
+    ticker = row.get("ticker")
+    date_str = row.get("date")
     side = (row.get("side") or "LONG").upper()
     entry_low = float(row.get("entry_low") or 0.0)
     entry_high = float(row.get("entry_high") or 0.0)
@@ -76,29 +92,56 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     entry_type = (row.get("entry_type") or "LIMIT").upper()
 
     if not ticker or not date_str:
-        return {**row, "r_net": None, "mae_r": None, "scored_at": _now_iso(), "scorer_version": SCORER_VERSION}
+        return {**row, "scored_at": _now_iso()}
 
     from src.tracking.execution_validator import get_bars_since_date
 
-    bars = get_bars_since_date(ticker, date_str)
+    # Fetch setup_date - 40 calendar days to warm EMA5 with at least 20 prior bars
+    from datetime import datetime, timedelta
+    try:
+        d_obj = datetime.strptime(date_str[:10], "%Y-%m-%d")
+        warm_start_date = (d_obj - timedelta(days=40)).strftime("%Y-%m-%d")
+    except Exception:
+        warm_start_date = date_str
+
+    bars = get_bars_since_date(ticker, warm_start_date)
     if bars is None or bars.empty:
-        logger.debug(f"No bars for {ticker} since {date_str}; cannot score.")
+        logger.debug(f"No bars for {ticker} since {warm_start_date}; cannot score.")
         return row
 
-    # P2: RSI2 lane scored with its own rules (next-open entry, EMA5 recovery exit, 10-bar max)
+    # Count bars strictly after the signal bar
+    bars_after_signal = 0
+    for idx in bars.index:
+        if str(idx)[:10] > date_str:
+            bars_after_signal += 1
+
+    # 9. RSI2 detection by setup_lane == 'RSI2' only; pass opening_ceiling = min(stop + 2*ATR, stop/(1-0.05), target)
     setup_lane = row.get("setup_lane") or ""
-    is_rsi2 = (setup_lane == "RSI2") or (entry_type in ("NEXT_OPEN", "RSI2")) or (row.get("notes") or "").startswith("rsi2")
+    is_rsi2 = (setup_lane == "RSI2")
     holding_bars = 10 if is_rsi2 else MAX_HOLDING_BARS
     e_type = "NEXT_OPEN" if is_rsi2 else entry_type
     strat_id = "RSI2" if is_rsi2 else None
 
-    # P2: no fake live bar; pass live_price=0.0
+    opening_ceiling = None
+    if is_rsi2:
+        atr_val = float(row.get("atr_at_signal") or row.get("atr") or 0.0)
+        ceil_candidates = []
+        if stop > 0 and atr_val > 0:
+            ceil_candidates.append(stop + 2.0 * atr_val)
+        if stop > 0:
+            ceil_candidates.append(stop / (1.0 - 0.05))
+        if target_1 > 0:
+            ceil_candidates.append(target_1)
+        if ceil_candidates:
+            opening_ceiling = min(ceil_candidates)
+
     eval_res = evaluate_setup_lifecycle_bars(
         bars=bars,
         setup_date=date_str,
         side=side,
         entry_type=e_type,
         strategy_id=strat_id,
+        opening_ceiling=opening_ceiling,
         entry_low=entry_low,
         entry_high=entry_high,
         breakout_level=breakout_level,
@@ -111,18 +154,20 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     was_filled = eval_res.get("was_filled", False)
-    bars_count = len(bars)
 
-    # 1. Unfilled: if setup never filled within 5 bars, mark NOT_FILLED with r_net=NULL
+    # 7. Unfilled: store validator's real status (INVALIDATED, MISSED_RUNAWAY, GAP_STOP, NOT_FILLED)
     if not was_filled:
-        if bars_count >= 5:
+        val_status = eval_res.get("status") or "NOT_FILLED"
+        is_terminal = eval_res.get("is_terminal", False)
+        if is_terminal or bars_after_signal >= 5:
+            exit_d = eval_res.get("exit_date") or (str(bars.iloc[-1].name)[:10] if hasattr(bars.iloc[-1], "name") else date_str)
             return {
                 **row,
                 "fill_date": None,
                 "fill_price": None,
-                "exit_date": str(bars.iloc[-1].name)[:10] if hasattr(bars.iloc[-1], "name") else None,
+                "exit_date": exit_d,
                 "exit_price": None,
-                "exit_reason": "NOT_FILLED",
+                "exit_reason": val_status,
                 "bars_held": 0,
                 "gross_r": None,
                 "r_net": None,
@@ -131,10 +176,10 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
                 "scorer_version": SCORER_VERSION,
             }
         else:
-            # Fewer than 5 bars passed; leave scored_at NULL so it can fill later
+            # Fewer than 5 bars after signal and non-terminal; leave scored_at NULL so it can fill later
             return row
 
-    # 2. Setup filled: ignore your_fill; breakout uses validator gap fill
+    # 8. Setup filled: breakout uses validator fill; limit uses fill or entry bound
     if entry_type == "BREAKOUT":
         fill_price = float(eval_res.get("fill_price") or breakout_level)
     else:
@@ -142,10 +187,10 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
 
     fill_date = eval_res.get("fill_date") or date_str
 
-    # Risk = planned entry_high - stop; stop >= fill means INVALID_GEOMETRY
+    # Risk = planned risk. Stop must be valid on the planned setup.
     if side == "LONG":
         risk = (entry_high - stop) if entry_high > 0 else (fill_price - stop)
-        if stop >= fill_price or risk <= 0:
+        if risk <= 0:
             return {
                 **row,
                 "fill_date": fill_date,
@@ -159,7 +204,7 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
             }
     else:
         risk = (stop - entry_low) if entry_low > 0 else (stop - fill_price)
-        if stop <= fill_price or risk <= 0:
+        if risk <= 0:
             return {
                 **row,
                 "fill_date": fill_date,
@@ -175,7 +220,7 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     is_terminal = eval_res.get("is_terminal", False)
     bars_held = eval_res.get("bars_held", 0)
 
-    # 3. Immature: if fewer than max holding bars have passed since fill and has not exited, leave scored_at NULL
+    # Immature: if fewer than max holding bars have passed since fill and has not exited, leave scored_at NULL
     if not is_terminal and bars_held < holding_bars:
         return {
             **row,
@@ -185,24 +230,24 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
             "scored_at": None,
         }
 
-    # 4. Finalize exit
+    # Finalize exit
     exit_date = eval_res.get("exit_date") or (str(bars.iloc[-1].name)[:10] if hasattr(bars.iloc[-1], "name") else "")
     exit_price = eval_res.get("exit_price")
     if exit_price is None or exit_price <= 0:
         exit_price = float(bars.iloc[-1].get("Close", bars.iloc[-1].get("close", fill_price)))
     exit_reason = eval_res.get("exit_reason") or eval_res.get("status") or "MAX_HOLDING_EXPIRED"
 
-    # 5. Compute gross R, fee (Cost 0.0005*(fill+exit)/risk), and net R
+    # Compute gross R, fee (Cost 0.0005*(fill+exit)/risk), and net R
+    # Filled trade that gaps through the stop gets real R at the open
     if side == "LONG":
         gross_r = (exit_price - fill_price) / risk
     else:
         gross_r = (fill_price - exit_price) / risk
 
-    # Cost 0.0005*(fill+exit)/risk
     cost_r = (0.0005 * (fill_price + exit_price)) / risk
     r_net = gross_r - cost_r
 
-    # 6. Compute MAE as worst adverse excursion between fill and exit divided by risk
+    # Compute MAE as worst adverse excursion between fill and exit divided by risk
     held_bars = bars
     if fill_date:
         held_bars = held_bars[held_bars.index >= fill_date]
@@ -239,9 +284,9 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def evaluate_all_suggestions() -> Dict[str, Any]:
-    """Score all unscored suggestions. Returns summary stats."""
-    rows = _load_suggestions(scored=False)
+def evaluate_all_suggestions(force: bool = False) -> Dict[str, Any]:
+    """Score all unscored suggestions. If force=True, re-scores all suggestions."""
+    rows = _load_suggestions(scored=None if force else False)
     scored_count = 0
     errors = []
 
@@ -327,9 +372,15 @@ def _compute_stats() -> Dict[str, Any]:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            # P2: filter gate_status='PASS'
             rows = cursor.execute(
-                "SELECT * FROM suggestions WHERE r_net IS NOT NULL AND exit_reason != 'NOT_FILLED' AND (gate_status = 'PASS' OR gate_status IS NULL)"
+                """
+                SELECT * FROM suggestions
+                WHERE gate_status = 'PASS'
+                  AND scorer_version = 2
+                  AND kind = 'NEW'
+                  AND verdict IN ('ENTER', 'STALK')
+                  AND r_net IS NOT NULL
+                """
             ).fetchall()
             if not rows:
                 return {}
@@ -343,3 +394,80 @@ def _compute_stats() -> Dict[str, Any]:
                 "min_r": round(min(r_vals), 4),
                 "max_r": round(max(r_vals), 4),
             }
+
+
+def get_main_record_stats(min_date: str = "2026-09-23") -> Dict[str, Any]:
+    """Compute stats for main record: source=judge, gate PASS, kind NEW, the 5 lanes, date >= min_date."""
+    with _db_lock:
+        with _get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                """
+                SELECT * FROM suggestions
+                WHERE source = 'judge'
+                  AND gate_status = 'PASS'
+                  AND scorer_version = 2
+                  AND kind = 'NEW'
+                  AND verdict IN ('ENTER', 'STALK')
+                  AND setup_lane IN ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2')
+                  AND date >= ?
+                  AND r_net IS NOT NULL
+                """,
+                (min_date,),
+            ).fetchall()
+            if not rows:
+                return {}
+            r_vals = [float(r["r_net"]) for r in rows if r["r_net"] is not None]
+            import statistics as _stats
+            wins = sum(1 for r in r_vals if r > 0)
+            losses = sum(1 for r in r_vals if r <= 0)
+
+            # Breakdown by lane
+            lanes_stats = {}
+            for lane in ['RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2']:
+                l_rows = [r for r in rows if r["setup_lane"] == lane]
+                l_r_vals = [float(r["r_net"]) for r in l_rows if r["r_net"] is not None]
+                l_wins = sum(1 for r in l_r_vals if r > 0)
+                lanes_stats[lane] = {
+                    "total": len(l_r_vals),
+                    "wins": l_wins,
+                    "losses": len(l_r_vals) - l_wins,
+                    "win_rate": round(l_wins / len(l_r_vals) * 100, 1) if l_r_vals else 0.0,
+                    "mean_r": round(_stats.mean(l_r_vals), 4) if l_r_vals else 0.0,
+                    "sum_r": round(sum(l_r_vals), 4) if l_r_vals else 0.0,
+                }
+
+            return {
+                "total_trades": len(r_vals),
+                "wins": wins,
+                "losses": losses,
+                "mean_r": round(_stats.mean(r_vals), 4) if r_vals else None,
+                "median_r": round(_stats.median(r_vals), 4) if r_vals else None,
+                "win_rate": round(wins / len(r_vals) * 100, 1) if r_vals else 0.0,
+                "sum_r": round(sum(r_vals), 4),
+                "by_lane": lanes_stats,
+            }
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Re-score suggestions in DB")
+    parser.add_argument("--force", action="store_true", help="Force re-score all suggestions")
+    parser.add_argument("--date", type=str, default="2026-09-23", help="Min date for get_main_record_stats")
+    args = parser.parse_args()
+
+    print(f"Scoring suggestions (SCORER_VERSION={SCORER_VERSION}, force={args.force})...")
+    res = evaluate_all_suggestions(force=args.force)
+    print(f"Scored {res.get('scored')} records. Errors: {len(res.get('errors', []))}")
+    if res.get("stats"):
+        print("Scoring overall stats:", json.dumps(res["stats"], indent=2))
+
+    print(f"\n--- Main Record Stats (date >= {args.date}) ---")
+    main_stats = get_main_record_stats(min_date=args.date)
+    if main_stats:
+        print(json.dumps(main_stats, indent=2))
+    else:
+        print("No trades found matching criteria for main record stats.")

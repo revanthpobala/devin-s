@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src import config
 from src.logic.strike_validator import validate_strike_geometry
@@ -94,9 +94,14 @@ def _pine_drift(
         pine_val = _dw_num(dw, *pine_keys)
         llm_val = 0.0
         for k in llm_keys:
-            llm_val = plan.get(k, 0.0) or 0.0
-            if llm_val:
-                break
+            try:
+                v = plan.get(k)
+                if v is not None:
+                    llm_val = float(v)
+                    if llm_val:
+                        break
+            except (ValueError, TypeError):
+                continue
         if pine_val > 0 and llm_val:
             diff = abs(llm_val - pine_val)
             if atr > 0 and diff > LEVEL_PINE_DRIFT_ATR * atr:
@@ -180,11 +185,15 @@ def validate_levels(
     ticker = (ticker or str(plan.get("ticker") or dw.get("ticker") or "")).strip().upper()
     date_str = date_str or str(plan.get("date") or dw.get("date") or "")
 
-    entry_low = float(plan.get("entry_low") or plan.get("entry_zone_low") or 0.0)
-    entry_high = float(plan.get("entry_high") or plan.get("entry_zone_high") or 0.0)
-    stop = float(plan.get("stop") or plan.get("tactical_stop") or 0.0)
-    target_1 = float(plan.get("target_1") or 0.0)
-    target_2 = float(plan.get("target_2") or 0.0)
+    # Safely cast plan values with float(); return gate failure on bad values, never raise
+    try:
+        entry_low = float(plan.get("entry_low") or plan.get("entry_zone_low") or 0.0)
+        entry_high = float(plan.get("entry_high") or plan.get("entry_zone_high") or 0.0)
+        stop = float(plan.get("stop") or plan.get("tactical_stop") or 0.0)
+        target_1 = float(plan.get("target_1") or 0.0)
+        target_2 = float(plan.get("target_2") or 0.0)
+    except (ValueError, TypeError) as e_cast:
+        return False, [f"Invalid non-numeric level in plan: {e_cast}"]
 
     # ── Reject SHORT ──────────────────────────────────────────
     if side != "LONG":
@@ -213,56 +222,63 @@ def validate_levels(
     if atr <= 0:
         reasons.append("missing ATR14 — hard fail")
 
-    # ── 3. Stop placement from entry_low & Pine stop ───────────
-    if atr > 0 and entry_low > 0:
-        pine_stop = _dw_num(dw, "Long Stop Loss", "rsi2 fixed stop", "long_stop_loss")
-        max_allowed_stop = entry_low - (LEVEL_ATR_STOP_MIN * atr)
-        if pine_stop > 0:
-            max_allowed_stop = min(max_allowed_stop, pine_stop + 0.05)
-        if stop > max_allowed_stop:
+    # ── Lanes classification ──────────────────────────────────
+    setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()
+    is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD")
+    is_rsi2 = (setup_lane == "RSI2")
+    is_measured_lane = is_measured_pine or is_rsi2
+
+    # ── 3. Stop placement & ATR floor ──────────────────────────
+    if is_measured_pine:
+        pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
+        pine_target = _dw_num(dw, "Long Target", "long_target")
+        if pine_stop > 0 and abs(stop - pine_stop) > 0.05:
             reasons.append(
-                f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} "
-                f"(must be <= min(entry_low - {LEVEL_ATR_STOP_MIN}*ATR, Pine stop))"
+                f"{setup_lane} lane requires stop to match Pine Long Stop Loss (${pine_stop:.2f}), got ${stop:.2f}"
             )
+        if pine_target > 0 and abs(target_1 - pine_target) > 0.05:
+            reasons.append(
+                f"{setup_lane} lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
+            )
+    elif not is_rsi2:
+        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): 1-ATR stop floor
+        if atr > 0 and entry_low > 0:
+            pine_stop = _dw_num(dw, "Long Stop Loss", "rsi2 fixed stop", "long_stop_loss")
+            max_allowed_stop = entry_low - (LEVEL_ATR_STOP_MIN * atr)
+            if pine_stop > 0:
+                max_allowed_stop = min(max_allowed_stop, pine_stop + 0.05)
+            if stop > max_allowed_stop:
+                reasons.append(
+                    f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} "
+                    f"(must be <= min(entry_low - {LEVEL_ATR_STOP_MIN}*ATR, Pine stop))"
+                )
 
     # ── 4. R:R floor & At-Market R:R ───────────────────────────
-    rr = _planned_rr(entry_low, entry_high, stop, target_1, side)
-    if rr > 0 and rr < LEVEL_RR_FLOOR:
-        reasons.append(
-            f"planned R:R {rr:.4f} from entry_high below floor {LEVEL_RR_FLOOR}"
-        )
-
     spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
     if spot <= 0:
-        spot = float(plan.get("spot") or plan.get("price") or 0.0)
+        try:
+            spot = float(plan.get("spot") or plan.get("price") or 0.0)
+        except (ValueError, TypeError):
+            spot = 0.0
     if spot > stop and target_1 > spot:
         rr_at_market = round((target_1 - spot) / (spot - stop), 4)
     else:
         rr_at_market = 0.0
     plan["rr_at_market"] = rr_at_market
 
-    setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()
-    exempt_lanes = ("RSI2", "CODE20", "OVERSOLD")
-    if setup_lane not in exempt_lanes:
+    # Skip planned R:R floor and at-market R:R floor for measured lanes
+    if not is_measured_lane:
+        rr = _planned_rr(entry_low, entry_high, stop, target_1, side)
+        if rr > 0 and rr < LEVEL_RR_FLOOR:
+            reasons.append(
+                f"planned R:R {rr:.4f} from entry_high below floor {LEVEL_RR_FLOOR}"
+            )
         if rr_at_market < 2.0:
             reasons.append(
                 f"at-market R:R {rr_at_market:.2f} below 2.0 floor for lane {setup_lane or 'DEFAULT'}"
             )
 
-    # ── 5. OVERSOLD geometry constraint ────────────────────────
-    if setup_lane == "OVERSOLD":
-        pine_stop = _dw_num(dw, "Long Stop Loss", "rsi2 fixed stop")
-        pine_target = _dw_num(dw, "Long Target", "Long Target T1 Waypoint")
-        if pine_stop > 0 and abs(stop - pine_stop) > 0.05:
-            reasons.append(
-                f"OVERSOLD lane requires stop to match Pine Long Stop Loss (${pine_stop:.2f}), got ${stop:.2f}"
-            )
-        if pine_target > 0 and abs(target_1 - pine_target) > 0.05:
-            reasons.append(
-                f"OVERSOLD lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
-            )
-
-    # ── 6. Target 1 ceiling vs 21b Expected Move ───────────────
+    # ── 5. Target 1 ceiling vs 21b Expected Move ───────────────
     close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
     exp_move_pct = _dw_num(dw, "Exp Move % (21b)", "Exp Move Pct 21b", "exp_move_pct", "exp_move")
     if exp_move_pct > 1.0:
@@ -274,30 +290,41 @@ def validate_levels(
                 f"target_1 ${target_1:.2f} exceeds 1.5x 21b expected move ceiling ${max_t1:.2f}"
             )
 
-    # ── 7. Earnings inside 21 bars (reject NEW) ────────────────
+    # ── 6. Earnings inside 21 bars (reject NEW) ────────────────
     kind = str(plan.get("kind") or "NEW").upper()
     if kind == "NEW" and ticker:
         try:
+            from datetime import date, datetime
+            signal_d = None
+            if date_str:
+                try:
+                    signal_d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+                except Exception:
+                    signal_d = None
+            if signal_d is None:
+                signal_d = date.today()
+
             from src.clients.earnings_client import get_next_earnings_days
-            days_to_earnings = get_next_earnings_days(ticker)
+            days_to_earnings = get_next_earnings_days(ticker, as_of_date=signal_d)
             dw_days = _dw_num(dw, "earnings_days", "days_to_earnings", "bars_to_earnings")
             if dw_days > 0 and (days_to_earnings is None or dw_days < days_to_earnings):
                 days_to_earnings = int(dw_days)
             if days_to_earnings is not None and 0 <= days_to_earnings <= 30:
                 reasons.append(
-                    f"earnings inside 21 bars ({days_to_earnings} calendar days away) — fail for NEW"
+                    f"earnings inside 21 bars ({days_to_earnings} calendar days away from {signal_d}) — fail for NEW"
                 )
         except Exception as e:
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")
 
-    # ── 8. Pine drift ──────────────────────────────────────────
-    drifts = _pine_drift(plan, dw, side)
-    for d in drifts:
-        reasons.append(
-            f"pine drift on {d['field']}: LLM ${d['llm_value']:.4f} vs "
-            f"Pine ${d['pine_value']:.4f} (diff {d['drift_in_atr']:.2f} ATR, "
-            f"threshold {d['threshold_atr']} ATR)"
-        )
+    # ── 7. Pine drift (skip for RSI2) ──────────────────────────
+    if not is_rsi2:
+        drifts = _pine_drift(plan, dw, side)
+        for d in drifts:
+            reasons.append(
+                f"pine drift on {d['field']}: LLM ${d['llm_value']:.4f} vs "
+                f"Pine ${d['pine_value']:.4f} (diff {d['drift_in_atr']:.2f} ATR, "
+                f"threshold {d['threshold_atr']} ATR)"
+            )
 
     # ── 5. Options geometry ────────────────────────────────────
     options_plan = plan.get("options_plan", {}) or {}

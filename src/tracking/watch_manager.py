@@ -195,6 +195,7 @@ def init_watch_db():
                     status TEXT NOT NULL DEFAULT 'STALKING',
                     dollar_pnl REAL DEFAULT 0.0,
                     roc_pct REAL DEFAULT 0.0,
+                    r_multiple REAL,
                     is_primary INTEGER DEFAULT 1,
                     outcome_notes TEXT,
                     evaluated_at TEXT,
@@ -206,6 +207,8 @@ def init_watch_db():
             existing_audit_cols = {col[1] for col in cursor.execute("PRAGMA table_info(suggested_trades_audit)").fetchall()}
             if "is_primary" not in existing_audit_cols:
                 cursor.execute("ALTER TABLE suggested_trades_audit ADD COLUMN is_primary INTEGER DEFAULT 1")
+            if "r_multiple" not in existing_audit_cols:
+                cursor.execute("ALTER TABLE suggested_trades_audit ADD COLUMN r_multiple REAL")
             conn.commit()
 
 
@@ -271,8 +274,14 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                         WHEN watch_targets.status IN ('IN_TRADE', 'IN_ZONE') THEN watch_targets.status 
                         ELSE excluded.status 
                     END,
-                    is_active=1,
-                    user_taken=0,
+                    is_active=CASE
+                        WHEN watch_targets.date != excluded.date OR (excluded.suggestion_id IS NOT NULL AND watch_targets.suggestion_id != excluded.suggestion_id) THEN 1
+                        ELSE watch_targets.is_active
+                    END,
+                    user_taken=CASE
+                        WHEN watch_targets.date != excluded.date OR (excluded.suggestion_id IS NOT NULL AND watch_targets.suggestion_id != excluded.suggestion_id) THEN 0
+                        ELSE watch_targets.user_taken
+                    END,
                     suggestion_id=COALESCE(excluded.suggestion_id, watch_targets.suggestion_id),
                     updated_at=excluded.updated_at,
                     raw_json=excluded.raw_json

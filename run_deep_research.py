@@ -99,7 +99,7 @@ def _mark_job_complete(job_id: str | None, success: bool = True, error_msg: str 
 
 
 def run_deep_research_pipeline(
-    target_date: str = None, target_ticker: str = None, force_tickers: set = None, job_id: str = None
+    target_date: str = None, target_ticker: str = None, force_tickers: set = None, job_id: str = None, force: bool = False
 ):
     logger.info("=" * 60)
     logger.info("STARTING DEEP RESEARCH PIPELINE (Paid Validation Phase)")
@@ -109,7 +109,7 @@ def run_deep_research_pipeline(
     final_job_id = _ensure_job_registered(target_ticker, date_str, job_id=job_id)
 
     try:
-        run_deep_research(date_str, target_ticker)
+        run_deep_research(date_str, target_ticker, force=force or bool(force_tickers))
         _mark_job_complete(final_job_id, success=True)
         logger.info("=" * 60)
         logger.info("DEEP RESEARCH PHASE COMPLETE.")
@@ -171,4 +171,4 @@ if __name__ == "__main__":
 
         run_local_research(target_date, target_ticker, force_tickers)
 
-    run_deep_research_pipeline(target_date, target_ticker, job_id=args.job_id)
+    run_deep_research_pipeline(target_date, target_ticker, force_tickers=force_tickers, job_id=args.job_id, force=bool(force_tickers))

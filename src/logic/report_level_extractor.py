@@ -128,6 +128,11 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         logger.warning(f"[{safe_ticker}] No reports or datawindow found for date {date_str}.")
         return None
 
+    # Before extraction, if _arbitration.md contains NO_LEVELS or LEVEL GATE REJECTED, skip; never fall through to _summary.md
+    if arbitration_text and ("NO_LEVELS" in arbitration_text or "LEVEL GATE REJECTED" in arbitration_text):
+        logger.info(f"[{safe_ticker}] Arbitration contains NO_LEVELS or LEVEL GATE REJECTED. Skipping extraction.")
+        return None
+
     # Spot Price — resolved up front so the embedded-block EM backstop below can use it.
     spot_price = _dw_lookup(dw_data, "close", "Close")
     if not spot_price:
@@ -140,7 +145,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         if not text_source:
             continue
         m_block = re.search(
-            r"```(?:json)?(?::watch_levels)?\s*(\{[\s\S]*?\"shares_plan\"[\s\S]*?\})\s*```",
+            r"```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?\"shares_plan\"[\s\S]*?\})\s*```",
             text_source,
         )
         if m_block:

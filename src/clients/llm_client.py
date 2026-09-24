@@ -756,7 +756,7 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
     return "\n".join(lines)
 
 
-def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = None) -> str:
+def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = None, is_independent: bool = False) -> str:
     """Safely executes a Python code snippet with pre-loaded df, dw, and math/pandas modules."""
     import io
     import sys
@@ -775,33 +775,46 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     ticker = ticker.upper()
     date_str = date_str or time.strftime("%Y-%m-%d")
 
+    csv_name = f"{ticker}_datawindow_independent.csv" if is_independent else f"{ticker}_datawindow.csv"
+    dw_name = f"{ticker}_datawindow_independent.json" if is_independent else f"{ticker}_datawindow.json"
+
     # Locate datawindow.csv and datawindow.json strictly for date_str
     chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
-    csv_path = chart_dir / f"{ticker}_datawindow.csv"
-    dw_path = chart_dir / f"{ticker}_datawindow.json"
+    csv_path = chart_dir / csv_name
+    dw_path = chart_dir / dw_name
 
     if not csv_path.exists():
         # Check date_str's triage folder before checking anywhere else
         triage_date_dir = config.BASE_DIR / "data" / "triage" / date_str
         for sub in ["_DEEP_RESEARCH", "force", ""]:
-            cand = triage_date_dir / sub / ticker / f"{ticker}_datawindow.csv" if sub else triage_date_dir / ticker / f"{ticker}_datawindow.csv"
+            cand = triage_date_dir / sub / ticker / csv_name if sub else triage_date_dir / ticker / csv_name
             if cand.exists():
                 csv_path = cand
-                dw_path = cand.parent / f"{ticker}_datawindow.json"
+                dw_path = cand.parent / dw_name
                 break
 
     if not csv_path.exists():
         triage_root = config.BASE_DIR / "data" / "triage"
         for d in sorted(triage_root.glob("*/"), reverse=True):
             for sub in ["_DEEP_RESEARCH", "force", ""]:
-                cand = d / sub / ticker / f"{ticker}_datawindow.csv" if sub else d / ticker / f"{ticker}_datawindow.csv"
+                cand = d / sub / ticker / csv_name if sub else d / ticker / csv_name
                 if cand.exists():
                     csv_path = cand
-                    dw_path = cand.parent / f"{ticker}_datawindow.json"
+                    dw_path = cand.parent / dw_name
                     break
 
     df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
     dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
+
+    # If Model B (is_independent), sanitize any proprietary columns if somehow still present
+    if is_independent and not df.empty:
+        drop_cols = [c for c in df.columns if any(b in c.lower() for b in [
+            "action", "pine", "entry", "stop loss", "target", "score", "pressure",
+            "rev zone", "ignition", "anchor", "sigma", "overextension", "gradient",
+            "mask", "signal pack", "premove", "fade gate", "bible", "pillar",
+            "zone 0", "buy score", "sell score", "prob"
+        ])]
+        df = df.drop(columns=drop_cols, errors="ignore")
 
     try:
         import scipy
@@ -1066,7 +1079,7 @@ def invoke_skill(skill_name: str, topic: str = "") -> dict:
         return {"status": "error", "error": f"Error reading skill '{skill_name}': {e}", "content": ""}
 
 
-def execute_tool_call(tool_call, date_str: str = None):
+def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = False):
     """Executes the mapped python function for a given tool call with TTL artifact caching."""
     from src.data.artifact_cache import artifact_cache
     
@@ -1239,8 +1252,8 @@ def execute_tool_call(tool_call, date_str: str = None):
         return res_str
     elif function_name == "execute_python_code":
         code_str = args.get("code", "")
-        logger.info(f"LLM executed tool: execute_python_code(ticker='{ticker}', code_len={len(code_str)})")
-        res_str = execute_python_code_tool(code=code_str, ticker=ticker, date_str=date_str)
+        logger.info(f"LLM executed tool: execute_python_code(ticker='{ticker}', code_len={len(code_str)}, ind={is_independent})")
+        res_str = execute_python_code_tool(code=code_str, ticker=ticker, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, {
             "code": code_str,
             "stdout": res_str,
@@ -1801,10 +1814,11 @@ def query_local_llm(
                     if m_date:
                         sim_date = m_date.group(1)
                 
+                is_ind = bool("[INDEPENDENT]" in (summarize_tool_context or ""))
                 def _process_tool_call(tool_call):
                     fn_name = getattr(getattr(tool_call, "function", None), "name", "unknown")
                     try:
-                        tool_result = execute_tool_call(tool_call, date_str=sim_date)
+                        tool_result = execute_tool_call(tool_call, date_str=sim_date, is_independent=is_ind)
                         tool_result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
                     except Exception as e_tool:
                         logger.error(f"Error executing tool {fn_name}: {e_tool}")

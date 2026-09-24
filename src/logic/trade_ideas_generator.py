@@ -19,7 +19,15 @@ def generate_trade_ideas_for_target(target: Dict[str, Any], position: Optional[D
     if is_open:
         pos_data = position or target.get("position") or {}
         qty = int(pos_data.get("quantity") or 1)
-        entry = float(pos_data.get("average_price") or target.get("entry_price") or (spot if spot > 0 else 100.0))
+        raw_entry = pos_data.get("average_price") or target.get("entry_price")
+        if not raw_entry:
+            return []
+        try:
+            entry = float(raw_entry)
+            if entry <= 0:
+                return []
+        except (ValueError, TypeError):
+            return []
         side = str(pos_data.get("side") or target.get("side") or "LONG").upper()
         stop = float(target.get("tactical_stop") or pos_data.get("stop") or 0.0)
         t1 = float(target.get("target_1") or pos_data.get("target") or 0.0)

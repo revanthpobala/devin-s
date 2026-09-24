@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import pandas as pd
 
 from src.logic.report_level_extractor import (
     _credit_strike_em_consistent,
@@ -643,10 +644,13 @@ def test_sync_reports_to_watchlist_skips_tastytrade_on_gate_rejection():
         },
     }
 
+    mock_df = pd.DataFrame([{"Close": 100.0, "Long Stop Loss": 95.0, "Long Target": 120.0, "ATR": 2.0, "Action Code": 20}])
     with patch("run_watch_alerts.extract_watch_levels_from_report", return_value=fake_data), \
          patch("run_watch_alerts.upsert_watch_target") as mock_upsert, \
-         patch("run_watch_alerts.TastytradeClient") as mock_tt_cls:
-        
+         patch("run_watch_alerts.TastytradeClient") as mock_tt_cls, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pandas.read_csv", return_value=mock_df):
+    
         mock_tt = MagicMock()
         mock_tt_cls.return_value = mock_tt
 
@@ -676,9 +680,13 @@ def test_sync_reports_to_watchlist_defaults_tastytrade_disabled():
         },
     }
 
+    mock_df = pd.DataFrame([{"Close": 100.0, "Long Stop Loss": 95.0, "Long Target": 115.0, "ATR": 3.0, "Action Code": 20}])
     with patch("run_watch_alerts.extract_watch_levels_from_report", return_value=fake_data), \
          patch("run_watch_alerts.upsert_watch_target") as mock_upsert, \
-         patch("run_watch_alerts.TastytradeClient") as mock_tt_cls:
+         patch("run_watch_alerts.TastytradeClient") as mock_tt_cls, \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("pandas.read_csv", return_value=mock_df), \
+         patch("src.logic.level_validation.validate_levels", return_value=(True, [])):
 
         # Default behavior: Tastytrade alerts are NOT generated until explicitly instructed
         count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="GOODTICKER")

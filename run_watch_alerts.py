@@ -178,11 +178,9 @@ def sync_reports_to_watchlist(
                             except Exception:
                                 pass
             if not dw_dict:
-                dw_dict = {
-                    "RSI2 ATR14": data.get("atr_14") or data.get("atr") or data.get("rsi2_atr14"),
-                    "Close": data.get("current_price") or data.get("spot") or data.get("close"),
-                    "setup_lane": data.get("setup_lane") or data.get("lane"),
-                }
+                logger.warning(f"[{t}] No Data Window found on disk for {date_str}. Gate cannot run fully — SKIPPING upsert.")
+                rejected_list.append({"ticker": t, "reasons": ["No Data Window found on disk (gate cannot run fully)"]})
+                continue
 
             from src.logic.level_validation import validate_levels
             plan = {
@@ -225,7 +223,7 @@ def sync_reports_to_watchlist(
                         with _get_connection() as sconn:
                             scur = sconn.cursor()
                             srow = scur.execute(
-                                "SELECT id FROM suggestions WHERE ticker = ? AND date = ? ORDER BY id DESC LIMIT 1",
+                                "SELECT id FROM suggestions WHERE ticker = ? AND date = ? AND source = 'judge' ORDER BY id DESC LIMIT 1",
                                 (t, date_str)
                             ).fetchone()
                             if srow:

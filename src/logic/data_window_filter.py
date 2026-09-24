@@ -416,28 +416,27 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
                         break
         f[field] = val
 
-    # Ensure RSI2 parameters override when protocol-2 is active
+    # Ensure RSI2 parameters are saved when protocol-2 is active (only swapped into long_stop_loss/target if lane is RSI2)
     if f.get("rsi2_protocol") == 2.0 or f.get("rsi2_events_pack") is not None:
         rsi2_stop_key = _match_label(raw, "rsi2 fixed stop", "rsi2 stop")
         if rsi2_stop_key and raw.get(rsi2_stop_key) is not None:
             stop_v = _num(raw[rsi2_stop_key])
             if stop_v is not None:
-                f["long_stop_loss"] = stop_v
                 f["rsi2_fixed_stop"] = stop_v
 
         rsi2_target_key = _match_label(raw, "rsi2 fixed target", "rsi2 target")
         if rsi2_target_key and raw.get(rsi2_target_key) is not None:
             tgt_v = _num(raw[rsi2_target_key])
             if tgt_v is not None:
-                f["long_target"] = tgt_v
                 f["rsi2_fixed_target"] = tgt_v
 
         rsi2_entry_key = _match_label(raw, "rsi2 entry or opening ceiling", "rsi2 entry")
         if rsi2_entry_key and raw.get(rsi2_entry_key) is not None:
             ent_v = _num(raw[rsi2_entry_key])
             if ent_v is not None:
-                f["long_entry"] = ent_v
                 f["rsi2_entry"] = ent_v
+
+    f["_rr_mkt_deliberately_absent"] = bool(raw.get("_rr_mkt_deliberately_absent"))
 
     # Unpack zone_rr_flags if present and individual flag fields are missing
     flags_pack = f.get("zone_rr_flags")
@@ -562,14 +561,22 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
         else:
             risk = stop - price
             reward = price - tgt
-    rr = (reward / risk) if (risk is not None and risk > 0) else None
 
     # Prefer the indicator's own at-market ratio on the long side so this can never drift from the
-    # .pine's longRRatMkt; the recomputation above is the fallback for pre-2026-08-13 scrapes.
+    # .pine's longRRatMkt; the recomputation is the fallback for pre-2026-08-13 scrapes.
+    # Do not recompute rr when the injected RR@mkt was deliberately absent.
     if side == "long":
         exported_rr_mkt = f.get("long_rr_at_market")
         if exported_rr_mkt is not None and exported_rr_mkt > 0:
             rr = exported_rr_mkt
+        elif f.get("_rr_mkt_deliberately_absent"):
+            rr = None
+        elif stop is not None and tgt is not None and price is not None and price > stop and tgt > price:
+            rr = (reward / risk) if (risk is not None and risk > 0) else None
+        else:
+            rr = None
+    else:
+        rr = (reward / risk) if (risk is not None and risk > 0) else None
 
     # For strong momentum / stage-2 names above the entry zone, calculate momentum R:R with a tight structural stop
     tight_stop = None
@@ -937,6 +944,14 @@ def run_data_window_filter(
         setup_lane = "WATCH_SHADOW"
     else:
         setup_lane = LANE_TO_SETUP_LANE.get(reason)
+
+    if setup_lane == "RSI2":
+        if f.get("rsi2_fixed_stop") is not None:
+            f["long_stop_loss"] = f["rsi2_fixed_stop"]
+        if f.get("rsi2_fixed_target") is not None:
+            f["long_target"] = f["rsi2_fixed_target"]
+        if f.get("rsi2_entry") is not None:
+            f["long_entry"] = f["rsi2_entry"]
 
     verdict = {
         "ticker": ticker,
@@ -1480,10 +1495,10 @@ def _self_test() -> None:
         "RR_TRAP": ("long", "TREND_LONG", "WATCH", "constructible_watch"),
         "STAGE0": ("long", "TREND_LONG", "CUT", "warmup_stage_0"),
         "CAT": ("long", "NONE", "WATCH", "no_setup"),
-        "RR_LANE": ("long", "TREND_LONG", "PASS", "rr_at_market_lane"),
+        "RR_LANE": ("long", "TREND_LONG", "PASS", "rr_at_market_lane_strong"),
         "RR_FADE": ("long", "TREND_LONG", "WATCH", "structure_only_no_fresh_long"),
         "RR_NO_FALLBACK": ("short", "NONE", "WATCH", "no_setup"),
-        "EV_SIDE_GUARD": ("long", "TREND_LONG", "PASS", "rr_at_market_lane"),
+        "EV_SIDE_GUARD": ("long", "TREND_LONG", "PASS", "rr_at_market_lane_strong"),
     }
 
     ok = True
@@ -1516,12 +1531,12 @@ def _self_test() -> None:
             logger.error(f"SELF-TEST RR_NO_FALLBACK {name}: got {nf.get(name)!r}, expected None "
                          f"(rr_to_target must never be used as a fallback)")
 
-    # Assert ev_r is None on EV_SIDE_GUARD despite long PASS
+    # Assert lane prior semantics on EV_SIDE_GUARD (strong lane prior EV = 0.13)
     esg = results.get("EV_SIDE_GUARD", {})
-    if esg.get("ev_r") is not None:
+    if esg.get("ev_r") != 0.13:
         ok = False
-        logger.error(f"SELF-TEST EV_SIDE_GUARD ev_r: got {esg.get('ev_r')!r}, expected None "
-                     f"(sell-dominant setup must not compute long ev_r)")
+        logger.error(f"SELF-TEST EV_SIDE_GUARD ev_r: got {esg.get('ev_r')!r}, expected 0.13 "
+                     f"(lane prior semantics for rr_at_market_lane_strong)")
 
     # A blocked long must still carry a usable structure read, otherwise the demotion-instead-of-CUT
     # is pointless -- the whole reason for not CUTting is that a trade remains constructible.

@@ -495,7 +495,7 @@ window.AppTrades = {
 
           <!-- 11. R:R @ MKT -->
           <td style="padding:10px 8px; font-family:var(--font-mono); font-size:11.5px; text-align:right; font-weight:700; color:var(--cyan-glow);">
-            ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : (t.rr_ratio ? Number(t.rr_ratio).toFixed(2) : '-')}
+            ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : '-'}
           </td>
 
           <!-- 12. LIVE QUOTE & DISTANCE -->

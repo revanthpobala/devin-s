@@ -96,8 +96,7 @@ def get_suggested_trades_endpoint():
                     SELECT wt.rowid as id, wt.*, 
                            s.gate_status, s.setup_lane, s.kind, s.atr_at_signal, s.rr_at_market_at_signal
                     FROM watch_targets wt
-                    LEFT JOIN suggestions s ON (wt.suggestion_id IS NOT NULL AND s.id = wt.suggestion_id)
-                                            OR (wt.suggestion_id IS NULL AND s.ticker = wt.ticker AND s.date = wt.date)
+                    LEFT JOIN suggestions s ON s.id = wt.suggestion_id
                     WHERE wt.is_active IS NULL OR wt.is_active = 1
                     ORDER BY wt.date DESC, wt.updated_at DESC
                     """
@@ -173,7 +172,7 @@ def get_suggested_trades_endpoint():
             t["stop_risk_pct"] = stop_risk_pct
             t["rr_ratio"] = rr_ratio
             t["has_report"] = has_report
-            t["gate_status"] = t.get("gate_status") or "PASS"
+            t["gate_status"] = t.get("gate_status") or "UNKNOWN"
             t["setup_lane"] = t.get("setup_lane") or "DEFAULT"
             t["kind"] = t.get("kind") or "NEW"
             atr_val = t.get("atr_at_signal") or (raw.get("indicators", {}).get("RSI2 ATR14") if raw else None)
@@ -185,7 +184,7 @@ def get_suggested_trades_endpoint():
                 t["stop_in_atr"] = round(abs(entry_mid - stop_loss) / atr_num, 2)
             else:
                 t["stop_in_atr"] = None
-            t["rr_at_market"] = t.get("rr_at_market_at_signal") or rr_ratio
+            t["rr_at_market"] = t.get("rr_at_market_at_signal")
             trades.append(t)
 
         summary = {

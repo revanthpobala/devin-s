@@ -475,10 +475,57 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     if triage.get("triage") in ("PASS", "WATCH") and str(triage.get("chosen_side") or "LONG").upper() == "LONG":
         try:
             from src.tracking.suggestions_ledger import append_suggestion
+            from src.logic.level_validation import validate_levels
+
             long_p = triage.get("long_plan") or {}
             z = long_p.get("zone") or [None, None]
             e_low = z[0] if isinstance(z, (list, tuple)) and len(z) > 0 else long_p.get("entry_zone_low")
             e_high = z[1] if isinstance(z, (list, tuple)) and len(z) > 1 else long_p.get("entry_zone_high")
+            stop_lvl = float(long_p.get("stop")) if long_p.get("stop") else None
+            t1_lvl = float(long_p.get("target")) if long_p.get("target") else None
+            t2_lvl = float(long_p.get("target_2")) if long_p.get("target_2") else None
+
+            s_lane = "WATCH_SHADOW" if triage.get("triage") == "WATCH" else (triage.get("setup_lane") or "RR_SETUP")
+            rule_plan = {
+                "ticker": ticker,
+                "date": today_str,
+                "entry_low": float(e_low) if e_low else None,
+                "entry_high": float(e_high) if e_high else None,
+                "stop": stop_lvl,
+                "target_1": t1_lvl,
+                "target_2": t2_lvl,
+                "setup_lane": s_lane,
+                "kind": "NEW",
+            }
+            gate_ok, gate_reasons = validate_levels(
+                plan=rule_plan,
+                dw=data_window or {},
+                side="LONG",
+                ticker=ticker,
+                date_str=today_str,
+            )
+            rule_gate_status = "PASS" if gate_ok else "REJECTED_BY_GATE"
+
+            atr_val = None
+            if data_window:
+                for k in ("RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR"):
+                    if data_window.get(k) is not None:
+                        try:
+                            atr_val = float(data_window[k])
+                            break
+                        except Exception:
+                            pass
+
+            spot_val = None
+            if data_window:
+                for k in ("close", "Close", "price", "spot"):
+                    if data_window.get(k) is not None:
+                        try:
+                            spot_val = float(data_window[k])
+                            break
+                        except Exception:
+                            pass
+
             append_suggestion({
                 "ticker": ticker,
                 "date": today_str,
@@ -487,10 +534,19 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "entry_type": "LIMIT",
                 "entry_low": float(e_low) if e_low else None,
                 "entry_high": float(e_high) if e_high else None,
-                "stop": float(long_p.get("stop")) if long_p.get("stop") else None,
-                "target_1": float(long_p.get("target")) if long_p.get("target") else None,
-                "target_2": float(long_p.get("target_2")) if long_p.get("target_2") else None,
+                "stop": stop_lvl,
+                "target_1": t1_lvl,
+                "target_2": t2_lvl,
                 "planned_rr": float(triage.get("rr")) if triage.get("rr") else None,
+                "verdict": "ENTER" if triage.get("triage") == "PASS" else "STALK",
+                "gate_status": rule_gate_status,
+                "setup_lane": s_lane,
+                "kind": "NEW",
+                "atr_at_signal": atr_val,
+                "spot_at_signal": spot_val,
+                "rr_at_market_at_signal": float(triage.get("rr_at_market") or triage.get("rr") or 0.0) if (triage.get("rr_at_market") or triage.get("rr")) else None,
+                "lane_prior_win": triage.get("lane_prior_win"),
+                "lane_prior_ev": triage.get("lane_prior_ev"),
                 "_datawindow": data_window,
                 "notes": f"Rule triage: {triage.get('triage')} ({triage.get('reason')})",
             })

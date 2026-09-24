@@ -42,9 +42,11 @@ def _call_model(
     use_remote: bool,
     label: str,
     ticker: str,
+    is_independent: bool = False,
 ) -> str:
     """Run one LLM pass: remote first, local-GPU fallback."""
     resp = None
+    tool_ctx = f"The simulated date is {date_str}. Treat {date_str} as the present day.{' [INDEPENDENT]' if is_independent else ''}"
     if use_remote:
         try:
             resp = query_local_llm(
@@ -55,7 +57,7 @@ def _call_model(
                 image_paths=image_paths,
                 use_tools=True,
                 max_tokens=16384,
-                summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
+                summarize_tool_context=tool_ctx,
             )
         except Exception as e:
             logger.warning(f"[{ticker}] Remote API inference for {label} failed ({e}) — falling back to Local GPU!")
@@ -72,7 +74,7 @@ def _call_model(
             use_tools=True,
             disable_thinking=True,
             max_tokens=16384,
-            summarize_tool_context=f"The simulated date is {date_str}. Treat {date_str} as the present day.",
+            summarize_tool_context=tool_ctx,
         )
     return resp or ""
 
@@ -101,11 +103,11 @@ def run_pass2(
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             fut_a = executor.submit(
                 _call_model, system_prompt, user_prompt, image_paths_model_a,
-                date_str, True, "Model A (Pine Gem)", ticker,
+                date_str, True, "Model A (Pine Gem)", ticker, False,
             )
             fut_b = executor.submit(
                 _call_model, system_prompt_independent, independent_user_prompt, image_paths_model_b,
-                date_str, True, "Model B (Independent)", ticker,
+                date_str, True, "Model B (Independent)", ticker, True,
             )
             response = fut_a.result()
             ind_response = fut_b.result()
@@ -113,12 +115,12 @@ def run_pass2(
         logger.info(f"[{ticker}] Pass 2 — launching Model A sequentially on Local GPU...")
         response = _call_model(
             system_prompt, user_prompt, image_paths_model_a,
-            date_str, False, "Model A (Pine Gem)", ticker,
+            date_str, False, "Model A (Pine Gem)", ticker, False,
         )
         logger.info(f"[{ticker}] Pass 2 — launching Model B sequentially on Local GPU...")
         ind_response = _call_model(
             system_prompt_independent, independent_user_prompt, image_paths_model_b,
-            date_str, False, "Model B (Independent)", ticker,
+            date_str, False, "Model B (Independent)", ticker, True,
         )
 
     return Pass2Result(response=response, ind_response=ind_response)

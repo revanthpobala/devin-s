@@ -36,9 +36,13 @@ def validate_strike_geometry(
         exp_move_num = float(exp_move_pct_21b) if exp_move_pct_21b is not None else None
     except (ValueError, TypeError):
         exp_move_num = None
-    pct = (exp_move_num / 100.0) if (exp_move_num is not None and exp_move_num > 0) else None
-    exp_move_dist = (spot_price * pct) if pct else None
-    max_allowed_dist = (1.5 * exp_move_dist) if exp_move_dist else None
+
+    if exp_move_num is None or exp_move_num <= 0:
+        return False, ["Missing or invalid ExpMove (Exp Move Pct 21b required for strike geometry validation)"]
+
+    pct = exp_move_num / 100.0
+    exp_move_dist = spot_price * pct
+    max_allowed_dist = 1.5 * exp_move_dist
 
     # 1. Credit spread and naked short leg OTM checks
     if "BULL_PUT" in strat or "PUT_CREDIT" in strat:

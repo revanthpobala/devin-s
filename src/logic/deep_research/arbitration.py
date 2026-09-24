@@ -147,6 +147,9 @@ def run_arbitration(
     reports_dir: Path,
     kind: str = "NEW",
     setup_lane: str | None = None,
+    triage_reason: str = "",
+    lane_prior_win: float | None = None,
+    lane_prior_ev: float | None = None,
 ) -> str:
     """Run Pass 2-JUDGE locally, write ``{ticker}_arbitration.md``, extract watch_levels.
 
@@ -174,8 +177,11 @@ def run_arbitration(
     zone_rr_flags = _decode_zone_rr_flags(raw_zone_flags)
 
     raw_act = dw_dict.get("Action Long Code")
-    if raw_act is None:
-        raw_act = dw_dict.get("Context Action Pack")
+    if raw_act is None and dw_dict.get("Context Action Pack") is not None:
+        try:
+            raw_act = int(round(float(dw_dict.get("Context Action Pack")))) % 32
+        except (ValueError, TypeError):
+            raw_act = None
     if raw_act is None:
         raw_act = f_parsed.get("action_long_code")
     if raw_act is None:
@@ -188,11 +194,15 @@ def run_arbitration(
     iv30_val = dw_dict.get("energy_iv30") or dw_dict.get("iv30") or f_parsed.get("energy_iv30") or f_parsed.get("iv30") or "N/A"
     iv_rank_val = dw_dict.get("energy_ivrank") or dw_dict.get("iv_rank") or f_parsed.get("energy_ivrank") or f_parsed.get("iv_rank") or "N/A"
 
+    lane_prior_str = f"win={lane_prior_win:.0%}, ev={lane_prior_ev:.2f}R" if lane_prior_win is not None and lane_prior_ev is not None else "N/A"
+
     ground_truth = (
         f"--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---\n"
         f"- Ticker: {ticker} | Date: {date_str} | DW Bar Date: {dw_bar_date} | DW Close: {dw_close}\n"
         f"- Position Mode: {kind} (MANAGE = already owned in portfolio; NEW = prospective entry)\n"
         f"- Triage Lane & Setup: {setup_lane or 'STANDARD'}\n"
+        f"- Triage Reason: {triage_reason or 'None'}\n"
+        f"- Lane Prior: {lane_prior_str}\n"
         f"{active_pos_block}\n"
         f"- Live Quote: {live_quote_block.strip() if live_quote_block else 'N/A'}\n"
         f"- Earnings Date & Event Risk: {earnings_fact_block.strip() if earnings_fact_block else 'N/A'}\n"
@@ -251,7 +261,7 @@ def run_arbitration(
 
     # Extract structured watch_levels JSON from raw response BEFORE any trimming
     watch_json_match = re.search(
-        r"```(?:json)?(?::watch_levels)?\s*(\{.*?\})\s*```", raw_judge, re.DOTALL
+        r"```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{.*?\})\s*```", raw_judge, re.DOTALL
     )
 
     safe = ticker.replace(":", "_")
@@ -276,7 +286,8 @@ def run_arbitration(
         watch_data.setdefault("ticker", ticker)
         watch_data.setdefault("date", date_str)
         watch_data["kind"] = kind
-        watch_data["setup_lane"] = setup_lane
+        model_lane = watch_data.get("setup_lane") or setup_lane or "RR_SETUP"
+        watch_data["setup_lane"] = model_lane
 
         from src.logic.level_validation import validate_levels
         from src.tracking.watch_manager import upsert_watch_target
@@ -288,7 +299,7 @@ def run_arbitration(
             "date": date_str,
             "side": watch_data.get("side", "LONG"),
             "kind": kind,
-            "setup_lane": setup_lane,
+            "setup_lane": model_lane,
         }
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
         if not _ok:
@@ -312,6 +323,20 @@ def run_arbitration(
         logger.info(f"[{ticker}] Extracted structured watch levels -> {watch_path}")
 
         sp = watch_data.get("shares_plan", {})
+        try:
+            atr_at_signal = float(atr14_val) if atr14_val != "N/A" else None
+        except (ValueError, TypeError):
+            atr_at_signal = None
+        try:
+            spot_at_signal = float(dw_close) if dw_close != "N/A" else None
+        except (ValueError, TypeError):
+            spot_at_signal = None
+        try:
+            raw_rr_mkt = dw_dict.get("Long RR At Market") or dw_dict.get("rr_at_market")
+            rr_at_market_at_signal = float(raw_rr_mkt) if raw_rr_mkt is not None else None
+        except (ValueError, TypeError):
+            rr_at_market_at_signal = None
+
         sugg_id = append_suggestion({
             "ticker": ticker,
             "date": date_str,
@@ -326,35 +351,54 @@ def run_arbitration(
             "target_2": sp.get("target_2"),
             "planned_rr": sp.get("rr_ratio"),
             "verdict": watch_data.get("verdict"),
-            "setup_lane": setup_lane,
+            "gate_status": "PASS",
+            "setup_lane": model_lane,
             "kind": kind,
+            "atr_at_signal": atr_at_signal,
+            "spot_at_signal": spot_at_signal,
+            "rr_at_market_at_signal": rr_at_market_at_signal,
+            "lane_prior_win": lane_prior_win,
+            "lane_prior_ev": lane_prior_ev,
             "_datawindow": dw_dict,
             "notes": f"Judge directive: {watch_data.get('verdict')}",
         })
-        watch_data["suggestion_id"] = sugg_id
+        if sugg_id and sugg_id > 0:
+            watch_data["suggestion_id"] = sugg_id
 
         upsert_watch_target(watch_data)
-        logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB (suggestion_id={sugg_id}).")
+        logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB (suggestion_id={watch_data.get('suggestion_id')}).")
 
         # Record into last_researched table
         try:
             from src.tracking.watch_manager import record_last_researched
             try:
-                ac_raw = dw_dict.get("Action Long Code") or dw_dict.get("action_long_code") or dw_dict.get("Action Code") or 0
-                ac = int(round(float(ac_raw)))
+                ac_raw = dw_dict.get("Action Long Code")
+                if ac_raw is None and dw_dict.get("Context Action Pack") is not None:
+                    ac = int(round(float(dw_dict.get("Context Action Pack")))) % 32
+                elif ac_raw is not None:
+                    ac = int(round(float(ac_raw)))
+                else:
+                    ac = 0
             except (ValueError, TypeError):
                 ac = 0
-            iz = 1 if (dw_dict.get("Long In Zone") or dw_dict.get("in_zone")) else 0
+            try:
+                raw_z = dw_dict.get("Zone RR Flags Pack") or dw_dict.get("zone_rr_flags_pack")
+                if raw_z is not None:
+                    iz = int(round(float(raw_z))) & 1
+                else:
+                    iz = 1 if (dw_dict.get("Long In Zone") or dw_dict.get("in_zone")) else 0
+            except (ValueError, TypeError):
+                iz = 0
             try:
                 rr_mkt = float(dw_dict.get("Long RR At Market") or dw_dict.get("rr_at_market") or 0.0)
             except (ValueError, TypeError):
                 rr_mkt = 0.0
             try:
-                st_val = float(sp.get("tactical_stop") or dw_dict.get("Long Stop Loss") or 0.0)
+                st_val = float(dw_dict.get("Long Stop Loss") or sp.get("tactical_stop") or 0.0)
             except (ValueError, TypeError):
                 st_val = 0.0
             try:
-                tgt_val = float(sp.get("target_1") or dw_dict.get("Long Target") or 0.0)
+                tgt_val = float(dw_dict.get("Long Target") or sp.get("target_1") or 0.0)
             except (ValueError, TypeError):
                 tgt_val = 0.0
             record_last_researched(
@@ -371,6 +415,12 @@ def run_arbitration(
 
     except Exception as e:
         logger.warning(f"[{ticker}] Failed to process watch levels JSON: {e}")
+        try:
+            from src.tracking.suggestions_ledger import log_rejected_plan
+            log_rejected_plan(ticker, date_str, locals().get("watch_data", {}), [f"JSON/Processing exception: {e}"])
+        except Exception:
+            pass
+        clean_judge += f"\n\n> ⚠️ **VERDICT: NO_LEVELS** — Failed to process watch levels JSON: {e}"
 
     arbitration_path.write_text(clean_judge, encoding="utf-8")
     logger.info(f"[{ticker}] Senior PM Arbitration generated at {arbitration_path}!")

@@ -85,8 +85,8 @@ DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
 ENRICH_TOP_N = int(os.getenv("ENRICH_TOP_N", "0"))
 # TIER_A_MIN_EV_R: minimum expected-value ratio (ev_r) a ticker must clear to be
 # eligible for deep research, even if it is a deterministic PASS. Prevents
-# thin-EV names (e.g. ev_r 0.11) from crowding out high-EV names (e.g. 3.04).
-TIER_A_MIN_EV_R = float(os.getenv("TIER_A_MIN_EV_R", "0.5"))
+# thin-EV names (e.g. ev_r < 0.05) from crowding out high-EV names.
+TIER_A_MIN_EV_R = float(os.getenv("TIER_A_MIN_EV_R", "0.05"))
 # WATCH_MIN_CONVICTION: a deterministic WATCH ticker (not in entry zone yet) is
 # still eligible for deep research when its conviction meets this bar. Deep
 # research (the paid pass) is the right tool to assess near-zone, high-quality,

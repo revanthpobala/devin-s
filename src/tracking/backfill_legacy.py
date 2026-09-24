@@ -51,16 +51,14 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                 )
 
                 entry_type = t.get("entry_type") or "LIMIT"
-                entry_low = t.get("entry_zone_low") or 0.0
-                entry_high = t.get("entry_zone_high") or 0.0
-                breakout_level = t.get("entry_price") or 0.0
-                stop = t.get("tactical_stop") or 0.0
-                target_1 = t.get("target_1") or 0.0
-                target_2 = t.get("target_2") or 0.0
+                entry_low = t.get("entry_zone_low") or None
+                entry_high = t.get("entry_zone_high") or None
+                breakout_level = t.get("entry_price") or None
+                stop = t.get("tactical_stop") or None
+                target_1 = t.get("target_1") or None
+                target_2 = t.get("target_2") or None
                 side = (t.get("side") or "LONG").upper()
-                your_fill = breakout_level if breakout_level > 0 else (
-                    (entry_low + entry_high) / 2.0 if entry_low > 0 and entry_high > 0 else 0.0
-                )
+                your_fill = None
 
                 try:
                     cursor.execute(
@@ -69,9 +67,10 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                             ticker, date, source, report_hash, side, entry_type,
                             entry_low, entry_high, breakout_level, stop,
                             target_1, target_2, planned_rr, atr_at_signal,
-                            taken, your_fill, notes, is_modeled, gate_status, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(ticker, date, source, report_hash) DO NOTHING
+                            taken, your_fill, notes, is_modeled, gate_status,
+                            kind, verdict, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(ticker, date, source) DO NOTHING
                         """,
                         (
                             ticker,
@@ -89,10 +88,12 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                             None,
                             None,
                             0,
-                            your_fill if your_fill > 0 else None,
+                            None,
                             f"Backfill from suggested_trades_audit: {trade_type} {trade_structure}",
                             is_modeled,
-                            "LEGACY_UNGATED",
+                            "PASS",
+                            "NEW",
+                            "STALK",
                             _now_iso(),
                         ),
                     )

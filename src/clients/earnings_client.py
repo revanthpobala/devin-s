@@ -7,12 +7,24 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-def get_next_earnings_days(ticker: str) -> int | None:
+def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int | None:
     """Deterministic next-earnings-date lookup via yfinance. None if unavailable -
     should be the rare exception for S&P 500 large-caps, not the common case, but
     callers MUST handle it gracefully (see format_earnings_fact_block)."""
     try:
         from datetime import date, datetime
+
+        ref_date = date.today()
+        if as_of_date is not None:
+            if isinstance(as_of_date, datetime):
+                ref_date = as_of_date.date()
+            elif isinstance(as_of_date, date):
+                ref_date = as_of_date
+            elif isinstance(as_of_date, str) and len(as_of_date) >= 10:
+                try:
+                    ref_date = datetime.strptime(as_of_date[:10], "%Y-%m-%d").date()
+                except Exception:
+                    ref_date = date.today()
 
         import yfinance as yf
 
@@ -44,7 +56,7 @@ def get_next_earnings_days(ticker: str) -> int | None:
                     nxt_date = None
 
             if nxt_date:
-                d = (nxt_date - date.today()).days
+                d = (nxt_date - ref_date).days
                 return d if d >= 0 else None
     except Exception as e:
         logger.warning(f"[{ticker}] earnings date lookup failed: {e}")

@@ -234,33 +234,34 @@ def get_watch_targets():
                 if status in ("TARGET_HIT", "COMPLETED"):
                     if is_options and max_loss > 0:
                         trade_r = round(max_prof / max_loss, 2)
+                        won_r.append(trade_r)
                     else:
                         t_exit = target_2 if (target_2 and target_2 > 0) else target_1
                         if t_exit and eff_entry and risk_amt > 0:
                             gain = (t_exit - eff_entry) if side == "LONG" else (eff_entry - t_exit)
                             trade_r = round(gain / risk_amt, 2)
+                            won_r.append(trade_r)
                         else:
-                            trade_r = 0.0
-                    won_r.append(trade_r)
+                            trade_r = None
 
                 elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
                     was_filled = bool(item.get("fill_price") or item.get("was_filled") or item.get("user_taken"))
-                    if status == "INVALIDATED" and not was_filled:
-                        trade_r = 0.0
+                    if not was_filled:
+                        trade_r = None
                     else:
                         trade_r = -1.0
                         lost_r.append(trade_r)
 
                 elif status in ("IN_TRADE", "IN_ZONE") and live_px and live_px > 0:
-                    if is_options and max_loss > 0:
-                        spot_move = (live_px - eff_entry) if (eff_entry and side == "LONG") else ((eff_entry - live_px) if eff_entry else 0.0)
-                        est_opt_pnl = max(-max_loss, min(max_prof, spot_move * 0.50))
-                        trade_r = round(est_opt_pnl / max_loss, 2)
+                    if is_options:
+                        trade_r = None
                     else:
                         if eff_entry and risk_amt > 0:
                             unrealized_gain = (live_px - eff_entry) if side == "LONG" else (eff_entry - live_px)
                             trade_r = round(unrealized_gain / risk_amt, 2)
-                    active_r.append(trade_r)
+                            active_r.append(trade_r)
+                        else:
+                            trade_r = None
 
                 item["trade_type"] = trade_type
                 item["trade_label"] = trade_label

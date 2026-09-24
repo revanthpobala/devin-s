@@ -85,7 +85,7 @@ def run_ponytail_pm_review(
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_local: bool = False):
+def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_local: bool = False, force: bool = False):
     """
     Automates the Deep Research validation phase using OpenAI-compatible tool calling.
 
@@ -145,7 +145,9 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         sym = sym.upper().strip()
         try:
             from src.tracking.position_state import list_open
-            for p in list_open():
+            positions = list_open()
+            pos_list = positions.values() if isinstance(positions, dict) else positions
+            for p in pos_list:
                 if str(p.get("ticker", "")).upper() == sym:
                     return True
         except Exception:
@@ -160,6 +162,8 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         return False
 
     def _has_recent_unchanged_research(sym: str, target_date: str, dw: dict) -> bool:
+        if force:
+            return False
         try:
             from src.tracking.watch_manager import get_last_researched
             rec = get_last_researched(sym)
@@ -181,20 +185,33 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
 
             # Compare action code, in-zone, R:R at market, stop and target
             try:
-                cur_ac = int(round(float(dw.get("Action Long Code") or dw.get("action_long_code") or dw.get("Action Code") or 0)))
+                cur_ac_raw = dw.get("Action Long Code")
+                if cur_ac_raw is None and dw.get("Context Action Pack") is not None:
+                    cur_ac = int(round(float(dw.get("Context Action Pack")))) % 32
+                elif cur_ac_raw is not None:
+                    cur_ac = int(round(float(cur_ac_raw)))
+                else:
+                    cur_ac = 0
             except (ValueError, TypeError):
                 cur_ac = 0
-            cur_iz = 1 if (dw.get("Long In Zone") or dw.get("in_zone")) else 0
+            try:
+                raw_z = dw.get("Zone RR Flags Pack") or dw.get("zone_rr_flags_pack")
+                if raw_z is not None:
+                    cur_iz = int(round(float(raw_z))) & 1
+                else:
+                    cur_iz = 1 if (dw.get("Long In Zone") or dw.get("in_zone")) else 0
+            except (ValueError, TypeError):
+                cur_iz = 0
             try:
                 cur_rr_mkt = float(dw.get("Long RR At Market") or dw.get("rr_at_market") or 0.0)
             except (ValueError, TypeError):
                 cur_rr_mkt = 0.0
             try:
-                cur_stop = float(dw.get("Long Stop Loss") or dw.get("stop_loss") or dw.get("tactical_stop") or 0.0)
+                cur_stop = float(dw.get("Long Stop Loss") or dw.get("tactical_stop") or 0.0)
             except (ValueError, TypeError):
                 cur_stop = 0.0
             try:
-                cur_tgt = float(dw.get("Long Target") or dw.get("target_1") or dw.get("target") or 0.0)
+                cur_tgt = float(dw.get("Long Target") or dw.get("target_1") or 0.0)
             except (ValueError, TypeError):
                 cur_tgt = 0.0
 
@@ -405,6 +422,23 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                         verdict_record = dw_filter_res
             except Exception as e_dwf:
                 logger.debug(f"[{ticker}] DataWindowFilter triage lane derivation failed: {e_dwf}")
+
+        # Explicit --ticker: read triage record; non-held CUT stops, WATCH runs as WATCH_SHADOW, held runs as MANAGE
+        if target_ticker:
+            triage_action = str(
+                (triage_record.get("action") if isinstance(triage_record, dict) else "")
+                or (verdict_record.get("action") if isinstance(verdict_record, dict) else "")
+            ).upper()
+            if not is_held:
+                if triage_action == "CUT":
+                    logger.info(f"[{ticker}] Explicit ticker resolved to CUT triage and is not held in portfolio. Skipping deep research.")
+                    continue
+                elif triage_action == "WATCH":
+                    if isinstance(triage_record, dict):
+                        triage_record["setup_lane"] = "WATCH_SHADOW"
+            else:
+                kind = "MANAGE"
+
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
 
         # 3. Format deterministic blocks
@@ -517,8 +551,8 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         independent_dw_str = sanitize_dw_for_independent(dw_dict)
 
         # Sanitize CSV and JSON for Model B so it never sees proprietary Pine script columns
-        ind_csv_path = paths["dw_csv"]
-        ind_json_path = paths["dw_json"]
+        ind_csv_path = None
+        ind_json_path = None
         try:
             target_out_dir = tdir or (raw_dir / ticker) or raw_dir
             if paths["dw_csv"].exists():
@@ -583,6 +617,24 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 ticker, date_str, p2.ind_response, tdir, reports_dir, dw_dict=dw_dict
             )
 
+            resolved_lane = (triage_record.get("setup_lane") if isinstance(triage_record, dict) else None) or "RR_SETUP"
+            triage_reason = str(
+                (triage_record.get("reason") if isinstance(triage_record, dict) else None)
+                or (verdict_record.get("reason") if isinstance(verdict_record, dict) else "")
+                or ""
+            )
+            lane_priors_map = {
+                "RR_SETUP_STRONG": (0.25, 0.13),
+                "RR_SETUP": (0.30, 0.08),
+                "CODE20": (0.45, 0.08),
+                "OVERSOLD": (0.51, 0.06),
+                "RSI2": (0.61, 0.06),
+            }
+            lane_prior_win, lane_prior_ev = lane_priors_map.get(resolved_lane, (None, None))
+            if lane_prior_win is None and isinstance(triage_record, dict):
+                lane_prior_win = triage_record.get("lane_prior_win")
+                lane_prior_ev = triage_record.get("lane_prior_ev")
+
             run_arbitration(
                 ticker=ticker, date_str=date_str,
                 clean_response=clean_response, clean_ind_response=clean_ind_response,
@@ -594,7 +646,10 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 active_pos_block=active_pos_block,
                 tdir=tdir, raw_dir=raw_dir, reports_dir=reports_dir,
                 kind=kind,
-                setup_lane=(triage_record.get("setup_lane") if isinstance(triage_record, dict) else None),
+                setup_lane=resolved_lane,
+                triage_reason=triage_reason,
+                lane_prior_win=lane_prior_win,
+                lane_prior_ev=lane_prior_ev,
             )
 
         except Exception as e:

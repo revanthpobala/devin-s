@@ -202,22 +202,11 @@ def derive_datawindow_fields(
             except Exception:
                 pass
 
-    # 4. Long RR At Market
+    # 4. Long RR At Market (from Long Stop Loss and Long Target only; no RSI2 / T1 waypoint / generic fallbacks)
     try:
-        curr_c = _get_snapshot_val(snapshot, "close", "Close", "price", "spot_price")
-        stop_v = _get_snapshot_val(
-            snapshot, "Long Stop Loss", "long stop loss", "rsi2 fixed stop", "long_stop_loss", "stop_loss", "stop"
-        )
-        target_v = _get_snapshot_val(
-            snapshot,
-            "Long Target",
-            "long target",
-            "Long Target T1 Waypoint",
-            "rsi2 fixed target",
-            "long_target",
-            "target_1",
-            "target",
-        )
+        curr_c = _get_snapshot_val(snapshot, "close", "Close")
+        stop_v = _get_snapshot_val(snapshot, "Long Stop Loss")
+        target_v = _get_snapshot_val(snapshot, "Long Target")
         if curr_c is not None and stop_v is not None and target_v is not None:
             c_f = float(curr_c)
             s_f = float(stop_v)
@@ -226,9 +215,14 @@ def derive_datawindow_fields(
                 rr_mkt = round((t_f - c_f) / (c_f - s_f), 4)
                 snapshot["Long RR At Market"] = rr_mkt
                 snapshot["long_rr_at_market"] = rr_mkt
+                snapshot.pop("_rr_mkt_deliberately_absent", None)
             else:
                 snapshot.pop("Long RR At Market", None)
                 snapshot.pop("long_rr_at_market", None)
+                snapshot["_rr_mkt_deliberately_absent"] = True
+        else:
+            snapshot.pop("Long RR At Market", None)
+            snapshot.pop("long_rr_at_market", None)
     except Exception:
         pass
 

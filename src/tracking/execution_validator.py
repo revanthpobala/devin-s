@@ -51,7 +51,8 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
 
     # If start_date is today or later, today's daily bar is not yet a closed historical bar in Yahoo Finance.
     # evaluate_setup_lifecycle_bars handles live intraday session extremes via session_low / session_high / live_price.
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    from zoneinfo import ZoneInfo
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     if start_date >= today_str:
         return None
 
@@ -92,7 +93,7 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
                         last_csv_date = str(df_csv["date_str"].max())[:10]
                         # A CSV scraped on signal day only holds the signal bar; require it to cover up to last closed session
                         if last_csv_date >= last_closed and (df_csv["date_str"] >= start_date).any():
-                            sub = df_csv[df_csv["date_str"] >= start_date].copy()
+                            sub = df_csv[(df_csv["date_str"] >= start_date) & (df_csv["date_str"] <= last_closed)].copy()
                             sub.set_index("date_str", inplace=True)
                             rename_cols = {}
                             for orig, standard in [("open", "Open"), ("high", "High"), ("low", "Low"), ("close", "Close")]:
@@ -169,25 +170,21 @@ def evaluate_setup_lifecycle_bars(
     target_2 = float(target_2 or 0.0)
     live_px = float(live_price or 0.0)
 
-    # 1. Parse bars into a chronological list of dicts
-    bar_records: List[Dict[str, Any]] = []
+    # 1. Parse all bars for chronological processing and EMA5 warming
+    all_bars: List[Dict[str, Any]] = []
     if bars is not None and hasattr(bars, "iterrows"):
         try:
             if hasattr(bars, "columns") and getattr(bars.columns, "nlevels", 1) > 1:
                 bars = bars.copy()
                 bars.columns = [c[0] for c in bars.columns]
             for idx, row in bars.iterrows():
-                d_str = str(idx)[:10]
-                if setup_date and d_str < setup_date:
-                    continue
-                if skip_setup_bar and setup_date and d_str == setup_date:
-                    continue
+                d_str = str(row.get("bar_date") or row.get("Date") or row.get("date") or idx)[:10]
                 o = float(row.get("Open") if "Open" in row else row.get("open", 0.0))
                 h = float(row.get("High") if "High" in row else row.get("high", 0.0))
                 l = float(row.get("Low") if "Low" in row else row.get("low", 0.0))
                 c = float(row.get("Close") if "Close" in row else row.get("close", 0.0))
                 if h > 0 and l > 0:
-                    bar_records.append({
+                    all_bars.append({
                         "date": d_str,
                         "open": o if o > 0 else l,
                         "high": h,
@@ -198,8 +195,25 @@ def evaluate_setup_lifecycle_bars(
         except Exception as e_parse:
             logger.debug(f"Error iterating bar rows: {e_parse}")
 
-    # Sort chronological
-    bar_records.sort(key=lambda r: r["date"])
+    all_bars.sort(key=lambda r: r["date"])
+
+    # Pre-compute EMA5 across all_bars for RSI2 recovery detection (warmed with prior bars)
+    multiplier_5 = 2.0 / (5.0 + 1.0)
+    cur_ema5 = None
+    for b in all_bars:
+        c_val = b["close"]
+        if cur_ema5 is None:
+            cur_ema5 = c_val
+        else:
+            cur_ema5 = (c_val - cur_ema5) * multiplier_5 + cur_ema5
+        b["ema5"] = cur_ema5
+
+    # Filter bar_records for walking from setup_date forward
+    bar_records: List[Dict[str, Any]] = [
+        b for b in all_bars
+        if not (setup_date and b["date"] < setup_date)
+        and not (skip_setup_bar and setup_date and b["date"] == setup_date)
+    ]
 
     # If live intraday session extremes are provided, append as current partial bar only when live_px > 0
     if live_px > 0 and ((session_low is not None and session_low > 0) or (session_high is not None and session_high > 0)):
@@ -207,7 +221,8 @@ def evaluate_setup_lifecycle_bars(
         cur_h = float(session_high) if (session_high is not None and session_high > 0) else live_px
         cur_c = live_px
         cur_o = (cur_l + cur_h) / 2.0
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        from zoneinfo import ZoneInfo
+        today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
         if bar_records and bar_records[-1]["date"] == today_str:
             bar_records[-1]["high"] = max(bar_records[-1]["high"], cur_h)
@@ -246,19 +261,9 @@ def evaluate_setup_lifecycle_bars(
     is_reclaimed = False
     episode_index = 1
     bars_held = 0
+    unfilled_bars_count = 0
     status = curr_st
     notes = ""
-
-    # Pre-compute EMA5 across bar records for RSI2 recovery detection
-    multiplier_5 = 2.0 / (5.0 + 1.0)
-    cur_ema5 = None
-    for b in bar_records:
-        c_val = b["close"]
-        if cur_ema5 is None:
-            cur_ema5 = c_val
-        else:
-            cur_ema5 = (c_val - cur_ema5) * multiplier_5 + cur_ema5
-        b["ema5"] = cur_ema5
 
     is_next_open_model = entry_type in ("NEXT_OPEN", "RSI2") or (strategy_id or "").upper() in ("RSI2", "RSI2_PULLBACK")
     recovery_due = False
@@ -273,13 +278,30 @@ def evaluate_setup_lifecycle_bars(
 
         if is_terminal:
             # Check for possible setup reclaim (creates a new episode)
-            if status in ("STOP_BREACHED", "INVALIDATED"):
+            if status in ("STOP_BREACHED", "INVALIDATED", "GAP_STOP"):
                 if side == "LONG" and entry_low > 0 and entry_high > 0:
                     if entry_low <= b_close <= entry_high or (b_low <= entry_high and b_high >= entry_low):
                         is_reclaimed = True
             continue
 
         if not was_filled:
+            # Enforce 5-bar fill window inside walk
+            if unfilled_bars_count >= 5:
+                status = "NOT_FILLED"
+                is_terminal = True
+                notes = "Expired: setup did not fill within 5 bars"
+                break
+
+            # Open below stop before fill = GAP_STOP, no fill
+            if stop_loss > 0 and ((side == "LONG" and b_open <= stop_loss) or (side == "SHORT" and b_open >= stop_loss)):
+                status = "GAP_STOP"
+                is_terminal = True
+                hit_stop = True
+                exit_date = None
+                exit_price = None
+                notes = f"Gap stop at open (${b_open:.2f}) prior to fill on {b_date}"
+                break
+
             # Check eligibility for fill on this bar
             eligible_for_fill = False
             pot_fill = 0.0
@@ -321,10 +343,9 @@ def evaluate_setup_lifecycle_bars(
                         pot_fill = b_open if b_open >= limit_flr else limit_flr
 
             # Check target and stop triggers on this bar
-            bar_hit_t2 = target_2 > 0 and ((side == "LONG" and b_high >= target_2) or (side == "SHORT" and b_low <= target_2))
             bar_hit_t1 = target_1 > 0 and ((side == "LONG" and b_high >= target_1) or (side == "SHORT" and b_low <= target_1))
-            bar_hit_target = bar_hit_t2 or bar_hit_t1
-            target_hit_name = "T2" if bar_hit_t2 else ("T1" if bar_hit_t1 else "")
+            bar_hit_target = bar_hit_t1
+            target_hit_name = "T1" if bar_hit_t1 else ""
 
             bar_hit_stop = False
             if stop_loss > 0:
@@ -339,7 +360,6 @@ def evaluate_setup_lifecycle_bars(
                     status = "MISSED_RUNAWAY"
                     is_terminal = True
                     hit_t1 = bar_hit_t1
-                    hit_t2 = bar_hit_t2
                     hit_target_level = target_hit_name
                     notes = f"Runaway: price reached target {target_hit_name} on {b_date} without filling entry"
                     continue
@@ -350,6 +370,10 @@ def evaluate_setup_lifecycle_bars(
                     exit_date = None
                     exit_price = None
                     notes = f"Invalidated: breached stop (${stop_loss:.2f}) on {b_date} prior to entry fill"
+                    continue
+                else:
+                    if setup_date and b_date > setup_date:
+                        unfilled_bars_count += 1
                     continue
             else:
                 # Eligible for fill on this bar
@@ -377,24 +401,6 @@ def evaluate_setup_lifecycle_bars(
                 status = "IN_TRADE"
                 bars_held = 1
 
-                # Check gap stop on entry bar
-                if side == "LONG" and stop_loss > 0 and b_open <= stop_loss:
-                    status = "STOP_BREACHED"
-                    hit_stop = True
-                    is_terminal = True
-                    exit_date = b_date
-                    exit_price = b_open
-                    notes = f"Gap stop at open (${b_open:.2f}) on entry bar {b_date}"
-                    continue
-                elif side == "SHORT" and stop_loss > 0 and b_open >= stop_loss:
-                    status = "STOP_BREACHED"
-                    hit_stop = True
-                    is_terminal = True
-                    exit_date = b_date
-                    exit_price = b_open
-                    notes = f"Gap stop at open (${b_open:.2f}) on entry bar {b_date}"
-                    continue
-
                 # Evaluate same-bar stop and target following fill
                 if bar_hit_stop and bar_hit_target:
                     # Path-accurate frozen convention: stop checked before target
@@ -419,7 +425,10 @@ def evaluate_setup_lifecycle_bars(
                         status = "TARGET_HIT"
                         hit_t1 = True
                         hit_target_level = "T1"
-                        exit_price = target_1
+                        if side == "LONG":
+                            exit_price = b_open if b_open >= target_1 else target_1
+                        else:
+                            exit_price = b_open if b_open <= target_1 else target_1
                         is_terminal = True
                         exit_date = b_date
                         notes = f"Target {hit_target_level} reached on entry bar {b_date} (filled at open)"
@@ -472,11 +481,10 @@ def evaluate_setup_lifecycle_bars(
                         if b_open >= stop_loss:
                             gap_through_stop = True
 
-            # Check targets
-            bar_hit_t2 = target_2 > 0 and ((side == "LONG" and b_high >= target_2) or (side == "SHORT" and b_low <= target_2))
+            # Check targets: T1 closes the trade
             bar_hit_t1 = target_1 > 0 and ((side == "LONG" and b_high >= target_1) or (side == "SHORT" and b_low <= target_1))
 
-            if bar_hit_stop and (bar_hit_t1 or bar_hit_t2):
+            if bar_hit_stop and bar_hit_t1:
                 # Path-accurate frozen convention: stop checked before target
                 status = "STOP_BREACHED"
                 hit_stop = True
@@ -493,27 +501,20 @@ def evaluate_setup_lifecycle_bars(
                 exit_price = b_open if gap_through_stop else stop_loss
                 notes = f"Stop breached on {b_date} ({'gap open $' + str(round(b_open, 2)) if gap_through_stop else '$' + str(round(stop_loss, 2))})"
                 continue
-            elif bar_hit_t2:
-                status = "TARGET_HIT"
-                hit_t2 = True
-                hit_t1 = True
-                hit_target_level = "T2"
-                is_terminal = True
-                exit_date = b_date
-                exit_price = target_2
-                notes = f"Target 2 reached (${target_2:.2f}) after fill"
-                continue
             elif bar_hit_t1:
                 status = "TARGET_HIT"
                 hit_t1 = True
                 hit_target_level = "T1"
                 is_terminal = True
                 exit_date = b_date
-                exit_price = target_1
-                notes = f"Target 1 reached (${target_1:.2f}) after fill"
+                if side == "LONG":
+                    exit_price = b_open if b_open >= target_1 else target_1
+                else:
+                    exit_price = b_open if b_open <= target_1 else target_1
+                notes = f"Target 1 reached (${exit_price:.2f}) after fill"
                 continue
 
-            # Check max holding bars (e.g. 10-bar time exit for RSI2)
+            # Check max holding bars (e.g. 10-bar time exit for RSI2, 21-bar general)
             if max_holding_bars and bars_held >= max_holding_bars:
                 status = "TIME_EXIT"
                 is_terminal = True
@@ -536,11 +537,7 @@ def evaluate_setup_lifecycle_bars(
             notes = f"Active position holding above stop (${stop_loss:.2f})"
         else:
             # Order never filled
-            if len(bar_records) >= 5:
-                status = "NOT_FILLED"
-                is_terminal = True
-                notes = "Expired: setup did not fill within 5 bars"
-            elif entry_low > 0 and entry_high > 0 and live_px > 0 and entry_low <= live_px <= entry_high:
+            if entry_low > 0 and entry_high > 0 and live_px > 0 and entry_low <= live_px <= entry_high:
                 status = "IN_ZONE"
                 notes = f"Spot in entry zone [${entry_low:.2f} - ${entry_high:.2f}]"
             else:
@@ -611,7 +608,13 @@ def evaluate_setup_lifecycle(
     sym = ticker.upper().strip()
     bars = None
     if setup_date and sym:
-        bars = get_bars_since_date(sym, setup_date)
+        from datetime import datetime, timedelta
+        try:
+            d_obj = datetime.strptime(setup_date[:10], "%Y-%m-%d")
+            warm_start_date = (d_obj - timedelta(days=40)).strftime("%Y-%m-%d")
+        except Exception:
+            warm_start_date = setup_date
+        bars = get_bars_since_date(sym, warm_start_date)
 
     return evaluate_setup_lifecycle_bars(
         bars=bars,
