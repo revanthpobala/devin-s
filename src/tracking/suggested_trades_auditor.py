@@ -89,7 +89,8 @@ def sync_suggested_trades_from_watch_targets() -> int:
                 short_strike = float(op.get("short_strike") or 0.0)
                 opt_exp = str(op.get("expiration") or "")
 
-                has_actionable_options = bool(
+                is_income = opt_struct.upper() in ("COVERED_CALL", "CASH_SECURED_PUT")
+                has_actionable_options = not is_income and bool(
                     opt_struct
                     and opt_struct.upper() != "NONE"
                     and (max_profit > 0 or max_loss > 0 or op.get("actionable") is True)
@@ -126,11 +127,14 @@ def sync_suggested_trades_from_watch_targets() -> int:
                     opt_primary = 0
                     sh_primary = 0
 
-                # 1. Insert/Update Options Trade
-                if has_actionable_options:
+                # 1. Insert/Update Options / Income Trade
+                if is_income or has_actionable_options:
                     struct_clean = opt_struct.replace("_", " ").upper()
                     strike_label = f" ({long_strike:g}/{short_strike:g})" if (long_strike and short_strike) else ""
                     trade_label = f"{struct_clean}{strike_label}"
+                    trade_type_val = "INCOME" if is_income else "OPTIONS"
+                    entry_type_val = "INCOME_ENTRY" if is_income else "OPTIONS_ENTRY"
+                    status_val = "INCOME" if is_income else status
 
                     cursor.execute(
                         """
@@ -141,8 +145,8 @@ def sync_suggested_trades_from_watch_targets() -> int:
                             long_strike, short_strike, target_debit, max_profit, max_loss,
                             last_price, distance_to_entry_pct, status, is_primary, created_at
                         ) VALUES (
-                            ?, ?, ?, 'OPTIONS', ?, ?,
-                            'OPTIONS_ENTRY', ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?,
                             ?, ?, ?, ?,
                             ?, ?, ?, ?, ?,
                             ?, ?, ?, ?, ?
@@ -150,6 +154,7 @@ def sync_suggested_trades_from_watch_targets() -> int:
                         ON CONFLICT(ticker, date, trade_type, trade_structure) DO UPDATE SET
                             side = excluded.side,
                             trade_label = excluded.trade_label,
+                            entry_type = excluded.entry_type,
                             entry_price = excluded.entry_price,
                             entry_zone_low = excluded.entry_zone_low,
                             entry_zone_high = excluded.entry_zone_high,
@@ -168,11 +173,11 @@ def sync_suggested_trades_from_watch_targets() -> int:
                             is_primary = excluded.is_primary
                         """,
                         (
-                            ticker, date_val, side, opt_struct.upper(), trade_label,
-                            entry_price, entry_low, entry_high,
+                            ticker, date_val, side, trade_type_val, opt_struct.upper(), trade_label,
+                            entry_type_val, entry_price, entry_low, entry_high,
                             tactical_stop, target_1, target_2, opt_exp,
                             long_strike, short_strike, target_debit, max_profit, max_loss,
-                            last_price, dist_pct, status, opt_primary, _now_iso(),
+                            last_price, dist_pct, status_val, opt_primary, _now_iso(),
                         ),
                     )
                     synced_count += 1
@@ -273,6 +278,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 notes = ""
 
                 is_options = (trade_type == "OPTIONS")
+                is_income = (trade_type == "INCOME")
 
                 from src.tracking.execution_validator import evaluate_setup_lifecycle
                 e_type = str(t.get("entry_type") or "LIMIT").upper()
@@ -314,18 +320,12 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 if exit_px is None or exit_px <= 0:
                     exit_px = t1 if status in ("TARGET_HIT", "COMPLETED") else stop
 
-                if was_filled:
-                    if is_options and max_loss > 0:
-                        if status in ("TARGET_HIT", "COMPLETED"):
-                            r_mult = round(max_prof / max_loss, 2)
-                            notes = f"Target reached: {r_mult:+.2f}R on {struct}"
-                        elif status in ("STOP_BREACHED", "STOPPED", "GAP_STOP"):
-                            r_mult = -1.0
-                            notes = f"Stop breached: -1.00R on {struct}"
-                        else:
-                            r_mult = None
-                            notes = f"Active trade on {struct}"
-                    elif risk_amt is not None and risk_amt > 0:
+                if is_income:
+                    r_mult = None
+                    notes = "Income structure — not R-scored"
+                    dollar_pnl = 0.0
+                elif was_filled:
+                    if risk_amt is not None and risk_amt > 0:
                         if status in ("TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "TIME_EXIT", "RECOVERY_EXIT"):
                             gain = (exit_px - fill_val) if side == "LONG" else (fill_val - exit_px)
                             r_mult = round(gain / risk_amt, 2)
@@ -337,24 +337,36 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                         else:
                             r_mult = None
                             notes = f"{status}: in trade"
+
+                        if is_options:
+                            clamped = max(-max_loss, min(max_prof, r_mult * max_loss if max_loss > 0 else 0.0))
+                            dollar_pnl = clamped
+                            notes += " (est)"
+                        else:
+                            dollar_pnl = r_mult * risk_amt * 100.0
                     else:
                         r_mult = None
                         notes = f"{status} with invalid geometry (risk <= 0)"
                 else:
                     r_mult = None
-                    if status in ("INVALIDATED", "GAP_STOP", "NOT_FILLED", "MISSED_RUNAWAY"):
+                    if status in ("INVALIDATED", "GAP_STOP", "NOT_FILLED", "MISSING_RUNAWAY"):
                         notes = f"{status} before fill: no R (never filled)"
                     else:
                         notes = f"Stalking: {dist_pct:+.1f}% from entry zone"
+
+                if spot <= 0 and status not in ("TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "TIME_EXIT", "RECOVERY_EXIT", "INCOME", "NO_QUOTE"):
+                    status = "NO_QUOTE"
+                    notes = f"{status}: no live quote available"
+                    r_mult = None
 
                 # Update row in DB
                 cursor.execute(
                     """
                     UPDATE suggested_trades_audit
-                    SET status = ?, r_multiple = ?, outcome_notes = ?, evaluated_at = ?
+                    SET status = ?, r_multiple = ?, outcome_notes = ?, evaluated_at = ?, dollar_pnl = ?
                     WHERE id = ?
                     """,
-                    (status, r_mult, notes, eval_time, row_id),
+                    (status, r_mult, notes, eval_time, dollar_pnl, row_id),
                 )
 
             conn.commit()
@@ -418,11 +430,16 @@ def get_audit_summary(
 
             all_trades: List[Dict[str, Any]] = [dict(r) for r in all_rows]
 
-            # Calculate KPI Metrics over the Primary Window
-            won_trades = [t for t in all_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
-            lost_trades = [t for t in all_trades if t["status"] in ("STOP_BREACHED", "STOPPED") or (t["status"] in ("INVALIDATED", "GAP_STOP") and t.get("r_multiple") is not None and float(t.get("r_multiple") or 0.0) < 0)]
-            active_trades = [t for t in all_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
-            stalking_trades = [t for t in all_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT")]
+            valid_statuses = {"TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT"}
+            kpi_trades = [t for t in all_trades if t.get("status") in valid_statuses and t.get("trade_type") != "INCOME"]
+
+            won_trades = [t for t in kpi_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
+            lost_trades = [t for t in kpi_trades if t["status"] in ("STOP_BREACHED", "STOPPED") or (t["status"] in ("INVALIDATED", "GAP_STOP") and t.get("r_multiple") is not None and float(t.get("r_multiple") or 0.0) < 0)]
+            active_trades = [t for t in kpi_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
+            stalking_trades = [t for t in kpi_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT")]
+
+            invalid_trades = [t for t in all_trades if t.get("status") in ("INVALID_GEOMETRY", "NO_QUOTE")]
+            invalid_count = len(invalid_trades)
 
             won_count = len(won_trades)
             lost_count = len(lost_trades)
@@ -434,6 +451,8 @@ def get_audit_summary(
             lost_r = sum(float(t["r_multiple"] or 0.0) for t in lost_trades)
             floating_r = sum(float(t["r_multiple"] or 0.0) for t in active_trades)
             net_r = round(won_r + lost_r + floating_r, 2)
+
+            net_dollar = round(sum(float(t.get("dollar_pnl") or 0.0) for t in kpi_trades), 2)
 
             resolved_win_rate = round((won_count / resolved_count * 100.0), 1) if resolved_count > 0 else 0.0
             abs_lost = abs(lost_r)
@@ -452,10 +471,12 @@ def get_audit_summary(
                 "active_count": active_count,
                 "actionable_count": active_count,
                 "stalking_count": stalking_count,
+                "invalid_count": invalid_count,
                 "total_won": round(won_r, 2),
                 "total_lost": round(lost_r, 2),
                 "total_floating": round(floating_r, 2),
                 "net_profit": net_r,
+                "net_dollar": net_dollar,
                 "resolved_win_rate": resolved_win_rate,
                 "win_rate_pct": resolved_win_rate,
                 "profit_factor": profit_factor,
@@ -469,6 +490,8 @@ def get_audit_summary(
                 "all": len(all_trades),
                 "options": sum(1 for t in all_trades if t.get("trade_type") == "OPTIONS"),
                 "shares": sum(1 for t in all_trades if t.get("trade_type") == "EQUITY"),
+                "income": sum(1 for t in all_trades if t.get("trade_type") == "INCOME"),
+                "invalid": invalid_count,
                 "won": won_count,
                 "stopped": lost_count,
                 "active": active_count,
@@ -483,6 +506,10 @@ def get_audit_summary(
                 filtered_trades = [t for t in filtered_trades if t.get("trade_type") == "OPTIONS"]
             elif tab_upper in ("SHARES", "EQUITY"):
                 filtered_trades = [t for t in filtered_trades if t.get("trade_type") == "EQUITY"]
+            elif tab_upper == "INCOME":
+                filtered_trades = [t for t in filtered_trades if t.get("trade_type") == "INCOME"]
+            elif tab_upper in ("INVALID", "INVALID_GEOMETRY"):
+                filtered_trades = [t for t in filtered_trades if t.get("status") in ("INVALID_GEOMETRY", "NO_QUOTE")]
             elif tab_upper in ("WON", "TARGET_HIT"):
                 filtered_trades = [t for t in filtered_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
             elif tab_upper in ("STOPPED", "INVALIDATED"):
@@ -490,7 +517,7 @@ def get_audit_summary(
             elif tab_upper in ("ACTIVE", "IN_TRADE", "IN_ZONE"):
                 filtered_trades = [t for t in filtered_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
             elif tab_upper == "STALKING":
-                filtered_trades = [t for t in filtered_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "IN_TRADE", "IN_ZONE")]
+                filtered_trades = [t for t in filtered_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT")]
 
             if search and search.strip():
                 sq = search.strip().upper()

@@ -226,13 +226,51 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
     if not ticker:
         return
 
-    shares_plan = data.get("shares_plan", {})
-    options_plan = data.get("options_plan", {})
-    invalidation = data.get("invalidation", {})
+    shares_plan = data.get("shares_plan", {}) or {}
+    options_plan = data.get("options_plan", {}) or {}
+    invalidation = data.get("invalidation", {}) or {}
 
     side = str(data.get("side") or shares_plan.get("side") or "LONG").upper()
     breakout_level = shares_plan.get("breakout_level")
     breakout_stop = shares_plan.get("breakout_stop")
+
+    date_str = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+
+    geometry_reasons: List[str] = []
+    try:
+        from src.logic.level_validation import check_geometry
+
+        entry_type = str(shares_plan.get("entry_type") or "LIMIT").upper()
+        entry_low = float(shares_plan.get("entry_zone_low") or 0.0)
+        entry_high = float(shares_plan.get("entry_zone_high") or 0.0)
+        stop = float(shares_plan.get("tactical_stop") or 0.0)
+        target_1 = float(shares_plan.get("target_1") or 0.0)
+        target_2 = float(shares_plan.get("target_2") or 0.0)
+        geometry_reasons = check_geometry(
+            side=side,
+            entry_type=entry_type,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            breakout_level=float(breakout_level or 0.0),
+            stop=stop,
+            t1=target_1,
+            t2=target_2,
+        )
+    except Exception as e:
+        logger.debug(f"[WATCH_GATE] {ticker} geometry pre-check raised: {e}")
+
+    if geometry_reasons:
+        failure_msg = "; ".join(geometry_reasons)
+        logger.warning(
+            f"[WATCH_GATE] {ticker} FAILED underlying geometry: {failure_msg} — NOT persisting to watch_targets."
+        )
+        try:
+            from src.tracking.suggestions_ledger import log_rejected_plan
+
+            log_rejected_plan(ticker, date_str, data, geometry_reasons)
+        except Exception as e_log:
+            logger.debug(f"[WATCH_GATE] Failed to log rejected plan for {ticker}: {e_log}")
+        return
 
     now = _now_iso()
 

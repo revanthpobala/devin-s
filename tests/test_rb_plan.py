@@ -671,7 +671,7 @@ def test_suggested_trades_auditor_r_math_coverage(tmp_path, monkeypatch):
                 ('WIN_SYM', '2026-09-20', 'LONG', 'EQUITY', 'SHARES', 'Shares (Limit)', 'LIMIT', 100.0, 90.0, 120.0, 0.0, 0.0, 120.0, 'TARGET_HIT', 1, '2026-09-20 10:00:00'),
                 ('LOSS_SYM', '2026-09-20', 'LONG', 'EQUITY', 'SHARES', 'Shares (Limit)', 'LIMIT', 100.0, 90.0, 120.0, 0.0, 0.0, 85.0, 'STOP_BREACHED', 1, '2026-09-20 10:00:00'),
                 ('UNFILLED_SYM', '2026-09-20', 'LONG', 'EQUITY', 'SHARES', 'Shares (Limit)', 'LIMIT', 100.0, 90.0, 120.0, 0.0, 0.0, 80.0, 'INVALIDATED', 1, '2026-09-20 10:00:00'),
-                ('AAPL', '2026-09-22', 'LONG', 'OPTIONS', 'COVERED_CALL', 'Covered Call (Credit)', 'OPTIONS_ENTRY', 336.87, 300.0, 360.0, 18260.0, 1025.0, 336.87, 'IN_TRADE', 1, '2026-09-22 10:00:00')
+                ('AAPL', '2026-09-22', 'LONG', 'INCOME', 'COVERED_CALL', 'Covered Call (Credit)', 'INCOME_ENTRY', 336.87, 300.0, 360.0, 18260.0, 1025.0, 336.87, 'INCOME', 1, '2026-09-22 10:00:00')
             """)
             conn.commit()
 

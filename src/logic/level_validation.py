@@ -42,6 +42,59 @@ def _dw_num(dw: Dict[str, Any], *keys: str) -> float:
     return 0.0
 
 
+def check_geometry(
+    side: str,
+    entry_type: str,
+    entry_low: float,
+    entry_high: float,
+    breakout_level: float,
+    stop: float,
+    t1: float,
+    t2: float = 0.0,
+) -> List[str]:
+    """Return reasons for bad underlying geometry.
+
+    LONG only. Effective entry = breakout_level if BREAKOUT else (entry_low, entry_high).
+    Required ordering: stop < eff_low <= eff_high < t1 (<= t2 if t2 > 0).
+    All required levels must be strictly positive.
+    """
+    reasons: List[str] = []
+    side = (side or "LONG").upper()
+    entry_type = (entry_type or "LIMIT").upper()
+
+    if side != "LONG":
+        reasons.append("SHORT side rejected — measured edge is long-only post-COVID")
+        return reasons
+
+    if entry_type == "BREAKOUT":
+        eff_low = eff_high = breakout_level if breakout_level and breakout_level > 0 else 0.0
+    else:
+        eff_low = float(entry_low or 0.0)
+        eff_high = float(entry_high or 0.0)
+
+    if eff_low <= 0:
+        reasons.append(f"entry_low must be > 0, got {eff_low}")
+    if eff_high <= 0:
+        reasons.append(f"entry_high must be > 0, got {eff_high}")
+    if stop <= 0:
+        reasons.append(f"stop must be > 0, got {stop}")
+    if t1 <= 0:
+        reasons.append(f"target_1 must be > 0, got {t1}")
+
+    if not reasons:
+        if not (stop < eff_low <= eff_high < t1):
+            if stop >= eff_low:
+                reasons.append(f"stop ${stop:.4f} >= entry_low ${eff_low:.4f}")
+            if eff_low > eff_high:
+                reasons.append(f"entry_low ${eff_low:.4f} > entry_high ${eff_high:.4f}")
+            if eff_high >= t1:
+                reasons.append(f"entry_high ${eff_high:.4f} >= target_1 ${t1:.4f}")
+        if t2 > 0 and t1 > t2:
+            reasons.append(f"target_1 ${t1:.4f} > target_2 ${t2:.4f}")
+
+    return reasons
+
+
 def _zone_midpoint(entry_low: float, entry_high: float) -> float:
     if entry_low and entry_high:
         return (entry_low + entry_high) / 2.0
@@ -205,6 +258,8 @@ def validate_levels(
         stop = float(plan.get("stop") or plan.get("tactical_stop") or 0.0)
         target_1 = float(plan.get("target_1") or 0.0)
         target_2 = float(plan.get("target_2") or 0.0)
+        breakout_level = float(plan.get("breakout_level") or 0.0)
+        entry_type = str(plan.get("entry_type") or "LIMIT").upper()
     except (ValueError, TypeError) as e_cast:
         return False, [f"Invalid non-numeric level in plan: {e_cast}"]
 
@@ -214,19 +269,27 @@ def validate_levels(
         return False, reasons
 
     # ── 1. Level ordering ──────────────────────────────────────
-    t2_ok = (target_1 <= target_2) if target_2 > 0 else True
-    if not (stop < entry_low <= entry_high < target_1 and t2_ok):
-        if stop >= entry_low:
-            reasons.append(f"stop ${stop:.4f} >= entry_low ${entry_low:.4f}")
-        if entry_low > entry_high:
-            reasons.append(f"entry_low ${entry_low:.4f} > entry_high ${entry_high:.4f}")
-        if entry_high >= target_1:
-            reasons.append(f"entry_high ${entry_high:.4f} >= target_1 ${target_1:.4f}")
-        if target_2 > 0 and target_1 > target_2:
-            reasons.append(f"target_1 ${target_1:.4f} > target_2 ${target_2:.4f}")
+    geo_reasons = check_geometry(
+        side=side,
+        entry_type="BREAKOUT" if (breakout_level or 0.0) > 0 else "LIMIT",
+        entry_low=entry_low,
+        entry_high=entry_high,
+        breakout_level=float(breakout_level or 0.0),
+        stop=stop,
+        t1=target_1,
+        t2=target_2,
+    )
+    reasons.extend(geo_reasons)
 
-    if not entry_low or not entry_high or not stop or not target_1:
-        reasons.append("missing required levels (entry_low, entry_high, stop, target_1)")
+    missing_required = []
+    if entry_type != "BREAKOUT" and (not entry_low or not entry_high):
+        missing_required.append("entry_low/entry_high")
+    if not stop:
+        missing_required.append("stop")
+    if not target_1:
+        missing_required.append("target_1")
+    if missing_required:
+        reasons.append(f"missing required levels ({', '.join(missing_required)})")
 
     # ── 2. ATR14 presence (hard fail if missing) ───────────────
     atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR", "wilder_atr14")
@@ -359,17 +422,26 @@ def validate_levels(
     structure = str(options_plan.get("structure", "") or "").upper().replace(" ", "_")
     if structure and structure != "NONE":
         spot = _dw_num(dw, "close", "Close")
-        exp_move = _dw_num(dw, "exp_move_pct", "Exp Move % (21b)", "Exp Move Pct 21b")
+        exp_move = _dw_num(dw, "exp_move_pct", "Exp Move Pct (21b)", "Exp Move Pct 21b")
         long_strike = _f(options_plan.get("long_strike"))
         short_strike = _f(options_plan.get("short_strike"))
         if (options_plan.get("long_strike") is not None and long_strike is None) or (options_plan.get("short_strike") is not None and short_strike is None):
             reasons.append("bad_strike: non-numeric or invalid strike in options_plan")
+        max_profit = _f(options_plan.get("max_profit"))
+        max_loss = _f(options_plan.get("max_loss"))
+        if max_profit is not None or max_loss is not None:
+            if max_profit is None or max_loss is None:
+                reasons.append("options geometry: max_profit/max_loss incomplete — defined-risk spreads require both values")
+            elif max_profit <= 0 and max_loss <= 0:
+                reasons.append("options geometry: max_profit/max_loss both non-positive — undefined risk structure rejected")
         is_valid, defects = validate_strike_geometry(
             strategy_type=structure,
             spot_price=spot,
             exp_move_pct_21b=exp_move,
             long_strike=long_strike or None,
             short_strike=short_strike or None,
+            max_profit=max_profit or None,
+            max_loss=max_loss or None,
         )
         if not is_valid:
             for defect in defects:

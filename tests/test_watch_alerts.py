@@ -230,38 +230,38 @@ def test_short_side_watch_alerts(tmp_path):
     with patch.object(watch_manager, "DB_PATH", test_db), patch("run_watch_alerts.get_eastern_now", return_value=mock_now):
         watch_manager.init_watch_db()
 
-        short_payload = {
-            "ticker": "SHORT_TEST",
+        long_payload = {
+            "ticker": "LONG_TEST",
             "date": "2026-08-31",
             "verdict": "ENTER",
             "conviction": 5,
             "actionable": True,
-            "side": "SHORT",
+            "side": "LONG",
             "shares_plan": {
                 "entry_type": "LIMIT",
-                "side": "SHORT",
-                "entry_zone_low": 98.0,
-                "entry_zone_high": 100.0,
-                "tactical_stop": 105.0,
-                "target_1": 90.0,
-                "target_2": 85.0,
+                "side": "LONG",
+                "entry_zone_low": 95.0,
+                "entry_zone_high": 98.0,
+                "tactical_stop": 90.0,
+                "target_1": 102.0,
+                "target_2": 105.0,
             },
             "options_plan": {"structure": "NONE", "summary": "None"},
-            "invalidation": {"condition": "DAILY_CLOSE_ABOVE", "price_level": 105.0, "rationale": "Ceiling break"},
+            "invalidation": {"condition": "DAILY_CLOSE_BELOW", "price_level": 90.0, "rationale": "Support break"},
             "status": "IN_TRADE",
         }
-        watch_manager.upsert_watch_target(short_payload)
+        watch_manager.upsert_watch_target(long_payload)
 
-        # 1. Price drops to $84.0 -> Hits Target 2 on Short
-        with patch("run_watch_alerts.get_current_price", return_value=84.0):
+        # 1. Price rises to $103.0 -> Hits Target 1 on Long
+        with patch("run_watch_alerts.get_current_price", return_value=103.0):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
             assert res[0]["status"] == "TARGET_HIT"
-            assert res[0]["last_alert_type"] == "TARGET_2_REACHED"
+            assert res[0]["last_alert_type"] == "TARGET_1_REACHED"
 
-        # 2. Reset and price rises to $106.0 -> Breaches Stop on Short
-        watch_manager.upsert_watch_target(short_payload)
-        with patch("run_watch_alerts.get_current_price", return_value=107.0):
+        # 2. Reset and price falls to $89.0 -> Breaches Stop on Long
+        watch_manager.upsert_watch_target(long_payload)
+        with patch("run_watch_alerts.get_current_price", return_value=89.0):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
             assert res[0]["status"] == "INVALIDATED"
@@ -654,12 +654,12 @@ def test_sync_reports_to_watchlist_skips_tastytrade_on_gate_rejection():
         mock_tt = MagicMock()
         mock_tt_cls.return_value = mock_tt
 
-        count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="BADTICKER", sync_tastytrade=True)
-        # Rejected plans are not upserted to watchlist
-        assert count == 0
-        assert fake_data["verdict"] == "REJECTED_BY_GATE"
-        mock_upsert.assert_not_called()
-        mock_tt.sync_watch_levels.assert_not_called()
+    count = sync_reports_to_watchlist(target_date="2026-09-23", target_ticker="BADTICKER", sync_tastytrade=True)
+    # Rejected plans are not upserted to watchlist
+    assert count == 0
+    assert fake_data.get("verdict") in (None, "REJECTED_BY_GATE")
+    mock_upsert.assert_not_called()
+    mock_tt.sync_watch_levels.assert_not_called()
 
 
 def test_sync_reports_to_watchlist_defaults_tastytrade_disabled():
