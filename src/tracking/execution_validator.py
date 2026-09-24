@@ -195,6 +195,22 @@ def evaluate_setup_lifecycle_bars(
                     })
         except Exception as e_parse:
             logger.debug(f"Error iterating bar rows: {e_parse}")
+    elif isinstance(bars, list):
+        for b in bars:
+            d_str = str(b.get("bar_date") or b.get("Date") or b.get("date"))[:10]
+            o = float(b.get("Open") if "Open" in b else b.get("open", 0.0))
+            h = float(b.get("High") if "High" in b else b.get("high", 0.0))
+            l = float(b.get("Low") if "Low" in b else b.get("low", 0.0))
+            c = float(b.get("Close") if "Close" in b else b.get("close", 0.0))
+            if h > 0 and l > 0:
+                all_bars.append({
+                    "date": d_str,
+                    "open": o if o > 0 else l,
+                    "high": h,
+                    "low": l,
+                    "close": c if c > 0 else l,
+                    "is_live_session": False,
+                })
 
     all_bars.sort(key=lambda r: r["date"])
 
@@ -531,8 +547,8 @@ def evaluate_setup_lifecycle_bars(
                 notes = f"Time exit reached ({max_holding_bars} bars held) on {b_date}"
                 continue
 
-            # Queue recovery exit if active position closed above EMA5
-            if is_next_open_model and bar.get("ema5") is not None:
+            # Queue recovery exit if active position closed above EMA5 (RSI2 only)
+            if is_rsi2_lane and bar.get("ema5") is not None:
                 if side == "LONG" and b_close > bar["ema5"]:
                     recovery_due = True
                 elif side == "SHORT" and b_close < bar["ema5"]:

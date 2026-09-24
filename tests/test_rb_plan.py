@@ -585,3 +585,129 @@ def test_pipeline_triage_cut_not_held_skips_deep_research():
     triage_verdict = triage_record.get("triage", "").upper()
     is_held = False
     assert triage_verdict == "CUT" and not is_held
+
+
+def test_execution_validator_non_rsi2_lane_no_ema5_recovery_exit():
+    """Non-RSI2 lanes (e.g. RR_SETUP with entry_type='NEXT_OPEN') do NOT trigger EMA5 recovery exit post-fill."""
+    bars = [
+        {"date": "2026-09-01", "open": 100.0, "high": 105.0, "low": 98.0, "close": 102.0, "ema5": 101.0},
+        {"date": "2026-09-02", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0, "ema5": 101.5},
+        {"date": "2026-09-03", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0, "ema5": 102.0},
+    ]
+
+    # Non-RSI2 lane: RR_SETUP with entry_type="NEXT_OPEN"
+    res_non_rsi2 = evaluate_setup_lifecycle_bars(
+        bars=bars,
+        setup_date="2026-08-31",
+        side="LONG",
+        entry_type="NEXT_OPEN",
+        entry_low=100.0,
+        entry_high=100.0,
+        breakout_level=0.0,
+        stop_loss=90.0,
+        target_1=115.0,
+        target_2=0.0,
+        setup_lane="RR_SETUP",
+        max_holding_bars=21,
+    )
+    # Fills on 2026-09-01 at 100.0. Closes above EMA5 on 09-01, 09-02, 09-03.
+    # Must NOT trigger RECOVERY_EXIT because setup_lane != "RSI2".
+    assert res_non_rsi2["was_filled"] is True
+    assert res_non_rsi2["fill_price"] == 100.0
+    assert res_non_rsi2["status"] == "IN_TRADE"
+    assert res_non_rsi2["hit_recovery"] is False
+
+    # RSI2 lane: setup_lane="RSI2"
+    res_rsi2 = evaluate_setup_lifecycle_bars(
+        bars=bars,
+        setup_date="2026-08-31",
+        side="LONG",
+        entry_type="NEXT_OPEN",
+        entry_low=100.0,
+        entry_high=100.0,
+        breakout_level=0.0,
+        stop_loss=90.0,
+        target_1=115.0,
+        target_2=0.0,
+        setup_lane="RSI2",
+        max_holding_bars=21,
+    )
+    # Fills on 2026-09-01 at 100.0. Closes above EMA5 on 09-02 (103.0 > 102.33).
+    # Queues recovery_due. On 2026-09-03 opens at 103.0 and exits on RECOVERY_EXIT!
+    assert res_rsi2["was_filled"] is True
+    assert res_rsi2["status"] == "RECOVERY_EXIT"
+    assert res_rsi2["exit_price"] == 103.0
+    assert res_rsi2["exit_date"] == "2026-09-03"
+    assert res_rsi2["hit_recovery"] is True
+
+
+def test_suggested_trades_auditor_r_math_coverage(tmp_path, monkeypatch):
+    """Auditor calculates real R math (exit - fill) / (fill - stop), excludes unfilled from loss count, and keeps active options unscored."""
+    import src.tracking.watch_manager as wm
+    from src.tracking.suggested_trades_auditor import (
+        _AUDIT_CACHE,
+        evaluate_all_suggested_trades,
+    )
+
+    db_file = tmp_path / "test_auditor.db"
+    monkeypatch.setattr(wm, "DB_PATH", db_file)
+    wm.init_watch_db()
+    _AUDIT_CACHE.clear()
+
+    # Insert 4 test trades directly into suggested_trades_audit:
+    # 1. Winning shares trade: fill 100, stop 90 (risk 10), exit at target 120 -> +2.00 R
+    # 2. Stopped shares trade: fill 100, stop 90 (risk 10), exit at stop 90 -> -1.00 R
+    # 3. Unfilled invalidated shares trade: entry 100, stop 90, never filled -> r_multiple None, NOT counted in loss
+    # 4. Active options trade: IN_TRADE, spot 336.87, max_profit 18260, max_loss 1025 -> r_multiple None (unscored)
+    with wm._db_lock:
+        with wm._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO suggested_trades_audit (
+                    ticker, date, side, trade_type, trade_structure, trade_label,
+                    entry_type, entry_price, tactical_stop, target_1, max_profit, max_loss,
+                    last_price, status, is_primary, created_at
+                ) VALUES
+                ('WIN_SYM', '2026-09-20', 'LONG', 'EQUITY', 'SHARES', 'Shares (Limit)', 'LIMIT', 100.0, 90.0, 120.0, 0.0, 0.0, 120.0, 'TARGET_HIT', 1, '2026-09-20 10:00:00'),
+                ('LOSS_SYM', '2026-09-20', 'LONG', 'EQUITY', 'SHARES', 'Shares (Limit)', 'LIMIT', 100.0, 90.0, 120.0, 0.0, 0.0, 85.0, 'STOP_BREACHED', 1, '2026-09-20 10:00:00'),
+                ('UNFILLED_SYM', '2026-09-20', 'LONG', 'EQUITY', 'SHARES', 'Shares (Limit)', 'LIMIT', 100.0, 90.0, 120.0, 0.0, 0.0, 80.0, 'INVALIDATED', 1, '2026-09-20 10:00:00'),
+                ('AAPL', '2026-09-22', 'LONG', 'OPTIONS', 'COVERED_CALL', 'Covered Call (Credit)', 'OPTIONS_ENTRY', 336.87, 300.0, 360.0, 18260.0, 1025.0, 336.87, 'IN_TRADE', 1, '2026-09-22 10:00:00')
+            """)
+            conn.commit()
+
+    # Mock evaluate_setup_lifecycle so evaluate_all_suggested_trades evaluates these mock trades
+    def mock_eval_lifecycle(ticker, **kwargs):
+        if ticker == "WIN_SYM":
+            return {"status": "TARGET_HIT", "was_filled": True, "fill_price": 100.0, "exit_price": 120.0}
+        elif ticker == "LOSS_SYM":
+            return {"status": "STOP_BREACHED", "was_filled": True, "fill_price": 100.0, "exit_price": 90.0}
+        elif ticker == "UNFILLED_SYM":
+            return {"status": "INVALIDATED", "was_filled": False, "fill_price": None, "exit_price": None}
+        elif ticker == "AAPL":
+            return {"status": "IN_TRADE", "was_filled": True, "fill_price": 336.87, "exit_price": None}
+        return {"status": "STALKING", "was_filled": False, "fill_price": None, "exit_price": None}
+
+    with patch("src.tracking.execution_validator.evaluate_setup_lifecycle", side_effect=mock_eval_lifecycle), \
+         patch("src.tracking.suggestion_scorer.evaluate_all_suggestions", return_value={}):
+        res = evaluate_all_suggested_trades(refresh_quotes=False, window=100)
+
+    summary = res.get("summary", {})
+    assert summary["won_count"] == 1
+    assert summary["lost_count"] == 1
+    assert summary["resolved_count"] == 2
+    assert summary["resolved_win_rate"] == 50.0
+    assert summary["total_won"] == 2.0
+    assert summary["total_lost"] == -1.0
+    assert summary["net_profit"] == 1.0
+    assert summary["profit_factor"] == 2.0
+
+    # Verify per-trade rows in DB
+    with wm._db_lock:
+        with wm._get_connection() as conn:
+            cur = conn.cursor()
+            rows = {r["ticker"]: dict(r) for r in cur.execute("SELECT * FROM suggested_trades_audit").fetchall()}
+
+    assert rows["WIN_SYM"]["r_multiple"] == 2.0
+    assert rows["LOSS_SYM"]["r_multiple"] == -1.0
+    assert rows["UNFILLED_SYM"]["r_multiple"] is None  # Unfilled never has negative R
+    assert rows["AAPL"]["r_multiple"] is None  # Active options trade is unscored (no fake 33687.00 R)
