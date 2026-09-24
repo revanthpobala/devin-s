@@ -837,9 +837,9 @@ window.AppChat = {
     }
   },
 
-  askModalCopilot(prompt) {
+  askModalCopilot(prompt, ticker = null, date = null) {
     const input = document.getElementById('modal-chat-input');
-    if (prompt.endsWith('$')) {
+    if (prompt && prompt.endsWith('$')) {
       if (input) {
         input.value = prompt;
         input.focus();
@@ -847,7 +847,7 @@ window.AppChat = {
       }
     } else {
       if (input) input.value = '';
-      this.sendModalCopilotMsg(prompt);
+      this.sendModalCopilotMsg(prompt, ticker, date);
     }
   },
 
@@ -955,13 +955,22 @@ window.AppChat = {
         sendBtn.disabled = false;
       }
 
-      // Resolve active ticker for main chat
+      // Resolve active ticker for main sidebar chat
       let activeTicker = (
+        (window.AppState.activeChatTicker) ||
+        (window.AppState.revChatFocusTicker) ||
         (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '') ||
         (document.getElementById('ticker-input') ? document.getElementById('ticker-input').value : '') ||
         ''
       ).trim().toUpperCase();
-      if (['GENERAL', 'AUTO', 'NONE', 'ALL'].includes(activeTicker)) activeTicker = '';
+      if (['GENERAL', 'AUTO', 'NONE', 'ALL', 'STOCK'].includes(activeTicker)) activeTicker = '';
+
+      if (activeTicker) {
+        window.AppState.revChatFocusTicker = activeTicker;
+        if (!this._revSessionId || !this._revSessionId.includes(`_${activeTicker}_`)) {
+          this._revSessionId = `sess_${activeTicker}_${Date.now()}`;
+        }
+      }
 
       const chatHeaderTitle = activeTicker ? `⚡ REV CHAT ($${activeTicker})` : '⚡ REV CHAT';
 
@@ -1265,18 +1274,30 @@ window.AppChat = {
     this.updateModalSendButtonState();
   },
 
-  async sendModalCopilotMsg(customPrompt = null) {
-    let sym = window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '';
-    let date = window.AppState.currentReportData ? window.AppState.currentReportData.date : '';
+  async sendModalCopilotMsg(customPrompt = null, explicitTicker = null, explicitDate = null) {
+    let sym = (
+      explicitTicker ||
+      window.AppState.activeChatTicker ||
+      (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '') ||
+      ''
+    ).toUpperCase().trim();
     if (!sym) {
       const titleEl = document.getElementById('modal-ticker-title');
       if (titleEl) {
         const m = titleEl.innerText.match(/^([A-Z0-9.\-]+)/);
-        if (m) sym = m[1];
+        if (m) sym = m[1].toUpperCase().trim();
       }
     }
     if (!sym) sym = 'STOCK';
-    sym = sym.toUpperCase().trim();
+
+    let date = explicitDate || '';
+    if (!date && window.AppState.currentReportData && window.AppState.currentReportData.ticker === sym) {
+      date = window.AppState.currentReportData.date || '';
+    }
+    if (!date && window.AppState.activeChats) {
+      const chat = window.AppState.activeChats.find(c => (c.ticker || '').toUpperCase().trim() === sym);
+      if (chat) date = chat.date || '';
+    }
     if (!date) {
       const titleEl = document.getElementById('modal-ticker-title');
       if (titleEl) {
@@ -1288,6 +1309,9 @@ window.AppChat = {
 
     // Ensure active ticker matches so chat UI displays this message & stream tokens
     window.AppState.activeChatTicker = sym;
+    window.AppState.revChatFocusTicker = sym;
+    const tickerInput = document.getElementById('ticker-input');
+    if (tickerInput) tickerInput.value = sym;
 
     // Check if THIS specific ticker is currently streaming
     if (window.AppState.modalStreams && window.AppState.modalStreams[key] && window.AppState.modalStreams[key].isStreaming) {
@@ -1340,7 +1364,9 @@ window.AppChat = {
       if (!window.AppState.modalChatHistories) window.AppState.modalChatHistories = {};
       if (!window.AppState.modalChatHistories[key]) window.AppState.modalChatHistories[key] = [];
       const targetHistory = window.AppState.modalChatHistories[key];
-      if (!this._modalSessionId) this._modalSessionId = `sess_${sym}_${date}_${Date.now()}`;
+      if (!this._modalSessionId || !this._modalSessionId.includes(`_${sym}_`)) {
+        this._modalSessionId = `sess_${sym}_${date || 'live'}_${Date.now()}`;
+      }
 
       // Clean history for payload (only valid string content and roles)
       const cleanHistory = targetHistory

@@ -1313,7 +1313,8 @@ window.AppSwing = {
 
   async openPlanExecution(ticker, date) {
     if (!ticker) return;
-    await this.openReportModal(date, ticker, 'plan');
+    const sym = ticker.toUpperCase().trim();
+    await this.openReportModal(date, sym, 'plan');
     this.togglePositionsPane(false);
     const drawer = document.getElementById('modal-copilot-drawer');
     if (drawer) {
@@ -1322,11 +1323,12 @@ window.AppSwing = {
         drawer.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
       } catch (e) {}
     }
-    const data = window.AppState.currentReportData;
-    const optPlan = data?.watch_levels?.options_plan?.summary || 'the suggested position';
-    const prompt = `What is the exact execution step for $${ticker} (${optPlan}) right now?`;
+    const chat = window.AppState.activeChats ? window.AppState.activeChats.find(c => (c.ticker || '').toUpperCase().trim() === sym) : null;
+    const data = (chat && chat.reportData) || window.AppState.currentReportData;
+    const optPlan = (data && data.ticker === sym && data.watch_levels?.options_plan?.summary) || 'the suggested position';
+    const prompt = `What is the exact execution step for $${sym} (${optPlan}) right now?`;
     if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {
-      window.AppChat.askModalCopilot(prompt);
+      window.AppChat.askModalCopilot(prompt, sym, date);
     } else if (window.AppChat && typeof window.AppChat.askActiveChat === 'function') {
       window.AppChat.askActiveChat(prompt);
     }
@@ -1440,12 +1442,15 @@ window.AppSwing = {
       if (prev) prev.draftInput = currentInput.value;
     }
 
-    // Set active chat
+    // Set active chat and sync all focus state
     window.AppState.activeChatTicker = chat.ticker;
+    window.AppState.currentReportData = chat.reportData;
+    window.AppState.revChatFocusTicker = chat.ticker;
+    const tickerInput = document.getElementById('ticker-input');
+    if (tickerInput) tickerInput.value = chat.ticker;
     chat.lastAccessed = Date.now();
     if (initialTab) chat.activeTab = initialTab;
 
-    window.AppState.currentReportData = chat.reportData;
     const data = chat.reportData;
     const actualDate = chat.date;
 
@@ -2167,14 +2172,15 @@ window.AppSwing = {
     if (resizer) resizer.style.display = 'flex';
 
     // 3. Build execution query
-    const data = window.AppState.currentReportData;
-    const ticker = (data && data.ticker) || window.AppState.activeChatTicker || 'STOCK';
-    const optPlan = data?.watch_levels?.options_plan?.summary || 'the suggested position';
-    const prompt = `What is the exact execution step for $${ticker} (${optPlan}) right now? If the primary structure has repriced or moved, engineer 3 actionable alternative vehicles (Covered Calls/PMCC, Floor Bull Put Spread/CSP, or LEAPS/Strike Shift) using live tools.`;
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK').toUpperCase().trim();
+    const chat = window.AppState.activeChats ? window.AppState.activeChats.find(c => (c.ticker || '').toUpperCase().trim() === sym) : null;
+    const data = (chat && chat.reportData) || window.AppState.currentReportData;
+    const optPlan = (data && data.ticker === sym && data.watch_levels?.options_plan?.summary) || 'the suggested position';
+    const prompt = `What is the exact execution step for $${sym} (${optPlan}) right now? If the primary structure has repriced or moved, engineer 3 actionable alternative vehicles (Covered Calls/PMCC, Floor Bull Put Spread/CSP, or LEAPS/Strike Shift) using live tools.`;
 
     // 4. Send directly to Modal Copilot
     if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {
-      window.AppChat.askModalCopilot(prompt);
+      window.AppChat.askModalCopilot(prompt, sym, data?.date);
     } else if (window.AppChat && typeof window.AppChat.askActiveChat === 'function') {
       window.AppChat.askActiveChat(prompt);
     }
@@ -2192,8 +2198,9 @@ window.AppSwing = {
   },
 
   askIndependentCopilot(type) {
-    const data = window.AppState.currentReportData || {};
-    const sym = (data.ticker || 'STOCK').toUpperCase();
+    const sym = (window.AppState.activeChatTicker || (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || 'STOCK').toUpperCase().trim();
+    const chat = window.AppState.activeChats ? window.AppState.activeChats.find(c => (c.ticker || '').toUpperCase().trim() === sym) : null;
+    const data = (chat && chat.reportData) || window.AppState.currentReportData || {};
 
     // Ensure Copilot drawer and resizer are visible and uncollapsed
     const drawer = document.getElementById('modal-copilot-drawer');
@@ -2216,7 +2223,7 @@ window.AppSwing = {
     }
 
     if (window.AppChat && typeof window.AppChat.askModalCopilot === 'function') {
-      window.AppChat.askModalCopilot(prompt);
+      window.AppChat.askModalCopilot(prompt, sym, data?.date);
     }
   },
 

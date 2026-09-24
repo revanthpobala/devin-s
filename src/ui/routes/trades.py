@@ -24,6 +24,17 @@ _SUGGESTED_CACHE: dict = {}
 _SUGGESTED_CACHE_TTL = 30  # 30 seconds
 
 
+def _safe_int(val, default):
+    try:
+        return int(val)
+    except Exception:
+        return default
+
+def _safe_str(val, default=""):
+    if val is None or not isinstance(val, (str, int, float)):
+        return default
+    return str(val)
+
 @router.get("/api/trades/audit")
 def get_trades_audit(
     tab: str = Query("ALL"),
@@ -35,12 +46,17 @@ def get_trades_audit(
     """Returns the pre-computed suggested trades audit trail, tab counts, and summary from SQLite."""
     try:
         from src.tracking.suggested_trades_auditor import get_audit_summary
+        page_val = _safe_int(page, 1)
+        page_size_val = _safe_int(page_size, 10)
+        window_val = _safe_int(window, 100)
+        tab_val = _safe_str(tab, "ALL")
+        search_val = _safe_str(search, "") if search else None
         return get_audit_summary(
-            tab=tab,
-            search=search,
-            page=page,
-            page_size=page_size,
-            window=window,
+            tab=tab_val,
+            search=search_val,
+            page=page_val,
+            page_size=page_size_val,
+            window=window_val,
             force_sync=False
         )
     except Exception as e:

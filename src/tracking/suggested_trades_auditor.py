@@ -399,7 +399,11 @@ def get_audit_summary(
             cursor = conn.cursor()
 
             # Base query: evaluate window on primary suggested trades
-            window_clause = f"LIMIT {int(window)}" if window and window > 0 else ""
+            try:
+                w_val = int(window) if window is not None else 100
+            except Exception:
+                w_val = 100
+            window_clause = f"LIMIT {w_val}" if w_val > 0 else ""
             
             # Fetch all rows within window (primary suggested trades for metrics)
             all_rows = cursor.execute(

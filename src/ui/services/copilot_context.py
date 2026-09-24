@@ -322,6 +322,16 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
                         matched_by[filtered[0]] = "history"
                         break
 
+    if explicit_ticker:
+        exp_u = explicit_ticker.strip().upper()
+        if exp_u not in ("GENERAL", "AUTO", "NONE", "ALL", ""):
+            has_prompt_ticker = any(matched_by.get(t) in ("dollar", "keyword") for t in detected)
+            if not has_prompt_ticker:
+                if exp_u in detected:
+                    detected.remove(exp_u)
+                detected.insert(0, exp_u)
+                matched_by[exp_u] = "modal"
+
     final_tickers = detected if detected else ["GENERAL"]
     primary = final_tickers[0]
     match_type = matched_by.get(primary, "none")

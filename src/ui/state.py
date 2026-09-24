@@ -120,3 +120,9 @@ def init_db():
             )
         """)
         conn.commit()
+
+    try:
+        from src.tracking.watch_manager import init_watch_db
+        init_watch_db()
+    except Exception as e:
+        logger.debug(f"Could not run init_watch_db: {e}")

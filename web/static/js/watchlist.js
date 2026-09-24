@@ -37,15 +37,16 @@ window.AppWatchlist = {
   async loadWatchlist() {
     try {
       const data = await window.AppApi.getWatchTargets();
-      const newTargets = (data && data.targets) ? data.targets : [];
+      if (!data) return;
+      const newTargets = Array.isArray(data.targets) ? data.targets : [];
       const newJson = JSON.stringify(newTargets);
       const isUnchanged = (newJson === this._lastTargetsJson);
       this._lastTargetsJson = newJson;
       this._allTargets = newTargets;
-      this._perfData = data ? data.performance : null;
+      this._perfData = data.performance || null;
 
-      // Sync audit summary badge in toolbar
-      this.loadAuditSummaryOnly();
+      // Sync audit summary badge in toolbar (quietly)
+      try { this.loadAuditSummaryOnly(); } catch (e) {}
 
       // If data has not changed at all, skip full DOM rebuilds entirely
       if (isUnchanged) return;
@@ -62,13 +63,15 @@ window.AppWatchlist = {
       try { this.renderRadarWidget(); } catch (err2) { console.error('Error in renderRadarWidget():', err2); }
     } catch (e) {
       console.error('Failed loading watchlist targets', e);
-      const radarEl = document.getElementById('swing-radar-widget');
-      if (radarEl) {
-        radarEl.innerHTML = `
-          <div style="color:var(--text-muted); font-size:12px; text-align:center; padding:12px;">
-            ⚠️ Unable to connect to watch database. Retrying...
-          </div>
-        `;
+      if (!this._allTargets || this._allTargets.length === 0) {
+        const radarEl = document.getElementById('swing-radar-widget');
+        if (radarEl) {
+          radarEl.innerHTML = `
+            <div style="color:var(--text-muted); font-size:12px; text-align:center; padding:12px;">
+              ⚠️ Unable to connect to watch database. Retrying...
+            </div>
+          `;
+        }
       }
     }
   },
