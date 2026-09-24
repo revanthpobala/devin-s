@@ -629,6 +629,25 @@ window.AppSwing = {
   _lastContinuousScanTime: null,
   _continuousPollingTimer: null,
 
+  async toggleContinuousScreenerPause() {
+    try {
+      const btn = document.getElementById('btn-toggle-screener-pause');
+      if (btn) btn.disabled = true;
+      const res = await fetch('/api/screener/toggle-pause', { method: 'POST' });
+      const data = await res.json();
+      const isPaused = Boolean(data.paused);
+      if (window.AppUtils && AppUtils.showToast) {
+        AppUtils.showToast(isPaused ? '⏸️ Schwab screener paused' : '▶️ Schwab screener resumed', isPaused ? 'warning' : 'success');
+      }
+      await this.pollContinuousScreenerStatus();
+      if (btn) btn.disabled = false;
+    } catch (e) {
+      console.error('Failed to toggle screener pause:', e);
+      const btn = document.getElementById('btn-toggle-screener-pause');
+      if (btn) btn.disabled = false;
+    }
+  },
+
   async triggerContinuousScanNow() {
     try {
       if (window.AppUtils && AppUtils.showToast) {
@@ -654,6 +673,21 @@ window.AppSwing = {
       const timerEl = document.getElementById('screener-next-scan-timer');
       const badgeEl = document.getElementById('screener-continuous-badge');
       const ttBadgeEl = document.getElementById('screener-tastytrade-badge');
+      const btnPause = document.getElementById('btn-toggle-screener-pause');
+
+      if (btnPause) {
+        if (s.paused) {
+          btnPause.innerHTML = '▶️ Resume Screener';
+          btnPause.style.borderColor = '#10b981';
+          btnPause.style.color = '#10b981';
+          btnPause.title = 'Screener is currently paused. Click to resume automated scanning.';
+        } else {
+          btnPause.innerHTML = '⏸️ Pause Screener';
+          btnPause.style.borderColor = '';
+          btnPause.style.color = '';
+          btnPause.title = 'Pause continuous automated scanning';
+        }
+      }
 
       if (ttBadgeEl) {
         if (s.tastytrade_connected) {
@@ -667,12 +701,29 @@ window.AppSwing = {
         }
       }
 
-      if (s.is_scanning) {
+      if (s.paused) {
+        if (labelEl) labelEl.innerText = '⏸️ Screener Paused';
+        if (timerEl) timerEl.innerText = 'Paused';
+        if (badgeEl) {
+          badgeEl.style.borderColor = 'rgba(245,158,11,0.4)';
+          badgeEl.style.color = '#f59e0b';
+          const dot = badgeEl.querySelector('.dot');
+          if (dot) {
+            dot.style.background = '#f59e0b';
+            dot.style.boxShadow = '0 0 6px #f59e0b';
+          }
+        }
+      } else if (s.is_scanning) {
         if (labelEl) labelEl.innerText = '⚡ Scanning 983 Stocks...';
         if (timerEl) timerEl.innerText = 'Live';
         if (badgeEl) {
           badgeEl.style.borderColor = '#3b82f6';
           badgeEl.style.color = 'var(--cyan)';
+          const dot = badgeEl.querySelector('.dot');
+          if (dot) {
+            dot.style.background = '#3b82f6';
+            dot.style.boxShadow = '0 0 6px #3b82f6';
+          }
         }
       } else {
         if (labelEl) labelEl.innerText = '🤖 Continuous Active';
@@ -685,6 +736,11 @@ window.AppSwing = {
         if (badgeEl) {
           badgeEl.style.borderColor = 'rgba(16,185,129,0.35)';
           badgeEl.style.color = '#10b981';
+          const dot = badgeEl.querySelector('.dot');
+          if (dot) {
+            dot.style.background = '#10b981';
+            dot.style.boxShadow = '0 0 6px #10b981';
+          }
         }
       }
 

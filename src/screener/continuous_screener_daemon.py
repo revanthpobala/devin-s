@@ -208,6 +208,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         self.max_concurrent_slots = max(1, int(os.getenv("CONTINUOUS_MAX_CONCURRENT_SLOTS", str(max_concurrent_slots))))
         self._active_research_threads: List[threading.Thread] = []
         self.running = True
+        self.paused = False
         self._wake_event = threading.Event()
         self._lock = threading.Lock()
 
@@ -391,6 +392,13 @@ class ContinuousScreenerDaemon(threading.Thread):
 
         # Step 2: Continuous loop
         while self.running:
+            # Check if paused by user
+            if self.paused:
+                with self._lock:
+                    self.last_status = "Paused by user"
+                self._wake_event.wait(timeout=2.0)
+                continue
+
             # Check market hours gating if enabled
             if self.market_hours_only and not self.is_market_hours():
                 # Drop any stale next_scan_time so we don't resume on a misaligned
@@ -419,10 +427,38 @@ class ContinuousScreenerDaemon(threading.Thread):
             if not self.running:
                 break
 
+            if self.paused:
+                continue
+
             # Execute periodic or triggered scan cycle
             self.run_scan_cycle()
 
         logger.info("🛑 [ContinuousScreener] Background daemon terminated.")
+
+    def pause(self):
+        """Pause continuous scanning."""
+        with self._lock:
+            self.paused = True
+            self.last_status = "Paused by user"
+        logger.info("⏸️ [ContinuousScreener] Screener paused by user.")
+        self._wake_event.set()
+
+    def resume(self):
+        """Resume continuous scanning."""
+        with self._lock:
+            self.paused = False
+            self.last_status = "Resumed"
+            self.next_scan_time = (datetime.now() + timedelta(seconds=self.poll_interval)).isoformat()
+        logger.info("▶️ [ContinuousScreener] Screener resumed by user.")
+        self._wake_event.set()
+
+    def toggle_pause(self) -> bool:
+        """Toggle pause state and return the new paused status."""
+        if self.paused:
+            self.resume()
+        else:
+            self.pause()
+        return self.paused
 
     def trigger_now(self):
         """Force an immediate scan cycle without waiting for the timer."""
@@ -448,6 +484,7 @@ class ContinuousScreenerDaemon(threading.Thread):
 
             return {
                 "running": self.running,
+                "paused": self.paused,
                 "is_scanning": self.is_scanning,
                 "poll_interval": self.poll_interval,
                 "last_scan_time": self.last_scan_time,
@@ -764,6 +801,32 @@ def trigger_continuous_scan_now():
     return False
 
 
+def pause_continuous_screener() -> bool:
+    """Pause the continuous screener daemon if active."""
+    global _daemon_instance
+    if _daemon_instance is not None:
+        _daemon_instance.pause()
+        return True
+    return False
+
+
+def resume_continuous_screener() -> bool:
+    """Resume the continuous screener daemon if active."""
+    global _daemon_instance
+    if _daemon_instance is not None:
+        _daemon_instance.resume()
+        return True
+    return False
+
+
+def toggle_continuous_screener_pause() -> bool:
+    """Toggle paused state of the continuous screener daemon. Returns new paused state."""
+    global _daemon_instance
+    if _daemon_instance is not None:
+        return _daemon_instance.toggle_pause()
+    return False
+
+
 def get_continuous_screener_status() -> Dict[str, Any]:
     """Retrieve telemetry status for the continuous screener daemon."""
     global _daemon_instance
@@ -771,6 +834,7 @@ def get_continuous_screener_status() -> Dict[str, Any]:
         return _daemon_instance.get_status()
     return {
         "running": False,
+        "paused": False,
         "is_scanning": False,
         "last_status": "Daemon not started",
         "tastytrade_connected": False,

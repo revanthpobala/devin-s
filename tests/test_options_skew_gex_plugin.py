@@ -15,8 +15,10 @@ def test_options_skew_gex_index_skip():
     assert res == {}
 
 
-def test_options_skew_gex_heuristic_fallback():
+def test_options_skew_gex_heuristic_fallback(monkeypatch):
     plugin = OptionsSkewGEXPlugin()
+    monkeypatch.setattr(plugin, "_calc_alpaca_skew_gex", lambda sym, spot: None)
+    monkeypatch.setattr(plugin, "_calc_yfinance_skew_gex", lambda sym, spot: None)
     df = pd.DataFrame({
         "open": [100.0, 101.0, 102.0],
         "high": [102.0, 103.0, 104.0],

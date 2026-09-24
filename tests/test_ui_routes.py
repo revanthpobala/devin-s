@@ -11,11 +11,22 @@ from src.ui.app import create_app
 
 
 @pytest.fixture(scope="module")
-def client():
-    app = create_app()
-    # Use TestClient with context manager to avoid triggering full background daemon threads during unit test
-    with TestClient(app, raise_server_exceptions=True) as c:
-        yield c
+def client(monkeypatch_module=None):
+    import src.ui.services.daemon_manager as dm
+
+    # Mock daemon lifecycle to avoid starting long-running background threads/subprocesses in unit tests
+    orig_start = dm.start_all_daemons
+    orig_stop = dm.stop_all_daemons
+    dm.start_all_daemons = lambda: None
+    dm.stop_all_daemons = lambda: None
+
+    try:
+        app = create_app()
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c
+    finally:
+        dm.start_all_daemons = orig_start
+        dm.stop_all_daemons = orig_stop
 
 
 def test_index_page(client):
@@ -24,7 +35,12 @@ def test_index_page(client):
     assert "text/html" in response.headers.get("content-type", "")
 
 
-def test_api_status(client):
+def test_api_status(client, monkeypatch):
+    import src.ui.routes.status as status_mod
+    monkeypatch.setattr(status_mod, "_get_live_vix", lambda: 15.0)
+    monkeypatch.setattr(status_mod, "_get_active_processes", lambda: [])
+    import src.clients.tastytrade_client as tt
+    monkeypatch.setattr(tt.TastytradeClient, "get_quote_alerts", lambda self: [])
     response = client.get("/api/status")
     assert response.status_code == 200
     data = response.json()
@@ -54,7 +70,9 @@ def test_screener_status(client):
     assert "running" in data
 
 
-def test_watch_targets(client):
+def test_watch_targets(client, monkeypatch):
+    import src.clients.schwab_client as sc
+    monkeypatch.setattr(sc, "get_realtime_quotes_batch", lambda syms: {})
     response = client.get("/api/watch-targets")
     assert response.status_code == 200
     data = response.json()

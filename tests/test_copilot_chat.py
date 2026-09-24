@@ -14,6 +14,23 @@ from run_ui import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_copilot_network_services(monkeypatch):
+    import src.clients.options_client as oc
+    monkeypatch.setattr(oc, "get_realtime_quote", lambda sym: "Last: 366.50 Bid/Ask: 366.40 / 366.60")
+    monkeypatch.setattr(oc, "fetch_targeted_chain", lambda *args, **kwargs: "| Expiry | Strike | Call Bid/Ask | Put Bid/Ask |\n| 2026-10-16 | 180 | 2.5/2.6 | 2.4/2.5 |")
+    monkeypatch.setattr(oc, "_alpaca_underlying_last", lambda sym: 180.0)
+    import src.clients.price_client as pc
+    monkeypatch.setattr(pc, "get_current_price", lambda sym: 366.50)
+    import src.clients.search_client as sc
+    monkeypatch.setattr(sc, "search_web", lambda q, max_results=3: [])
+    import src.clients.tastytrade_client as tt
+    monkeypatch.setattr(tt.TastytradeClient, "get_quote_alerts", lambda self: [])
+    monkeypatch.setattr(tt.TastytradeClient, "get_market_metrics", lambda self, sym: [{"implied-volatility-index-rank": "0.45", "historical-volatility-30-day": "35.2"}])
+    import src.clients.schwab_client as sc_client
+    monkeypatch.setattr(sc_client, "get_unusual_options_flow_data", lambda sym: {"status": "ok", "anomalies": []})
+
+
 def test_copilot_chat_persistence_and_sessions():
     _init_db()
     sid = f"test_session_{uuid.uuid4().hex[:8]}"
@@ -160,12 +177,18 @@ def test_copilot_chat_request_multimodal_fields():
     assert req.image_data.startswith("data:image/png;base64,")
 
 
-def test_unified_options_chain_and_memory_cache():
+def test_unified_options_chain_and_memory_cache(monkeypatch):
     import time
+    from src.clients import options_client
     from src.clients.options_client import fetch_options_chain_tool, _CHAIN_MEM_CACHE
 
     # Clear cache for clean test
     _CHAIN_MEM_CACHE.clear()
+
+    # Mock raw fetcher to avoid slow network I/O
+    fake_table = "| Expiry | Strike | Call Bid/Ask | Put Bid/Ask |\n| 2026-10-16 | 180 | 2.5/2.6 | 2.4/2.5 |"
+    monkeypatch.setattr(options_client, "fetch_targeted_chain", lambda *args, **kwargs: fake_table)
+    monkeypatch.setattr(options_client, "_alpaca_underlying_last", lambda sym: 180.0)
 
     # Call 1: Fetches unified chain
     t0 = time.time()

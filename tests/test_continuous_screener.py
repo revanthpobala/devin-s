@@ -12,8 +12,11 @@ import pytest
 from src.screener.continuous_screener_daemon import (
     ContinuousScreenerDaemon,
     get_continuous_screener_status,
+    pause_continuous_screener,
+    resume_continuous_screener,
     start_continuous_screener_daemon,
     stop_continuous_screener_daemon,
+    toggle_continuous_screener_pause,
     trigger_continuous_scan_now,
 )
 
@@ -403,6 +406,59 @@ def test_screener_feature_payload_and_pipeline_sequence(tmp_path):
             assert any("run_deep_research.py" in str(cmd) for cmd in called_cmds)
             # 4. Watch alerts synced
             assert any("run_watch_alerts.py" in str(cmd) for cmd in called_cmds)
+
+
+def test_continuous_screener_pause_and_resume():
+    """Verify pausing, resuming, and toggling pause state on daemon instance."""
+    daemon = ContinuousScreenerDaemon(poll_interval=300)
+    assert daemon.paused is False
+    assert daemon.get_status()["paused"] is False
+
+    # Pause
+    daemon.pause()
+    assert daemon.paused is True
+    assert daemon.get_status()["paused"] is True
+    assert "Paused" in daemon.get_status()["last_status"]
+
+    # Resume
+    daemon.resume()
+    assert daemon.paused is False
+    assert daemon.get_status()["paused"] is False
+
+    # Toggle pause
+    now_paused = daemon.toggle_pause()
+    assert now_paused is True
+    assert daemon.paused is True
+
+    now_paused = daemon.toggle_pause()
+    assert now_paused is False
+    assert daemon.paused is False
+
+
+def test_continuous_screener_pause_endpoints():
+    """Verify FastAPI screener pause endpoints."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from src.ui.routes.screener import router as screener_router
+
+    app = FastAPI()
+    app.include_router(screener_router)
+    client = TestClient(app)
+
+    # Test toggle-pause endpoint
+    res = client.post("/api/screener/toggle-pause")
+    assert res.status_code == 200
+    assert "paused" in res.json()
+
+    # Test pause endpoint
+    res_p = client.post("/api/screener/pause")
+    assert res_p.status_code == 200
+    assert res_p.json().get("paused") is True
+
+    # Test resume endpoint
+    res_r = client.post("/api/screener/resume")
+    assert res_r.status_code == 200
+    assert res_r.json().get("paused") is False
 
 
 

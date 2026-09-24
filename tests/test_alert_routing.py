@@ -6,6 +6,14 @@ from src.tracking import position_state
 from src.tracking.sheets_tracker import _format_triage_label
 
 
+@pytest.fixture(autouse=True)
+def mock_alert_routing_network(monkeypatch):
+    import src.clients.schwab_client as sc
+    monkeypatch.setattr(sc, "calculate_intraday_atr", lambda sym: 2.0)
+    import src.tracking.position_monitor as pm
+    monkeypatch.setattr(pm, "get_current_price", lambda sym, context="execution": 510.0)
+
+
 def test_position_manager_rejects_neutral_and_screener_alerts(tmp_path):
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
@@ -52,7 +60,8 @@ def test_position_manager_rejects_neutral_and_screener_alerts(tmp_path):
 def test_position_manager_accepts_valid_directional_intraday_alerts(tmp_path):
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
-         patch("src.tracking.alert_evaluator.evaluate_risk_vetoes", return_value=None):
+         patch("src.tracking.alert_evaluator.evaluate_risk_vetoes", return_value=None), \
+         patch("src.clients.schwab_client.calculate_intraday_atr", return_value=2.0):
         mgr = PositionManager(poll_interval=10)
         mgr._ensure_monitor = MagicMock()
 
@@ -140,7 +149,8 @@ def test_intraday_trade_execution_alerts_parsed_and_routed(tmp_path):
 
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
-         patch("src.tracking.alert_evaluator.evaluate_risk_vetoes", return_value=None):
+         patch("src.tracking.alert_evaluator.evaluate_risk_vetoes", return_value=None), \
+         patch("src.clients.schwab_client.calculate_intraday_atr", return_value=2.0):
         mgr = PositionManager(poll_interval=10)
         mgr._ensure_monitor = MagicMock()
         mgr._stop_monitor = MagicMock()

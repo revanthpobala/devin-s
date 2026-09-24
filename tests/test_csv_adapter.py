@@ -35,7 +35,16 @@ def _make_dummy_df(nrows=280):
     return pd.DataFrame(rows)
 
 
+from unittest.mock import patch
+
 class TestCSVAdapter(unittest.TestCase):
+    def setUp(self):
+        self.patcher = patch("src.plugins.plugin_manager.PluginManager.run_all", return_value={})
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+
     def test_csv_to_datawindow_basic(self):
         df = _make_dummy_df(nrows=280)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -111,7 +120,7 @@ class TestCSVAdapter(unittest.TestCase):
             "_realvol_60d": 30.0,
         }
         df = _make_dummy_df(nrows=280)
-        enriched = decode_and_enrich_datawindow(snapshot, df, ticker="AMZN")
+        enriched = decode_and_enrich_datawindow(snapshot, df, ticker="TEST")
 
         self.assertEqual(enriched.get("_protocol_version"), 2)
         self.assertEqual(enriched.get("_rsi2_events_pack_raw"), 2051)

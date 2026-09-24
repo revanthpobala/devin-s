@@ -60,6 +60,43 @@ def trigger_continuous_screener_scan_endpoint():
         return {"status": "error", "error": str(e)}
 
 
+@router.post("/pause")
+def pause_continuous_screener_endpoint():
+    """Pause continuous scanning."""
+    try:
+        from src.screener.continuous_screener_daemon import pause_continuous_screener
+        paused = pause_continuous_screener()
+        append_log("⏸️ [SCHWAB SCREENER] Continuous screener paused by user.")
+        return {"status": "paused" if paused else "not_running", "paused": True}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/resume")
+def resume_continuous_screener_endpoint():
+    """Resume continuous scanning."""
+    try:
+        from src.screener.continuous_screener_daemon import resume_continuous_screener
+        resumed = resume_continuous_screener()
+        append_log("▶️ [SCHWAB SCREENER] Continuous screener resumed by user.")
+        return {"status": "resumed" if resumed else "not_running", "paused": False}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/toggle-pause")
+def toggle_continuous_screener_pause_endpoint():
+    """Toggle continuous scanning paused state."""
+    try:
+        from src.screener.continuous_screener_daemon import toggle_continuous_screener_pause
+        new_paused = toggle_continuous_screener_pause()
+        state_str = "paused" if new_paused else "resumed"
+        append_log(f"{'⏸️' if new_paused else '▶️'} [SCHWAB SCREENER] Continuous screener {state_str} by user.")
+        return {"status": "ok", "paused": new_paused}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @router.get("/schwab-pre-move")
 def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str = Query("long")):
     """Fetch current coiled pre-move swing candidates (Long or Short) from survivors manifests."""

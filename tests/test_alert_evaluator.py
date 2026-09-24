@@ -18,6 +18,7 @@ def temp_db(tmp_path):
 def test_build_live_market_context_mocked():
     with patch("src.tracking.alert_evaluator.TastytradeClient") as mock_tt, \
          patch("src.tracking.alert_evaluator.search_web") as mock_search, \
+         patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "bullish"}), \
          patch("src.tracking.alert_evaluator.fetch_options_chain_tool") as mock_options:
         
         mock_tt.return_value.get_market_metrics.return_value = [{
@@ -67,6 +68,7 @@ def test_evaluate_alert_payload_daily_mocked(temp_db):
     })
 
     with patch.object(alert_db, "DB_PATH", temp_db), \
+         patch("src.tracking.alert_evaluator.build_live_market_context", return_value={"volatility": {}, "news": [], "options_snippet": "", "expected_earnings": None}), \
          patch("src.tracking.alert_evaluator.query_local_llm", return_value=mock_llm_resp):
         
         res = evaluate_alert_payload(alert, use_tools=False)

@@ -8,8 +8,9 @@ BASE_URL = "http://127.0.0.1:8050"
 
 def _is_server_running() -> bool:
     try:
-        with urllib.request.urlopen(f"{BASE_URL}/", timeout=1):
-            return True
+        req = urllib.request.Request(f"{BASE_URL}/api/status", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            return resp.status == 200
     except Exception:
         return False
 

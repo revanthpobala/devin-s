@@ -98,7 +98,7 @@ def _get_active_processes() -> List[Dict[str, Any]]:
     import psutil
     active = []
     try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time', 'cpu_percent', 'memory_percent']):
+        for proc in psutil.process_iter(['pid', 'name']):
             try:
                 name = (proc.info.get('name') or '').lower()
                 if not ('python' in name or 'powershell' in name):
