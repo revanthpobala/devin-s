@@ -46,7 +46,7 @@ window.AppWatchlist = {
       this._perfData = data.performance || null;
 
       // Sync audit summary badge in toolbar (quietly)
-      try { this.loadAuditSummaryOnly(); } catch (e) {}
+      try { this.loadAuditSummaryOnly(); } catch (e) { }
 
       // If data has not changed at all, skip full DOM rebuilds entirely
       if (isUnchanged) return;
@@ -1221,7 +1221,7 @@ window.AppWatchlist = {
             </div>
 
             <div class="levels-row">
-              <div class="level-col"><label>Entry Zone</label><span>$${Number(t.entry_zone_low||0).toFixed(2)} - $${Number(t.entry_zone_high||0).toFixed(2)}</span></div>
+              <div class="level-col"><label>Entry Zone</label><span>$${Number(t.entry_zone_low || 0).toFixed(2)} - $${Number(t.entry_zone_high || 0).toFixed(2)}</span></div>
               <div class="level-col"><label>Tactical Stop</label><span style="color:var(--rose-light);">$${stop.toFixed(2)}</span></div>
               <div class="level-col"><label>Target 1</label><span style="color:var(--emerald-light);">$${t1.toFixed(2)}</span></div>
               <div class="level-col"><label>Target 2</label><span style="color:var(--cyan-glow);">$${t2.toFixed(2)}</span></div>
@@ -1398,7 +1398,7 @@ window.AppWatchlist = {
       const spot = Number(t.last_price || 0);
       const spotStr = spot > 0 ? `$${spot.toFixed(2)}` : '--.--';
       const timeBadge = this._formatResearchTime(t.research_timestamp, t.date);
-      
+
       const dist = t.distance_to_entry_pct;
       const distStr = (dist !== null && dist !== undefined) ? `${dist >= 0 ? '+' : ''}${Number(dist).toFixed(2)}%` : '';
       const st = (t.status || '').toUpperCase();
@@ -1456,7 +1456,7 @@ window.AppWatchlist = {
       // Action Directive Banner (What should I take action on)
       let actionHtml = '';
       if (st === 'IN_ZONE') {
-        const optNote = t.options_actionable ? `Execute ${t.options_structure || 'spread'} at market, or set limit buy in zone.` : `Confirm limit order fill in $${Number(t.entry_zone_low||0).toFixed(2)}-$${Number(t.entry_zone_high||0).toFixed(2)} zone.`;
+        const optNote = t.options_actionable ? `Execute ${t.options_structure || 'spread'} at market, or set limit buy in zone.` : `Confirm limit order fill in $${Number(t.entry_zone_low || 0).toFixed(2)}-$${Number(t.entry_zone_high || 0).toFixed(2)} zone.`;
         actionHtml = `
           <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:6px; padding:7px 12px; margin-top:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
             <span style="color:#065f46; font-weight:700; font-size:12px;">🔥 TAKE ACTION: Spot is in buy zone! ${optNote}</span>
@@ -1469,7 +1469,7 @@ window.AppWatchlist = {
         const pnlStr = `<span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:${pnlColor};">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span>`;
         actionHtml = `
           <div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:6px; padding:7px 12px; margin-top:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-            <span style="color:#3730a3; font-weight:700; font-size:12px;">💼 TAKE ACTION: Position Active (${pnlStr})! Stalking Target 1 ($${Number(t.target_1||0).toFixed(2)}). Hold and manage risk.</span>
+            <span style="color:#3730a3; font-weight:700; font-size:12px;">💼 TAKE ACTION: Position Active (${pnlStr})! Stalking Target 1 ($${Number(t.target_1 || 0).toFixed(2)}). Hold and manage risk.</span>
             <button class="btn secondary" onclick="AppSwing.openPlanExecution('${t.ticker}', '${t.date}')" style="padding:3px 9px; font-size:11px; cursor:pointer;" title="Open Trade Plan & Copilot Execution">Manage Position</button>
           </div>
         `;
@@ -1582,11 +1582,11 @@ window.AppWatchlist = {
               <!-- Equity Plan -->
               <div style="display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                 <span style="font-weight:700; color:var(--text-muted); font-size:10.5px; text-transform:uppercase; flex-shrink:0;">Equity Plan:</span>
-                <span>Limit: <strong style="color:var(--text-main); font-family:'JetBrains Mono',monospace;">$${Number(t.entry_zone_low||0).toFixed(2)}–$${Number(t.entry_zone_high||0).toFixed(2)}</strong></span>
+                <span>Limit: <strong style="color:var(--text-main); font-family:'JetBrains Mono',monospace;">$${Number(t.entry_zone_low || 0).toFixed(2)}–$${Number(t.entry_zone_high || 0).toFixed(2)}</strong></span>
                 <span style="opacity:0.4;">•</span>
-                <span>Stop: <strong style="color:var(--rose); font-family:'JetBrains Mono',monospace;">$${Number(t.tactical_stop||0).toFixed(2)}</strong></span>
+                <span>Stop: <strong style="color:var(--rose); font-family:'JetBrains Mono',monospace;">$${Number(t.tactical_stop || 0).toFixed(2)}</strong></span>
                 <span style="opacity:0.4;">•</span>
-                <span>T1: <strong style="color:var(--emerald); font-family:'JetBrains Mono',monospace;">$${Number(t.target_1||0).toFixed(2)}</strong></span>
+                <span>T1: <strong style="color:var(--emerald); font-family:'JetBrains Mono',monospace;">$${Number(t.target_1 || 0).toFixed(2)}</strong></span>
                 ${t.target_2 ? `<span style="opacity:0.4;">•</span><span>T2: <strong style="color:var(--blue); font-family:'JetBrains Mono',monospace;">$${Number(t.target_2).toFixed(2)}</strong></span>` : ''}
               </div>
             </div>
@@ -1852,7 +1852,7 @@ window.AppWatchlist = {
       if (window.AppStatus) {
         window.AppStatus.showToast(`🗑️ Untracked and removed ${ticker} from Watchlist`);
       }
-      
+
       // Automatically close modal if currently viewing this ticker
       if (window.AppState && window.AppState.currentReportData && window.AppState.currentReportData.ticker === ticker) {
         if (window.AppSwing && window.AppSwing.closeReportModal) {
@@ -1957,7 +1957,7 @@ window.AppWatchlist = {
     const sign = net >= 0 ? '+' : '';
     const wr = s.resolved_win_rate !== undefined ? `${s.resolved_win_rate}% WR` : '';
     const winLabel = (s.window && s.window > 0) ? `Last ${s.window}` : 'All';
-    badge.innerText = `${sign}$${Math.abs(net).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} (${wr}) • ${winLabel}`;
+    badge.innerText = `${sign}${net.toFixed(2)}R (${wr}) . ${winLabel}`;
     badge.className = net >= 0 ? 'pill green' : 'pill red';
   },
 
@@ -2210,8 +2210,8 @@ window.AppWatchlist = {
         const strikes = (t.long_strike && t.short_strike) ? `$${t.long_strike}/$${t.short_strike}` : '';
         const exp = (t.options_expiration && t.options_expiration !== 'N/A') ? t.options_expiration : '';
         const debit = t.target_debit > 0 ? `$${Number(t.target_debit).toFixed(2)} Debit` : 'Credit';
-        const maxP = Number(t.max_profit || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:2});
-        const maxL = Number(t.max_loss || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:2});
+        const maxP = Number(t.max_profit || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+        const maxL = Number(t.max_loss || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
         levelsHtml = `<div style="font-size:11.5px; font-weight:600;">${strikes} ${exp} (${debit})</div>
                       <div style="font-size:10.5px; color:var(--text-muted);">Max: +$${maxP} / -$${maxL}</div>`;
       } else {

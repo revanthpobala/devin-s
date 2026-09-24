@@ -359,7 +359,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
 
             conn.commit()
 
-    return get_audit_summary(tab="ALL", window=window)
+    return get_audit_summary(tab="ALL", window=window, _from_evaluate=True)
 
 
 def get_audit_summary(
@@ -369,6 +369,7 @@ def get_audit_summary(
     page_size: int = 10,
     window: int = 100,
     force_sync: bool = False,
+    _from_evaluate: bool = False,
 ) -> Dict[str, Any]:
     """
     Returns pre-computed summary metrics, tab counts, pagination, and trade audit records
@@ -391,7 +392,7 @@ def get_audit_summary(
             cnt = conn.cursor().execute("SELECT COUNT(*) FROM suggested_trades_audit WHERE is_primary = 1").fetchone()[0]
             has_trades = (cnt > 0)
 
-    if not has_trades:
+    if not has_trades and not _from_evaluate:
         evaluate_all_suggested_trades(window=window)
 
     with _db_lock:
