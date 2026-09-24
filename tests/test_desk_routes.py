@@ -22,20 +22,6 @@ def client(tmp_path, monkeypatch):
             from datetime import datetime
             today = datetime.now().strftime("%Y-%m-%d")
             
-            # research_queue table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS research_queue (
-                    id INTEGER PRIMARY KEY,
-                    ticker TEXT,
-                    date TEXT,
-                    source TEXT,
-                    setup TEXT,
-                    status TEXT,
-                    reason TEXT
-                )
-            """)
-            cursor.execute("INSERT INTO research_queue (ticker, date, status) VALUES ('AAPL', ?, 'PASS')", (today,))
-            
             # suggestions table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS suggestions (

@@ -18,62 +18,69 @@ class JournalNotesUpdate(BaseModel):
 
 @router.get("/today")
 def get_today():
-    """
-    found: today's research_queue rows + triage verdict + lane.
-    actionable: suggestions joined to watch_targets where status IN_ZONE / IN_TRADE or |dist| <= 1.5%, sorted by live RR at market desc. Row: ticker, lane, entry zone, stop, target, stop width in ATR, live RR@mkt, dist %, earnings days, lane_prior_win / lane_prior_ev, suggestion_id.
-    stalking: remaining open PASS suggestions (< 21 bars old).
-    """
-    with _db_lock:
-        with _get_connection() as conn:
-            conn.row_factory = sqlite3.Row if "sqlite3" in globals() else None
-            if not conn.row_factory:
-                import sqlite3
-                conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            
-            # found
-            found_rows = cursor.execute(
-                "SELECT ticker, source, setup, status, reason FROM research_queue WHERE date = ?", (today_str,)
-            ).fetchall()
-            found = [dict(r) for r in found_rows]
-            
-            # actionable & stalking
-            suggestions = cursor.execute(
-                "SELECT s.id as suggestion_id, s.ticker, s.setup_lane as lane, s.entry_low, s.entry_high, s.stop, s.target_1 as target, s.lane_prior_win, s.lane_prior_ev, w.status, w.distance_to_entry_pct as dist, w.last_price, s.rr_at_market_at_signal FROM suggestions s LEFT JOIN watch_targets w ON s.ticker = w.ticker WHERE s.gate_status = 'PASS' AND s.date >= date('now', '-21 days')"
-            ).fetchall()
-            
-            actionable = []
-            stalking = []
-            
-            for row in suggestions:
-                r = dict(row)
-                status = r.get("status") or "STALKING"
-                dist = r.get("dist")
-                if status in ("IN_ZONE", "IN_TRADE") or (dist is not None and abs(dist) <= 1.5):
-                    # Compute live RR
-                    entry_h = r.get("entry_high") or 0.0
-                    stop = r.get("stop") or 0.0
-                    target = r.get("target") or 0.0
-                    last_px = r.get("last_price") or 0.0
-                    
-                    live_rr = 0.0
-                    if last_px > stop and target > last_px:
-                        live_rr = round((target - last_px) / (last_px - stop), 2)
-                    r["live_rr"] = live_rr
-                    
-                    actionable.append(r)
-                elif status == "STALKING":
-                    stalking.append(r)
-            
-            actionable.sort(key=lambda x: x.get("live_rr", 0.0), reverse=True)
-            
-            return {
-                "found": found,
-                "actionable": actionable,
-                "stalking": stalking,
-            }
+    try:
+        with _db_lock:
+            with _get_connection() as conn:
+                conn.row_factory = sqlite3.Row if "sqlite3" in globals() else None
+                if not conn.row_factory:
+                    import sqlite3
+                    conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                from src.tracking.alert_db import get_research_queue
+                
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                
+                # found
+                found_raw = get_research_queue(today_str)
+                found = []
+                for r in found_raw:
+                    found.append({
+                        "ticker": r["symbol"],
+                        "source": r["source"],
+                        "setup": r["setup"],
+                        "status": r["status"],
+                        "reason": r["reason"]
+                    })
+                
+                # actionable & stalking
+                suggestions = cursor.execute(
+                    "SELECT s.id as suggestion_id, s.ticker, s.setup_lane as lane, s.entry_low, s.entry_high, s.stop, s.target_1 as target, s.lane_prior_win, s.lane_prior_ev, w.status, w.distance_to_entry_pct as dist, w.last_price, s.rr_at_market_at_signal FROM suggestions s LEFT JOIN watch_targets w ON s.ticker = w.ticker WHERE s.gate_status = 'PASS' AND s.date >= date('now', '-21 days')"
+                ).fetchall()
+                
+                actionable = []
+                stalking = []
+                
+                for row in suggestions:
+                    r = dict(row)
+                    status = r.get("status") or "STALKING"
+                    dist = r.get("dist")
+                    if status in ("IN_ZONE", "IN_TRADE") or (dist is not None and abs(dist) <= 1.5):
+                        # Compute live RR
+                        entry_h = r.get("entry_high") or 0.0
+                        stop = r.get("stop") or 0.0
+                        target = r.get("target") or 0.0
+                        last_px = r.get("last_price") or 0.0
+                        
+                        live_rr = 0.0
+                        if last_px > stop and target > last_px:
+                            live_rr = round((target - last_px) / (last_px - stop), 2)
+                        r["live_rr"] = live_rr
+                        
+                        actionable.append(r)
+                    elif status == "STALKING":
+                        stalking.append(r)
+                
+                actionable.sort(key=lambda x: x.get("live_rr", 0.0), reverse=True)
+                
+                return {
+                    "found": found,
+                    "actionable": actionable,
+                    "stalking": stalking,
+                }
+    except Exception as e:
+        import traceback
+        return {"error": traceback.format_exc()}
 
 @router.get("/journal")
 def get_journal(

@@ -2,6 +2,12 @@
  * Centralized API Client
  */
 window.AppApi = {
+  async request(url, options = {}) {
+    const res = await fetch(url, options);
+    if (!res.ok) throw new Error(`API request failed: ${res.status} ${res.statusText}`);
+    return await res.json();
+  },
+
   async getStatus() {
     const res = await fetch('/api/status');
     if (!res.ok) throw new Error(`Failed to fetch status: ${res.status}`);
