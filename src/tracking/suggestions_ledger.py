@@ -71,16 +71,35 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
     """Ensure suggestions table and all schema migration columns exist."""
     cursor = conn.cursor()
 
-    # Check if table exists and has old UNIQUE constraint
+    # Check if table exists and has old UNIQUE constraint or legacy DEFAULT 'PASS'
     row = cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='suggestions'").fetchone()
     needs_rebuild = False
-    if row and row[0] and "UNIQUE(ticker, date, source, report_hash)" in row[0]:
-        needs_rebuild = True
+    if row and row[0]:
+        sql_def = row[0]
+        if "UNIQUE(ticker, date, source, report_hash)" in sql_def or "DEFAULT 'PASS'" in sql_def or 'DEFAULT "PASS"' in sql_def:
+            needs_rebuild = True
 
     if needs_rebuild:
         logger.info("[ledger] Rebuilding suggestions table to migrate UNIQUE constraint to (ticker, date, source)...")
         cols_info = cursor.execute("PRAGMA table_info(suggestions)").fetchall()
         existing_cols = [c[1] for c in cols_info]
+
+        # Coalesce user fields before dedupe
+        try:
+            cursor.execute(
+                """
+                UPDATE suggestions AS s
+                SET
+                    taken = COALESCE((SELECT MAX(s2.taken) FROM suggestions s2 WHERE s2.ticker = s.ticker AND s2.date = s.date AND s2.source = s.source), s.taken),
+                    your_fill = COALESCE((SELECT s2.your_fill FROM suggestions s2 WHERE s2.ticker = s.ticker AND s2.date = s.date AND s2.source = s.source AND s2.your_fill IS NOT NULL ORDER BY s2.id DESC LIMIT 1), s.your_fill),
+                    notes = COALESCE((SELECT s2.notes FROM suggestions s2 WHERE s2.ticker = s.ticker AND s2.date = s.date AND s2.source = s.source AND s2.notes IS NOT NULL AND s2.notes != '' ORDER BY s2.id DESC LIMIT 1), s.notes)
+                WHERE id IN (
+                    SELECT MAX(id) FROM suggestions GROUP BY ticker, date, source HAVING COUNT(*) > 1
+                )
+                """
+            )
+        except Exception as e_c:
+            logger.debug(f"[ledger] Coalesce before rebuild warning: {e_c}")
 
         cursor.execute(
             """
@@ -203,10 +222,36 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
                 r_net REAL,
                 mae_r REAL,
                 scored_at TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
+
+        # In no-rebuild path, dedupe existing duplicates with coalesce before creating unique index
+        try:
+            cursor.execute(
+                """
+                UPDATE suggestions AS s
+                SET
+                    taken = COALESCE((SELECT MAX(s2.taken) FROM suggestions s2 WHERE s2.ticker = s.ticker AND s2.date = s.date AND s2.source = s.source), s.taken),
+                    your_fill = COALESCE((SELECT s2.your_fill FROM suggestions s2 WHERE s2.ticker = s.ticker AND s2.date = s.date AND s2.source = s.source AND s2.your_fill IS NOT NULL ORDER BY s2.id DESC LIMIT 1), s.your_fill),
+                    notes = COALESCE((SELECT s2.notes FROM suggestions s2 WHERE s2.ticker = s.ticker AND s2.date = s.date AND s2.source = s.source AND s2.notes IS NOT NULL AND s2.notes != '' ORDER BY s2.id DESC LIMIT 1), s.notes)
+                WHERE id IN (
+                    SELECT MAX(id) FROM suggestions GROUP BY ticker, date, source HAVING COUNT(*) > 1
+                )
+                """
+            )
+            cursor.execute(
+                """
+                DELETE FROM suggestions
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM suggestions GROUP BY ticker, date, source
+                )
+                """
+            )
+        except Exception as e_d:
+            logger.debug(f"[ledger] Coalesce before unique index warning: {e_d}")
+
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_sugg ON suggestions(ticker, date, source)")
 
         for col_def in [
@@ -338,6 +383,9 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     target_2=excluded.target_2,
                     planned_rr=excluded.planned_rr,
                     atr_at_signal=excluded.atr_at_signal,
+                    taken=CASE WHEN excluded.taken = 1 THEN 1 ELSE suggestions.taken END,
+                    your_fill=COALESCE(excluded.your_fill, suggestions.your_fill),
+                    notes=CASE WHEN excluded.notes IS NOT NULL AND excluded.notes != '' THEN excluded.notes ELSE suggestions.notes END,
                     is_modeled=excluded.is_modeled,
                     gate_status=excluded.gate_status,
                     gate_reasons=excluded.gate_reasons,
@@ -348,17 +396,17 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     spot_at_signal=excluded.spot_at_signal,
                     lane_prior_win=excluded.lane_prior_win,
                     lane_prior_ev=excluded.lane_prior_ev,
-                    fill_date=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_date END,
-                    fill_price=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_price END,
-                    exit_date=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_date END,
-                    exit_price=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_price END,
-                    exit_reason=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_reason END,
-                    bars_held=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.bars_held END,
-                    gross_r=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.gross_r END,
-                    r_net=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.r_net END,
-                    mae_r=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.mae_r END,
-                    scored_at=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.scored_at END,
-                    scorer_version=CASE WHEN (suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.scorer_version END
+                    fill_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_date END,
+                    fill_price=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_price END,
+                    exit_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_date END,
+                    exit_price=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_price END,
+                    exit_reason=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_reason END,
+                    bars_held=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.bars_held END,
+                    gross_r=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.gross_r END,
+                    r_net=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.r_net END,
+                    mae_r=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.mae_r END,
+                    scored_at=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.scored_at END,
+                    scorer_version=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.scorer_version END
                 """
                 cursor.execute(
                     sql,
@@ -540,62 +588,4 @@ def get_per_source_stats(since: Optional[str] = None) -> List[Dict[str, Any]]:
                 })
             return stats
 
-
-def get_main_record_stats() -> Dict[str, Any]:
-    """Return metrics for the canonical Main Record:
-    source='judge', gate_status='PASS', kind='NEW',
-    lanes in ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2'),
-    dated >= '2026-09-23'. Everything else is reported separately.
-    """
-    with _db_lock:
-        with _get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            try:
-                rows = cursor.execute(
-                    """
-                    SELECT * FROM suggestions
-                    WHERE source = 'judge'
-                      AND gate_status = 'PASS'
-                      AND kind = 'NEW'
-                      AND setup_lane IN ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2')
-                      AND date >= '2026-09-23'
-                    ORDER BY date ASC, ticker ASC
-                    """
-                ).fetchall()
-            except Exception:
-                return {}
-
-            total = len(rows)
-            taken_count = sum(1 for r in rows if r["taken"])
-            filled_count = sum(1 for r in rows if (r["fill_price"] is not None and r["fill_price"] > 0) or (r["exit_reason"] and r["exit_reason"] != "NOT_FILLED"))
-            fill_rate = round(filled_count / total * 100, 1) if total > 0 else 0.0
-
-            scored_rows = [r for r in rows if r["r_net"] is not None]
-            if scored_rows:
-                r_vals = [float(r["r_net"]) for r in scored_rows]
-                mean_r = round(statistics.mean(r_vals), 4)
-                median_r = round(statistics.median(r_vals), 4)
-                win_pct = round(sum(1 for r in r_vals if r > 0) / len(r_vals) * 100, 1)
-                stopped_pct = round(sum(1 for r in scored_rows if r["exit_reason"] == "STOP_BREACHED") / len(scored_rows) * 100, 1)
-            else:
-                mean_r = None
-                median_r = None
-                win_pct = 0.0
-                stopped_pct = 0.0
-
-            return {
-                "source": "judge",
-                "label": "Main Record (>= 2026-09-23)",
-                "total": total,
-                "n": total,
-                "filled_count": filled_count,
-                "fill_rate": fill_rate,
-                "scored_count": len(scored_rows),
-                "mean_r": mean_r,
-                "median_r": median_r,
-                "win_rate_pct": win_pct,
-                "stop_out_pct": stopped_pct,
-                "flag_n30": len(scored_rows) >= 30,
-            }
 

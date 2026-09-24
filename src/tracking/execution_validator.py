@@ -153,6 +153,7 @@ def evaluate_setup_lifecycle_bars(
     strategy_id: Optional[str] = None,
     opening_ceiling: Optional[float] = None,
     skip_setup_bar: bool = False,
+    setup_lane: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Pure chronological bar-walking evaluation helper.
@@ -265,7 +266,9 @@ def evaluate_setup_lifecycle_bars(
     status = curr_st
     notes = ""
 
-    is_next_open_model = entry_type in ("NEXT_OPEN", "RSI2") or (strategy_id or "").upper() in ("RSI2", "RSI2_PULLBACK")
+    lane_str = (setup_lane or strategy_id or "").upper().strip()
+    is_rsi2_lane = (lane_str == "RSI2" or lane_str == "RSI2_PULLBACK")
+    is_next_open_model = is_rsi2_lane or (entry_type == "NEXT_OPEN")
     recovery_due = False
 
     # 2. Chronological bar walk
@@ -374,6 +377,11 @@ def evaluate_setup_lifecycle_bars(
                 else:
                     if setup_date and b_date > setup_date:
                         unfilled_bars_count += 1
+                        if unfilled_bars_count >= 5:
+                            status = "NOT_FILLED"
+                            is_terminal = True
+                            notes = "Expired: setup did not fill within 5 bars"
+                            break
                     continue
             else:
                 # Eligible for fill on this bar
@@ -436,7 +444,7 @@ def evaluate_setup_lifecycle_bars(
                     else:
                         notes = f"Filled limit at ${pot_fill:.2f} on {b_date}"
 
-                if is_next_open_model and bar.get("ema5") is not None:
+                if is_rsi2_lane and bar.get("ema5") is not None:
                     if side == "LONG" and b_close > bar["ema5"]:
                         recovery_due = True
                     elif side == "SHORT" and b_close < bar["ema5"]:
@@ -600,6 +608,7 @@ def evaluate_setup_lifecycle(
     strategy_id: Optional[str] = None,
     opening_ceiling: Optional[float] = None,
     skip_setup_bar: bool = False,
+    setup_lane: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Public seam for setup lifecycle evaluation.
@@ -636,5 +645,6 @@ def evaluate_setup_lifecycle(
         strategy_id=strategy_id,
         opening_ceiling=opening_ceiling,
         skip_setup_bar=skip_setup_bar,
+        setup_lane=setup_lane,
     )
 

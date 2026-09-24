@@ -23,6 +23,9 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
+            from src.tracking.suggestions_ledger import ensure_suggestions_schema
+            ensure_suggestions_schema(conn)
+
             audit_rows = cursor.execute(
                 "SELECT * FROM suggested_trades_audit ORDER BY date ASC, ticker ASC"
             ).fetchall()
@@ -91,9 +94,9 @@ def backfill_legacy_suggestions() -> Dict[str, Any]:
                             None,
                             f"Backfill from suggested_trades_audit: {trade_type} {trade_structure}",
                             is_modeled,
-                            "PASS",
-                            "NEW",
-                            "STALK",
+                            "LEGACY_UNGATED",
+                            None,
+                            None,
                             _now_iso(),
                         ),
                     )

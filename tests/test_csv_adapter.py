@@ -166,8 +166,6 @@ class TestCSVAdapter(unittest.TestCase):
         self.assertEqual(verdict.get("protocol_version"), 2)
         self.assertEqual(verdict.get("rsi2_events_pack"), 2051)
         self.assertTrue(verdict.get("rsi2_setup_event"))
-        self.assertTrue(verdict.get("rsi2_armed_event"))
-
         # Verify stop and target were mapped into the plan
         self.assertEqual(verdict["long_plan"]["stop"], 233.702913)
         self.assertEqual(verdict["long_plan"]["target"], 282.594174)

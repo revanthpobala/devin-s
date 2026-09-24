@@ -425,19 +425,20 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
 
         # Explicit --ticker: read triage record; non-held CUT stops, WATCH runs as WATCH_SHADOW, held runs as MANAGE
         if target_ticker:
-            triage_action = str(
-                (triage_record.get("action") if isinstance(triage_record, dict) else "")
+            triage_val = str(
+                (triage_record.get("triage") if isinstance(triage_record, dict) else "")
+                or (verdict_record.get("triage") if isinstance(verdict_record, dict) else "")
+                or (triage_record.get("action") if isinstance(triage_record, dict) else "")
                 or (verdict_record.get("action") if isinstance(verdict_record, dict) else "")
             ).upper()
-            if not is_held:
-                if triage_action == "CUT":
-                    logger.info(f"[{ticker}] Explicit ticker resolved to CUT triage and is not held in portfolio. Skipping deep research.")
-                    continue
-                elif triage_action == "WATCH":
-                    if isinstance(triage_record, dict):
-                        triage_record["setup_lane"] = "WATCH_SHADOW"
-            else:
+            if is_held:
                 kind = "MANAGE"
+            elif triage_val == "CUT":
+                logger.info(f"[{ticker}] Explicit ticker resolved to CUT triage and is not held in portfolio. Skipping deep research.")
+                continue
+            elif triage_val == "WATCH":
+                if isinstance(triage_record, dict):
+                    triage_record["setup_lane"] = "WATCH_SHADOW"
 
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
 
@@ -623,12 +624,13 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 or (verdict_record.get("reason") if isinstance(verdict_record, dict) else "")
                 or ""
             )
+            from src.logic.data_window_filter import LANE_PRIORS
             lane_priors_map = {
-                "RR_SETUP_STRONG": (0.25, 0.13),
-                "RR_SETUP": (0.30, 0.08),
-                "CODE20": (0.45, 0.08),
-                "OVERSOLD": (0.51, 0.06),
-                "RSI2": (0.61, 0.06),
+                "RR_SETUP_STRONG": LANE_PRIORS.get("rr_at_market_lane_strong", (25.0, 0.13)),
+                "RR_SETUP": LANE_PRIORS.get("rr_at_market_lane", (30.0, 0.08)),
+                "CODE20": LANE_PRIORS.get("reversal_buy_lane", (45.0, 0.08)),
+                "OVERSOLD": LANE_PRIORS.get("oversold_lane", (51.0, 0.06)),
+                "RSI2": LANE_PRIORS.get("rsi2_setup_lane", (61.0, 0.06)),
             }
             lane_prior_win, lane_prior_ev = lane_priors_map.get(resolved_lane, (None, None))
             if lane_prior_win is None and isinstance(triage_record, dict):

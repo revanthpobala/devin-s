@@ -275,11 +275,11 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                         ELSE excluded.status 
                     END,
                     is_active=CASE
-                        WHEN watch_targets.date != excluded.date OR (excluded.suggestion_id IS NOT NULL AND watch_targets.suggestion_id != excluded.suggestion_id) THEN 1
+                        WHEN watch_targets.date != excluded.date OR (excluded.suggestion_id IS NOT NULL AND excluded.suggestion_id IS NOT watch_targets.suggestion_id) THEN 1
                         ELSE watch_targets.is_active
                     END,
                     user_taken=CASE
-                        WHEN watch_targets.date != excluded.date OR (excluded.suggestion_id IS NOT NULL AND watch_targets.suggestion_id != excluded.suggestion_id) THEN 0
+                        WHEN watch_targets.date != excluded.date OR (excluded.suggestion_id IS NOT NULL AND excluded.suggestion_id IS NOT watch_targets.suggestion_id) THEN 0
                         ELSE watch_targets.user_taken
                     END,
                     suggestion_id=COALESCE(excluded.suggestion_id, watch_targets.suggestion_id),

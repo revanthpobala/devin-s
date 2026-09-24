@@ -486,9 +486,13 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             t2_lvl = float(long_p.get("target_2")) if long_p.get("target_2") else None
 
             s_lane = "WATCH_SHADOW" if triage.get("triage") == "WATCH" else (triage.get("setup_lane") or "RR_SETUP")
+            dw_bar_date = (data_window.get("date") or data_window.get("time") or data_window.get("Date") or today_str) if data_window else today_str
+            if isinstance(dw_bar_date, str) and len(dw_bar_date) >= 10:
+                dw_bar_date = dw_bar_date[:10]
+
             rule_plan = {
                 "ticker": ticker,
-                "date": today_str,
+                "date": dw_bar_date,
                 "entry_low": float(e_low) if e_low else None,
                 "entry_high": float(e_high) if e_high else None,
                 "stop": stop_lvl,
@@ -502,7 +506,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 dw=data_window or {},
                 side="LONG",
                 ticker=ticker,
-                date_str=today_str,
+                date_str=dw_bar_date,
             )
             rule_gate_status = "PASS" if gate_ok else "REJECTED_BY_GATE"
 
@@ -528,7 +532,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
 
             append_suggestion({
                 "ticker": ticker,
-                "date": today_str,
+                "date": dw_bar_date,
                 "source": "rule",
                 "side": "LONG",
                 "entry_type": "LIMIT",

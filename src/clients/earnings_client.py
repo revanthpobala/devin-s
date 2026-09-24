@@ -13,8 +13,11 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
     callers MUST handle it gracefully (see format_earnings_fact_block)."""
     try:
         from datetime import date, datetime
+        import pandas as pd
+        import yfinance as yf
 
         ref_date = date.today()
+        is_past = False
         if as_of_date is not None:
             if isinstance(as_of_date, datetime):
                 ref_date = as_of_date.date()
@@ -25,10 +28,28 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
                     ref_date = datetime.strptime(as_of_date[:10], "%Y-%m-%d").date()
                 except Exception:
                     ref_date = date.today()
+            if ref_date < date.today():
+                is_past = True
 
-        import yfinance as yf
+        t = yf.Ticker(ticker)
 
-        cal = yf.Ticker(ticker).calendar
+        if is_past:
+            ed = t.get_earnings_dates(limit=12)
+            if ed is not None and not ed.empty:
+                ref_str = ref_date.strftime("%Y-%m-%d")
+                future_dates = []
+                for dt_idx in ed.index:
+                    d_str = str(dt_idx)[:10]
+                    if d_str >= ref_str:
+                        future_dates.append(d_str)
+                future_dates.sort()
+                if future_dates:
+                    next_earn_str = future_dates[0]
+                    b_range = pd.bdate_range(start=ref_str, end=next_earn_str)
+                    b_days = len(b_range) - 1
+                    return b_days
+
+        cal = t.calendar
         dates = None
         if isinstance(cal, dict):
             dates = cal.get("Earnings Date")
@@ -56,8 +77,11 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
                     nxt_date = None
 
             if nxt_date:
-                d = (nxt_date - ref_date).days
-                return d if d >= 0 else None
+                ref_str = ref_date.strftime("%Y-%m-%d")
+                nxt_str = nxt_date.strftime("%Y-%m-%d")
+                b_range = pd.bdate_range(start=ref_str, end=nxt_str)
+                b_days = len(b_range) - 1
+                return b_days if b_days >= 0 else None
     except Exception as e:
         logger.warning(f"[{ticker}] earnings date lookup failed: {e}")
         return None

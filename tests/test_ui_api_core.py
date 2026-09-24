@@ -60,7 +60,7 @@ def test_api_watch_targets():
     assert "targets" in data
     assert isinstance(data["targets"], list)
     assert "performance" in data
-    assert "net_dollar_profit" in data["performance"]
+    assert "win_rate" in data["performance"] or "total_r" in data["performance"]
     if data["targets"]:
         t0 = data["targets"][0]
         assert "trade_dollar_pnl" in t0

@@ -223,6 +223,7 @@ def derive_datawindow_fields(
         else:
             snapshot.pop("Long RR At Market", None)
             snapshot.pop("long_rr_at_market", None)
+            snapshot["_rr_mkt_deliberately_absent"] = True
     except Exception:
         pass
 

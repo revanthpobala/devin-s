@@ -192,7 +192,7 @@ def get_suggested_trades_endpoint():
             "in_zone": sum(1 for tr in trades if tr.get("status") == "IN_ZONE"),
             "stalking": sum(1 for tr in trades if tr.get("status") == "STALKING"),
             "target_hit": sum(1 for tr in trades if tr.get("status") in ("TARGET_HIT", "COMPLETED")),
-            "stopped": sum(1 for tr in trades if tr.get("status") in ("STOP_BREACHED", "STOPPED", "INVALIDATED")),
+            "stopped": sum(1 for tr in trades if tr.get("status") in ("STOP_BREACHED", "STOPPED") or (tr.get("status") in ("INVALIDATED", "GAP_STOP") and tr.get("was_filled"))),
         }
         result = {"trades": trades, "summary": summary}
         _SUGGESTED_CACHE[_cache_key] = (_now, result)
@@ -382,7 +382,8 @@ def get_scoreboard(since: Optional[str] = None):
     """Return unified empirical scoreboard for Intraday and Swing suggestions."""
     try:
         from src.tracking.intraday_stats import generate_postmortem_stats
-        from src.tracking.suggestions_ledger import get_per_source_stats, get_main_record_stats
+        from src.tracking.suggestions_ledger import get_per_source_stats
+        from src.tracking.suggestion_scorer import get_main_record_stats
 
         stats = generate_postmortem_stats(since=since)
         intraday_data = {

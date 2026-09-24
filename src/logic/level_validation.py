@@ -63,6 +63,16 @@ def _planned_rr(entry_low: float, entry_high: float, stop: float, target_1: floa
     return 0.0
 
 
+def _f(val: Any) -> Optional[float]:
+    """Safe float cast returning None on error."""
+    if val is None or val == "" or val == "N/A":
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def _pine_drift(
     plan: Dict[str, Any], dw: Dict[str, Any], side: str
 ) -> List[Dict[str, Any]]:
@@ -78,7 +88,7 @@ def _pine_drift(
     pine_map = {
         "entry_low": ("Long Entry Zone Bot",),
         "entry_high": ("Long Entry Zone Top",),
-        "stop": ("Long Stop Loss", "rsi2 fixed stop"),
+        "stop": ("Long Stop Loss",),
         "target_1": ("Long Target", "Long Target T1 Waypoint"),
     }
 
@@ -173,8 +183,11 @@ def validate_levels(
     Checks:
     1. Level ordering: LONG requires stop < entry_low <= entry_high < target_1 <= target_2.
     2. R:R floor: planned R:R from zone midpoint >= LEVEL_RR_FLOOR (default 1.5).
-    3. Stop distance: at least LEVEL_ATR_STOP_MIN x ATR14 from zone midpoint.
-    4. Pine drift: flag when LLM levels differ from Pine by more than LEVEL_PINE_DRIFT_ATR x ATR.
+    3. Stop placement:
+       - Measured Pine lanes (RR_SETUP, RR_SETUP_STRONG, CODE20, OVERSOLD): must match Pine Long Stop Loss & Long Target within 0.05.
+       - RSI2 lane: abs(stop - (close - 2*ATR)) <= 0.05*ATR and abs(t1 - (close + 4*ATR)) <= 0.05*ATR.
+       - Judge invented (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): 1-ATR stop floor.
+    4. Pine drift: flag when LLM levels differ from Pine by more than LEVEL_PINE_DRIFT_ATR x ATR (skipped for RSI2).
     5. Options: strike_validator.validate_strike_geometry on options_plan.
 
     Returns (ok, reasons). ok=True means all checks pass. Failures are logged
@@ -228,22 +241,42 @@ def validate_levels(
     is_rsi2 = (setup_lane == "RSI2")
     is_measured_lane = is_measured_pine or is_rsi2
 
-    # ── 3. Stop placement & ATR floor ──────────────────────────
+    spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
+    if spot <= 0:
+        try:
+            spot = float(plan.get("spot") or plan.get("price") or 0.0)
+        except (ValueError, TypeError):
+            spot = 0.0
+
+    # ── 3. Stop placement & geometry ──────────────────────────
     if is_measured_pine:
         pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
         pine_target = _dw_num(dw, "Long Target", "long_target")
-        if pine_stop > 0 and abs(stop - pine_stop) > 0.05:
-            reasons.append(
-                f"{setup_lane} lane requires stop to match Pine Long Stop Loss (${pine_stop:.2f}), got ${stop:.2f}"
-            )
-        if pine_target > 0 and abs(target_1 - pine_target) > 0.05:
-            reasons.append(
-                f"{setup_lane} lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
-            )
-    elif not is_rsi2:
+        if pine_stop <= 0 or pine_target <= 0:
+            reasons.append(f"pine_levels_missing: {setup_lane} lane requires Pine Long Stop Loss and Long Target, but levels are missing in Data Window (stop={pine_stop}, target={pine_target})")
+        else:
+            if abs(stop - pine_stop) > 0.05:
+                reasons.append(
+                    f"{setup_lane} lane requires stop to match Pine Long Stop Loss (${pine_stop:.2f}), got ${stop:.2f}"
+                )
+            if abs(target_1 - pine_target) > 0.05:
+                reasons.append(
+                    f"{setup_lane} lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
+                )
+    elif is_rsi2:
+        close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
+        if close_px > 0 and atr > 0:
+            exp_stop = close_px - (2.0 * atr)
+            exp_t1 = close_px + (4.0 * atr)
+            tol = 0.05 * atr
+            if abs(stop - exp_stop) > tol or abs(target_1 - exp_t1) > tol:
+                reasons.append(
+                    f"rsi2_geometry: stop ${stop:.2f} (exp ${exp_stop:.2f}) or target_1 ${target_1:.2f} (exp ${exp_t1:.2f}) deviates > 0.05 ATR (${tol:.2f}) from close +/- 2/4 ATR"
+                )
+    else:
         # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): 1-ATR stop floor
         if atr > 0 and entry_low > 0:
-            pine_stop = _dw_num(dw, "Long Stop Loss", "rsi2 fixed stop", "long_stop_loss")
+            pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
             max_allowed_stop = entry_low - (LEVEL_ATR_STOP_MIN * atr)
             if pine_stop > 0:
                 max_allowed_stop = min(max_allowed_stop, pine_stop + 0.05)
@@ -254,12 +287,6 @@ def validate_levels(
                 )
 
     # ── 4. R:R floor & At-Market R:R ───────────────────────────
-    spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
-    if spot <= 0:
-        try:
-            spot = float(plan.get("spot") or plan.get("price") or 0.0)
-        except (ValueError, TypeError):
-            spot = 0.0
     if spot > stop and target_1 > spot:
         rr_at_market = round((target_1 - spot) / (spot - stop), 4)
     else:
@@ -278,17 +305,18 @@ def validate_levels(
                 f"at-market R:R {rr_at_market:.2f} below 2.0 floor for lane {setup_lane or 'DEFAULT'}"
             )
 
-    # ── 5. Target 1 ceiling vs 21b Expected Move ───────────────
-    close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
-    exp_move_pct = _dw_num(dw, "Exp Move % (21b)", "Exp Move Pct 21b", "exp_move_pct", "exp_move")
-    if exp_move_pct > 1.0:
-        exp_move_pct = exp_move_pct / 100.0
-    if close_px > 0 and exp_move_pct > 0 and target_1 > 0:
-        max_t1 = close_px * (1.0 + 1.5 * exp_move_pct)
-        if target_1 > round(max_t1 + 0.05, 2):
-            reasons.append(
-                f"target_1 ${target_1:.2f} exceeds 1.5x 21b expected move ceiling ${max_t1:.2f}"
-            )
+    # ── 5. Target 1 ceiling vs 21b Expected Move (skip for all measured lanes & RSI2) ──
+    if not is_measured_lane:
+        close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
+        exp_move_pct = _dw_num(dw, "Exp Move % (21b)", "Exp Move Pct 21b", "exp_move_pct", "exp_move")
+        if exp_move_pct > 1.0:
+            exp_move_pct = exp_move_pct / 100.0
+        if close_px > 0 and exp_move_pct > 0 and target_1 > 0:
+            max_t1 = close_px * (1.0 + 1.5 * exp_move_pct)
+            if target_1 > round(max_t1 + 0.05, 2):
+                reasons.append(
+                    f"target_1 ${target_1:.2f} exceeds 1.5x 21b expected move ceiling ${max_t1:.2f}"
+                )
 
     # ── 6. Earnings inside 21 bars (reject NEW) ────────────────
     kind = str(plan.get("kind") or "NEW").upper()
@@ -309,9 +337,9 @@ def validate_levels(
             dw_days = _dw_num(dw, "earnings_days", "days_to_earnings", "bars_to_earnings")
             if dw_days > 0 and (days_to_earnings is None or dw_days < days_to_earnings):
                 days_to_earnings = int(dw_days)
-            if days_to_earnings is not None and 0 <= days_to_earnings <= 30:
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 21:
                 reasons.append(
-                    f"earnings inside 21 bars ({days_to_earnings} calendar days away from {signal_d}) — fail for NEW"
+                    f"earnings inside 21 bars ({days_to_earnings} trading bars away from {signal_d}) — fail for NEW"
                 )
         except Exception as e:
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")
@@ -326,14 +354,16 @@ def validate_levels(
                 f"threshold {d['threshold_atr']} ATR)"
             )
 
-    # ── 5. Options geometry ────────────────────────────────────
+    # ── 8. Options geometry ────────────────────────────────────
     options_plan = plan.get("options_plan", {}) or {}
     structure = str(options_plan.get("structure", "") or "").upper().replace(" ", "_")
     if structure and structure != "NONE":
         spot = _dw_num(dw, "close", "Close")
         exp_move = _dw_num(dw, "exp_move_pct", "Exp Move % (21b)", "Exp Move Pct 21b")
-        long_strike = float(options_plan.get("long_strike") or 0.0)
-        short_strike = float(options_plan.get("short_strike") or 0.0)
+        long_strike = _f(options_plan.get("long_strike"))
+        short_strike = _f(options_plan.get("short_strike"))
+        if (options_plan.get("long_strike") is not None and long_strike is None) or (options_plan.get("short_strike") is not None and short_strike is None):
+            reasons.append("bad_strike: non-numeric or invalid strike in options_plan")
         is_valid, defects = validate_strike_geometry(
             strategy_type=structure,
             spot_price=spot,

@@ -64,22 +64,6 @@ def _load_suggestions(
 
 def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     """Score a single suggestion row according to honest lifecycle validation."""
-    # 6. Clear all outcome fields before scoring so a stale v1 row is never returned unchanged
-    row = {
-        **row,
-        "fill_date": None,
-        "fill_price": None,
-        "exit_date": None,
-        "exit_price": None,
-        "exit_reason": None,
-        "bars_held": 0,
-        "gross_r": None,
-        "r_net": None,
-        "mae_r": None,
-        "scored_at": None,
-        "scorer_version": SCORER_VERSION,
-    }
-
     ticker = row.get("ticker")
     date_str = row.get("date")
     side = (row.get("side") or "LONG").upper()
@@ -104,6 +88,7 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         warm_start_date = date_str
 
+    # Fetch bars first; if None/empty, return original row without clearing or saving
     bars = get_bars_since_date(ticker, warm_start_date)
     if bars is None or bars.empty:
         logger.debug(f"No bars for {ticker} since {warm_start_date}; cannot score.")
@@ -141,6 +126,7 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         side=side,
         entry_type=e_type,
         strategy_id=strat_id,
+        setup_lane=setup_lane,
         opening_ceiling=opening_ceiling,
         entry_low=entry_low,
         entry_high=entry_high,
@@ -160,12 +146,12 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         val_status = eval_res.get("status") or "NOT_FILLED"
         is_terminal = eval_res.get("is_terminal", False)
         if is_terminal or bars_after_signal >= 5:
-            exit_d = eval_res.get("exit_date") or (str(bars.iloc[-1].name)[:10] if hasattr(bars.iloc[-1], "name") else date_str)
+            # Unfilled rows have exit_date = NULL
             return {
                 **row,
                 "fill_date": None,
                 "fill_price": None,
-                "exit_date": exit_d,
+                "exit_date": None,
                 "exit_price": None,
                 "exit_reason": val_status,
                 "bars_held": 0,
@@ -176,8 +162,11 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
                 "scorer_version": SCORER_VERSION,
             }
         else:
-            # Fewer than 5 bars after signal and non-terminal; leave scored_at NULL so it can fill later
-            return row
+            # Non-terminal result is never saved as final; scored_at stays NULL
+            return {
+                **row,
+                "scored_at": None,
+            }
 
     # 8. Setup filled: breakout uses validator fill; limit uses fill or entry bound
     if entry_type == "BREAKOUT":
@@ -399,25 +388,28 @@ def _compute_stats() -> Dict[str, Any]:
 def get_main_record_stats(min_date: str = "2026-09-23") -> Dict[str, Any]:
     """Compute stats for main record: source=judge, gate PASS, kind NEW, the 5 lanes, date >= min_date."""
     with _db_lock:
-        with _get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            rows = cursor.execute(
-                """
-                SELECT * FROM suggestions
-                WHERE source = 'judge'
-                  AND gate_status = 'PASS'
-                  AND scorer_version = 2
-                  AND kind = 'NEW'
-                  AND verdict IN ('ENTER', 'STALK')
-                  AND setup_lane IN ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2')
-                  AND date >= ?
-                  AND r_net IS NOT NULL
-                """,
-                (min_date,),
-            ).fetchall()
-            if not rows:
-                return {}
+        try:
+            with _get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                rows = cursor.execute(
+                    """
+                    SELECT * FROM suggestions
+                    WHERE source = 'judge'
+                      AND gate_status = 'PASS'
+                      AND scorer_version = 2
+                      AND kind = 'NEW'
+                      AND verdict IN ('ENTER', 'STALK')
+                      AND setup_lane IN ('RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2')
+                      AND date >= ?
+                      AND r_net IS NOT NULL
+                    """,
+                    (min_date,),
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        if not rows:
+            return {}
             r_vals = [float(r["r_net"]) for r in rows if r["r_net"] is not None]
             import statistics as _stats
             wins = sum(1 for r in r_vals if r > 0)

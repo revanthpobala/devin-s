@@ -8,6 +8,7 @@ emits desktop/console alerts, and syncs live status to Google Sheets.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -120,66 +121,19 @@ def sync_reports_to_watchlist(
     for t in sorted(tickers):
         data = extract_watch_levels_from_report(t, date_str)
         if data:
-            # Load ticker's latest data window for accurate level validation
+            # Load ticker's same-date data window: data/raw/<report date>/<T>/<T>_datawindow.json
             dw_dict = {}
             safe_sym = t.replace(":", "_")
-            log_file = config.BASE_DIR / "data" / "logs" / "data_window_scrapes.jsonl"
-            if log_file.exists():
+            dw_file = config.BASE_DIR / "data" / "raw" / date_str / safe_sym / f"{safe_sym}_datawindow.json"
+            if dw_file.exists():
                 try:
-                    for line in reversed(log_file.read_text(encoding="utf-8", errors="ignore").splitlines()):
-                        if line.strip():
-                            obj = json.loads(line)
-                            if (obj.get("ticker") or "").upper() == safe_sym:
-                                dw_dict = obj.get("raw") or obj.get("data_window") or obj.get("data") or {}
-                                if dw_dict:
-                                    break
-                except Exception:
-                    pass
+                    dw_dict = json.loads(dw_file.read_text(encoding="utf-8"))
+                except Exception as e:
+                    logger.warning(f"[{t}] Error reading DW JSON {dw_file}: {e}")
 
             if not dw_dict:
-                raw_root = config.BASE_DIR / "data" / "raw"
-                search_dirs = [raw_root / date_str] if (raw_root / date_str).exists() else []
-                if raw_root.exists():
-                    search_dirs += sorted(raw_root.glob("*/"), reverse=True)
-                for d in search_dirs:
-                    for cand_p in (
-                        d / safe_sym / f"{safe_sym}_thesis.json",
-                        d / f"{safe_sym}_thesis.json",
-                        d / safe_sym / f"{safe_sym}_datawindow.json",
-                        d / f"{safe_sym}_datawindow.json",
-                    ):
-                        if cand_p.exists():
-                            try:
-                                th_obj = json.loads(cand_p.read_text(encoding="utf-8"))
-                                dw_dict = th_obj.get("data_window") or th_obj.get("_datawindow") or th_obj.get("dw") or th_obj
-                                if isinstance(dw_dict, dict) and any("close" in str(k).lower() for k in dw_dict.keys()):
-                                    break
-                                else:
-                                    dw_dict = {}
-                            except Exception:
-                                pass
-                    if dw_dict:
-                        break
-
-            if not dw_dict:
-                import pandas as pd
-                raw_root = config.BASE_DIR / "data" / "raw"
-                if raw_root.exists():
-                    for d in sorted(raw_root.glob("*/"), reverse=True):
-                        cand = d / safe_sym / f"{safe_sym}_datawindow.csv"
-                        if not cand.exists():
-                            cand = d / f"{safe_sym}_datawindow.csv"
-                        if cand.exists():
-                            try:
-                                df_csv = pd.read_csv(cand)
-                                if not df_csv.empty:
-                                    dw_dict = df_csv.iloc[-1].to_dict()
-                                    break
-                            except Exception:
-                                pass
-            if not dw_dict:
-                logger.warning(f"[{t}] No Data Window found on disk for {date_str}. Gate cannot run fully — SKIPPING upsert.")
-                rejected_list.append({"ticker": t, "reasons": ["No Data Window found on disk (gate cannot run fully)"]})
+                logger.warning(f"[{t}] No same-date Data Window found at data/raw/{date_str}/{safe_sym}/{safe_sym}_datawindow.json. Gate cannot run fully — SKIPPING upsert.")
+                rejected_list.append({"ticker": t, "reasons": [f"No same-date Data Window found for {date_str}"]})
                 continue
 
             from src.logic.level_validation import validate_levels
@@ -192,7 +146,13 @@ def sync_reports_to_watchlist(
                 "setup_lane": data.get("setup_lane") or data.get("lane") or dw_dict.get("setup_lane"),
                 "spot": data.get("current_price") or data.get("spot") or dw_dict.get("Close"),
             }
-            _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"), ticker=t, date_str=date_str)
+            try:
+                _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"), ticker=t, date_str=date_str)
+            except Exception as e_gate:
+                logger.warning(f"[{t}] Gate validation crashed: {e_gate} — SKIPPING upsert.")
+                rejected_list.append({"ticker": t, "reasons": [f"Gate validation error: {e_gate}"]})
+                continue
+
             if not _ok:
                 data["verdict"] = "REJECTED_BY_GATE"
             verdict_str = str(data.get("verdict") or "").upper()

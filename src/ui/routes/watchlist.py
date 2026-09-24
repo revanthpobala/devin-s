@@ -232,11 +232,11 @@ def get_watch_targets():
                 risk_amt = abs(eff_entry - tactical_stop) if (eff_entry and tactical_stop) else 0.0
 
                 if status in ("TARGET_HIT", "COMPLETED"):
-                    if is_options and max_loss > 0:
-                        trade_r = round(max_prof / max_loss, 2)
-                        won_r.append(trade_r)
+                    if is_options:
+                        # Options TARGET_HIT unscored until P7 chain pricing exists
+                        trade_r = None
                     else:
-                        t_exit = target_2 if (target_2 and target_2 > 0) else target_1
+                        t_exit = target_1
                         if t_exit and eff_entry and risk_amt > 0:
                             gain = (t_exit - eff_entry) if side == "LONG" else (eff_entry - t_exit)
                             trade_r = round(gain / risk_amt, 2)
@@ -306,6 +306,7 @@ def get_watch_targets():
                 "win_rate": win_rate,
                 "total_r": total_r,
                 "mean_r": mean_r,
+                "net_dollar_profit": 0.0,
                 "is_modeled": False,
                 "accounting_mode": "R_MULTIPLE",
             }

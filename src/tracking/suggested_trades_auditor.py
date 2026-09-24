@@ -301,34 +301,51 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 r_mult: Optional[float] = None
                 notes = ""
 
-                risk_amt = abs(entry - stop) if (entry > 0 and stop > 0) else 0.0
+                fill_val = float(eval_res.get("fill_price") or entry or 0.0)
+                if fill_val > 0 and stop > 0:
+                    risk_amt = (fill_val - stop) if side == "LONG" else (stop - fill_val)
+                    if risk_amt <= 0:
+                        risk_amt = None
+                else:
+                    risk_amt = None
 
-                if status in ("TARGET_HIT", "COMPLETED"):
+                was_filled = bool(eval_res.get("was_filled"))
+                exit_px = eval_res.get("exit_price")
+                if exit_px is None or exit_px <= 0:
+                    exit_px = t1 if status in ("TARGET_HIT", "COMPLETED") else stop
+
+                if was_filled:
                     if is_options and max_loss > 0:
-                        r_mult = round(max_prof / max_loss, 2)
-                        notes = f"Target reached: {r_mult:+.2f}R on {struct}"
-                    else:
-                        gain = (t1 - entry) if side == "LONG" else (entry - t1)
-                        r_mult = round(gain / risk_amt, 2) if risk_amt > 0 else None
-                        notes = f"Target 1 reached: {r_mult:+.2f}R at ${t1:.2f} vs fill ${entry:.2f}" if r_mult is not None else f"Target 1 reached at ${t1:.2f}"
-                elif status in ("INVALIDATED", "STOP_BREACHED", "STOPPED", "GAP_STOP"):
-                    if eval_res.get("was_filled"):
-                        r_mult = -1.0
-                        notes = f"Stop breached: -1.00R at ${stop:.2f} vs fill ${entry:.2f}"
+                        if status in ("TARGET_HIT", "COMPLETED"):
+                            r_mult = round(max_prof / max_loss, 2)
+                            notes = f"Target reached: {r_mult:+.2f}R on {struct}"
+                        elif status in ("STOP_BREACHED", "STOPPED", "GAP_STOP"):
+                            r_mult = -1.0
+                            notes = f"Stop breached: -1.00R on {struct}"
+                        else:
+                            r_mult = None
+                            notes = f"Active trade on {struct}"
+                    elif risk_amt is not None and risk_amt > 0:
+                        if status in ("TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "TIME_EXIT", "RECOVERY_EXIT"):
+                            gain = (exit_px - fill_val) if side == "LONG" else (fill_val - exit_px)
+                            r_mult = round(gain / risk_amt, 2)
+                            notes = f"{status}: {r_mult:+.2f}R at ${exit_px:.2f} vs fill ${fill_val:.2f}"
+                        elif status in ("IN_TRADE", "IN_ZONE"):
+                            gain = (spot - fill_val) if side == "LONG" else (fill_val - spot)
+                            r_mult = round(gain / risk_amt, 2)
+                            notes = f"Active trade: {r_mult:+.2f}R at ${spot:.2f} vs fill ${fill_val:.2f}"
+                        else:
+                            r_mult = None
+                            notes = f"{status}: in trade"
                     else:
                         r_mult = None
-                        notes = "Invalidated before fill: no R (never filled)"
-                elif status in ("IN_TRADE", "IN_ZONE"):
-                    if is_options and max_loss > 0:
-                        r_mult = None
-                        notes = f"Active trade on {struct}"
-                    else:
-                        gain = (spot - entry) if side == "LONG" else (entry - spot)
-                        r_mult = round(gain / risk_amt, 2) if risk_amt > 0 else None
-                        notes = f"Active trade: {r_mult:+.2f}R at ${spot:.2f} vs fill ${entry:.2f}" if r_mult is not None else f"Active trade at ${spot:.2f}"
+                        notes = f"{status} with invalid geometry (risk <= 0)"
                 else:
                     r_mult = None
-                    notes = f"Stalking: {dist_pct:+.1f}% from entry zone"
+                    if status in ("INVALIDATED", "GAP_STOP", "NOT_FILLED", "MISSED_RUNAWAY"):
+                        notes = f"{status} before fill: no R (never filled)"
+                    else:
+                        notes = f"Stalking: {dist_pct:+.1f}% from entry zone"
 
                 # Update row in DB
                 cursor.execute(
@@ -398,9 +415,9 @@ def get_audit_summary(
 
             # Calculate KPI Metrics over the Primary Window
             won_trades = [t for t in all_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
-            lost_trades = [t for t in all_trades if t["status"] in ("INVALIDATED", "STOP_BREACHED", "STOPPED")]
+            lost_trades = [t for t in all_trades if t["status"] in ("STOP_BREACHED", "STOPPED") or (t["status"] in ("INVALIDATED", "GAP_STOP") and t.get("r_multiple") is not None and float(t.get("r_multiple") or 0.0) < 0)]
             active_trades = [t for t in all_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
-            stalking_trades = [t for t in all_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT")]
+            stalking_trades = [t for t in all_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT")]
 
             won_count = len(won_trades)
             lost_count = len(lost_trades)
@@ -408,9 +425,9 @@ def get_audit_summary(
             stalking_count = len(stalking_trades)
             resolved_count = won_count + lost_count
 
-            won_r = sum(float(t["r_multiple"] if t.get("r_multiple") is not None else t.get("dollar_pnl") or 0.0) for t in won_trades)
-            lost_r = sum(float(t["r_multiple"] if t.get("r_multiple") is not None else t.get("dollar_pnl") or 0.0) for t in lost_trades)
-            floating_r = sum(float(t["r_multiple"] if t.get("r_multiple") is not None else t.get("dollar_pnl") or 0.0) for t in active_trades)
+            won_r = sum(float(t["r_multiple"] or 0.0) for t in won_trades)
+            lost_r = sum(float(t["r_multiple"] or 0.0) for t in lost_trades)
+            floating_r = sum(float(t["r_multiple"] or 0.0) for t in active_trades)
             net_r = round(won_r + lost_r + floating_r, 2)
 
             resolved_win_rate = round((won_count / resolved_count * 100.0), 1) if resolved_count > 0 else 0.0

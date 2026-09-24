@@ -194,7 +194,7 @@ def run_arbitration(
     iv30_val = dw_dict.get("energy_iv30") or dw_dict.get("iv30") or f_parsed.get("energy_iv30") or f_parsed.get("iv30") or "N/A"
     iv_rank_val = dw_dict.get("energy_ivrank") or dw_dict.get("iv_rank") or f_parsed.get("energy_ivrank") or f_parsed.get("iv_rank") or "N/A"
 
-    lane_prior_str = f"win={lane_prior_win:.0%}, ev={lane_prior_ev:.2f}R" if lane_prior_win is not None and lane_prior_ev is not None else "N/A"
+    lane_prior_str = f"win={lane_prior_win:.0f}%, ev={lane_prior_ev:.2f}R" if lane_prior_win is not None and lane_prior_ev is not None else "N/A"
 
     ground_truth = (
         f"--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---\n"
@@ -286,8 +286,11 @@ def run_arbitration(
         watch_data.setdefault("ticker", ticker)
         watch_data.setdefault("date", date_str)
         watch_data["kind"] = kind
-        model_lane = watch_data.get("setup_lane") or setup_lane or "RR_SETUP"
-        watch_data["setup_lane"] = model_lane
+        triage_lane = setup_lane or "RR_SETUP"
+        model_lane = watch_data.get("setup_lane")
+        if model_lane and model_lane != triage_lane:
+            logger.info(f"[{ticker}] Model suggested setup_lane='{model_lane}', strictly preserving triage_lane='{triage_lane}'")
+        watch_data["setup_lane"] = triage_lane
 
         from src.logic.level_validation import validate_levels
         from src.tracking.watch_manager import upsert_watch_target
@@ -299,7 +302,7 @@ def run_arbitration(
             "date": date_str,
             "side": watch_data.get("side", "LONG"),
             "kind": kind,
-            "setup_lane": model_lane,
+            "setup_lane": triage_lane,
         }
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
         if not _ok:
@@ -352,7 +355,7 @@ def run_arbitration(
             "planned_rr": sp.get("rr_ratio"),
             "verdict": watch_data.get("verdict"),
             "gate_status": "PASS",
-            "setup_lane": model_lane,
+            "setup_lane": triage_lane,
             "kind": kind,
             "atr_at_signal": atr_at_signal,
             "spot_at_signal": spot_at_signal,

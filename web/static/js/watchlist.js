@@ -563,54 +563,93 @@ window.AppWatchlist = {
     else if (statusUpper === 'MISSED_RUNAWAY') { statusBadgeClass = 'missed_runaway'; statusIcon = '🚀'; }
 
     // Dynamic Outcome / Profit & Loss Badge by Suggested Trades
-    let pnlHtml = '-';
-    const rVal = Number(t.r_multiple !== undefined && t.r_multiple !== null ? t.r_multiple : (t.trade_dollar_pnl || 0));
+    let pnlHtml = '—';
+    const rVal = (t.r_multiple !== undefined && t.r_multiple !== null) ? Number(t.r_multiple) : null;
     const tradeLabel = t.trade_label || (t.trade_type === 'OPTIONS' ? 'Options Spread' : 'Shares');
 
     if (statusUpper === 'TARGET_HIT' || statusUpper === 'COMPLETED') {
-      const rStr = Math.abs(rVal).toFixed(2);
-      pnlHtml = `
-        <div style="display:flex; flex-direction:column; gap:2px;">
-          <span class="pill" style="color:#10b981; background:rgba(16,185,129,0.18); border:1px solid #10b981; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Realized win on suggested trade ${tradeLabel}">
-            +${rStr} R WIN 🏆
-          </span>
-          <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
-            ${tradeLabel}
-          </span>
-        </div>
-      `;
+      if (rVal !== null) {
+        const rStr = Math.abs(rVal).toFixed(2);
+        pnlHtml = `
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span class="pill" style="color:#10b981; background:rgba(16,185,129,0.18); border:1px solid #10b981; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Realized win on suggested trade ${tradeLabel}">
+              +${rStr} R WIN 🏆
+            </span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+              ${tradeLabel}
+            </span>
+          </div>
+        `;
+      } else {
+        pnlHtml = `
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span class="pill" style="color:#10b981; background:rgba(16,185,129,0.18); border:1px solid #10b981; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Target reached on ${tradeLabel}">
+              TARGET HIT 🏁
+            </span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+              ${tradeLabel}
+            </span>
+          </div>
+        `;
+      }
     } else if (statusUpper === 'INVALIDATED' || statusUpper === 'STOP_BREACHED' || statusUpper === 'STOPPED') {
-      const isZeroR = (Math.abs(rVal) < 0.01);
-      const lossStr = isZeroR ? '0.00 R UNFILLED' : `-${Math.abs(rVal).toFixed(2)} R STOP 🛑`;
-      const pillColor = isZeroR ? '#94a3b8' : '#f43f5e';
-      const pillBg = isZeroR ? 'rgba(148,163,184,0.18)' : 'rgba(244,63,94,0.18)';
-      const pillBorder = isZeroR ? '#94a3b8' : '#f43f5e';
-      pnlHtml = `
-        <div style="display:flex; flex-direction:column; gap:2px;">
-          <span class="pill" style="color:${pillColor}; background:${pillBg}; border:1px solid ${pillBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="${isZeroR ? 'Invalidated before fill' : 'Defined stop loss'} on ${tradeLabel}">
-            ${lossStr}
-          </span>
-          <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
-            ${tradeLabel}
-          </span>
-        </div>
-      `;
+      if (rVal !== null) {
+        const isZeroR = (Math.abs(rVal) < 0.01);
+        const lossStr = isZeroR ? '0.00 R UNFILLED' : `-${Math.abs(rVal).toFixed(2)} R STOP 🛑`;
+        const pillColor = isZeroR ? '#94a3b8' : '#f43f5e';
+        const pillBg = isZeroR ? 'rgba(148,163,184,0.18)' : 'rgba(244,63,94,0.18)';
+        const pillBorder = isZeroR ? '#94a3b8' : '#f43f5e';
+        pnlHtml = `
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span class="pill" style="color:${pillColor}; background:${pillBg}; border:1px solid ${pillBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="${isZeroR ? 'Invalidated before fill' : 'Defined stop loss'} on ${tradeLabel}">
+              ${lossStr}
+            </span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+              ${tradeLabel}
+            </span>
+          </div>
+        `;
+      } else {
+        pnlHtml = `
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span class="pill" style="color:#94a3b8; background:rgba(148,163,184,0.18); border:1px solid #94a3b8; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Invalidated before fill on ${tradeLabel}">
+              UNFILLED 🛑
+            </span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+              ${tradeLabel}
+            </span>
+          </div>
+        `;
+      }
     } else if ((statusUpper === 'IN_TRADE' || statusUpper === 'IN_ZONE') && spot > 0) {
-      const pnlSign = rVal >= 0 ? '+' : '-';
-      const pnlColor = rVal >= 0 ? '#10b981' : '#f43f5e';
-      const pnlBg = rVal >= 0 ? 'rgba(16,185,129,0.14)' : 'rgba(244,63,94,0.14)';
-      const pnlBorder = rVal >= 0 ? 'rgba(16,185,129,0.45)' : 'rgba(244,63,94,0.45)';
-      const rStr = Math.abs(rVal).toFixed(2);
-      pnlHtml = `
-        <div style="display:flex; flex-direction:column; gap:2px;">
-          <span class="pill" style="color:${pnlColor}; background:${pnlBg}; border:1px solid ${pnlBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Live theoretical value on suggested trade ${tradeLabel}">
-            ${pnlSign}${rStr} R LIVE ⚡
-          </span>
-          <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
-            ${tradeLabel}
-          </span>
-        </div>
-      `;
+      if (rVal !== null) {
+        const pnlSign = rVal >= 0 ? '+' : '-';
+        const pnlColor = rVal >= 0 ? '#10b981' : '#f43f5e';
+        const pnlBg = rVal >= 0 ? 'rgba(16,185,129,0.14)' : 'rgba(244,63,94,0.14)';
+        const pnlBorder = rVal >= 0 ? 'rgba(16,185,129,0.45)' : 'rgba(244,63,94,0.45)';
+        const rStr = Math.abs(rVal).toFixed(2);
+        pnlHtml = `
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span class="pill" style="color:${pnlColor}; background:${pnlBg}; border:1px solid ${pnlBorder}; font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;" title="Live theoretical value on suggested trade ${tradeLabel}">
+              ${pnlSign}${rStr} R LIVE ⚡
+            </span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+              ${tradeLabel}
+            </span>
+          </div>
+        `;
+      } else {
+        pnlHtml = `
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span class="pill in_zone" style="font-weight:800; font-family:'JetBrains Mono',monospace; font-size:11.5px;">
+              IN ZONE 🎯
+            </span>
+            <span style="font-size:10px; color:var(--text-muted); font-weight:700;">
+              ${tradeLabel}
+            </span>
+          </div>
+        `;
+      }
     } else if (statusUpper === 'MISSED_RUNAWAY') {
       pnlHtml = `
         <div style="display:flex; flex-direction:column; gap:2px;">
@@ -625,8 +664,8 @@ window.AppWatchlist = {
     } else {
       pnlHtml = `
         <div style="display:flex; flex-direction:column; gap:2px;">
-          <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; color:var(--cyan-glow);" title="Max profit potential on suggested trade">
-            ${t.trade_max_profit ? `+$${Number(t.trade_max_profit).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} pot.` : '--'}
+          <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; color:var(--cyan-glow);">
+            ${rVal !== null ? `${rVal >= 0 ? '+' : ''}${rVal.toFixed(2)} R` : '—'}
           </span>
           <span style="font-size:10px; color:var(--text-muted); font-weight:600;">
             ${tradeLabel} ${t.rr_ratio ? `(${t.rr_ratio}:1 R:R)` : ''}
@@ -808,7 +847,7 @@ window.AppWatchlist = {
       const inZoneCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'IN_ZONE').length;
       const inTradeCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'IN_TRADE').length;
       const stalkingCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'STALKING').length;
-      const invalidCount = groupTargets.filter(t => ['INVALIDATED', 'STOP_BREACHED'].includes((t.status || '').toUpperCase())).length;
+      const invalidCount = groupTargets.filter(t => (t.status || '').toUpperCase() === 'STOP_BREACHED' || ((t.status || '').toUpperCase() === 'INVALIDATED' && (t.r_multiple !== undefined && t.r_multiple !== null && Number(t.r_multiple) < 0))).length;
       const targetHitCount = groupTargets.filter(t => ['TARGET_HIT', 'COMPLETED'].includes((t.status || '').toUpperCase())).length;
 
       const dateNetR = groupTargets.reduce((acc, t) => {

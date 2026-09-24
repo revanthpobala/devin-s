@@ -119,10 +119,10 @@ _FIELD_LABELS = {
     "stage_age_bars": ("context stage age pack", "stage age bars", "stage age",),
     "long_zbot": ("long entry zone bot",),
     "long_ztop": ("long entry zone top",),
-    "long_stop_loss": ("long stop loss", "rsi2 fixed stop", "rsi2 stop",),
-    "long_target": ("long target", "rsi2 fixed target", "rsi2 target",),
+    "long_stop_loss": ("long stop loss",),
+    "long_target": ("long target",),
     "long_target_t1": ("long target t1 waypoint", "long target t1",),
-    "long_entry": ("long entry", "rsi2 entry or opening ceiling", "rsi2 entry",),
+    "long_entry": ("long entry",),
     "long_in_zone": ("long in zone",),
     "long_rr_valid": ("long rr valid", "long r:r valid",),
     "short_zbot": ("short entry zone bot",),
@@ -820,7 +820,7 @@ def run_data_window_filter(
         triage, reason = "CUT", "toxic_geometry"       # stop inside the noise floor: unbuildable
     elif stage == 0 and not is_rsi2_setup:
         triage, reason = "CUT", "warmup_stage_0"       # no history: nothing is computable
-    elif W["target"] is None and W["chased"]:
+    elif W["target"] is None and W["chased"] and not is_rsi2_setup:
         triage, reason = "CUT", "chasing_without_target"  # no target: no plan to construct
     # Code 20 (REVERSAL BUY): requires at-market R:R >= 2.0 per Phase 6
     elif act_code == 20 and rr_mkt is not None and rr_mkt >= RR_MKT_PASS:

@@ -667,8 +667,10 @@ def _fetch_ohlc_df_fallback(ticker: str) -> "tuple":
     return df, dw
 
 
-def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str: str = None) -> str:
+def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str: str = None, is_independent: bool = False) -> str:
     """Executes quantitative analytics plugins on demand for the LLM."""
+    if is_independent:
+        return "not available in independent mode"
     import pandas as pd
     import json
     from src.plugins import plugin_manager
@@ -681,35 +683,21 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
     dw_path = chart_dir / f"{ticker}_datawindow.json"
 
     if not csv_path.exists():
-        raw_root = config.BASE_DIR / "data" / "raw"
-        for d in sorted(raw_root.glob("*/"), reverse=True):
-            cand = d / ticker / f"{ticker}_datawindow.csv"
-            if cand.exists():
-                csv_path = cand
-                dw_path = d / ticker / f"{ticker}_datawindow.json"
-                break
-
-    if not csv_path.exists():
-        # Also check triage directory
-        triage_root = config.BASE_DIR / "data" / "triage"
-        for d in sorted(triage_root.glob("*/"), reverse=True):
+        # Only check triage directory for same date
+        triage_root = config.BASE_DIR / "data" / "triage" / date_str
+        if triage_root.exists():
             for sub in ["_DEEP_RESEARCH", "force", ""]:
-                cand = d / sub / ticker / f"{ticker}_datawindow.csv" if sub else d / ticker / f"{ticker}_datawindow.csv"
+                cand = triage_root / sub / ticker / f"{ticker}_datawindow.csv" if sub else triage_root / ticker / f"{ticker}_datawindow.csv"
                 if cand.exists():
                     csv_path = cand
                     dw_path = cand.parent / f"{ticker}_datawindow.json"
                     break
 
     if not csv_path.exists():
-        # No on-disk datawindow: fetch OHLCV live (Tastytrade -> yfinance) and build a minimal dw.
-        try:
-            df, dw = _fetch_ohlc_df_fallback(ticker)
-            logger.info(f"[run_quantitative_plugin:{ticker}] no datawindow on disk; using live OHLCV fallback ({len(df)} bars).")
-        except Exception as e_fb:
-            return f"Error: No historical datawindow.csv found for {ticker}, and live OHLCV fetch failed: {e_fb}"
-    else:
-        df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
-        dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
+        return f"Error: No historical datawindow.csv found for {ticker} on {date_str}."
+
+    df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
+    dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
 
     p_key = plugin_name.lower().strip().replace("-", "_").replace(" ", "_")
     if p_key in ("orderflow", "order_flow_plugin"):
@@ -806,15 +794,12 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
     dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
 
-    # If Model B (is_independent), sanitize any proprietary columns if somehow still present
+    # If Model B (is_independent), sanitize to allowlist only: time, open, high, low, close, volume
     if is_independent and not df.empty:
-        drop_cols = [c for c in df.columns if any(b in c.lower() for b in [
-            "action", "pine", "entry", "stop loss", "target", "score", "pressure",
-            "rev zone", "ignition", "anchor", "sigma", "overextension", "gradient",
-            "mask", "signal pack", "premove", "fade gate", "bible", "pillar",
-            "zone 0", "buy score", "sell score", "prob"
-        ])]
-        df = df.drop(columns=drop_cols, errors="ignore")
+        allowlist = {"time", "date", "open", "high", "low", "close", "volume"}
+        keep_cols = [c for c in df.columns if c.lower() in allowlist]
+        df = df[keep_cols]
+        dw = {}
 
     try:
         import scipy
@@ -861,22 +846,17 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         sys.stdout = old_stdout
 
 
-def fetch_historical_zone_and_regime_analytics_tool(ticker: str, lookback_bars: int = 60, date_str: str = None) -> str:
+def fetch_historical_zone_and_regime_analytics_tool(ticker: str, lookback_bars: int = 60, date_str: str = None, is_independent: bool = False) -> str:
     """Computes on-demand deep historical analytics from datawindow.csv for the LLM brain."""
+    if is_independent:
+        return "not available in independent mode"
     import pandas as pd
     ticker = ticker.upper()
     date_str = date_str or time.strftime("%Y-%m-%d")
     chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
     csv_path = chart_dir / f"{ticker}_datawindow.csv"
     if not csv_path.exists():
-        raw_root = config.BASE_DIR / "data" / "raw"
-        for d in sorted(raw_root.glob("*/"), reverse=True):
-            cand = d / ticker / f"{ticker}_datawindow.csv"
-            if cand.exists():
-                csv_path = cand
-                break
-    if not csv_path.exists():
-        return f"Error: No historical datawindow.csv found for {ticker}."
+        return f"Error: No historical datawindow.csv found for {ticker} on {date_str}."
 
     df = pd.read_csv(csv_path)
     if df.empty:
@@ -936,8 +916,10 @@ def fetch_historical_zone_and_regime_analytics_tool(ticker: str, lookback_bars: 
     return "\n".join(lines)
 
 
-def fetch_prior_research_tool(ticker: str, lookback_days: int = 14, date_str: str = None) -> str:
+def fetch_prior_research_tool(ticker: str, lookback_days: int = 14, date_str: str = None, is_independent: bool = False) -> str:
     """Retrieves the most recent prior research summary and trade plan from reports/<date>/<ticker>_summary.md."""
+    if is_independent:
+        return "not available in independent mode"
     import re
     from datetime import datetime
 
@@ -1247,7 +1229,7 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
     elif function_name == "fetch_historical_zone_and_regime_analytics":
         lookback = int(args.get("lookback_bars", 60))
         logger.info(f"LLM executed tool: fetch_historical_zone_and_regime_analytics(ticker='{ticker}', lookback={lookback})")
-        res_str = fetch_historical_zone_and_regime_analytics_tool(ticker, lookback_bars=lookback, date_str=date_str)
+        res_str = fetch_historical_zone_and_regime_analytics_tool(ticker, lookback_bars=lookback, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "execute_python_code":
@@ -1269,23 +1251,23 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
     elif function_name == "run_quantitative_plugin":
         plugin_name = args.get("plugin_name", "all")
         logger.info(f"LLM executed tool: run_quantitative_plugin(ticker='{ticker}', plugin='{plugin_name}')")
-        res_str = run_quantitative_plugin_tool(ticker, plugin_name=plugin_name, date_str=date_str)
+        res_str = run_quantitative_plugin_tool(ticker, plugin_name=plugin_name, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "fetch_prior_research":
         lookback = int(args.get("lookback_days", 14))
         logger.info(f"LLM executed tool: fetch_prior_research(ticker='{ticker}', lookback_days={lookback})")
-        res_str = fetch_prior_research_tool(ticker=ticker, lookback_days=lookback, date_str=date_str)
+        res_str = fetch_prior_research_tool(ticker=ticker, lookback_days=lookback, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "detect_candlestick_patterns":
         logger.info(f"LLM executed tool: detect_candlestick_patterns(ticker='{ticker}')")
-        res_str = run_quantitative_plugin_tool(ticker, plugin_name="candlestick_patterns", date_str=date_str)
+        res_str = run_quantitative_plugin_tool(ticker, plugin_name="candlestick_patterns", date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "fetch_tastytrade_volatility_and_options":
         logger.info(f"LLM executed tool: fetch_tastytrade_volatility_and_options(ticker='{ticker}')")
-        res_str = run_quantitative_plugin_tool(ticker, plugin_name="tastytrade_volatility", date_str=date_str)
+        res_str = run_quantitative_plugin_tool(ticker, plugin_name="tastytrade_volatility", date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "fetch_schwab_options_flow":
