@@ -9,15 +9,43 @@ window.App = {
         window.AppAlerts.switchSubTab('schwab');
       }
     }
+    
+    // If selecting an ops sub-desk, ensure ops is the main desk active
+    const opsDesks = ['swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'logs'];
+    if (desk === 'ops') desk = 'swing';
+    
+    let mainDesk = desk;
+    if (opsDesks.includes(desk)) {
+      mainDesk = 'ops';
+    }
+
     window.AppState.currentDesk = desk;
-    ['swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'logs'].forEach(d => {
+    
+    // Main desk switching
+    ['today', 'journal', 'record', 'ops'].forEach(d => {
       const pane = document.getElementById(`desk-pane-${d}`);
       const btn = document.getElementById(`btn-desk-${d}`);
-      if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
-      if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
+      if (pane) pane.style.display = (d === mainDesk) ? 'flex' : 'none';
+      if (btn) btn.className = `desk-nav-btn ${d === mainDesk ? 'active' : ''}`;
     });
+    
+    // Ops sub-desk switching (only update display logic inside ops pane)
+    if (mainDesk === 'ops') {
+      opsDesks.forEach(d => {
+        const pane = document.getElementById(`desk-pane-${d}`);
+        const btn = document.getElementById(`btn-desk-${d}`);
+        if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
+        if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
+      });
+    }
 
-    if (desk === 'alerts' && window.AppAlerts) {
+    if (desk === 'today' && window.AppDesk) {
+      window.AppDesk.loadToday();
+    } else if (desk === 'journal' && window.AppDesk) {
+      window.AppDesk.loadJournal();
+    } else if (desk === 'record' && window.AppDesk) {
+      window.AppDesk.loadRecord();
+    } else if (desk === 'alerts' && window.AppAlerts) {
       if (window.AppAlerts._activeSubTab === 'schwab' && window.AppSwing) {
         window.AppSwing.loadSchwabScreener();
       } else {
@@ -107,6 +135,7 @@ window.App = {
     }
     if (window.AppLogs) window.AppLogs.loadLogs();
     if (window.AppAlerts) window.AppAlerts.loadAlerts();
+    if (window.AppDesk) window.AppDesk.loadToday();
     this.loadAllTickersDatalist();
 
     // 3. Fast Poll Loop (2.5s) for Live Status, Logs, and Positions

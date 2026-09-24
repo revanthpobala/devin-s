@@ -127,6 +127,22 @@ def sync_suggested_trades_from_watch_targets() -> int:
                     opt_primary = 0
                     sh_primary = 0
 
+                from src.logic.level_validation import check_geometry
+                geo_reasons = check_geometry(
+                    side=side,
+                    entry_type=entry_mode,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    breakout_level=breakout_lvl,
+                    stop=tactical_stop,
+                    t1=target_1,
+                    t2=target_2,
+                )
+                if geo_reasons:
+                    status = "INVALID_GEOMETRY"
+                    opt_primary = 0
+                    sh_primary = 0
+
                 # 1. Insert/Update Options / Income Trade
                 if is_income or has_actionable_options:
                     struct_clean = opt_struct.replace("_", " ").upper()
@@ -258,6 +274,8 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 struct = (t.get("trade_structure") or "SHARES").upper()
                 side = (t.get("side") or "LONG").upper()
                 status = (t.get("status") or "STALKING").upper()
+                if status == "INVALID_GEOMETRY":
+                    continue
                 spot = float(t.get("last_price") or 0.0)
 
                 entry = float(t.get("entry_price") or 0.0)
@@ -338,18 +356,19 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                             r_mult = None
                             notes = f"{status}: in trade"
 
-                        if is_options:
-                            clamped = max(-max_loss, min(max_prof, r_mult * max_loss if max_loss > 0 else 0.0))
-                            dollar_pnl = clamped
-                            notes += " (est)"
-                        else:
-                            dollar_pnl = r_mult * risk_amt * 100.0
+                        if r_mult is not None:
+                            if is_options:
+                                clamped = max(-max_loss, min(max_prof, r_mult * max_loss if max_loss > 0 else 0.0))
+                                dollar_pnl = clamped
+                                notes += " (est)"
+                            else:
+                                dollar_pnl = r_mult * risk_amt * 100.0
                     else:
                         r_mult = None
                         notes = f"{status} with invalid geometry (risk <= 0)"
                 else:
                     r_mult = None
-                    if status in ("INVALIDATED", "GAP_STOP", "NOT_FILLED", "MISSING_RUNAWAY"):
+                    if status in ("INVALIDATED", "GAP_STOP", "NOT_FILLED", "MISSED_RUNAWAY"):
                         notes = f"{status} before fill: no R (never filled)"
                     else:
                         notes = f"Stalking: {dist_pct:+.1f}% from entry zone"
@@ -430,13 +449,13 @@ def get_audit_summary(
 
             all_trades: List[Dict[str, Any]] = [dict(r) for r in all_rows]
 
-            valid_statuses = {"TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT"}
+            valid_statuses = {"TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT", "STALKING", "MISSED_RUNAWAY", "INVALIDATED"}
             kpi_trades = [t for t in all_trades if t.get("status") in valid_statuses and t.get("trade_type") != "INCOME"]
 
             won_trades = [t for t in kpi_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
             lost_trades = [t for t in kpi_trades if t["status"] in ("STOP_BREACHED", "STOPPED") or (t["status"] in ("INVALIDATED", "GAP_STOP") and t.get("r_multiple") is not None and float(t.get("r_multiple") or 0.0) < 0)]
             active_trades = [t for t in kpi_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
-            stalking_trades = [t for t in kpi_trades if t["status"] not in ("TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT")]
+            stalking_trades = [t for t in kpi_trades if t["status"] in ("STALKING", "MISSED_RUNAWAY", "NOT_FILLED") or (t["status"] == "INVALIDATED" and t.get("r_multiple") is None)]
 
             invalid_trades = [t for t in all_trades if t.get("status") in ("INVALID_GEOMETRY", "NO_QUOTE")]
             invalid_count = len(invalid_trades)

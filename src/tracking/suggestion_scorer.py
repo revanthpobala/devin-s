@@ -410,36 +410,36 @@ def get_main_record_stats(min_date: str = "2026-09-23") -> Dict[str, Any]:
             return {}
         if not rows:
             return {}
-            r_vals = [float(r["r_net"]) for r in rows if r["r_net"] is not None]
-            import statistics as _stats
-            wins = sum(1 for r in r_vals if r > 0)
-            losses = sum(1 for r in r_vals if r <= 0)
+        r_vals = [float(r["r_net"]) for r in rows if r["r_net"] is not None]
+        import statistics as _stats
+        wins = sum(1 for r in r_vals if r > 0)
+        losses = sum(1 for r in r_vals if r <= 0)
 
-            # Breakdown by lane
-            lanes_stats = {}
-            for lane in ['RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2']:
-                l_rows = [r for r in rows if r["setup_lane"] == lane]
-                l_r_vals = [float(r["r_net"]) for r in l_rows if r["r_net"] is not None]
-                l_wins = sum(1 for r in l_r_vals if r > 0)
-                lanes_stats[lane] = {
-                    "total": len(l_r_vals),
-                    "wins": l_wins,
-                    "losses": len(l_r_vals) - l_wins,
-                    "win_rate": round(l_wins / len(l_r_vals) * 100, 1) if l_r_vals else 0.0,
-                    "mean_r": round(_stats.mean(l_r_vals), 4) if l_r_vals else 0.0,
-                    "sum_r": round(sum(l_r_vals), 4) if l_r_vals else 0.0,
-                }
-
-            return {
-                "total_trades": len(r_vals),
-                "wins": wins,
-                "losses": losses,
-                "mean_r": round(_stats.mean(r_vals), 4) if r_vals else None,
-                "median_r": round(_stats.median(r_vals), 4) if r_vals else None,
-                "win_rate": round(wins / len(r_vals) * 100, 1) if r_vals else 0.0,
-                "sum_r": round(sum(r_vals), 4),
-                "by_lane": lanes_stats,
+        # Breakdown by lane
+        lanes_stats = {}
+        for lane in ['RR_SETUP', 'RR_SETUP_STRONG', 'CODE20', 'OVERSOLD', 'RSI2']:
+            l_rows = [r for r in rows if r["setup_lane"] == lane]
+            l_r_vals = [float(r["r_net"]) for r in l_rows if r["r_net"] is not None]
+            l_wins = sum(1 for r in l_r_vals if r > 0)
+            lanes_stats[lane] = {
+                "total": len(l_r_vals),
+                "wins": l_wins,
+                "losses": len(l_r_vals) - l_wins,
+                "win_rate": round(l_wins / len(l_r_vals) * 100, 1) if l_r_vals else 0.0,
+                "mean_r": round(_stats.mean(l_r_vals), 4) if l_r_vals else 0.0,
+                "sum_r": round(sum(l_r_vals), 4) if l_r_vals else 0.0,
             }
+
+        return {
+            "total_trades": len(r_vals),
+            "wins": wins,
+            "losses": losses,
+            "mean_r": round(_stats.mean(r_vals), 4) if r_vals else None,
+            "median_r": round(_stats.median(r_vals), 4) if r_vals else None,
+            "win_rate": round(wins / len(r_vals) * 100, 1) if r_vals else 0.0,
+            "sum_r": round(sum(r_vals), 4),
+            "by_lane": lanes_stats,
+        }
 
 
 if __name__ == "__main__":

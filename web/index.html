@@ -49,28 +49,70 @@
 
       <!-- Desk Switcher Bar -->
       <div class="desk-switcher-bar">
-        <button class="desk-nav-btn active" id="btn-desk-swing" onclick="App.switchDesk('swing')">
-          <span>🎯</span> Stalking & Execution Radar
+        <button class="desk-nav-btn active" id="btn-desk-today" onclick="App.switchDesk('today')">
+          <span>⚡</span> Today
         </button>
-        <button class="desk-nav-btn" id="btn-desk-alerts" onclick="App.switchDesk('alerts')">
-          <span>🚨</span> Alerts & Screeners
+        <button class="desk-nav-btn" id="btn-desk-journal" onclick="App.switchDesk('journal')">
+          <span>📖</span> Journal
         </button>
-        <button class="desk-nav-btn" id="btn-desk-watchlist" onclick="App.switchDesk('watchlist')">
-          <span>📡</span> Stalking & Triggers Table
+        <button class="desk-nav-btn" id="btn-desk-record" onclick="App.switchDesk('record')">
+          <span>🏆</span> Record
         </button>
-        <button class="desk-nav-btn" id="btn-desk-trades" onclick="App.switchDesk('trades')">
-          <span>💡</span> Suggested Trades & Audit
-        </button>
-        <button class="desk-nav-btn" id="btn-desk-portfolio" onclick="App.switchDesk('portfolio')">
-          <span>💼</span> Schwab Positions
-        </button>
-        <button class="desk-nav-btn" id="btn-desk-intraday" onclick="App.switchDesk('intraday')">
-          <span>⚡</span> Intraday 0DTE Desk
-        </button>
-        <button class="desk-nav-btn" id="btn-desk-logs" onclick="App.switchDesk('logs')">
-          <span>📜</span> Operations & Consoles
+        <button class="desk-nav-btn" id="btn-desk-ops" onclick="App.switchDesk('ops')">
+          <span>⚙️</span> Ops
         </button>
       </div>
+
+      <!-- ================================================================= -->
+      <!-- TODAY DESK PANE                                                   -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-today" style="display:flex; flex-direction:column; gap:20px;">
+        <div id="today-content-container"></div>
+      </div>
+      
+      <!-- ================================================================= -->
+      <!-- JOURNAL DESK PANE                                                 -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-journal" style="display:none; flex-direction:column; gap:20px;">
+        <div id="journal-content-container"></div>
+      </div>
+      
+      <!-- ================================================================= -->
+      <!-- RECORD DESK PANE                                                  -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-record" style="display:none; flex-direction:column; gap:20px;">
+        <div id="record-content-container"></div>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- OPS DESK PANE (Contains Old Desks)                                -->
+      <!-- ================================================================= -->
+      <div id="desk-pane-ops" style="display:none; flex-direction:column; gap:20px;">
+
+        <!-- Ops Switcher Bar -->
+        <div class="desk-switcher-bar" style="border-bottom:1px solid var(--border); padding-bottom:10px;">
+          <button class="desk-nav-btn active" id="btn-desk-swing" onclick="App.switchDesk('swing')">
+            <span>🎯</span> Stalking & Execution Radar
+          </button>
+          <button class="desk-nav-btn" id="btn-desk-alerts" onclick="App.switchDesk('alerts')">
+            <span>🚨</span> Alerts & Screeners
+          </button>
+          <button class="desk-nav-btn" id="btn-desk-watchlist" onclick="App.switchDesk('watchlist')">
+            <span>📡</span> Stalking & Triggers Table
+          </button>
+          <button class="desk-nav-btn" id="btn-desk-trades" onclick="App.switchDesk('trades')">
+            <span>💡</span> Suggested Trades & Audit
+          </button>
+          <button class="desk-nav-btn" id="btn-desk-portfolio" onclick="App.switchDesk('portfolio')">
+            <span>💼</span> Schwab Positions
+          </button>
+          <button class="desk-nav-btn" id="btn-desk-intraday" onclick="App.switchDesk('intraday')">
+            <span>⚡</span> Intraday 0DTE Desk
+          </button>
+          <button class="desk-nav-btn" id="btn-desk-logs" onclick="App.switchDesk('logs')">
+            <span>📜</span> Operations & Consoles
+          </button>
+        </div>
 
       <!-- ================================================================= -->
       <!-- SWING STALKING & RESEARCH DESK PANE                               -->
@@ -1270,6 +1312,7 @@
         </div>
 
       </div>
+      </div> <!-- Close desk-pane-ops -->
 
       <!-- Persistent Live Operations & Terminal Stream Console (Universal) -->
       <div class="station-card" style="margin-top:4px;">
@@ -2605,6 +2648,7 @@
   <script src="/static/js/logs.js?v=76"></script>
   <script src="/static/js/alerts.js?v=85"></script>
   <script src="/static/js/chat.js?v=76"></script>
+  <script src="/static/js/desk.js?v=1"></script>
   <script src="/static/js/app.js?v=76"></script>
 </body>
 </html>

@@ -258,6 +258,7 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
         )
     except Exception as e:
         logger.debug(f"[WATCH_GATE] {ticker} geometry pre-check raised: {e}")
+        geometry_reasons.append(f"geometry pre-check exception: {e}")
 
     if geometry_reasons:
         failure_msg = "; ".join(geometry_reasons)

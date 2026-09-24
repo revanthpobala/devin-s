@@ -29,7 +29,8 @@ def test_review_tv_exit_vetoes_intrabar_wick_for_long(tmp_path):
         }
 
         # Case 1: Live broker quote has rebounded / is holding at 499.85 (above stop 499.70)
-        with patch("src.tracking.position_monitor.get_current_price", return_value=499.85):
+        with patch("src.tracking.position_monitor.get_current_price", return_value=499.85), \
+             patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "normal flow"}):
             decision = review_tv_exit("MSFT", exit_alert)
             assert decision["action"] == "VETO_HOLD"
             assert "Intra-bar wick noise" in decision["reason"]
@@ -38,7 +39,8 @@ def test_review_tv_exit_vetoes_intrabar_wick_for_long(tmp_path):
         # Now test through PositionManager: position must remain OPEN
         mgr = PositionManager(poll_interval=10)
         mgr._stop_monitor = MagicMock()
-        with patch("src.tracking.position_monitor.get_current_price", return_value=499.85):
+        with patch("src.tracking.position_monitor.get_current_price", return_value=499.85), \
+             patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "normal flow"}):
             mgr._handle_alert(exit_alert)
             state = position_state.load_state()
             assert "MSFT" in state

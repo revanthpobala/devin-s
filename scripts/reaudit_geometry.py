@@ -53,25 +53,55 @@ def run() -> Dict[str, Any]:
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
-            targets = cursor.execute("SELECT * FROM watch_targets").fetchall()
-
-            for row in targets:
+            # Process suggested_trades_audit
+            audit_rows = cursor.execute("SELECT * FROM suggested_trades_audit WHERE status != 'INVALID_GEOMETRY'").fetchall()
+            for row in audit_rows:
                 scanned += 1
-                raw: Dict[str, Any] = {}
-                try:
-                    raw = json.loads(row["raw_json"] or "{}")
-                except Exception:
-                    pass
+                side = (row["side"] or "LONG").upper()
+                entry_type = str(row["entry_type"] or "LIMIT").upper()
+                entry_low = _clean_float(row["entry_zone_low"])
+                entry_high = _clean_float(row["entry_zone_high"])
+                breakout = _clean_float(row["entry_price"]) if entry_type == "BREAKOUT" else 0.0
+                stop = _clean_float(row["tactical_stop"])
+                t1 = _clean_float(row["target_1"])
+                t2 = _clean_float(row["target_2"])
 
-                sp = raw.get("shares_plan", {}) or {}
-                side = (row["side"] or sp.get("side") or "LONG").upper()
-                entry_type = str(row["entry_type"] or sp.get("entry_type") or "LIMIT").upper()
-                entry_low = _clean_float(row["entry_zone_low"] or sp.get("entry_zone_low"))
-                entry_high = _clean_float(row["entry_zone_high"] or sp.get("entry_zone_high"))
-                breakout = _clean_float(row["breakout_level"] or sp.get("breakout_level"))
-                stop = _clean_float(row["tactical_stop"] or sp.get("tactical_stop"))
-                t1 = _clean_float(row["target_1"] or sp.get("target_1"))
-                t2 = _clean_float(row["target_2"] or sp.get("target_2"))
+                reasons = check_geometry(
+                    side=side,
+                    entry_type=entry_type,
+                    entry_low=entry_low,
+                    entry_high=entry_high,
+                    breakout_level=breakout,
+                    stop=stop,
+                    t1=t1,
+                    t2=t2,
+                )
+                if reasons:
+                    invalid_audit_rows += 1
+                    row_id = row["id"]
+                    joined = "; ".join(reasons)
+
+                    cursor.execute(
+                        """
+                        UPDATE suggested_trades_audit
+                        SET status = ?, r_multiple = NULL, outcome_notes = ?, evaluated_at = ?, is_primary = 0
+                        WHERE id = ?
+                        """,
+                        ("INVALID_GEOMETRY", joined, _now_iso(), row_id),
+                    )
+
+            # Process watch_targets
+            watch_rows = cursor.execute("SELECT * FROM watch_targets WHERE status != 'REJECTED_BY_GATE'").fetchall()
+            for row in watch_rows:
+                scanned += 1
+                side = (row["side"] or "LONG").upper()
+                entry_type = str(row["entry_type"] or "LIMIT").upper()
+                entry_low = _clean_float(row["entry_zone_low"])
+                entry_high = _clean_float(row["entry_zone_high"])
+                breakout = _clean_float(row["breakout_level"]) if entry_type == "BREAKOUT" else 0.0
+                stop = _clean_float(row["tactical_stop"])
+                t1 = _clean_float(row["target_1"])
+                t2 = _clean_float(row["target_2"])
 
                 reasons = check_geometry(
                     side=side,
@@ -86,33 +116,15 @@ def run() -> Dict[str, Any]:
                 if reasons:
                     invalid_targets += 1
                     ticker = row["ticker"]
-                    date = row["date"]
-                    joined = "; ".join(reasons)
-
-                    cursor.execute(
-                        "UPDATE watch_targets SET status = ?, verdict = ?, updated_at = ? WHERE ticker = ?",
-                        ("REJECTED_BY_GATE", "REJECTED_BY_GATE", _now_iso(), ticker),
-                    )
-
+                    
                     cursor.execute(
                         """
-                        UPDATE suggested_trades_audit
-                        SET status = ?, r_multiple = NULL, outcome_notes = ?, evaluated_at = ?, is_primary = 0
-                        WHERE ticker = ? AND date = ? AND is_primary = 1
+                        UPDATE watch_targets
+                        SET status = ?, actionable = 0, updated_at = ?
+                        WHERE ticker = ?
                         """,
-                        ("INVALID_GEOMETRY", joined, _now_iso(), ticker, date),
+                        ("REJECTED_BY_GATE", _now_iso(), ticker),
                     )
-                    invalid_audit_rows += cursor.rowcount
-
-                    cursor.execute(
-                        """
-                        UPDATE suggested_trades_audit
-                        SET status = ?, r_multiple = NULL, outcome_notes = ?, evaluated_at = ?, is_primary = 0
-                        WHERE ticker = ? AND date = ? AND status NOT IN ('TARGET_HIT', 'COMPLETED', 'STOP_BREACHED', 'STOPPED', 'GAP_STOP', 'NOT_FILLED', 'IN_TRADE', 'IN_ZONE', 'RECOVERY_EXIT', 'TIME_EXIT')
-                        """,
-                        ("INVALID_GEOMETRY", joined, _now_iso(), ticker, date),
-                    )
-                    invalid_audit_rows += cursor.rowcount
 
             conn.commit()
 

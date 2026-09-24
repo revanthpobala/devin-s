@@ -271,7 +271,7 @@ def validate_levels(
     # ── 1. Level ordering ──────────────────────────────────────
     geo_reasons = check_geometry(
         side=side,
-        entry_type="BREAKOUT" if (breakout_level or 0.0) > 0 else "LIMIT",
+        entry_type=entry_type,
         entry_low=entry_low,
         entry_high=entry_high,
         breakout_level=float(breakout_level or 0.0),

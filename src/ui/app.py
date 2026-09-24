@@ -24,6 +24,7 @@ from src.ui.routes import (
     trades,
     views,
     watchlist,
+    desk,
 )
 from src.ui.services.daemon_manager import start_all_daemons, stop_all_daemons
 from src.ui.services.research_queue import dispatch_next_queued_job, rehydrate_active_jobs
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(research.router)
     app.include_router(copilot.router)
     app.include_router(edge_scanner.router)
+    app.include_router(desk.router)
 
     # 5. Lifecycle Event Handlers
     @app.on_event("startup")
