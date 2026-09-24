@@ -36,10 +36,12 @@ def _make_dummy_df(nrows=280):
 
 
 from unittest.mock import patch
+from src.plugins.plugin_manager import plugin_manager
+
 
 class TestCSVAdapter(unittest.TestCase):
     def setUp(self):
-        self.patcher = patch("src.plugins.plugin_manager.PluginManager.run_all", return_value={})
+        self.patcher = patch.object(plugin_manager, "run_all", return_value={})
         self.patcher.start()
 
     def tearDown(self):

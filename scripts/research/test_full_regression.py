@@ -5,7 +5,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from src.data.csv_adapter import csv_to_datawindow
-from src.plugins import plugin_manager
+from src.plugins.plugin_manager import plugin_manager
 from src.clients.llm_client import run_quantitative_plugin_tool, execute_python_code_tool
 from scripts.eval.validate_report import validate_report
 

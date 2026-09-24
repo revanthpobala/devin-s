@@ -673,7 +673,7 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
         return "not available in independent mode"
     import pandas as pd
     import json
-    from src.plugins import plugin_manager
+    from src.plugins.plugin_manager import plugin_manager
 
     ticker = ticker.upper()
     date_str = date_str or time.strftime("%Y-%m-%d")
