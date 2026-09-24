@@ -2230,15 +2230,26 @@ window.AppWatchlist = {
         distColor = Math.abs(dist) <= 1.5 ? '#10b981' : (dist > 0 ? '#f59e0b' : '#94a3b8');
       }
 
-      // PnL & ROC
-      const pnl = Number(t.dollar_pnl || 0);
-      const roc = Number(t.roc_pct || 0);
-      const pnlSign = pnl > 0 ? '+' : (pnl < 0 ? '-' : '');
-      const rocSign = roc > 0 ? '+' : (roc < 0 ? '-' : '');
-      const isZero = (pnl === 0 && (st === 'STALKING' || st === 'MISSED_RUNAWAY'));
-      const pnlColor = isZero ? 'var(--text-muted)' : (pnl >= 0 ? '#10b981' : '#f87171');
-      const pnlDisplay = isZero ? '--' : `${pnlSign}${Math.abs(pnl).toFixed(2)} R`;
-      const rocDisplay = isZero ? '--' : `${rocSign}${Math.abs(roc).toFixed(1)}%`;
+      // PnL (R-Multiple) & ROC %
+      let pnlDisplay = '—';
+      let rocDisplay = '—';
+      let pnlColor = 'var(--text-muted)';
+
+      if (t.r_multiple !== null && t.r_multiple !== undefined) {
+        const rVal = Number(t.r_multiple);
+        const rSign = rVal > 0 ? '+' : (rVal < 0 ? '-' : '');
+        pnlDisplay = `${rSign}${Math.abs(rVal).toFixed(2)} R`;
+        pnlColor = rVal >= 0 ? '#10b981' : '#f87171';
+        if (isOptions && t.max_loss && Number(t.max_loss) > 0) {
+          rocDisplay = `${rSign}${(rVal * 100).toFixed(1)}%`;
+        }
+      }
+
+      if (!isOptions && t.pnl_pct !== null && t.pnl_pct !== undefined && (st === 'IN_TRADE' || st === 'TARGET_HIT' || st === 'STOPPED' || st === 'STOP_BREACHED')) {
+        const pPct = Number(t.pnl_pct);
+        const pSign = pPct > 0 ? '+' : (pPct < 0 ? '-' : '');
+        rocDisplay = `${pSign}${Math.abs(pPct).toFixed(1)}%`;
+      }
 
       return `
         <tr style="border-bottom:1px solid var(--border); transition:background 0.15s;" onmouseover="this.style.background='var(--bg-subtle)'" onmouseout="this.style.background='transparent'">

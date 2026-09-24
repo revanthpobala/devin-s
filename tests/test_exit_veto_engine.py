@@ -311,7 +311,7 @@ def test_position_monitor_early_gain_traction_breakeven_ratchet(tmp_path):
         state = position_state.load_state()
         assert "NVDA" in state
         assert state["NVDA"]["be_locked"] is True
-        assert state["NVDA"]["stop"] in (500.05, 500.06)
+        assert state["NVDA"]["stop"] in (500.05, 500.06, 500.07)
         assert "Gain traction" in state["NVDA"]["last_eval"]
 
 

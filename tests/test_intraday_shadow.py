@@ -55,7 +55,10 @@ def test_stage_veto_env_flag(monkeypatch):
     assert "COUNTER-STAGE: STAGE 4 DECLINE" in hdr
 
 
-def test_push_formatters():
+def test_push_formatters(tmp_path, monkeypatch):
+    import src.tracking.alert_db as adb
+    monkeypatch.setattr(adb, "DB_PATH", tmp_path / "test_push.db")
+    adb.init_db()
     from src.tracking.alert_evaluator import format_intraday_entry_push, format_intraday_exit_push
 
     alert = {

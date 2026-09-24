@@ -228,7 +228,7 @@ def get_watch_targets():
 
                 # 2. SUGGESTED TRADE R-MULTIPLE
                 eff_entry = item.get("fill_price") or entry_mid
-                trade_r = 0.0
+                trade_r = None
                 risk_amt = abs(eff_entry - tactical_stop) if (eff_entry and tactical_stop) else 0.0
 
                 if status in ("TARGET_HIT", "COMPLETED"):
