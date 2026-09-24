@@ -19,8 +19,13 @@ from pydantic import BaseModel
 from src import config
 from src.ui.state import append_log, get_db
 
+import time
+
 logger = logging.getLogger("ui_server")
 router = APIRouter(tags=["watchlist"])
+
+_WATCH_TARGETS_CACHE: Dict[str, Any] = {}
+_WATCH_TARGETS_CACHE_TTL = 10.0  # 10 seconds
 
 
 class CreateAlertRequest(BaseModel):
@@ -46,6 +51,11 @@ class SyncTickerAlertsRequest(BaseModel):
 @router.get("/api/watch-targets")
 def get_watch_targets():
     """Fetch active stalking targets and enrich with tactical trade ideas and real-time Schwab quotes."""
+    now_ts = time.time()
+    cached = _WATCH_TARGETS_CACHE.get("all_targets")
+    if cached and (now_ts - cached[0] < _WATCH_TARGETS_CACHE_TTL):
+        return cached[1]
+
     try:
         from src.logic.trade_ideas_generator import generate_trade_ideas_for_target
 
@@ -84,10 +94,7 @@ def get_watch_targets():
                             target_mtime = datetime.fromtimestamp(cand.stat().st_mtime).isoformat()
                             break
 
-                if not target_mtime:
-                    continue
-
-                item["research_timestamp"] = target_mtime
+                item["research_timestamp"] = target_mtime or item.get("updated_at") or d_str
                 item["is_open_position"] = False
                 item["trade_ideas"] = generate_trade_ideas_for_target(item)
                 targets.append(item)
@@ -311,7 +318,9 @@ def get_watch_targets():
                 "accounting_mode": "R_MULTIPLE",
             }
 
-            return {"targets": targets, "count": len(targets), "performance": performance_summary}
+            res = {"targets": targets, "count": len(targets), "performance": performance_summary}
+            _WATCH_TARGETS_CACHE["all_targets"] = (now_ts, res)
+            return res
     except Exception as e:
         logger.error(f"Error fetching watch targets: {e}")
         return {"targets": [], "count": 0, "error": str(e)}
@@ -320,6 +329,7 @@ def get_watch_targets():
 @router.post("/api/watch-targets/delete")
 def delete_watch_target_post(data: dict):
     """Soft delete / Untrack a stalking target from the SQLite watch database."""
+    _WATCH_TARGETS_CACHE.clear()
     try:
         row_id = data.get("id") or data.get("row_id")
         ticker = (data.get("ticker") or "").upper().strip()

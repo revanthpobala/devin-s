@@ -2484,13 +2484,15 @@ window.AppSwing = {
       this.togglePositionsPane(false);
       this.renderSuggestedPositionsFullTab(data, bodyEl);
     } else if (tab === 'arb') {
-      bodyEl.innerHTML = data.arbitration_md
-        ? window.AppUtils.renderMarkdown(data.arbitration_md)
-        : '<em>No arbitration report found.</em>';
+      const arbContent = data.arbitration_md || data.summary_md || data.independent_md;
+      bodyEl.innerHTML = arbContent
+        ? window.AppUtils.renderMarkdown(arbContent)
+        : '<em>No arbitration or research report found for this date.</em>';
     } else if (tab === 'sum') {
-      bodyEl.innerHTML = data.summary_md
-        ? window.AppUtils.renderMarkdown(data.summary_md)
-        : '<em>No synthesis summary found.</em>';
+      const sumContent = data.summary_md || data.arbitration_md || data.independent_md;
+      bodyEl.innerHTML = sumContent
+        ? window.AppUtils.renderMarkdown(sumContent)
+        : '<em>No synthesis summary found for this date.</em>';
     } else if (tab === 'ind') {
       const bannerHtml = `
         <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(139,92,246,0.28); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
@@ -2516,9 +2518,10 @@ window.AppSwing = {
           </div>
         </div>
       `;
-      const reportHtml = data.independent_md
-        ? window.AppUtils.renderMarkdown(data.independent_md)
-        : '<em>No independent report found.</em>';
+      const indContent = data.independent_md || data.arbitration_md || data.summary_md;
+      const reportHtml = indContent
+        ? window.AppUtils.renderMarkdown(indContent)
+        : '<em>No independent report found for this date.</em>';
       bodyEl.innerHTML = bannerHtml + reportHtml;
     } else if (tab === 'history') {
       this.togglePositionsPane(false);
