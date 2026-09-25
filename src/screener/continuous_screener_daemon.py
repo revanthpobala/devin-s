@@ -709,6 +709,13 @@ class ContinuousScreenerDaemon(threading.Thread):
 
             score = float(c.get("priority_score") or 0.0)
             tier = str(c.get("priority_tier") or "MONITOR")
+            setup_val = c.get("setup")
+
+            # Only genuine coiling setups or high/medium priority qualify for autonomous deep research.
+            # Generic MONITOR candidates without an actionable setup pattern must not be scraped or dispatched.
+            if tier not in ("HIGH_PRIORITY", "MEDIUM_PRIORITY") and not setup_val:
+                continue
+
             if tier == "HIGH_PRIORITY":
                 if score < self.min_conviction_score * 0.5:
                     continue

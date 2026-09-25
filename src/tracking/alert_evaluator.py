@@ -125,7 +125,46 @@ def build_live_market_context(symbol: str) -> Dict[str, Any]:
                 "liquidity_rating": m.get("liquidity-rating"),
                 "borrow_rate": m.get("borrow-rate"),
             }
-            context["expected_earnings"] = m.get("earnings", {}).get("expected-report-date")
+            report_date_str = m.get("earnings", {}).get("expected-report-date")
+            days_away = None
+            b_days_away = None
+            if report_date_str:
+                try:
+                    r_dt = datetime.strptime(str(report_date_str)[:10], "%Y-%m-%d").date()
+                    today_dt = datetime.now().date()
+                    days_away = (r_dt - today_dt).days
+                    import pandas as pd
+                    b_days_away = max(0, len(pd.bdate_range(start=today_dt, end=r_dt)) - 1)
+                except Exception:
+                    pass
+
+            if days_away is None:
+                try:
+                    from src.clients.earnings_client import get_next_earnings_days
+                    b_days = get_next_earnings_days(symbol)
+                    if b_days is not None:
+                        b_days_away = b_days
+                        days_away = int(b_days * 7 / 5)
+                except Exception:
+                    pass
+
+            gate = "CLEAR"
+            if days_away is not None:
+                if days_away < 3:
+                    gate = "FAIL (<3 days away - binary event risk)"
+                elif days_away < 7:
+                    gate = "WARNING (<7 days away - approach with caution)"
+                else:
+                    gate = f"CLEAR ({days_away} calendar days / {b_days_away} trading days away - NOT a near-term binary risk)"
+
+            context["earnings_proximity"] = {
+                "report_date": report_date_str or "N/A",
+                "days_remaining": days_away,
+                "trading_days_remaining": b_days_away,
+                "earnings_gate": gate,
+                "is_imminent": bool(days_away is not None and days_away <= 7),
+            }
+            context["expected_earnings"] = report_date_str
     except Exception as e:
         logger.debug(f"Tastytrade metrics fetch bypassed for {symbol}: {e}")
 
@@ -700,6 +739,7 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
         "wrong_if": wrong_if,
         "volatility_context": live_ctx.get("volatility"),
         "expected_earnings": live_ctx.get("expected_earnings"),
+        "earnings_proximity": live_ctx.get("earnings_proximity"),
         "recent_catalysts": live_ctx.get("news"),
         "options_snippet": live_ctx.get("options_snippet"),
         "today": get_eastern_now().strftime("%Y-%m-%d"),
@@ -726,7 +766,7 @@ Apply the revanth-0dte.md rules card to this alert and return your GO/NO-GO deci
 {json.dumps(triage_context, indent=2)}
 
 Channel #ponytail ruthlessly:
-1. Measured risk/reward: Evaluate price action, broker volatility (Tastytrade IV/HV), earnings proximity, and news catalysts.
+1. Measured risk/reward: Evaluate price action, broker volatility (Tastytrade IV/HV), and earnings proximity (STRICT RULE: always use earnings_proximity.days_remaining and earnings_gate; DO NOT guess or calculate days manually).
 2. Hard defensive anchor stop level (exact dollar value).
 3. Recommended vehicle (SHARES, BULL_PUT_SPREAD, BULL_CALL_SPREAD, BEAR_PUT_SPREAD, BEAR_CALL_SPREAD, DEEP_ITM_LEAPS, or STALK_CASH).
 4. Triage verdict: PASS (Deep Research), WATCH, or CUT.
@@ -788,7 +828,10 @@ Output strictly valid JSON matching the revanth-gem-local.md schema.
 
     if iv_rank is not None:
         playbook_parts.append(f"**Tastytrade Volatility**: IV Rank {iv_rank}% (IV Percentile {iv_pct}%, 30d HV {hv30}%, Spread {iv_hv_diff}%)")
-    if expected_earnings:
+    ep = live_ctx.get("earnings_proximity") or {}
+    if ep.get("days_remaining") is not None:
+        playbook_parts.append(f"**Expected Earnings**: {ep.get('report_date')} ({ep.get('days_remaining')}d away · {ep.get('earnings_gate')})")
+    elif expected_earnings:
         playbook_parts.append(f"**Expected Earnings**: {expected_earnings}")
     if catalyst and catalyst.lower() not in ("none", "n/a"):
         playbook_parts.append(f"**Catalyst**: {catalyst}")

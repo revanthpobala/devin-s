@@ -47,7 +47,7 @@ def find_live_research_pid(ticker: str, job_id: Optional[str] = None) -> Optiona
                 if not cmdline:
                     continue
                 cmd_str = " ".join(cmdline).upper()
-                if "RUN_DEEP_RESEARCH.PY" in cmd_str or "RUN_SWING_RESEARCH.PY" in cmd_str:
+                if "RUN_DEEP_RESEARCH.PY" in cmd_str or "RUN_SWING_RESEARCH.PY" in cmd_str or "RUN_LOCAL_RESEARCH.PY" in cmd_str:
                     if job_id and job_id.upper() in cmd_str:
                         return proc.pid
                     if f"--TICKER {t_upper}" in cmd_str or f"-T {t_upper}" in cmd_str or f" {t_upper} " in cmd_str or cmd_str.endswith(f" {t_upper}"):
@@ -94,12 +94,13 @@ def rehydrate_active_jobs():
     try:
         with get_db() as conn:
             c = conn.cursor()
-            running = c.execute("SELECT job_id, ticker, pid, target_date, started_at FROM active_research_jobs WHERE status = 'RUNNING'").fetchall()
+            running = c.execute("SELECT job_id, ticker, pid, target_date, started_at, log_file FROM active_research_jobs WHERE status = 'RUNNING'").fetchall()
             for r in running:
-                pid = r["pid"]
-                jid = r["job_id"]
-                ticker_sym = r["ticker"]
-                t_date = r["target_date"] or datetime.now().strftime("%Y-%m-%d")
+                r_dict = dict(r)
+                pid = r_dict.get("pid")
+                jid = r_dict.get("job_id")
+                ticker_sym = r_dict.get("ticker", "")
+                t_date = r_dict.get("target_date") or datetime.now().strftime("%Y-%m-%d")
 
                 is_alive = False
                 effective_pid = None
@@ -131,13 +132,13 @@ def rehydrate_active_jobs():
                     else:
                         # Check heartbeat: only mark FAILED after stale heartbeat, NOT on server restart
                         stale_seconds = int(os.getenv("RESEARCH_HEARTBEAT_TIMEOUT_S", "600"))
-                        log_file_p = Path(r["log_file"]) if r.get("log_file") else None
+                        log_file_p = Path(r_dict["log_file"]) if r_dict.get("log_file") else None
                         last_active = None
                         if log_file_p and log_file_p.exists():
                             last_active = datetime.fromtimestamp(log_file_p.stat().st_mtime, tz=timezone.utc)
-                        elif r.get("started_at"):
+                        elif r_dict.get("started_at"):
                             try:
-                                last_active = datetime.fromisoformat(r["started_at"])
+                                last_active = datetime.fromisoformat(r_dict["started_at"])
                             except Exception:
                                 pass
 
@@ -218,12 +219,11 @@ def dispatch_next_queued_job():
                 append_log(f"⚡ [Queue Dispatcher] Dispatched queued research for {tkr} to open slot (Job ID: {jid}).")
 
 
-# Sub-stage markers we watch for in the deep-research subprocess stream
 _STAGE_MARKERS = [
-    (re.compile(r"\[Debate\]|debate|Bull.*Bear", re.I), "Debate"),
-    (re.compile(r"Pass 2|pass2|Gemini|Pine Gem|Model A", re.I), "Pass 2 — Pine Gem"),
-    (re.compile(r"Independent|independent_gem|Model B|IND", re.I), "Pass 2-IND — Independent"),
-    (re.compile(r"Arbitration|arbitration|PM.*Judge|Ponytail", re.I), "Arbitration — PM Judge"),
+    (re.compile(r"\[Debate\]|\bdebate\b|Bull.*Bear", re.I), "Debate"),
+    (re.compile(r"Pass 2|pass2|Pine Gem|\bModel A\b", re.I), "Pass 2 — Pine Gem"),
+    (re.compile(r"\bIndependent\b|independent_gem|\bModel B\b|\bPass 2-IND\b", re.I), "Pass 2-IND — Independent"),
+    (re.compile(r"\bArbitration\b|\barbitration\b|PM.*Judge|\bPonytail\b", re.I), "Arbitration — PM Judge"),
     (re.compile(r"Watch.*sync|watch_alerts|Tastytrade.*alert", re.I), "Watch Sync"),
 ]
 

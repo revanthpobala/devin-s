@@ -376,14 +376,47 @@ def get_logs(channel: str = "all", job_id: Optional[str] = None):
                             is_alive = True
                             job_row["pid"] = live_pid
                         else:
-                            job_row["status"] = "FAILED"
-                            job_row["stage"] = "ERROR"
-                            job_row["error_message"] = job_row.get("error_message") or "Process terminated before generating report"
-                            c.execute(
-                                "UPDATE active_research_jobs SET status='FAILED', stage='ERROR', error_message=COALESCE(error_message, ?) WHERE job_id=?",
-                                ("Process terminated before generating report", job_id),
-                            )
-                            conn.commit()
+                            # 1. Check if report files already exist -> COMPLETED
+                            t_date = job_row.get("target_date") or datetime.now().strftime("%Y-%m-%d")
+                            ticker_sym = job_row.get("ticker", "")
+                            rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_summary.md"
+                            arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_arbitration.md"
+                            if rep_file.exists() or arb_file.exists():
+                                is_alive = False
+                                job_row["status"] = "COMPLETED"
+                                job_row["stage"] = "DONE"
+                                c.execute(
+                                    "UPDATE active_research_jobs SET status='COMPLETED', stage='DONE', completed_at=? WHERE job_id=?",
+                                    (datetime.now(timezone.utc).isoformat(), job_id),
+                                )
+                                conn.commit()
+                            elif job_row.get("stage") not in ("SCRAPING", "STARTING"):
+                                # 2. Check heartbeat: only mark FAILED after stale heartbeat, NOT during brief transitions
+                                log_file_p = Path(job_row.get("log_file") or (LOGS_DIR / f"{job_id}.log"))
+                                is_recent = False
+                                if log_file_p.exists():
+                                    elapsed = (datetime.now(timezone.utc) - datetime.fromtimestamp(log_file_p.stat().st_mtime, tz=timezone.utc)).total_seconds()
+                                    if elapsed < 180:
+                                        is_recent = True
+                                elif job_row.get("started_at"):
+                                    try:
+                                        st_dt = datetime.fromisoformat(job_row["started_at"])
+                                        if st_dt.tzinfo is None:
+                                            st_dt = st_dt.replace(tzinfo=timezone.utc)
+                                        if (datetime.now(timezone.utc) - st_dt).total_seconds() < 180:
+                                            is_recent = True
+                                    except Exception:
+                                        pass
+
+                                if not is_recent:
+                                    job_row["status"] = "FAILED"
+                                    job_row["stage"] = "ERROR"
+                                    job_row["error_message"] = job_row.get("error_message") or "Process terminated before generating report"
+                                    c.execute(
+                                        "UPDATE active_research_jobs SET status='FAILED', stage='ERROR', error_message=COALESCE(error_message, ?) WHERE job_id=?",
+                                        ("Process terminated before generating report", job_id),
+                                    )
+                                    conn.commit()
                 job_row["is_alive"] = is_alive
 
         return {"logs": logs, "channel": f"job:{job_id}", "job": job_row}
