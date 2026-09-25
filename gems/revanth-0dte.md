@@ -201,7 +201,7 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 | ↑ | ↑ | ↑ | Full stack — highest conviction CALLS |
 | ↓ | ↓ | ↓ | Full stack — highest conviction PUTS |
 | ↑ | ↑ | ↓ (or ↓↓↑) | 15m fighting the tide → the card's trend veto likely engaged; **skip / wait for 15m to realign** |
-| mixed (→) | — | aligned w/ side | 50% size; tradeable but not a layup |
+| mixed (→) | — | aligned w/ side | 50% size or demand Grade A — mixed arrows are not a full-size setup |
 
 ### E) Time-of-day (ET, read off chart clock) → action
 

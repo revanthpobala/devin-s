@@ -233,6 +233,17 @@ window.AppApi = {
     return await res.json();
   },
 
+  async getQuotes(tickers = []) {
+    const results = {};
+    await Promise.all(tickers.map(async sym => {
+      try {
+        const q = await this.getTickerQuote(sym);
+        if (q) results[sym] = q;
+      } catch (e) {}
+    }));
+    return results;
+  },
+
   async getOptionsFlow(ticker, refresh = false) {
     const url = `/api/options-flow/${encodeURIComponent(ticker)}${refresh ? '?refresh=true' : ''}`;
     const res = await fetch(url);

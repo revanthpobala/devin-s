@@ -18,6 +18,7 @@
     _iframeEl: null,
     _loadingEl: null,
     _currentSym: '',
+    _currentExchange: 'BATS',
     _currentInterval: 'D',
     _currentTarget: null,
     _hoverTimer: null,
@@ -29,6 +30,11 @@
     init() {
       if (this._initialized) return;
       this._initialized = true;
+
+      try {
+        const saved = localStorage.getItem('tv_hover_exchange');
+        if (saved) this._currentExchange = saved;
+      } catch (e) {}
 
       this._createCardElement();
       this._bindGlobalEvents();
@@ -49,6 +55,13 @@
               <span class="tv-hover-price" id="tv-hover-price" style="display:none;"></span>
             </div>
             <div class="tv-hover-actions">
+              <select id="tv-hover-exchange" class="tv-hover-exchange-select" onchange="AppTvHover.setExchange(this.value)" title="Exchange routing prefix (saved in settings)">
+                <option value="BATS">BATS</option>
+                <option value="NASDAQ">NASDAQ</option>
+                <option value="NYSE">NYSE</option>
+                <option value="AMEX">AMEX</option>
+                <option value="AUTO">AUTO</option>
+              </select>
               <div class="tv-hover-intervals">
                 <button class="tv-hover-int-btn" data-int="5" onclick="AppTvHover.setInterval('5')">5m</button>
                 <button class="tv-hover-int-btn" data-int="15" onclick="AppTvHover.setInterval('15')">15m</button>
@@ -56,7 +69,7 @@
                 <button class="tv-hover-int-btn active" data-int="D" onclick="AppTvHover.setInterval('D')">1D</button>
               </div>
               <button class="tv-hover-btn-action" onclick="AppTvHover.openFullModal()" title="Expand to Full Interactive Modal">⛶ Full</button>
-              <a class="tv-hover-btn-action" id="tv-hover-link-ext" target="_blank" href="#" title="Open directly in TradingView">↗</a>
+              <a class="tv-hover-btn-action" id="tv-hover-link-ext" target="_blank" href="#" title="Open directly in TradingView (loads with your real-time subscription & indicators)">↗</a>
             </div>
           </div>
           <div class="tv-hover-chart-body">
@@ -194,10 +207,54 @@
       }, delay);
     },
 
+    _getPrefixedSymbol(sym) {
+      if (!sym) return '';
+      if (sym.includes(':')) return sym;
+      const exch = (this._currentExchange || 'BATS').trim().toUpperCase();
+      if (!exch || exch === 'AUTO') {
+        return sym;
+      }
+      return `${exch}:${sym}`;
+    },
+
+    setExchange(exchange, updateFrame = true) {
+      this._currentExchange = (exchange || 'BATS').trim().toUpperCase();
+      try {
+        localStorage.setItem('tv_hover_exchange', this._currentExchange);
+      } catch (e) {}
+
+      const selectEl = document.getElementById('tv-hover-exchange');
+      if (selectEl && selectEl.value !== this._currentExchange) {
+        selectEl.value = this._currentExchange;
+      }
+
+      if (this._currentSym) {
+        const fullSym = this._getPrefixedSymbol(this._currentSym);
+        const extLink = document.getElementById('tv-hover-link-ext');
+        if (extLink) {
+          extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(fullSym)}&interval=${this._currentInterval || 'D'}`;
+        }
+        if (updateFrame) {
+          this._loadChartFrame(this._currentSym, this._currentInterval || 'D');
+        }
+      }
+    },
+
     show(targetEl, sym) {
       if (!this._cardEl) this._createCardElement();
       this._currentTarget = targetEl;
       this._currentSym = sym;
+
+      // Restore saved exchange preference
+      try {
+        const savedExch = localStorage.getItem('tv_hover_exchange');
+        if (savedExch) this._currentExchange = savedExch;
+      } catch (e) {}
+
+      const selectEl = document.getElementById('tv-hover-exchange');
+      if (selectEl) {
+        selectEl.value = this._currentExchange || 'BATS';
+      }
 
       // Intelligent default timeframe based on active desk
       const isIntradayDesk = (window.AppState && window.AppState.currentDesk === 'intraday');
@@ -221,16 +278,17 @@
         this._loadSpotPrice(sym, priceEl);
       }
 
-      // External link
+      // External link with current exchange prefix
+      const fullSym = this._getPrefixedSymbol(sym);
       const extLink = document.getElementById('tv-hover-link-ext');
       if (extLink) {
-        extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(sym)}&interval=${this._currentInterval || defaultInterval}`;
+        extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(fullSym)}&interval=${this._currentInterval || defaultInterval}`;
       }
 
       // Interval pills
       this.setInterval(this._currentInterval || defaultInterval, false);
 
-      // Load Chart iframe
+      // Load Chart iframe with exchange prefix
       this._loadChartFrame(sym, this._currentInterval);
 
       // Viewport-aware positioning
@@ -272,9 +330,10 @@
         }
       });
 
+      const fullSym = this._getPrefixedSymbol(this._currentSym);
       const extLink = document.getElementById('tv-hover-link-ext');
       if (extLink && this._currentSym) {
-        extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(this._currentSym)}&interval=${interval}`;
+        extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(fullSym)}&interval=${interval}`;
       }
 
       if (updateFrame && this._currentSym) {
@@ -294,7 +353,8 @@
     _loadChartFrame(sym, interval) {
       if (!this._iframeEl) return;
 
-      const expectedSrc = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&hidesidetoolbar=1&symboledit=0&saveimage=0&toolbarbg=0f172a&studies=%5B%5D&theme=dark&style=1&timezone=America%2FNew_York`;
+      const fullSym = this._getPrefixedSymbol(sym);
+      const expectedSrc = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(fullSym)}&interval=${encodeURIComponent(interval)}&hidesidetoolbar=1&symboledit=0&saveimage=0&toolbarbg=0f172a&studies=%5B%5D&theme=dark&style=1&timezone=America%2FNew_York`;
 
       if (this._iframeEl.src !== expectedSrc) {
         if (this._loadingEl) this._loadingEl.style.opacity = '1';
@@ -304,18 +364,19 @@
 
     _loadSpotPrice(sym, priceEl) {
       if (!priceEl) return;
-      if (window.AppApi && typeof window.AppApi.getQuotes === 'function') {
-        window.AppApi.getQuotes([sym]).then(quotes => {
-          if (quotes && quotes[sym] && quotes[sym].price && this._currentSym === sym) {
-            const p = Number(quotes[sym].price);
-            const chg = quotes[sym].change_pct !== undefined ? Number(quotes[sym].change_pct) : null;
+      if (window.AppApi && typeof window.AppApi.getTickerQuote === 'function') {
+        window.AppApi.getTickerQuote(sym).then(q => {
+          if (q && q.price && this._currentSym === sym) {
+            const p = Number(q.price);
+            const chg = q.net_percent_change !== undefined ? Number(q.net_percent_change) : (q.change_pct !== undefined ? Number(q.change_pct) : null);
             let chgHtml = '';
             if (chg !== null) {
               const chgColor = chg >= 0 ? '#10b981' : '#ef4444';
-              chgHtml = ` <span style="color:${chgColor};">(${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%)</span>`;
+              chgHtml = ` <span style="color:${chgColor};font-size:10px;">(${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%)</span>`;
             }
-            priceEl.innerHTML = `$${p.toFixed(2)}${chgHtml}`;
-            priceEl.style.display = 'inline-block';
+            const src = q.source ? `${q.source} Live` : 'Live';
+            priceEl.innerHTML = `<span class="tv-hover-live-pill" title="0-delay real-time quote directly from ${src} stream"><span class="dot live-pulse"></span>Live $${p.toFixed(2)}${chgHtml}</span>`;
+            priceEl.style.display = 'inline-flex';
           }
         }).catch(() => {});
       }
@@ -325,8 +386,8 @@
       if (!this._cardEl || !targetEl) return;
 
       const rect = targetEl.getBoundingClientRect();
-      const cardW = 540;
-      const cardH = 380;
+      const cardW = 560;
+      const cardH = 390;
       const padding = 12;
 
       let left = rect.right + padding;

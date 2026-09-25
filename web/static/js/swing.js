@@ -2831,17 +2831,23 @@ window.AppSwing = {
   _currentTvModalInterval: 'D',
 
   openTradingViewModal(ticker, interval = 'D') {
-    const sym = (ticker || 'SPY').trim().toUpperCase();
-    this._currentTvModalTicker = sym;
+    const rawSym = (ticker || 'SPY').trim().toUpperCase();
+    this._currentTvModalTicker = rawSym;
     this._currentTvModalInterval = interval;
-    this.setTicker(sym);
+    this.setTicker(rawSym);
+
+    let prefExch = 'BATS';
+    try {
+      prefExch = localStorage.getItem('tv_hover_exchange') || 'BATS';
+    } catch (e) {}
+    const sym = (!rawSym.includes(':') && prefExch && prefExch !== 'AUTO') ? `${prefExch}:${rawSym}` : rawSym;
 
     const modal = document.getElementById('tv-chart-modal');
     const title = document.getElementById('tv-modal-ticker-title');
     const extLink = document.getElementById('tv-modal-btn-external');
     const priceEl = document.getElementById('tv-modal-live-price');
 
-    if (title) title.innerText = `$${sym} - TradingView Interactive Chart`;
+    if (title) title.innerText = `$${rawSym} - TradingView Interactive Chart`;
     if (extLink) extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}`;
     if (priceEl) priceEl.innerText = 'Live Spot';
 
@@ -2867,9 +2873,9 @@ window.AppSwing = {
 
     // Fetch live quote for header badge if available
     if (window.AppApi && typeof window.AppApi.getQuotes === 'function') {
-      window.AppApi.getQuotes([sym]).then(quotes => {
-        if (quotes && quotes[sym] && quotes[sym].price) {
-          if (priceEl) priceEl.innerText = `$${Number(quotes[sym].price).toFixed(2)}`;
+      window.AppApi.getQuotes([rawSym]).then(quotes => {
+        if (quotes && quotes[rawSym] && quotes[rawSym].price) {
+          if (priceEl) priceEl.innerText = `$${Number(quotes[rawSym].price).toFixed(2)}`;
         }
       }).catch(() => {});
     }
@@ -2881,8 +2887,15 @@ window.AppSwing = {
 
   setTradingViewModalInterval(interval) {
     this._currentTvModalInterval = interval;
+    const rawSym = this._currentTvModalTicker || 'SPY';
+    let prefExch = 'BATS';
+    try {
+      prefExch = localStorage.getItem('tv_hover_exchange') || 'BATS';
+    } catch (e) {}
+    const sym = (!rawSym.includes(':') && prefExch && prefExch !== 'AUTO') ? `${prefExch}:${rawSym}` : rawSym;
+
     const extLink = document.getElementById('tv-modal-btn-external');
-    if (extLink) extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(this._currentTvModalTicker || 'SPY')}&interval=${encodeURIComponent(interval)}`;
+    if (extLink) extLink.href = `https://www.tradingview.com/chart/jPAQSlZC/?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}`;
 
     ['15', '60', 'D', 'W'].forEach(tf => {
       const btn = document.getElementById(`tv-tf-${tf}`);
@@ -2908,8 +2921,11 @@ window.AppSwing = {
     if (!host) return;
 
     const rawSym = this._currentTvModalTicker || 'SPY';
-    // If not already prefixed with an exchange, use BATS: for real-time (0 delay) data on US stocks
-    const sym = rawSym.includes(':') ? rawSym : `BATS:${rawSym}`;
+    let prefExch = 'BATS';
+    try {
+      prefExch = localStorage.getItem('tv_hover_exchange') || 'BATS';
+    } catch (e) {}
+    const sym = (!rawSym.includes(':') && prefExch && prefExch !== 'AUTO') ? `${prefExch}:${rawSym}` : rawSym;
     const interval = this._currentTvModalInterval || 'D';
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     const theme = isDark ? 'dark' : 'light';

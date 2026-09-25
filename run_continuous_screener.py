@@ -4,8 +4,8 @@ run_continuous_screener.py
 Continuous Schwab 1000 Screener & Autonomous Deep Research Engine.
 Continuously screens 983 Schwab 1000 (SCHK) constituents for coiled pre-move swing bases (Long)
 and ceiling exhaustion (Prime Short), enriches setups with Tastytrade institutional volatility metrics
-and 24/7 cloud price alerts, and autonomously dispatches exactly 1 qualified setup at a time into the
-Deep Research pipeline when the local execution slot is free.
+and 24/7 cloud price alerts, and autonomously dispatches qualified setups into the
+Deep Research pipeline when local execution slots are available.
 
 Usage:
   # Continuous loop mode (scans every 10 min, dispatches 1 in the slot when qualified)
@@ -124,6 +124,12 @@ def main():
         action="store_true",
         help="Run chart scraping headless (no visible browser window)",
     )
+    parser.add_argument(
+        "--max-slots",
+        type=int,
+        default=3,
+        help="Max concurrent deep research slots (default: 3)",
+    )
 
     args = parser.parse_args()
 
@@ -131,13 +137,13 @@ def main():
         os.environ["HEADLESS_SCRAPE"] = "1"
     os.environ["CONTINUOUS_MIN_CONVICTION"] = str(args.min_score)
     os.environ["CONTINUOUS_MAX_AUTO_DEEP"] = str(args.max_deep)
-    os.environ["CONTINUOUS_MAX_CONCURRENT_SLOTS"] = "1"
+    os.environ["CONTINUOUS_MAX_CONCURRENT_SLOTS"] = str(args.max_slots)
 
     logger.info("=" * 85)
     logger.info("🤖 LAUNCHING SCHWAB 1000 AUTONOMOUS SCREENER & DEEP RESEARCH ENGINE")
     logger.info(f"   Universe:           Schwab 1000 Index (SCHK ETF — 983 stocks)")
     logger.info(f"   Scan Interval:      {args.interval}s ({args.interval / 60:.1f}m)")
-    logger.info(f"   Autonomous Deep:    {'ENABLED (1 in slot)' if args.auto_deep else 'DISABLED'}")
+    logger.info(f"   Autonomous Deep:    {'ENABLED' if args.auto_deep else 'DISABLED'} (max {args.max_slots} in slot)")
     logger.info(f"   Conviction Gate:    Score >= {args.min_score}")
     logger.info(f"   Daily Deep Cap:     {args.max_deep} setups / day")
     logger.info(f"   Market Hours Only:  {args.market_hours_only}")
@@ -150,7 +156,7 @@ def main():
         auto_alerts=False,
         market_hours_only=args.market_hours_only,
         auto_deep_research=args.auto_deep,
-        max_concurrent_slots=1,
+        max_concurrent_slots=args.max_slots,
     )
 
     def handle_shutdown(signum, frame):

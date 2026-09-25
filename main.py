@@ -206,7 +206,7 @@ def _append_screener_candidate(symbol: str, setup: str, date_str: str):
         symbol=symbol,
         date_str=date_str,
         setup=setup,
-        source="screener",
+        source="tv_alert",
         reason=f"Screener candidate setup: {setup}",
     )
 
@@ -317,12 +317,14 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
             logger.debug(f"Failed to mark email {email_id} as read: {e_mark}")
 
     # 5. Enqueue for background asynchronous enrichment
-    # Mute Daily NEUTRAL: skip LLM enrichment, store only, plus EOD digest.
+    # Mute Daily NEUTRAL only when there is no setup field; otherwise let it
+    # proceed to enrichment so a basing setup can still reach the research queue.
     raw_action = str(alert.get("action", "")).upper().strip()
     raw_side = str(alert.get("side", "")).upper().strip()
     is_daily_neutral = (
         strategy == "Daily"
         and raw_action == "NEUTRAL"
+        and not alert.get("setup")
     )
     if is_daily_neutral:
         logger.debug(f"[MUTED] Daily NEUTRAL for {symbol} — skipped enrichment.")

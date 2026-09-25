@@ -1750,8 +1750,8 @@ table.watchlist-table tbody td {
 .tv-hover-card {
   position: fixed;
   z-index: 99999;
-  width: 540px;
-  height: 380px;
+  width: 560px;
+  height: 390px;
   background: rgba(15, 23, 42, 0.98);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -1805,18 +1805,66 @@ table.watchlist-table tbody td {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 140px;
+  max-width: 110px;
 }
 
 .tv-hover-price {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
   font-weight: 700;
+  padding: 0;
+  border: none;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.tv-hover-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--text-main, #f8fafc);
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.4);
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--border, rgba(51, 65, 85, 0.4));
   white-space: nowrap;
+}
+
+.tv-hover-live-pill .dot.live-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+  animation: pulse-glow 1.5s infinite ease-in-out;
+}
+
+.tv-hover-exchange-select {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border, rgba(51, 65, 85, 0.6));
+  color: var(--cyan-glow, #38bdf8);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.tv-hover-exchange-select:hover,
+.tv-hover-exchange-select:focus {
+  border-color: var(--cyan, #06b6d4);
+  background: rgba(6, 182, 212, 0.12);
+}
+
+.tv-hover-exchange-select option {
+  background: #0f172a;
+  color: #f8fafc;
 }
 
 .tv-hover-actions {

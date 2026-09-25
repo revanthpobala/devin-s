@@ -720,6 +720,17 @@ class ContinuousScreenerDaemon(threading.Thread):
                 continue
 
             eligible.append(c)
+            try:
+                from src.tracking.alert_db import queue_for_research
+                queue_for_research(
+                    symbol=sym,
+                    date_str=target_date,
+                    setup=c.get("setup") or c.get("priority_tier") or "",
+                    source="schwab_screener",
+                    reason=f"Schwab screener candidate: {c.get('priority_tier')} score={score}",
+                )
+            except Exception as e_q:
+                logger.debug(f"[ContinuousScreener] Failed to queue {sym} in research_queue: {e_q}")
 
         if not eligible:
             return []
