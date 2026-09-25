@@ -108,18 +108,20 @@ def simulate_0dte_eval(req: Simulate0DTERequest):
     """Simulate and test 0DTE rules evaluation (revanth-0dte.md) on demand."""
     try:
         from main import query_local_llm_for_trade
+        sym = req.ticker.strip().upper()
         fake_alert = {
-            "ticker": req.ticker.strip().upper(),
+            "ticker": sym,
             "action": req.action.strip().upper(),
             "price": req.price,
             "why_now": req.why_now,
             "strategy": "Simulated 0DTE",
             "time": datetime.now().isoformat(),
         }
-        res = query_local_llm_for_trade(fake_alert)
-        return {"status": "ok", "evaluation": res}
+        decision, playbook = query_local_llm_for_trade(fake_alert, sym, "Simulated 0DTE")
+        return {"status": "ok", "decision": decision, "playbook": playbook}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        logger.error(f"Error in 0DTE simulate eval: {e}")
+        return {"status": "error", "error": str(e), "decision": "ERROR", "playbook": str(e)}
 
 
 class SaveSkillRequest(BaseModel):

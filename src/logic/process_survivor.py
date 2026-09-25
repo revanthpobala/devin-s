@@ -128,7 +128,7 @@ def _next_earnings_days(ticker: str):
 
 
 def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days: int = 90,
-                         chrome_profile: str = None, force: bool = False, headless: bool = False):
+                         chrome_profile: str = None, force: bool = False, headless: bool = True):
     ticker = survivor.get("Ticker") or survivor.get("Symbol") or survivor.get("ticker", "")
     if not ticker:
         logger.warning(f"[Scraper-{worker_id}] Survivor dict has no Ticker key: {survivor}")

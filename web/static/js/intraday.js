@@ -157,7 +157,7 @@ window.AppIntraday = {
 
             return `
               <tr>
-                <td style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="AppIntraday.queryPosition('${sym}', '${side}', '${entry}', '${spot}', '${pnl}')" title="Click to query $${sym} in REV CHAT">${sym} 🔍</td>
+                <td class="tv-symbol-hover" data-ticker="${sym}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="AppIntraday.queryPosition('${sym}', '${side}', '${entry}', '${spot}', '${pnl}')" title="Click to query $${sym} in REV CHAT · Hover for Live TradingView Chart">${sym} 🔍</td>
                 <td><span class="pill ${isLong ? 'green' : 'red'}" style="padding:1px 6px; font-size:10px;">${side}</span></td>
                 <td>${entry}</td>
                 <td style="font-weight:600;">${spot}</td>
@@ -245,8 +245,13 @@ window.AppIntraday = {
 
     try {
       const data = await window.AppApi.simulate0DTE({ ticker, action, price, why_now });
-      if (decEl) decEl.innerText = data.decision || 'DECISION COMPLETE';
-      if (playEl) playEl.innerText = data.playbook || '(No playbook commentary returned)';
+      if (data.status === 'error') {
+        if (decEl) decEl.innerText = '❌ EVALUATION ERROR';
+        if (playEl) playEl.innerText = data.error || 'Server error';
+      } else {
+        if (decEl) decEl.innerText = data.decision || 'DECISION COMPLETE';
+        if (playEl) playEl.innerText = data.playbook || '(No playbook commentary returned)';
+      }
     } catch (e) {
       if (decEl) decEl.innerText = '❌ EVALUATION ERROR';
       if (playEl) playEl.innerText = e.message;
@@ -369,7 +374,7 @@ window.AppIntraday = {
             return `
               <tr>
                 <td style="color:var(--text-muted); font-size:11px; white-space:nowrap;">${timeStr}</td>
-                <td style="font-weight:700; color:var(--cyan-glow); cursor:help;" title="${compTitle} ($${a.symbol})" data-ticker="${a.symbol}">${a.symbol}</td>
+                <td class="tv-symbol-hover" data-ticker="${a.symbol}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="if(window.AppSwing) AppSwing.openTradingViewModal('${a.symbol}', '15')" title="${compTitle} ($${a.symbol}) · Click to open chart · Hover for Live TradingView Chart">${a.symbol}</td>
                 <td><span class="pill ${badgeColor}" style="padding:2px 8px; font-size:10px; font-weight:700;">${actUpper}</span></td>
                 <td style="font-weight:600;">${px}</td>
                 <td style="font-size:11px; color:var(--text-main); font-weight:600;">${gradeScore}</td>

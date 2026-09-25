@@ -824,8 +824,21 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
             if any(d.glob(f"{ticker_u}_*")):
                 dates_set.add(d.name)
 
+    target_dt = (date_str or "").strip()
+    if not target_dt or target_dt in ("latest", "today", "now"):
+        from src.tracking.alert_db import get_eastern_date_str
+        target_dt = get_eastern_date_str()
+
+    local_dossier_md = None
+    local_wl = None
+    try:
+        from src.ui.routes.research import _build_local_research_dossier
+        local_dossier_md, local_wl = _build_local_research_dossier(target_dt, ticker_u)
+    except Exception as le:
+        logger.debug(f"Local research dossier check error for {ticker_u}: {le}")
+
     sorted_hist_dates = sorted(list(dates_set), reverse=True)
-    latest_dt = sorted_hist_dates[0] if sorted_hist_dates else (date_str if date_str else None)
+    latest_dt = target_dt if (local_wl or target_dt in sorted_hist_dates) else (sorted_hist_dates[0] if sorted_hist_dates else target_dt)
 
     report_spot: Optional[float] = None
     report_date: Optional[str] = latest_dt
@@ -838,6 +851,16 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     arb_file: Optional[Path] = None
     ind_file: Optional[Path] = None
     sum_file: Optional[Path] = None
+
+    if local_wl:
+        shares_plan = dict(local_wl.get("shares_plan") or {})
+        options_plan = dict(local_wl.get("options_plan") or {})
+        invalidation_rule = dict(local_wl.get("invalidation") or {})
+        verdict = local_wl.get("verdict") or verdict
+        conviction = local_wl.get("conviction") or conviction
+        if local_wl.get("spot_price"):
+            report_spot = float(local_wl["spot_price"])
+        report_date = target_dt
 
     if latest_dt:
         t_raw_dir = raw_root / latest_dt / ticker_u
@@ -1343,6 +1366,14 @@ if not df.empty:
         if latest_dt:
             spot_comp_str = f" (Spot at publication was ${report_spot:.2f} vs LIVE SPOT ${live_spot:.2f} right now)" if (report_spot and live_spot) else ""
 
+            # Active Local Research Dossier (deterministic pre-filter, action codes, ponytail playbook)
+            if local_dossier_md:
+                parts.append(
+                    f"### 📑 TODAY'S ACTIVE LOCAL RESEARCH & TRIAGE DOSSIER ({ticker_u} — Date: {target_dt}):\n"
+                    f"> 💡 **ACTIVE LOCAL DOSSIER**: Deterministic Data Window pre-filter, action codes, technical analysis, and #ponytail tactical playbook for {ticker_u} compiled on {target_dt}.\n\n"
+                    + local_dossier_md[:6000]
+                )
+
             # Independent Quantitative Study (Model B)
             if ind_file and ind_file.exists():
                 parts.append(
@@ -1618,6 +1649,52 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     except Exception as de:
         logger.debug(f"Error parsing arbitration dossiers: {de}")
 
+    # 2b. Local Research & Triage Dossiers (tickers with local triage or consolidated data)
+    try:
+        from src.ui.routes.research import _build_local_research_dossier
+        cand_syms = set()
+        for cand_dir in [raw_root / active_date, config.BASE_DIR / "data" / "triage" / active_date]:
+            if cand_dir.exists():
+                for sub in cand_dir.iterdir():
+                    if sub.is_dir() and sub.name.isupper() and len(sub.name) <= 5:
+                        cand_syms.add(sub.name)
+        cons_f = raw_root / active_date / "consolidate" / "consolidated_results.json"
+        if cons_f.exists():
+            try:
+                with open(cons_f, "r", encoding="utf-8") as cf:
+                    cr_obj = json.load(cf)
+                    if isinstance(cr_obj, dict):
+                        cand_syms.update([k.upper() for k in cr_obj.keys() if len(k) <= 5])
+            except Exception:
+                pass
+
+        already_covered = set(today_tickers)
+        local_lines = []
+        for s_cand in sorted(list(cand_syms)):
+            if s_cand not in already_covered:
+                l_md, l_wl = _build_local_research_dossier(active_date, s_cand)
+                if l_wl:
+                    if s_cand not in today_tickers:
+                        today_tickers.append(s_cand)
+                    s_card = [
+                        f"• **{s_cand}** ({active_date} · Local Research Dossier) — Decision: **{l_wl.get('verdict', 'WATCH')}** | Conviction: **{l_wl.get('conviction', '--')}/10**",
+                    ]
+                    sp = l_wl.get("shares_plan") or {}
+                    if sp.get("entry_zone_low") and sp.get("entry_zone_high"):
+                        s_card.append(f"  - **Entry Zone:** ${float(sp['entry_zone_low']):.2f} – ${float(sp['entry_zone_high']):.2f}")
+                    if sp.get("tactical_stop"):
+                        s_card.append(f"  - **Tactical Stop:** ${float(sp['tactical_stop']):.2f}")
+                    if sp.get("target_1"):
+                        s_card.append(f"  - **Target 1:** ${float(sp['target_1']):.2f}")
+                    op = l_wl.get("options_plan") or {}
+                    if op.get("structure"):
+                        s_card.append(f"  - **Structure:** {op['structure']}")
+                    local_lines.append("\n".join(s_card))
+        if local_lines:
+            parts.append(f"### 📑 LOCAL RESEARCH & TRIAGE DOSSIERS ({active_date}):\n" + "\n\n".join(local_lines))
+    except Exception as lde:
+        logger.debug(f"Error compiling local dossiers in daily overview: {lde}")
+
     # 3. Active Watchlist & Tactical Triggers
     try:
         with _get_db() as conn:
@@ -1798,7 +1875,7 @@ You MUST follow this exact structure:
         try:
             job_id = _launch_background_job(
                 name=f"Chart Scrape ({primary_ticker})",
-                command=[sys.executable, "run_swing_research.py", "--ticker", primary_ticker, "--force"],
+                command=[sys.executable, "run_swing_research.py", "--ticker", primary_ticker, "--force", "--headless"],
                 log_file=f"scrape_{primary_ticker}.log"
             )
             context_parts.append(f"### 🔄 AUTOMATED SCRAPE TRIGGERED FOR {primary_ticker}\nAction Executed: Successfully launched background TradingView chart scraper (Job ID: {job_id}).\nInforming user that a fresh chart and Data Window are currently updating in data/raw/{date_str}/{primary_ticker}/.")

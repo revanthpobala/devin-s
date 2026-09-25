@@ -16,10 +16,77 @@ from typing import Any, Dict, Optional
 import requests
 
 from src import config
-from src.tracking.alert_db import DB_PATH
+from src.tracking.alert_db import DB_PATH, update_research_status
 from src.tracking.alert_evaluator import evaluate_alert_payload
+from src.ui.services.research_queue import dispatch_next_queued_job
+from src.tracking.watch_manager import _get_connection, _db_lock
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_queue_coverage(today_str: Optional[str] = None):
+    """Coverage guarantee: ensure any research_queue symbol with no alert today gets a synthetic alert to evaluate."""
+    today_str = today_str or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with sqlite3.connect(str(DB_PATH), timeout=10.0) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT symbol, setup FROM research_queue
+                WHERE date = ?
+            """, (today_str,))
+            items = cur.fetchall()
+            if not items:
+                return
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for sym, setup in items:
+                sym_u = (sym or "").strip().upper()
+                if not sym_u:
+                    continue
+                msg_id = f"synth-{sym_u}-{today_str}"
+                cur.execute("""
+                    INSERT OR IGNORE INTO alerts (
+                        message_id, date, timestamp, symbol, action, strategy, setup, status, created_at, raw_payload
+                    ) VALUES (?, ?, ?, ?, 'LONG', 'Swing', ?, 'PENDING', ?, '{}')
+                """, (msg_id, today_str, now_iso, sym_u, setup or 'Screener', now_iso))
+            conn.commit()
+    except Exception as e:
+        logger.debug(f"Queue coverage sync note: {e}")
+
+
+def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
+    ticker = ticker.upper()
+    if not ticker:
+        return
+    report_dir = config.BASE_DIR / "reports" / date_str
+    has_report = (
+        (report_dir / f"{ticker}_summary.md").exists()
+        or (report_dir / f"{ticker}_arbitration.md").exists()
+    )
+    if has_report:
+        return
+    db_path = config.BASE_DIR / "data" / "research_watch.db"
+    if not db_path.exists():
+        return
+    try:
+        with _db_lock:
+            with _get_connection() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT job_id FROM active_research_jobs WHERE LOWER(ticker) = ? AND target_date = ? AND status IN ('QUEUED', 'RUNNING')",
+                    (ticker.lower(), date_str),
+                )
+                if c.fetchone():
+                    return
+                job_id = f"auto-{ticker}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+                c.execute(
+                    "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date) VALUES (?, ?, 'full', 'QUEUED', 'QUEUED', ?, ?)",
+                    (job_id, ticker, datetime.now(timezone.utc).isoformat(), date_str),
+                )
+                conn.commit()
+                dispatch_next_queued_job()
+                logger.info(f"🤖 [AutoTriageDaemon] Enqueued deep research for {ticker}: {job_id}")
+    except Exception as e:
+        logger.warning(f"Failed to dispatch research for {ticker}: {e}")
 
 _daemon_instance: Optional["AutoTriageDaemon"] = None
 _daemon_lock = threading.Lock()
@@ -74,6 +141,9 @@ class AutoTriageDaemon(threading.Thread):
         logger.info(f"🤖 [AutoTriageDaemon] started (poll_interval={self.poll_interval}s, batch_size={self.batch_size}).")
         while not self._stop_event.is_set():
             try:
+                # 0. Coverage guarantee: ensure queue candidates are staged as pending alerts
+                _ensure_queue_coverage()
+
                 # 1. Quick check: Are there any pending alerts in SQLite?
                 pending = get_pending_alerts_count()
                 if pending > 0:
@@ -121,6 +191,16 @@ class AutoTriageDaemon(threading.Thread):
                     batch_count += 1
                     self.total_triaged += 1
                     logger.info(f"🤖 [AutoTriageDaemon] Triaged {alert_dict.get('symbol')}: {res.get('llm_decision')}")
+                    decision = (res.get('llm_decision') or '').upper()
+                    sym = (alert_dict.get('symbol') or '').strip().upper()
+                    d_str = alert_dict.get('date') or datetime.now().strftime('%Y-%m-%d')
+                    if 'PASS' in decision:
+                        update_research_status(sym, d_str, 'LOCAL_PASS')
+                        _dispatch_deep_research_if_needed(sym, d_str)
+                    elif 'WATCH' in decision:
+                        update_research_status(sym, d_str, 'LOCAL_WATCH')
+                    elif 'CUT' in decision:
+                        update_research_status(sym, d_str, 'LOCAL_CUT')
                 except Exception as e:
                     logger.warning(f"[AutoTriageDaemon] Failed evaluating {row['symbol']}: {e}")
 

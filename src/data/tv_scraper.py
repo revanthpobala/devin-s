@@ -45,10 +45,10 @@ DEFAULT_LOOKBACK_DAYS = 90
 SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 
 class TVScraper:
-    def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None, headless: bool = False):
+    def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None, headless: bool = True):
         self.chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/jPAQSlZC/")
         self.plain_chart_url = os.getenv("TV_PLAIN_CHART_URL", "https://www.tradingview.com/chart/92oElFWJ/")
-        self.headless = bool(headless or os.getenv("HEADLESS_SCRAPE", "0").lower() in ("1", "true", "yes"))
+        self.headless = bool(headless if headless is not None else os.getenv("HEADLESS_SCRAPE", "1").lower() in ("1", "true", "yes"))
         # Store Chrome profile locally or read from TV_CHROME_PROFILE_DIR
         env_profile = os.getenv("TV_CHROME_PROFILE_DIR")
         if env_profile and os.path.exists(env_profile):
@@ -152,7 +152,7 @@ class TVScraper:
             try:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=self.user_data_dir,
-                    headless=False,
+                    headless=self.headless,
                     viewport={"width": 1920, "height": 1080},
                     args=["--disable-blink-features=AutomationControlled"],
                 )
@@ -165,7 +165,7 @@ class TVScraper:
                     try:
                         context = p.chromium.launch_persistent_context(
                             user_data_dir=str(config.BASE_DIR / alt),
-                            headless=False,
+                            headless=self.headless,
                             viewport={"width": 1920, "height": 1080},
                             args=["--disable-blink-features=AutomationControlled"],
                         )

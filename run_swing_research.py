@@ -23,7 +23,7 @@ def run_swing_pipeline(
     spx_mode: bool = False,
     spx_csv: str | None = None,
     force: bool = False,
-    headless: bool = False,
+    headless: bool = True,
 ):
     logger.info("=" * 60)
     logger.info("STARTING SWING RESEARCH PIPELINE (Scrape Phase)")
@@ -286,7 +286,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Run Playwright browser in headless mode",
+        default=True,
+        help="Run Playwright browser in headless mode (default: True)",
+    )
+    parser.add_argument(
+        "--headed",
+        dest="headless",
+        action="store_false",
+        help="Run Playwright browser with visible GUI window",
     )
 
     args = parser.parse_args()

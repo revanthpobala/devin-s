@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from src import config
+from src.tracking.alert_db import update_research_status
 from src.ui.state import (
     ACTIVE_RESEARCH_SUBPROCS,
     ACTIVE_RESEARCH_WORKERS,
@@ -242,6 +243,11 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
     log_file_path = LOGS_DIR / f"{job_id}.log"
     recent_lines: collections.deque[str] = collections.deque(maxlen=25)
 
+    try:
+        update_research_status(ticker_u, date or datetime.now().strftime("%Y-%m-%d"), "DEEP_RUNNING")
+    except Exception:
+        pass
+
     def _log_both(msg: str):
         append_log(f"[{ticker_u}] {msg}")
         recent_lines.append(msg)
@@ -372,11 +378,11 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                     (job_id,),
                 )
                 conn.commit()
-            _log_both(f"📸 [1/3] Scraping TradingView Charts & Data Window...")
+            _log_both(f"📸 [1/3] Scraping TradingView Charts & Data Window (Headless)...")
             cmd = [py_exe, "run_swing_research.py"]
             if date and date.strip():
                 cmd.append(date.strip())
-            cmd.extend(["--ticker", ticker_u])
+            cmd.extend(["--ticker", ticker_u, "--headless"])
             if force:
                 cmd.append("--force")
             _run_subproc(cmd, "Scrape phase")
@@ -478,17 +484,46 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             threading.Thread(target=_bg_watch_sync, args=(ticker_u, date_to_use), daemon=True).start()
 
         with get_db() as conn:
+            final_stage = "DONE" if proceed_to_deep else "LOCAL_DONE"
+            final_detail = None if proceed_to_deep else "Local triage complete; deep research skipped by triage gate"
             conn.cursor().execute(
-                "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'DONE', stage_detail = NULL, completed_at = ? WHERE job_id = ?",
-                (datetime.now(timezone.utc).isoformat(), job_id)
+                "UPDATE active_research_jobs SET status = 'COMPLETED', stage = ?, stage_detail = ?, completed_at = ? WHERE job_id = ?",
+                (final_stage, final_detail, datetime.now(timezone.utc).isoformat(), job_id)
             )
             conn.commit()
-        _log_both(f"✅ Deep Research Complete for {ticker_u}!")
+
+        # Update lifecycle status in research_queue based on gate status
+        is_gate_pass = False
+        try:
+            with get_db() as c_db:
+                row = c_db.cursor().execute(
+                    "SELECT gate_status FROM suggestions WHERE LOWER(ticker) = ? AND date >= date('now', '-3 days') ORDER BY id DESC LIMIT 1",
+                    (ticker_u.lower(),)
+                ).fetchone()
+                if row and row["gate_status"] == "PASS":
+                    is_gate_pass = True
+        except Exception:
+            pass
+
+        final_status = ("DEEP_DONE_PASS" if is_gate_pass else "DEEP_DONE_REJECT") if proceed_to_deep else "LOCAL_DONE"
+        try:
+            update_research_status(ticker_u, date_to_use or datetime.now().strftime("%Y-%m-%d"), final_status)
+        except Exception:
+            pass
+
+        if proceed_to_deep:
+            _log_both(f"✅ Deep Research Complete for {ticker_u}!")
+        else:
+            _log_both(f"✅ Local Triage Complete for {ticker_u} (Deep Research skipped by triage gate).")
 
     except Exception as e:
         tb_str = traceback.format_exc()
         _log_both(f"❌ Exception in research worker: {e}")
         _log_both(tb_str)
+        try:
+            update_research_status(ticker_u, date or datetime.now().strftime("%Y-%m-%d"), "DEEP_DONE_REJECT")
+        except Exception:
+            pass
         with get_db() as conn:
             c = conn.cursor()
             existing = c.execute("SELECT status FROM active_research_jobs WHERE job_id = ?", (job_id,)).fetchone()

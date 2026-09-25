@@ -47,19 +47,34 @@
     <!-- LEFT COLUMN: Main Trading Desks -->
     <div class="main-desks-column">
 
-      <!-- Desk Switcher Bar -->
-      <div class="desk-switcher-bar">
+      <!-- Main Desk Switcher Bar -->
+      <div class="desk-switcher-bar" style="display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:16px;">
         <button class="desk-nav-btn active" id="btn-desk-today" onclick="App.switchDesk('today')">
           <span>⚡</span> Today
         </button>
-        <button class="desk-nav-btn" id="btn-desk-journal" onclick="App.switchDesk('journal')">
-          <span>📖</span> Journal
+        <button class="desk-nav-btn" id="btn-desk-swing" onclick="App.switchDesk('swing')">
+          <span>🎯</span> Radar
         </button>
-        <button class="desk-nav-btn" id="btn-desk-record" onclick="App.switchDesk('record')">
-          <span>🏆</span> Record
+        <button class="desk-nav-btn" id="btn-desk-alerts" onclick="App.switchDesk('alerts')">
+          <span>🚨</span> Alerts & Screener
         </button>
-        <button class="desk-nav-btn" id="btn-desk-ops" onclick="App.switchDesk('ops')">
-          <span>⚙️</span> Ops
+        <button class="desk-nav-btn" id="btn-desk-trades" onclick="App.switchDesk('trades')">
+          <span>💡</span> Trades
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-portfolio" onclick="App.switchDesk('portfolio')">
+          <span>💼</span> Portfolio
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-intraday" onclick="App.switchDesk('intraday')">
+          <span>⚡</span> 0DTE Desk
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-watchlist" onclick="App.switchDesk('watchlist')">
+          <span>📡</span> Watchlist
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-ledger" onclick="App.switchDesk('journal')">
+          <span>📖</span> Ledger (Journal & Record)
+        </button>
+        <button class="desk-nav-btn" id="btn-desk-logs" onclick="App.switchDesk('logs')">
+          <span>⚙️</span> Ops & Logs
         </button>
       </div>
 
@@ -74,6 +89,10 @@
       <!-- JOURNAL DESK PANE                                                 -->
       <!-- ================================================================= -->
       <div id="desk-pane-journal" style="display:none; flex-direction:column; gap:20px;">
+        <div style="display:flex; gap:8px; border-bottom:1px solid var(--border); padding-bottom:10px;">
+          <button class="btn" onclick="App.switchDesk('journal')">📖 Active & Evaluated Journal</button>
+          <button class="btn secondary" onclick="App.switchDesk('record')">🏆 Closed P&L Record</button>
+        </div>
         <div id="journal-content-container"></div>
       </div>
       
@@ -81,43 +100,17 @@
       <!-- RECORD DESK PANE                                                  -->
       <!-- ================================================================= -->
       <div id="desk-pane-record" style="display:none; flex-direction:column; gap:20px;">
+        <div style="display:flex; gap:8px; border-bottom:1px solid var(--border); padding-bottom:10px;">
+          <button class="btn secondary" onclick="App.switchDesk('journal')">📖 Active & Evaluated Journal</button>
+          <button class="btn" onclick="App.switchDesk('record')">🏆 Closed P&L Record</button>
+        </div>
         <div id="record-content-container"></div>
       </div>
 
       <!-- ================================================================= -->
-      <!-- OPS DESK PANE (Contains Old Desks)                                -->
-      <!-- ================================================================= -->
-      <div id="desk-pane-ops" style="display:none; flex-direction:column; gap:20px;">
-
-        <!-- Ops Switcher Bar -->
-        <div class="desk-switcher-bar" style="border-bottom:1px solid var(--border); padding-bottom:10px;">
-          <button class="desk-nav-btn active" id="btn-desk-swing" onclick="App.switchDesk('swing')">
-            <span>🎯</span> Stalking & Execution Radar
-          </button>
-          <button class="desk-nav-btn" id="btn-desk-alerts" onclick="App.switchDesk('alerts')">
-            <span>🚨</span> Alerts & Screeners
-          </button>
-          <button class="desk-nav-btn" id="btn-desk-watchlist" onclick="App.switchDesk('watchlist')">
-            <span>📡</span> Stalking & Triggers Table
-          </button>
-          <button class="desk-nav-btn" id="btn-desk-trades" onclick="App.switchDesk('trades')">
-            <span>💡</span> Suggested Trades & Audit
-          </button>
-          <button class="desk-nav-btn" id="btn-desk-portfolio" onclick="App.switchDesk('portfolio')">
-            <span>💼</span> Schwab Positions
-          </button>
-          <button class="desk-nav-btn" id="btn-desk-intraday" onclick="App.switchDesk('intraday')">
-            <span>⚡</span> Intraday 0DTE Desk
-          </button>
-          <button class="desk-nav-btn" id="btn-desk-logs" onclick="App.switchDesk('logs')">
-            <span>📜</span> Operations & Consoles
-          </button>
-        </div>
-
-      <!-- ================================================================= -->
       <!-- SWING STALKING & RESEARCH DESK PANE                               -->
       <!-- ================================================================= -->
-      <div id="desk-pane-swing" style="display:flex; flex-direction:column; gap:20px;">
+      <div id="desk-pane-swing" style="display:none; flex-direction:column; gap:20px;">
 
         <!-- 1-Click Research Station (Sleek Compact Bar) -->
         <div class="station-card" style="padding:10px 16px; margin-bottom:2px;">
@@ -1311,19 +1304,18 @@
           </div>
         </div>
 
-      </div>
-      </div> <!-- Close desk-pane-ops -->
-
-      <!-- Persistent Live Operations & Terminal Stream Console (Universal) -->
-      <div class="station-card" style="margin-top:4px;">
-        <div class="card-head">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span class="card-title">📜 LIVE OPERATIONS & TERMINAL STREAM (data/logs/)</span>
-            <span class="pill green" style="font-size:10px; padding:2px 8px;"><span class="dot pulse"></span>STREAMING</span>
+        <!-- Persistent Live Operations & Terminal Stream Console (Universal) -->
+        <div class="station-card" id="universal-console-station" style="margin-top:4px; display:none;">
+          <div class="card-head">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="card-title">📜 LIVE OPERATIONS & TERMINAL STREAM (data/logs/)</span>
+              <span class="pill green" style="font-size:10px; padding:2px 8px;"><span class="dot pulse"></span>STREAMING</span>
+            </div>
+            <button class="btn secondary" onclick="document.getElementById('console-box').innerText = 'Logs cleared from view.';" style="padding:2px 8px; font-size:11px;">Clear View</button>
           </div>
-          <button class="btn secondary" onclick="document.getElementById('console-box').innerText = 'Logs cleared from view.';" style="padding:2px 8px; font-size:11px;">Clear View</button>
+          <div class="console-box" id="console-box" style="height:170px;">System initialized. Ready for operations.</div>
         </div>
-        <div class="console-box" id="console-box" style="height:170px;">System initialized. Ready for operations.</div>
+
       </div>
 
     </div> <!-- Close .main-desks-column -->
@@ -2062,7 +2054,8 @@
           <div class="tab-bar" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; background:var(--bg-subtle); padding:8px 12px; border-bottom:1px solid var(--border);">
             <div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
               <button class="tab-btn" id="tab-plan-btn" onclick="AppSwing.switchDossierTab('plan')" style="font-weight:800; color:#059669; border-color:#059669; background:rgba(5, 150, 105, 0.08);">🎯 Suggested Position</button>
-              <button class="tab-btn active" id="tab-arb-btn" onclick="AppSwing.switchDossierTab('arb')">⚖️ Senior PM Arbitration</button>
+              <button class="tab-btn active" id="tab-local-btn" onclick="AppSwing.switchDossierTab('local')" style="font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.08);">📑 Local Dossier</button>
+              <button class="tab-btn" id="tab-arb-btn" onclick="AppSwing.switchDossierTab('arb')">⚖️ Senior PM Arbitration</button>
               <button class="tab-btn" id="tab-sum-btn" onclick="AppSwing.switchDossierTab('sum')">📊 Model A (Synthesis)</button>
               <button class="tab-btn" id="tab-ind-btn" onclick="AppSwing.switchDossierTab('ind')">🧭 Model B (Independent)</button>
               <button class="tab-btn" id="tab-history-btn" onclick="AppSwing.switchDossierTab('history')">📜 History & Drift (<span id="modal-hist-count">0</span>)</button>
@@ -2648,7 +2641,8 @@
   <script src="/static/js/logs.js?v=76"></script>
   <script src="/static/js/alerts.js?v=85"></script>
   <script src="/static/js/chat.js?v=76"></script>
-  <script src="/static/js/desk.js?v=1"></script>
+  <script src="/static/js/desk.js?v=5"></script>
+  <script src="/static/js/tv_hover.js?v=1"></script>
   <script src="/static/js/app.js?v=76"></script>
 </body>
 </html>

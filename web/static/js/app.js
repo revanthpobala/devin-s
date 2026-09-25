@@ -10,33 +10,34 @@ window.App = {
       }
     }
     
-    // If selecting an ops sub-desk, ensure ops is the main desk active
-    const opsDesks = ['swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'logs'];
-    if (desk === 'ops') desk = 'swing';
-    
-    let mainDesk = desk;
-    if (opsDesks.includes(desk)) {
-      mainDesk = 'ops';
-    }
+    if (desk === 'ops') desk = 'logs';
 
     window.AppState.currentDesk = desk;
     
-    // Main desk switching
-    ['today', 'journal', 'record', 'ops'].forEach(d => {
+    const allDesks = ['today', 'swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'journal', 'record', 'logs'];
+    allDesks.forEach(d => {
       const pane = document.getElementById(`desk-pane-${d}`);
+      if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
       const btn = document.getElementById(`btn-desk-${d}`);
-      if (pane) pane.style.display = (d === mainDesk) ? 'flex' : 'none';
-      if (btn) btn.className = `desk-nav-btn ${d === mainDesk ? 'active' : ''}`;
+      if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
     });
-    
-    // Ops sub-desk switching (only update display logic inside ops pane)
-    if (mainDesk === 'ops') {
-      opsDesks.forEach(d => {
-        const pane = document.getElementById(`desk-pane-${d}`);
-        const btn = document.getElementById(`btn-desk-${d}`);
-        if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
-        if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
-      });
+
+    const ledgerBtn = document.getElementById('btn-desk-ledger');
+    if (ledgerBtn) {
+      if (desk === 'journal' || desk === 'record') {
+        ledgerBtn.className = 'desk-nav-btn active';
+      } else {
+        ledgerBtn.className = 'desk-nav-btn';
+      }
+    }
+
+    const uConsole = document.getElementById('universal-console-station');
+    if (uConsole) {
+      if (desk === 'today' || desk === 'journal' || desk === 'record') {
+        uConsole.style.display = 'none';
+      } else {
+        uConsole.style.display = 'block';
+      }
     }
 
     if (desk === 'today' && window.AppDesk) {
@@ -45,6 +46,8 @@ window.App = {
       window.AppDesk.loadJournal();
     } else if (desk === 'record' && window.AppDesk) {
       window.AppDesk.loadRecord();
+    } else if (desk === 'swing' && window.AppSwing) {
+      window.AppSwing.refreshResearchQueue();
     } else if (desk === 'alerts' && window.AppAlerts) {
       if (window.AppAlerts._activeSubTab === 'schwab' && window.AppSwing) {
         window.AppSwing.loadSchwabScreener();
@@ -113,6 +116,9 @@ window.App = {
 
     // 0. Initialize theme (defaults to clean Light)
     this.initTheme();
+
+    // 0b. Initialize active desk
+    this.switchDesk('today');
 
     // 1. Initialize REV CHAT resize handlers
     if (window.AppChat) {

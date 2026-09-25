@@ -411,6 +411,320 @@ def list_available_reports(date: Optional[str] = None):
     }
 
 
+def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Optional[str], Optional[dict]]:
+    """Synthesize a complete Local Research Dossier from alerts, triage thesis, and suggestions."""
+    thesis_data = None
+    triage_base = config.BASE_DIR / "data" / "triage" / target_date
+    raw_base = config.BASE_DIR / "data" / "raw" / target_date / ticker_u
+    candidates = [
+        triage_base / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json",
+        triage_base / "force" / ticker_u / f"{ticker_u}_thesis.json",
+        triage_base / "pass" / ticker_u / f"{ticker_u}_thesis.json",
+        triage_base / "watch" / ticker_u / f"{ticker_u}_thesis.json",
+        triage_base / "cut" / ticker_u / f"{ticker_u}_thesis.json",
+        triage_base / ticker_u / f"{ticker_u}_thesis.json",
+        triage_base / f"{ticker_u}_thesis.json",
+        raw_base / f"{ticker_u}_thesis.json",
+        raw_base / f"{ticker_u}_triage.json",
+        config.BASE_DIR / "data" / "raw" / target_date / f"{ticker_u}_triage.json",
+        triage_base / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_triage.json",
+        triage_base / "force" / ticker_u / f"{ticker_u}_triage.json",
+        triage_base / f"{ticker_u}_triage.json",
+    ]
+    for c in candidates:
+        if c.exists():
+            try:
+                with open(c, "r", encoding="utf-8") as f:
+                    thesis_data = json.load(f)
+                    if thesis_data:
+                        break
+            except Exception:
+                pass
+
+    if not thesis_data:
+        # Check consolidated results
+        cons_p = config.BASE_DIR / "data" / "raw" / target_date / "consolidate" / "consolidated_results.json"
+        if cons_p.exists():
+            try:
+                with open(cons_p, "r", encoding="utf-8") as f:
+                    c_all = json.load(f)
+                    if isinstance(c_all, dict) and ticker_u in c_all:
+                        thesis_data = c_all[ticker_u]
+            except Exception:
+                pass
+
+    if not thesis_data:
+        try:
+            for p in sorted(config.BASE_DIR.glob(f"data/triage/*/**/{ticker_u}_thesis.json"), reverse=True):
+                with open(p, "r", encoding="utf-8") as f:
+                    thesis_data = json.load(f)
+                    if thesis_data:
+                        break
+        except Exception:
+            pass
+
+    if not thesis_data:
+        try:
+            for p in sorted(config.BASE_DIR.glob(f"data/raw/*/{ticker_u}/{ticker_u}_triage.json"), reverse=True):
+                with open(p, "r", encoding="utf-8") as f:
+                    thesis_data = json.load(f)
+                    if thesis_data:
+                        break
+        except Exception:
+            pass
+
+    alert_row = None
+    suggestion_row = None
+    try:
+        from src.tracking.alert_db import _get_connection as _get_alert_conn, _db_lock as _alert_db_lock
+        with _alert_db_lock:
+            with _get_alert_conn() as acon:
+                ac = acon.cursor()
+                ac.execute("""
+                    SELECT * FROM alerts
+                    WHERE (UPPER(symbol) = ? OR LOWER(symbol) = ?)
+                      AND (date = ? OR ? = '' OR ? = 'latest')
+                      AND llm_decision IS NOT NULL
+                      AND llm_decision != ''
+                    ORDER BY date DESC, rowid DESC
+                    LIMIT 1
+                """, (ticker_u, ticker_u.lower(), target_date, target_date, target_date))
+                r = ac.fetchone()
+                if not r:
+                    ac.execute("""
+                        SELECT * FROM alerts
+                        WHERE (UPPER(symbol) = ? OR LOWER(symbol) = ?)
+                          AND llm_decision IS NOT NULL
+                          AND llm_decision != ''
+                        ORDER BY date DESC, rowid DESC
+                        LIMIT 1
+                    """, (ticker_u, ticker_u.lower()))
+                    r = ac.fetchone()
+                if r:
+                    alert_row = dict(r)
+
+                ac.execute("""
+                    SELECT * FROM suggestions
+                    WHERE (UPPER(ticker) = ? OR LOWER(ticker) = ?)
+                    ORDER BY date DESC, id DESC
+                    LIMIT 1
+                """, (ticker_u, ticker_u.lower()))
+                sr = ac.fetchone()
+                if sr:
+                    suggestion_row = dict(sr)
+    except Exception as e:
+        logger.debug(f"Alert DB query error for {ticker_u}: {e}")
+
+    if not thesis_data and not alert_row and not suggestion_row:
+        return None, None
+
+    triage_info = {}
+    llm_data = {}
+    if thesis_data:
+        raw_triage = thesis_data.get("triage")
+        if isinstance(raw_triage, dict):
+            triage_info = raw_triage
+            llm_data = thesis_data.get("llm_data") or {}
+        else:
+            triage_info = thesis_data
+            llm_data = thesis_data.get("llm_data") or {}
+
+    raw_dec = (alert_row.get("llm_decision") if alert_row else None) or triage_info.get("triage") or (suggestion_row.get("gate_status") if suggestion_row else None) or "WATCH"
+    clean_verdict = "PASS" if "PASS" in str(raw_dec).upper() else ("CUT" if "CUT" in str(raw_dec).upper() else "WATCH")
+
+    conv_val = None
+    if alert_row and alert_row.get("llm_decision"):
+        m = re.search(r"\((\d+(?:\.\d+)?(?:/\d+)?)\)", alert_row["llm_decision"])
+        if m:
+            conv_val = m.group(1)
+    if not conv_val:
+        conv_val = triage_info.get("conviction") or llm_data.get("conviction") or (alert_row.get("score") if alert_row else None)
+    if conv_val is not None:
+        try:
+            if isinstance(conv_val, (int, float)):
+                conv_str = f"{float(conv_val):.1f}"
+            else:
+                conv_str = str(conv_val)
+        except Exception:
+            conv_str = str(conv_val)
+    else:
+        conv_str = "--"
+
+    setup = (alert_row.get("setup") if alert_row else None) or triage_info.get("mode") or (suggestion_row.get("setup_lane") if suggestion_row else None) or "Technical Coiling"
+    mode = triage_info.get("mode") or (suggestion_row.get("setup_lane") if suggestion_row else None) or "REVERSAL / MOMENTUM"
+
+    playbook = (alert_row.get("llm_playbook") if alert_row else None) or triage_info.get("reason") or llm_data.get("sentiment_summary") or "Local technical triage completed."
+
+    side = str(triage_info.get("chosen_side") or (alert_row.get("side") if alert_row else "") or "long").lower()
+    plan = triage_info.get(f"{side}_plan") or triage_info.get("long_plan") or {}
+    zone = plan.get("zone") or [None, None]
+    entry_low = zone[0] if (len(zone) > 0 and zone[0] is not None) else (suggestion_row.get("entry_low") if suggestion_row else None)
+    entry_high = zone[1] if (len(zone) > 1 and zone[1] is not None) else (suggestion_row.get("entry_high") if suggestion_row else None)
+    stop = plan.get("stop") or (suggestion_row.get("stop") if suggestion_row else None) or triage_info.get("tight_stop")
+    target_1 = plan.get("target") or (suggestion_row.get("target_1") if suggestion_row else None)
+    target_2 = suggestion_row.get("target_2") if suggestion_row else None
+
+    # Parse levels from playbook text if missing
+    if stop is None and playbook:
+        m_stop = re.search(r'Stop\s+\$?([0-9]+\.?[0-9]*)', playbook, re.IGNORECASE)
+        if m_stop:
+            try:
+                stop = float(m_stop.group(1))
+            except Exception:
+                pass
+    if target_1 is None and playbook:
+        m_target = re.search(r'Target\s+\$?([0-9]+\.?[0-9]*)', playbook, re.IGNORECASE)
+        if m_target:
+            try:
+                target_1 = float(m_target.group(1))
+            except Exception:
+                pass
+    if entry_low is None and playbook:
+        m_entry = re.search(r'Entry\s+(?:Zone\s+)?\$?([0-9]+\.?[0-9]*)(?:\s*[-–]\s*\$?([0-9]+\.?[0-9]*))?', playbook, re.IGNORECASE)
+        if m_entry:
+            try:
+                entry_low = float(m_entry.group(1))
+                entry_high = float(m_entry.group(2)) if m_entry.group(2) else entry_low
+            except Exception:
+                pass
+
+    spot_price = (alert_row.get("alert_price") if alert_row else None) or (alert_row.get("market_price") if alert_row else None) or (suggestion_row.get("last_price") if suggestion_row else None)
+    if not spot_price:
+        # Check datawindow.json in raw artifacts
+        for dw_cand in [raw_base / f"{ticker_u}_datawindow.json", config.BASE_DIR / "data" / "raw" / target_date / ticker_u / f"{ticker_u}_datawindow.json"]:
+            if dw_cand.exists():
+                try:
+                    dw = json.loads(dw_cand.read_text(encoding="utf-8"))
+                    for k in ["close", "Close", "last", "Last", "bar_close"]:
+                        if k in dw and dw[k] is not None:
+                            spot_price = float(dw[k])
+                            break
+                except Exception:
+                    pass
+            if spot_price:
+                break
+    if not spot_price and entry_low and entry_high:
+        try:
+            spot_price = (float(entry_low) + float(entry_high)) / 2.0
+        except Exception:
+            pass
+    elif not spot_price and entry_low:
+        try:
+            spot_price = float(entry_low)
+        except Exception:
+            pass
+
+    # If entry zone was not explicitly given, compute tactical zone from spot & stop
+    if entry_low is None and spot_price:
+        if stop and spot_price > stop:
+            entry_low = round(spot_price * 0.99, 2)
+            entry_high = round(spot_price, 2)
+        else:
+            entry_low = round(spot_price, 2)
+            entry_high = round(spot_price, 2)
+
+    # Mathematical R:R computation if missing
+    rr = triage_info.get("rr") or (suggestion_row.get("rr_at_market_at_signal") if suggestion_row else None)
+    if rr is None and entry_high and stop and target_1:
+        try:
+            risk = float(entry_high) - float(stop)
+            reward = float(target_1) - float(entry_high)
+            if risk > 0 and reward > 0:
+                rr = reward / risk
+        except Exception:
+            pass
+    rr_str = f"{float(rr):.2f}" if rr is not None else "--"
+    win_prob = triage_info.get("win_prob") or (suggestion_row.get("lane_prior_win") if suggestion_row else None)
+    win_prob_str = f"{float(win_prob):.1f}%" if win_prob is not None else "--"
+    ev_r = triage_info.get("ev_r") or (suggestion_row.get("lane_prior_ev") if suggestion_row else None)
+    ev_str = f"{float(ev_r):.2f} R" if ev_r is not None else "--"
+
+    # Extract recommended options vehicle from playbook
+    vehicle = "EQUITY_SHARES"
+    if playbook:
+        m_veh = re.search(r'Vehicle:\s*([A-Za-z0-9_]+)', playbook)
+        if m_veh:
+            vehicle = m_veh.group(1).upper()
+
+    flags = triage_info.get("flags") or llm_data.get("flags") or []
+    flags_str = ", ".join(f"`{f}`" for f in flags) if flags else "None detected"
+    recency = triage_info.get("recency") or {}
+    warnings = recency.get("warnings_fresh") or []
+    warnings_str = ", ".join(warnings) if warnings else "Clean (No active warnings)"
+    reversals = recency.get("reversals_fresh") or []
+    reversals_str = ", ".join(reversals) if reversals else "None"
+
+    sentiment = triage_info.get("sentiment") or {}
+    sentiment_label = sentiment.get("label") or llm_data.get("sentiment") or "neutral"
+    sentiment_summary = sentiment.get("summary") or llm_data.get("sentiment_summary") or "No negative news contradictions detected."
+    headlines = sentiment.get("headlines") or []
+    headlines_formatted = "\n".join(f"- {h}" for h in headlines[:5]) if headlines else "- No recent breaking headlines flagged."
+
+    lines = [
+        f"# {ticker_u} | LOCAL RESEARCH DOSSIER ({target_date})\n",
+        f"> **System Decision**: **{raw_dec}** | **Score / Conviction**: **{conv_str}** | **Setup**: **{setup}**\n",
+        f"> **Lane / Mode**: `{mode}` | **Reference Spot**: ${float(spot_price):.2f}" if spot_price else f"> **Lane / Mode**: `{mode}`",
+        "\n---\n",
+        "### 🛡️ Tactical Playbook & Evaluation\n",
+        playbook.strip(),
+        "\n\n---\n",
+        "### 🎯 Structured Levels & Mathematical Plan\n",
+    ]
+    if entry_low is not None and entry_high is not None:
+        lines.append(f"- **Entry Zone**: ${float(entry_low):.2f} – ${float(entry_high):.2f}")
+    if stop is not None:
+        lines.append(f"- **Tactical Invalidation Stop**: ${float(stop):.2f}")
+    if target_1 is not None:
+        lines.append(f"- **Target 1 (Scale Out)**: ${float(target_1):.2f}")
+    if target_2 is not None:
+        lines.append(f"- **Target 2 (Runner)**: ${float(target_2):.2f}")
+    lines.append(f"- **Risk / Reward**: {rr_str} | **Win Probability**: {win_prob_str} | **Expected Value**: {ev_str}")
+
+    lines.extend([
+        "\n### ⚠️ Technical Warnings & Flags\n",
+        f"- **Active Flags**: {flags_str}",
+        f"- **Recency Warnings**: {warnings_str}",
+        f"- **Reversal Triggers**: {reversals_str}",
+        "\n### 📰 News & Sentiment Dossier\n",
+        f"- **Sentiment Stance**: **{sentiment_label.upper()}**",
+        f"- **Synthesis**: {sentiment_summary}",
+        "- **Recent Catalysts & Headlines**:\n" + headlines_formatted,
+        "\n---\n",
+        f"*Note: This Local Research Dossier was generated via the deterministic pre-filter and local Qwen LLM. Click **🔬 Run deep** to trigger multi-model quantitative arbitration.*"
+    ])
+    dossier_md = "\n".join(lines)
+
+    opt_summary = f"Local triage: {clean_verdict}. Vehicle: {vehicle}. Stalk entry zone ${float(entry_low):.2f}-${float(entry_high):.2f} with tactical stop at ${float(stop):.2f}." if (entry_low and stop) else f"Local triage: {vehicle} plan recommended."
+
+    watch_levels = {
+        "ticker": ticker_u,
+        "date": target_date,
+        "verdict": clean_verdict,
+        "conviction": conv_val if isinstance(conv_val, (int, float)) else 8.0,
+        "status": "IN_ZONE" if (suggestion_row and suggestion_row.get("status") in ("IN_ZONE", "IN_TRADE")) else "STALKING",
+        "spot_price": spot_price,
+        "shares_plan": {
+            "entry_zone_low": entry_low,
+            "entry_zone_high": entry_high,
+            "tactical_stop": stop,
+            "target_1": target_1,
+            "target_2": target_2,
+        },
+        "options_plan": {
+            "structure": vehicle,
+            "actionable": True,
+            "summary": opt_summary,
+        },
+        "invalidation": {
+            "condition": "DAILY CLOSE BELOW",
+            "price_level": stop,
+            "rationale": f"Thesis invalidated on candle close below ${float(stop):.2f}." if stop else "Invalidation below structural stop level.",
+        }
+    }
+
+    return dossier_md, watch_levels
+
+
 @router.get("/api/report/{ticker}")
 def get_report_bundle_single(ticker: str):
     """Convenience alias resolving the latest available report bundle for a ticker."""
@@ -441,6 +755,7 @@ def get_report_bundle(date: str, ticker: str):
 
     raw_root = config.BASE_DIR / "data" / "raw"
     rep_root = config.BASE_DIR / "reports"
+    triage_root = config.BASE_DIR / "data" / "triage"
 
     report_dates_set = set()
     scrape_dates_set = set()
@@ -459,12 +774,52 @@ def get_report_bundle(date: str, ticker: str):
                     if (
                         (sym_dir / f"{ticker_u}_arbitration.md").exists()
                         or (sym_dir / f"{ticker_u}_gemini_thesis.md").exists()
-                        or (sym_dir / f"{ticker_u}_thesis.md").exists()
+                        or (sym_dir / f"{ticker_u}_thesis.json").exists()
+                        or (sym_dir / f"{ticker_u}_triage.json").exists()
                         or (sym_dir / f"{ticker_u}_watch_levels.json").exists()
                     ):
                         report_dates_set.add(d.name)
                     elif (sym_dir / f"{ticker_u}_datawindow.json").exists():
                         scrape_dates_set.add(d.name)
+
+                if (d / f"{ticker_u}_triage.json").exists():
+                    report_dates_set.add(d.name)
+
+                if (d / "consolidate" / "consolidated_results.json").exists():
+                    try:
+                        with open(d / "consolidate" / "consolidated_results.json", "r", encoding="utf-8") as cr_f:
+                            cr_data = json.load(cr_f)
+                            if isinstance(cr_data, dict) and ticker_u in cr_data:
+                                report_dates_set.add(d.name)
+                    except Exception:
+                        pass
+
+    if triage_root.exists():
+        for d in triage_root.iterdir():
+            if d.is_dir() and d.name.startswith("202"):
+                if list(d.glob(f"**/{ticker_u}_thesis.json")) or list(d.glob(f"**/{ticker_u}_triage.json")) or list(d.glob(f"**/{ticker_u}_gemini_thesis.md")):
+                    report_dates_set.add(d.name)
+
+    try:
+        from src.tracking.alert_db import _get_connection as _get_alert_conn, _db_lock as _alert_db_lock
+        with _alert_db_lock:
+            with _get_alert_conn() as acon:
+                rows = acon.cursor().execute(
+                    "SELECT DISTINCT date FROM alerts WHERE (UPPER(symbol) = ? OR LOWER(symbol) = ?) AND llm_decision IS NOT NULL AND llm_decision != '' ORDER BY date DESC",
+                    (ticker_u, ticker_u.lower())
+                ).fetchall()
+                for r in rows:
+                    if r["date"] and str(r["date"]).startswith("202"):
+                        report_dates_set.add(str(r["date"])[:10])
+                s_rows = acon.cursor().execute(
+                    "SELECT DISTINCT date FROM suggestions WHERE (UPPER(ticker) = ? OR LOWER(ticker) = ?) ORDER BY date DESC",
+                    (ticker_u, ticker_u.lower())
+                ).fetchall()
+                for r in s_rows:
+                    if r["date"] and str(r["date"]).startswith("202"):
+                        report_dates_set.add(str(r["date"])[:10])
+    except Exception as e:
+        logger.debug(f"Could not load alert dates for {ticker_u}: {e}")
 
     try:
         with get_db() as conn:
@@ -506,7 +861,7 @@ def get_report_bundle(date: str, ticker: str):
         # 1. Summary / Model A
         s_cand = r_d / f"{ticker_u}_summary.md"
         if not s_cand.exists() and w_d.exists():
-            for c_name in (f"{ticker_u}_gemini_thesis.md", f"{ticker_u}_summary.md", f"{ticker_u}_thesis.md"):
+            for c_name in (f"{ticker_u}_gemini_thesis.md", f"{ticker_u}_summary.md"):
                 c_p = w_d / c_name
                 if c_p.exists():
                     s_cand = c_p
@@ -560,16 +915,21 @@ def get_report_bundle(date: str, ticker: str):
 
     summary_md, independent_md, arbitration_md = _read_dossier_files(target_date)
 
-    # If requested date has no reports, fall back to the most recent date that has reports
-    if not summary_md and not independent_md and not arbitration_md:
-        for alt_d in available_dates:
-            if alt_d == target_date:
-                continue
-            alt_s, alt_i, alt_a = _read_dossier_files(alt_d)
-            if alt_s or alt_i or alt_a:
-                summary_md, independent_md, arbitration_md = alt_s, alt_i, alt_a
-                target_date = alt_d
-                break
+    # Check local research dossier for the target date first
+    local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
+
+    # Only fall back to an older date if the target_date was NOT explicitly pinned AND has NO deep research AND NO local research dossier
+    if not summary_md and not independent_md and not arbitration_md and not local_dossier_md:
+        if not req_date or req_date in ("latest", "today", "now", "", "undefined", "null"):
+            for alt_d in available_dates:
+                if alt_d == target_date:
+                    continue
+                alt_s, alt_i, alt_a = _read_dossier_files(alt_d)
+                if alt_s or alt_i or alt_a:
+                    summary_md, independent_md, arbitration_md = alt_s, alt_i, alt_a
+                    target_date = alt_d
+                    local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
+                    break
 
     if not arbitration_md and (summary_md or independent_md):
         arbitration_md = f"# {ticker_u} | ARBITRATION & EXECUTIVE RESEARCH DOSSIER ({target_date})\n\n*(Displaying primary research report for {target_date})*\n\n" + (independent_md or summary_md)
@@ -602,6 +962,18 @@ def get_report_bundle(date: str, ticker: str):
                     break
 
         if not chosen_doc:
+            loc_md, loc_wl = _build_local_research_dossier(d_str, ticker_u)
+            if loc_md and loc_wl:
+                v = loc_wl.get("verdict", "WATCH")
+                c = loc_wl.get("conviction")
+                conv_str = f" (Conviction: {c}/10)" if c else ""
+                timeline.append({
+                    "date": d_str,
+                    "spot": loc_wl.get("spot_price"),
+                    "verdict": f"{v}{conv_str}",
+                    "summary": f"Local triage: {v}.",
+                    "has_doc": True,
+                })
             continue
 
         txt = chosen_doc.read_text(encoding="utf-8")
@@ -848,7 +1220,12 @@ def get_report_bundle(date: str, ticker: str):
         logger.debug(f"Could not generate trade ideas for {ticker_u}: {te}")
 
     if not arbitration_md and not summary_md and not independent_md:
-        if watch_levels:
+        if not local_dossier_md:
+            local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
+        if local_dossier_md:
+            if not watch_levels and local_wl:
+                watch_levels = local_wl
+        elif watch_levels:
             sp = watch_levels.get("shares_plan") or {}
             op = watch_levels.get("options_plan") or {}
             v = watch_levels.get("verdict") or "WATCH"
@@ -873,14 +1250,26 @@ def get_report_bundle(date: str, ticker: str):
             if t2 is not None:
                 lines.append(f"- **Target 2**: ${float(t2):.2f}")
             lines.append(f"\n### 🛡️ Recommended Strategy\n{opt_str}\n")
-            lines.append("---\n*Detailed 3-model deep research narrative pending. Live quotes, options chain, and interactive Copilot are active in the right-hand panel.*")
-            arbitration_md = "\n".join(lines)
+            lines.append("---\n*Multi-model deep research narrative pending. Local triage and interactive Copilot are active.*")
+            local_dossier_md = "\n".join(lines)
         else:
-            arbitration_md = (
-                f"# {ticker_u} | RESEARCH DOSSIER ({target_date})\n\n"
-                f"No archived deep-research report found on disk for **{ticker_u}**.\n\n"
+            local_dossier_md = (
+                f"# {ticker_u} | LOCAL RESEARCH DOSSIER ({target_date})\n\n"
+                f"No archived report or local research found for **{ticker_u}**.\n\n"
                 f"👉 Use the interactive **AI Dossier Copilot** on the right to fetch live quotes, inspect options chains, or trigger fresh analysis."
             )
+    else:
+        # Deep research reports exist on disk! Also ensure local_dossier_md is populated
+        if not local_dossier_md:
+            local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
+
+    if not watch_levels:
+        if local_wl:
+            watch_levels = local_wl
+        else:
+            _, local_wl = _build_local_research_dossier(target_date, ticker_u)
+            if local_wl:
+                watch_levels = local_wl
 
     # Extract spot_price at time of report for the Suggested Position header
     spot_price = None
@@ -897,6 +1286,13 @@ def get_report_bundle(date: str, ticker: str):
                 except (ValueError, TypeError):
                     pass
 
+    # Check if real multi-model deep research exists for target_date
+    has_deep = bool(
+        (summary_md and not summary_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER"))
+        or (independent_md and not independent_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER"))
+        or (arbitration_md and not arbitration_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER") and not arbitration_md.startswith(f"# {ticker_u} | TACTICAL RADAR"))
+    )
+
     result_payload = {
         "ticker": ticker_u,
         "date": target_date,
@@ -909,6 +1305,10 @@ def get_report_bundle(date: str, ticker: str):
         "summary_md": summary_md,
         "independent_md": independent_md,
         "arbitration_md": arbitration_md,
+        "local_dossier_md": local_dossier_md,
+        "has_local_dossier": bool(local_dossier_md),
+        "has_deep_research": has_deep,
+        "default_tab": "local" if (local_dossier_md and not has_deep) else "arb",
         "watch_levels": watch_levels,
         "has_zoom_chart": zoom_path is not None,
         "has_plain_chart": plain_path is not None,

@@ -81,9 +81,12 @@ window.AppAlerts = {
   getReportForTicker(symbol, dateKey) {
     const sym = (symbol || '').toUpperCase().trim();
     if (!sym) return null;
-    if (dateKey && dateKey !== 'ALL' && this._reportsByDate && this._reportsByDate[dateKey]) {
-      const found = this._reportsByDate[dateKey].find(r => (r.ticker || '').toUpperCase() === sym);
-      if (found) return found;
+    if (dateKey && dateKey !== 'ALL') {
+      if (this._reportsByDate && this._reportsByDate[dateKey]) {
+        const found = this._reportsByDate[dateKey].find(r => (r.ticker || '').toUpperCase() === sym);
+        if (found) return found;
+      }
+      return null;
     }
     if (this._allReportsByTicker && this._allReportsByTicker[sym] && this._allReportsByTicker[sym].length > 0) {
       return this._allReportsByTicker[sym][0];
@@ -2105,7 +2108,8 @@ window.AppAlerts = {
 
           <!-- 2. TICKER & COMPANY (Interactive Card) -->
           <td style="padding:7px 6px; overflow:hidden;">
-            <div class="ticker-table-card"
+            <div class="ticker-table-card tv-symbol-hover"
+                 data-ticker="${sym}"
                  onclick="event.stopPropagation(); AppAlerts.openTickerTradesModal('${sym}', '${dateKey}')"
                  title="Click to view all ${dateKey} intraday trades for ${sym} (AI-only P&amp;L)"
                  style="display:inline-flex; flex-direction:column; gap:2px; cursor:pointer; padding:3px 7px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); transition:all 0.15s ease;"
@@ -2346,13 +2350,19 @@ window.AppAlerts = {
     // Render Top Deep Research Quick Access Ribbon if dossiers exist
     const ribbonContainer = document.getElementById('daily-alerts-dr-ribbon-container');
     if (ribbonContainer) {
-      const activeDate = (this._dateFilter !== 'ALL') ? this._dateFilter : (this._availableDates[0] || '2026-09-16');
+      const isSpecificDate = (this._dateFilter && this._dateFilter !== 'ALL');
+      const activeDate = isSpecificDate ? this._dateFilter : (this._availableDates[0] || '2026-09-16');
       const dateReports = (this._reportsByDate && this._reportsByDate[activeDate]) || [];
-      const allReports = [];
-      for (const d in this._reportsByDate) {
-        (this._reportsByDate[d] || []).forEach(r => allReports.push(r));
+      let displayReports = [];
+      if (isSpecificDate) {
+        displayReports = dateReports;
+      } else {
+        const allReports = [];
+        for (const d in this._reportsByDate) {
+          (this._reportsByDate[d] || []).forEach(r => allReports.push(r));
+        }
+        displayReports = allReports.slice(0, 10);
       }
-      const displayReports = dateReports.length > 0 ? dateReports : allReports.slice(0, 10);
 
       if (displayReports.length > 0) {
         ribbonContainer.style.display = 'block';
@@ -2671,7 +2681,8 @@ window.AppAlerts = {
 
           <!-- 2. TICKER & DOSSIER BADGE -->
           <td style="padding:8px 8px; overflow:hidden;">
-            <div class="ticker-table-card"
+            <div class="ticker-table-card tv-symbol-hover"
+                 data-ticker="${sym}"
                  onclick="event.stopPropagation(); ${rep ? `AppSwing.openReportModal('${rep.date || dateKey}', '${sym}')` : `AppAlerts.openAlertModal('${alertId}')`}"
                  title="Click to ${rep ? 'open Deep Research Dossier' : 'inspect setup and plan'} for ${sym}"
                  style="display:inline-flex; flex-direction:column; gap:3px; cursor:pointer; padding:4px 8px; border-radius:6px; background:var(--bg-subtle); border:1px solid var(--border); transition:all 0.15s ease;"

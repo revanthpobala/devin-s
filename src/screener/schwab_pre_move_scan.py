@@ -1186,7 +1186,7 @@ def run_autonomous_screener_pipeline(
     auto_max: int = 3,
     run_deep: bool = True,
     date_str: Optional[str] = None,
-    headless: bool = False,
+    headless: bool = True,
 ) -> Dict[str, Any]:
     """
     Autonomous Execution Engine for High-Priority Screener Candidates.
@@ -1511,7 +1511,7 @@ def run_schwab_pre_move_scan(
     auto_max: int = 3,
     target_date: Optional[str] = None,
     side: str = "long",
-    headless: bool = False,
+    headless: bool = True,
 ) -> Any:
     """Main entry point for the Schwab 1000 Screener (supports Long Basing, Prime Short, or Both)."""
     date_str = target_date or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")

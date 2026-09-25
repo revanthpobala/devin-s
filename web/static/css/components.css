@@ -1744,5 +1744,181 @@ table.watchlist-table tbody td {
   box-shadow: 0 0 6px rgba(56, 189, 248, 0.25);
 }
 
+/* ================================================================= */
+/* REAL-TIME TRADINGVIEW HOVER CHART CARD                            */
+/* ================================================================= */
+.tv-hover-card {
+  position: fixed;
+  z-index: 99999;
+  width: 540px;
+  height: 380px;
+  background: rgba(15, 23, 42, 0.98);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(6, 182, 212, 0.45);
+  border-radius: 10px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.85), 0 0 20px rgba(6, 182, 212, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
 
+.tv-hover-card.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
 
+.tv-hover-header {
+  padding: 8px 12px;
+  background: rgba(30, 41, 59, 0.85);
+  border-bottom: 1px solid var(--border, rgba(51, 65, 85, 0.5));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  user-select: none;
+}
+
+.tv-hover-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tv-hover-sym {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 13.5px;
+  font-weight: 900;
+  color: var(--cyan-glow, #38bdf8);
+  letter-spacing: 0.5px;
+}
+
+.tv-hover-name {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.tv-hover-price {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border, rgba(51, 65, 85, 0.4));
+  white-space: nowrap;
+}
+
+.tv-hover-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tv-hover-intervals {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 2px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(51, 65, 85, 0.5));
+}
+
+.tv-hover-int-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #94a3b8);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tv-hover-int-btn:hover {
+  color: var(--text-main, #f8fafc);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tv-hover-int-btn.active {
+  background: var(--blue, #2563eb);
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.tv-hover-btn-action {
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(51, 65, 85, 0.6));
+  color: var(--text-main, #f8fafc);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s ease;
+}
+
+.tv-hover-btn-action:hover {
+  background: rgba(6, 182, 212, 0.15);
+  border-color: var(--cyan, #06b6d4);
+  color: var(--cyan-glow, #38bdf8);
+}
+
+.tv-hover-chart-body {
+  flex: 1;
+  width: 100%;
+  height: calc(100% - 39px);
+  position: relative;
+  background: #0b1120;
+}
+
+.tv-hover-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.tv-hover-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  background: #0b1120;
+  z-index: 1;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.tv-symbol-hover {
+  cursor: pointer !important;
+  transition: color 0.15s ease, text-shadow 0.15s ease;
+}
+
+.tv-symbol-hover:hover {
+  color: var(--cyan-glow, #38bdf8) !important;
+  text-shadow: 0 0 8px rgba(6, 182, 212, 0.4);
+}

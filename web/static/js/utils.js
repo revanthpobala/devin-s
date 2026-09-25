@@ -21,19 +21,39 @@ window.AppUtils = {
   renderMarkdown(text) {
     if (!text) return '';
     try {
+      let cleanText = String(text);
+      let rawLevelsJson = null;
+
+      // Extract machine-readable watch_levels block so narrative markdown format is strictly respected
+      const wlMatch = cleanText.match(/```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?\})\s*```/i);
+      if (wlMatch) {
+        rawLevelsJson = wlMatch[1];
+        cleanText = cleanText.replace(wlMatch[0], '').trim();
+      }
+
       if (window.marked) {
         if (typeof window.marked.setOptions === 'function' && !window.marked._breaksConfigured) {
           window.marked.setOptions({ breaks: true, gfm: true });
           window.marked._breaksConfigured = true;
         }
         let html = typeof window.marked.parse === 'function'
-          ? window.marked.parse(text, { breaks: true, gfm: true })
-          : window.marked(text, { breaks: true, gfm: true });
+          ? window.marked.parse(cleanText, { breaks: true, gfm: true })
+          : window.marked(cleanText, { breaks: true, gfm: true });
         // Transform interactive action links into clickable button pills
         html = html.replace(/<a\s+href=["']action:ask\?prompt=([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, promptEnc, label) => {
           const prompt = decodeURIComponent(promptEnc.replace(/\+/g, '%20'));
           return `<button class="ticker-pill-btn" onclick="AppChat.askActiveChat('${prompt.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:var(--cyan-glow); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12); cursor:pointer;">${label}</button>`;
         });
+
+        // If structured watch levels were extracted, append as a subtle collapsible drawer at the very bottom
+        if (rawLevelsJson) {
+          html += `
+            <details style="margin-top:32px; border:1px solid var(--border); border-radius:6px; background:var(--bg-subtle); padding:8px 12px; font-size:11px;">
+              <summary style="cursor:pointer; font-weight:700; color:var(--text-muted); user-select:none;">🔧 Raw Tactical Levels JSON (Extracted for Watchlist)</summary>
+              <pre style="margin-top:8px; padding:10px; background:rgba(0,0,0,0.4); border-radius:4px; overflow-x:auto;"><code class="language-json">${this.escapeHtml(rawLevelsJson)}</code></pre>
+            </details>
+          `;
+        }
         return html;
       }
     } catch (e) {
@@ -188,11 +208,11 @@ window.AppUtils = {
    */
   decorateTickerTooltips(root = document) {
     try {
-      const candidates = root.querySelectorAll('.ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .recent-job-row strong, [data-ticker]');
+      const candidates = root.querySelectorAll('.ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .recent-job-row strong, .ticker-with-tooltip, .ticker-table-card, [data-ticker]');
       candidates.forEach(el => {
         let sym = el.getAttribute('data-ticker');
         if (!sym) {
-          const txt = (el.textContent || '').trim().replace(/^\$/, '');
+          const txt = (el.textContent || '').trim().replace(/^\$/, '').replace(/🔍/g, '').trim();
           if (/^[A-Z]{1,6}$/.test(txt)) {
             sym = txt;
           }
@@ -200,11 +220,12 @@ window.AppUtils = {
         if (sym) {
           const comp = this.getCompanyName(sym);
           if (comp && (!el.title || el.title.startsWith('Click to open') || el.title.length < comp.length)) {
-            el.title = `${sym}: ${comp}`;
+            el.title = `${sym}: ${comp} · Hover for Live TradingView Chart`;
           }
           if (!el.getAttribute('data-ticker')) {
             el.setAttribute('data-ticker', sym);
           }
+          el.classList.add('tv-symbol-hover');
         }
       });
     } catch (e) {

@@ -1395,10 +1395,18 @@ window.AppSwing = {
       if (!window.AppState.activeChats) window.AppState.activeChats = [];
       const chatIndex = window.AppState.activeChats.findIndex(c => c.ticker === ticker);
 
+      const effectiveDefaultTab = initialTab || (data && data.default_tab) || (data && data.has_deep_research ? 'arb' : 'local');
+
       if (chatIndex !== -1) {
         window.AppState.activeChats[chatIndex].date = actualDate;
         window.AppState.activeChats[chatIndex].reportData = data;
-        window.AppState.activeChats[chatIndex].activeTab = initialTab || window.AppState.activeChats[chatIndex].activeTab || 'arb';
+        let currentTab = initialTab || window.AppState.activeChats[chatIndex].activeTab || effectiveDefaultTab;
+        if (currentTab === 'arb' && data && !data.has_deep_research && data.has_local_dossier) {
+          currentTab = 'local';
+        } else if (currentTab === 'local' && data && !data.has_local_dossier && data.has_deep_research) {
+          currentTab = 'arb';
+        }
+        window.AppState.activeChats[chatIndex].activeTab = currentTab;
         window.AppState.activeChats[chatIndex].lastAccessed = Date.now();
       } else {
         // Enforce max 3 chats limit
@@ -1414,14 +1422,14 @@ window.AppSwing = {
           ticker: ticker,
           date: actualDate,
           reportData: data,
-          activeTab: initialTab || 'arb',
+          activeTab: effectiveDefaultTab,
           draftInput: '',
           lastAccessed: Date.now()
         });
       }
 
       // 4. Switch to this chat
-      this.switchToChat(ticker, initialTab);
+      this.switchToChat(ticker, effectiveDefaultTab);
 
     } catch (e) {
       if (bodyEl) bodyEl.innerText = `Failed loading report for ${ticker}: ${e.message}`;
@@ -1488,7 +1496,13 @@ window.AppSwing = {
     }
 
     // Switch to active dossier tab
-    const activeTab = chat.activeTab || window.AppState.activeDossierTab || 'arb';
+    let activeTab = initialTab || chat.activeTab || (data && data.default_tab) || (data && data.has_deep_research ? 'arb' : 'local') || window.AppState.activeDossierTab || 'local';
+    if (activeTab === 'arb' && data && !data.has_deep_research && data.has_local_dossier) {
+      activeTab = 'local';
+    } else if (activeTab === 'local' && data && !data.has_local_dossier && data.has_deep_research) {
+      activeTab = 'arb';
+    }
+    chat.activeTab = activeTab;
     this.switchDossierTab(activeTab);
 
     // Refresh live price & poll for this ticker
@@ -2465,13 +2479,33 @@ window.AppSwing = {
     }
   },
 
+  async triggerDeepResearch(ticker, date) {
+    ticker = (ticker || '').toUpperCase().trim();
+    if (!ticker) return;
+    try {
+      const res = await fetch('/api/research/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: [ticker], date: date })
+      });
+      const data = await res.json();
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`🔬 Dispatched deep research for ${ticker}`, 'success');
+      } else {
+        alert(`Dispatched deep research for ${ticker}`);
+      }
+    } catch (e) {
+      alert(`Failed to trigger deep research: ${e.message}`);
+    }
+  },
+
   switchDossierTab(tab) {
     window.AppState.activeDossierTab = tab;
     if (window.AppState.activeChats && window.AppState.activeChatTicker) {
       const activeChat = window.AppState.activeChats.find(c => c.ticker === window.AppState.activeChatTicker);
       if (activeChat) activeChat.activeTab = tab;
     }
-    ['plan', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow'].forEach(t => {
+    ['plan', 'local', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow'].forEach(t => {
       const btn = document.getElementById(`tab-${t}-btn`);
       if (btn) btn.className = `tab-btn ${t === tab ? 'active' : ''}`;
     });
@@ -2483,46 +2517,139 @@ window.AppSwing = {
     if (tab === 'plan') {
       this.togglePositionsPane(false);
       this.renderSuggestedPositionsFullTab(data, bodyEl);
+    } else if (tab === 'local') {
+      const localContent = data.local_dossier_md || (data.arbitration_md && data.arbitration_md.includes('LOCAL RESEARCH DOSSIER') ? data.arbitration_md : null);
+      if (localContent) {
+        const bannerHtml = `
+          <div style="background:linear-gradient(135deg, rgba(6,182,212,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(6,182,212,0.28); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-weight:700; color:var(--cyan); font-size:12.5px;">📑 LOCAL RESEARCH &amp; TRIAGE DOSSIER</span>
+                <span class="pill cyan" style="font-size:9.5px; padding:1px 6px;">LOCAL-FIRST AI</span>
+                <span class="pill blue" style="font-size:9.5px; padding:1px 6px;">${data.date || 'Today'}</span>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+                Generated via deterministic pre-filter, #ponytail quantitative assessment, and local Qwen triage.
+              </div>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.triggerDeepResearch('${data.ticker}', '${data.date}')">
+                🔬 Run Deep Research
+              </button>
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.switchDossierTab('tv')">
+                📈 Live Chart
+              </button>
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppChat.startFreshModalSession()">
+                🔄 Fresh Copilot
+              </button>
+            </div>
+          </div>
+        `;
+        bodyEl.innerHTML = bannerHtml + window.AppUtils.renderMarkdown(localContent);
+      } else {
+        bodyEl.innerHTML = `
+          <div style="padding:40px; text-align:center; color:var(--text-muted);">
+            <h3>No Local Dossier Available</h3>
+            <p>No local triage dossier recorded for <strong>${data.ticker}</strong> on ${data.date || 'this date'}.</p>
+            <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:12px; padding:6px 14px; margin-top:10px; cursor:pointer;" onclick="AppSwing.triggerDeepResearch('${data.ticker}', '${data.date}')">
+              🔬 Run Research Now
+            </button>
+          </div>
+        `;
+      }
     } else if (tab === 'arb') {
-      const arbContent = data.arbitration_md || data.summary_md || data.independent_md;
-      bodyEl.innerHTML = arbContent
-        ? window.AppUtils.renderMarkdown(arbContent)
-        : '<em>No arbitration or research report found for this date.</em>';
+      const arbContent = data.arbitration_md;
+      if (arbContent) {
+        bodyEl.innerHTML = window.AppUtils.renderMarkdown(arbContent);
+      } else {
+        bodyEl.innerHTML = `
+          <div style="padding:40px; text-align:center; color:var(--text-muted);">
+            <div style="font-size:24px; margin-bottom:10px;">⚖️</div>
+            <h3 style="color:var(--text-main); margin-bottom:8px;">Senior PM Arbitration Pending</h3>
+            <p style="max-width:500px; margin:0 auto 16px; font-size:12px; line-height:1.5;">
+              Multi-model quantitative deep research and PM arbitration have not yet been executed for <strong>${data.ticker}</strong> on ${data.date || 'this date'}.
+            </p>
+            <div style="display:flex; justify-content:center; gap:8px;">
+              <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.triggerDeepResearch('${data.ticker}', '${data.date}')">
+                🔬 Run Deep Research
+              </button>
+              <button class="btn secondary" style="font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.switchDossierTab('local')">
+                📑 View Local Dossier
+              </button>
+            </div>
+          </div>
+        `;
+      }
     } else if (tab === 'sum') {
-      const sumContent = data.summary_md || data.arbitration_md || data.independent_md;
-      bodyEl.innerHTML = sumContent
-        ? window.AppUtils.renderMarkdown(sumContent)
-        : '<em>No synthesis summary found for this date.</em>';
+      const sumContent = data.summary_md;
+      if (sumContent) {
+        bodyEl.innerHTML = window.AppUtils.renderMarkdown(sumContent);
+      } else {
+        bodyEl.innerHTML = `
+          <div style="padding:40px; text-align:center; color:var(--text-muted);">
+            <div style="font-size:24px; margin-bottom:10px;">📊</div>
+            <h3 style="color:var(--text-main); margin-bottom:8px;">Model A Synthesis Pending</h3>
+            <p style="max-width:500px; margin:0 auto 16px; font-size:12px; line-height:1.5;">
+              Deep research synthesis has not yet been executed for <strong>${data.ticker}</strong> on ${data.date || 'this date'}.
+            </p>
+            <div style="display:flex; justify-content:center; gap:8px;">
+              <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.triggerDeepResearch('${data.ticker}', '${data.date}')">
+                🔬 Run Deep Research
+              </button>
+              <button class="btn secondary" style="font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.switchDossierTab('local')">
+                📑 View Local Dossier
+              </button>
+            </div>
+          </div>
+        `;
+      }
     } else if (tab === 'ind') {
-      const bannerHtml = `
-        <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(139,92,246,0.28); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-          <div>
-            <div style="display:flex; align-items:center; gap:6px;">
-              <span style="font-weight:700; color:var(--violet); font-size:12.5px;">📐 MODEL B (Independent Quant & Macro)</span>
-              <span class="pill purple" style="font-size:9.5px; padding:1px 6px;">ISOLATED CONTEXT</span>
+      const indContent = data.independent_md;
+      if (indContent) {
+        const bannerHtml = `
+          <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(139,92,246,0.28); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-weight:700; color:var(--violet); font-size:12.5px;">📐 MODEL B (Independent Quant & Macro)</span>
+                <span class="pill purple" style="font-size:9.5px; padding:1px 6px;">ISOLATED CONTEXT</span>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+                Objective macro & volume profile thesis. Two-Pass protocol active: clarifies ambiguities before locking execution.
+              </div>
             </div>
-            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
-              Objective macro & volume profile thesis. Two-Pass protocol active: clarifies ambiguities before locking execution.
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn" style="background:var(--violet); color:#fff; font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.askIndependentCopilot('two_pass')">
+                ⚡ What Is Going On? (State Check)
+              </button>
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.askIndependentCopilot('plan')">
+                🎯 Tactical Execution Plan
+              </button>
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppChat.startFreshModalSession()">
+                🔄 Fresh Chat
+              </button>
             </div>
           </div>
-          <div style="display:flex; gap:6px; flex-wrap:wrap;">
-            <button class="btn" style="background:var(--violet); color:#fff; font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.askIndependentCopilot('two_pass')">
-              ⚡ What Is Going On? (State Check)
-            </button>
-            <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppSwing.askIndependentCopilot('plan')">
-              🎯 Tactical Execution Plan
-            </button>
-            <button class="btn secondary" style="font-size:11px; padding:4px 10px; cursor:pointer;" onclick="AppChat.startFreshModalSession()">
-              🔄 Fresh Chat
-            </button>
+        `;
+        bodyEl.innerHTML = bannerHtml + window.AppUtils.renderMarkdown(indContent);
+      } else {
+        bodyEl.innerHTML = `
+          <div style="padding:40px; text-align:center; color:var(--text-muted);">
+            <div style="font-size:24px; margin-bottom:10px;">🧭</div>
+            <h3 style="color:var(--text-main); margin-bottom:8px;">Model B Independent Research Pending</h3>
+            <p style="max-width:500px; margin:0 auto 16px; font-size:12px; line-height:1.5;">
+              Independent macro & quant thesis has not yet been executed for <strong>${data.ticker}</strong> on ${data.date || 'this date'}.
+            </p>
+            <div style="display:flex; justify-content:center; gap:8px;">
+              <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.triggerDeepResearch('${data.ticker}', '${data.date}')">
+                🔬 Run Deep Research
+              </button>
+              <button class="btn secondary" style="font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.switchDossierTab('local')">
+                📑 View Local Dossier
+              </button>
+            </div>
           </div>
-        </div>
-      `;
-      const indContent = data.independent_md || data.arbitration_md || data.summary_md;
-      const reportHtml = indContent
-        ? window.AppUtils.renderMarkdown(indContent)
-        : '<em>No independent report found for this date.</em>';
-      bodyEl.innerHTML = bannerHtml + reportHtml;
+        `;
+      }
     } else if (tab === 'history') {
       this.togglePositionsPane(false);
       const timeline = data.historical_timeline || [];
