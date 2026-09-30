@@ -1,3 +1,15 @@
+if (typeof pbBadge !== 'function') {
+  window.pbBadge = function(pb) {
+    if (pb === 1 || pb === 1.0 || pb === true) {
+      return ` <span class="pill green" title="PB funnel set (Signal Pack bit 32) — measured era-stable positive" style="font-size:9px; padding:1px 5px; margin-top:2px;">PB</span>`;
+    }
+    if (pb === 0 || pb === 0.0 || pb === false) {
+      return ` <span class="pill" title="No PB funnel — measured era-unstable / negative" style="font-size:9px; padding:1px 5px; margin-top:2px; color:var(--text-muted);">no PB</span>`;
+    }
+    return '';
+  };
+}
+
 window.AppDesk = {
   _activeRecordScope: 'gated',
 
@@ -802,7 +814,7 @@ window.AppDesk = {
             <td style="padding:8px; text-align:center; color:var(--text-muted); font-size:10px;"><span id="${iconId}">▶</span></td>
             <td style="padding:8px; white-space:nowrap;">${dateStr}</td>
             <td style="padding:8px; font-weight:700; white-space:nowrap;"><a href="javascript:void(0)" onclick="event.stopPropagation(); AppSwing.openReportModal('${dateStr}', '${sym}')">${sym}</a></td>
-            <td style="padding:8px; white-space:nowrap;">${this.fmt(r.lane, '–')}</td>
+            <td style="padding:8px; white-space:nowrap;">${this.fmt(r.lane, '–')}${pbBadge(r.pb_funnel)}</td>
             <td style="padding:8px; text-align:center; white-space:nowrap;">${statusBadge}</td>
             <td style="padding:8px; font-family:var(--font-mono); font-size:11px; white-space:nowrap;">${planEntry}</td>
             <td style="padding:8px; text-align:right; color:var(--rose-light); font-family:var(--font-mono); white-space:nowrap;">${planStop}</td>

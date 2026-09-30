@@ -154,8 +154,8 @@ def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str 
                     candidates = sorted(
                         filtered,
                         key=lambda x: (
-                            bool(x.get("pb_funnel")),
-                            float(x.get("proxy_rr") or x.get("long_rr", x.get("short_rr", 0.0)) or 0.0),
+                            bool(x.get("pb_funnel")) if req_side != "short" else (x.get("priority_tier") == "HIGH_PRIORITY"),
+                            float(x.get("proxy_rr") or x.get("short_rr", x.get("long_rr", 0.0)) or 0.0),
                             bool(x.get("is_extreme_reversal", False)),
                         ),
                         reverse=True,

@@ -104,10 +104,15 @@ def enrich_candidates_with_tastytrade(
         # duplicate registrations, and `tastytrade_alert_active` is only set when at
         # least one alert was actually created or already exists on the cloud.
         if auto_alerts:
-            # Cloud alerts follow the same gate as autonomous dispatch: PB funnel, long side.
-            is_qualified = (
-                str(p.get("side", "LONG")).upper() == "LONG" and p.get("pb_funnel")
-            )
+            # Cloud alerts follow the same gate as autonomous dispatch: PB funnel for longs, short conviction for shorts.
+            side = str(p.get("side", "LONG")).upper()
+            if side == "LONG":
+                is_qualified = bool(p.get("pb_funnel"))
+            else:
+                from src.config import SCREENER_MIN_CONVICTION
+                tier = str(p.get("priority_tier") or "MONITOR")
+                score = float(p.get("priority_score") or 0.0)
+                is_qualified = (tier == "HIGH_PRIORITY" or score >= SCREENER_MIN_CONVICTION)
 
             if is_qualified:
                 side = str(p.get("side", "LONG")).upper()
@@ -752,13 +757,11 @@ class ContinuousScreenerDaemon(threading.Thread):
             )
             return []
 
-        # Sort: PB funnel first, then proxy R:R. PB outranks R:R on the measured result -- R:R 2-3 with
-        # PB (+0.072R) beats R:R >= 3 without PB (+0.030R). Everything is PB by now, so proxy_rr
-        # does the ordering.
+        # Sort: PB funnel first (for longs) / HIGH_PRIORITY (for shorts), then proxy/directional R:R.
         eligible.sort(
             key=lambda x: (
-                bool(x.get("pb_funnel")),
-                float(x.get("proxy_rr") or x.get("long_rr", x.get("short_rr", 0.0)) or 0.0),
+                bool(x.get("pb_funnel")) if str(x.get("side") or "LONG").upper() == "LONG" else (x.get("priority_tier") == "HIGH_PRIORITY"),
+                float(x.get("proxy_rr") or x.get("short_rr", x.get("long_rr", 0.0)) or 0.0),
             ),
             reverse=True,
         )

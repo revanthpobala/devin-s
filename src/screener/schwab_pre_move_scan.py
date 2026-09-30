@@ -1190,11 +1190,15 @@ def _register_slot(t_date: str, selected: List[Dict[str, Any]]) -> str:
 def _dispatch_eligible(cand: Dict[str, Any]) -> Tuple[bool, str]:
     """(eligible, basis) for one autonomous-dispatch candidate.
 
-    SCHWAB_SCREENER (default) uses the PB funnel. It was measured by replaying
-    evaluate_pine_screener_model over Schwab daily bars across the Schwab-1000 universe
-    (348,879 bars / 528 tickers): every no-PB band is era-stable NEGATIVE (MEDIUM -0.164R,
-    score 50-65 -0.128R, MONITOR -0.151R) and HIGH_PRIORITY's +0.417R is 99% PB with a -1R median,
-    so PB is an exclusion to satisfy, not a bonus. The legacy tier/score gate is retired.
+    SCHWAB_SCREENER (default) uses the PB funnel for long candidates. It was measured by
+    replaying evaluate_pine_screener_model over historical daily bars across the S&P 500
+    constituent universe (348,879 bars / 528 tickers): every no-PB band is era-stable
+    NEGATIVE (MEDIUM -0.164R, score 50-65 -0.128R, MONITOR -0.151R) and HIGH_PRIORITY's
+    +0.417R is 99% PB with a -1R median, so PB is an exclusion to satisfy, not a bonus.
+    The legacy tier/score gate is retired for long setups.
+
+    Short candidates are not PB-funneled (PB was measured on long basing setups only).
+    Short setups qualify on short screener conviction: HIGH_PRIORITY tier or priority_score >= SCREENER_MIN_CONVICTION.
 
     Any OTHER intake keeps its own gate. The audit above never saw an EdgeScanner intraday alert,
     so scoring one on it would transfer a threshold across populations and call the result
@@ -1207,8 +1211,13 @@ def _dispatch_eligible(cand: Dict[str, Any]) -> Tuple[bool, str]:
     intake = str(cand.get("intake") or "SCHWAB_SCREENER").upper()
     if intake != "SCHWAB_SCREENER":
         return True, f"{intake}_INGEST_SCORE"
-    if str(cand.get("side") or "LONG").upper() != "LONG":
-        return False, "SCREENER_PB_NOT_LONG"
+    side = str(cand.get("side") or "LONG").upper()
+    if side == "SHORT":
+        from src.config import SCREENER_MIN_CONVICTION
+        tier = str(cand.get("priority_tier") or "MONITOR")
+        score = float(cand.get("priority_score") or 0.0)
+        is_qual = (tier == "HIGH_PRIORITY" or score >= SCREENER_MIN_CONVICTION)
+        return is_qual, f"SCREENER_SHORT_{tier}"
     return bool(cand.get("pb_funnel")), "SCREENER_PB"
 
 
@@ -1260,15 +1269,15 @@ def run_autonomous_screener_pipeline(
             _by_basis[_b] = _by_basis.get(_b, 0) + 1
     logger.info(f"🤖 [AUTONOMOUS ENGINE] Dispatch gate breakdown: {_by_basis}")
 
-    # Sort strictly by PB funnel, then proxy R:R
+    # Sort: PB funnel (longs) / HIGH_PRIORITY (shorts), then proxy/directional R:R
     sorted_picks = sorted(
         high_priority_picks,
         key=lambda x: (
-            bool(x.get("pb_funnel")),
-            float(x.get("proxy_rr") or x.get("long_rr", x.get("short_rr", 0.0)) or 0.0),
+            bool(x.get("pb_funnel")) if str(x.get("side") or "LONG").upper() == "LONG" else (x.get("priority_tier") == "HIGH_PRIORITY"),
+            float(x.get("proxy_rr") or x.get("short_rr", x.get("long_rr", 0.0)) or 0.0),
             bool(x.get("is_extreme_reversal", False)),
             bool(x.get("squeeze_on", False)),
-            float(x.get("long_rr", x.get("short_rr", 0.0))),
+            float(x.get("short_rr" if str(x.get("side") or "LONG").upper() == "SHORT" else "long_rr", 0.0)),
         ),
         reverse=True,
     )

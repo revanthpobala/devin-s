@@ -67,7 +67,17 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
             "priority_score": 70.0,
             "priority_tier": "HIGH_PRIORITY",
             "pb_funnel": True,
-        }
+        },
+        {
+            "symbol": "WEAK",
+            "side": "SHORT",
+            "price": 50.0,
+            "ceiling_level": 55.0,
+            "target_level": 40.0,
+            "priority_score": 40.0,
+            "priority_tier": "MONITOR",
+            "pb_funnel": False,
+        },
     ]
 
     mock_metrics = [
@@ -104,10 +114,10 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
 
         alerts_created = daemon.enrich_with_tastytrade(long_picks, short_picks)
 
-        # Cloud alerts follow the same gate as autonomous dispatch: PB funnel, LONG side only.
-        # So LYB gets 2 alerts (support + target) and the SHORT pick gets none.
-        assert alerts_created == 2
-        assert mock_tt.create_quote_alert.call_count == 2
+        # Cloud alerts follow the same gate as autonomous dispatch: PB funnel for longs, conviction for shorts.
+        # So LYB gets 2 alerts (support + target), XYZ gets 2 alerts (ceiling + target), WEAK gets none.
+        assert alerts_created == 4
+        assert mock_tt.create_quote_alert.call_count == 4
 
         # Verify LYB enrichment
         lyb_tt = long_picks[0].get("tastytrade")
@@ -120,12 +130,15 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
         assert lyb_tt["lendability"] == "Easy To Borrow"
         assert long_picks[0]["tastytrade_alert_active"] is True
 
-        # Verify XYZ enrichment (metrics still attached; alerts are long-side only)
+        # Verify XYZ enrichment (metrics attached; alerts registered for high-priority short)
         xyz_tt = short_picks[0].get("tastytrade")
         assert xyz_tt is not None
         assert xyz_tt["iv_rank"] == 80.0
         assert xyz_tt["borrow_rate"] == 1.5
-        assert short_picks[0].get("tastytrade_alert_active") is None
+        assert short_picks[0]["tastytrade_alert_active"] is True
+
+        # Verify WEAK short (unqualified -> no alerts)
+        assert short_picks[1].get("tastytrade_alert_active") is None
 
 
 def test_enrich_with_tastytrade_idempotent_dedup():
@@ -291,9 +304,9 @@ def test_evaluate_and_dispatch_deep_research():
         # PB unmeasured (None) -> refused, never promoted to a measured half
         {"symbol": "UNMEASURED", "side": "LONG", "price": 40.0, "pb_funnel": None, "proxy_rr": 5.0,
          "priority_score": 90.0, "priority_tier": "HIGH_PRIORITY"},
-        # Short side is out of scope for the PB gate
-        {"symbol": "SHORTY", "side": "SHORT", "price": 40.0, "pb_funnel": True, "proxy_rr": 5.0,
-         "priority_score": 90.0, "priority_tier": "HIGH_PRIORITY"},
+        # Weak short candidate lacking conviction -> refused
+        {"symbol": "SHORT_WEAK", "side": "SHORT", "price": 40.0, "proxy_rr": 1.5,
+         "priority_score": 40.0, "priority_tier": "MONITOR"},
     ]
 
     with patch.object(daemon, "dispatch_candidate_research", return_value=True) as mock_dispatch, \
@@ -310,7 +323,7 @@ def test_evaluate_and_dispatch_deep_research():
         assert "EXCEED" not in dispatched
         assert "NOPB" not in dispatched
         assert "UNMEASURED" not in dispatched
-        assert "SHORTY" not in dispatched
+        assert "SHORT_WEAK" not in dispatched
         assert mock_dispatch.call_count == 2
 
         # Second call on same day should dispatch 0 because cap (2) is reached
@@ -323,6 +336,34 @@ def test_evaluate_and_dispatch_deep_research():
         assert "LYB" in status["auto_deep_dispatched_today"]
 
 
+def test_evaluate_and_dispatch_deep_research_with_qualifying_short():
+    """Verify that a qualified short candidate can be dispatched."""
+    daemon = ContinuousScreenerDaemon(poll_interval=300, auto_deep_research=True, max_concurrent_slots=2)
+    daemon.max_auto_deep_per_day = 2
+
+    candidates = [
+        {"symbol": "LYB", "side": "LONG", "price": 62.5, "pb_funnel": True, "proxy_rr": 3.5,
+         "priority_score": 75.0, "priority_tier": "HIGH_PRIORITY"},
+        {"symbol": "SHORT_PRIME", "side": "SHORT", "price": 40.0, "proxy_rr": 4.0, "short_rr": 4.0,
+         "priority_score": 85.0, "priority_tier": "HIGH_PRIORITY"},
+        {"symbol": "SHORT_WEAK", "side": "SHORT", "price": 40.0, "proxy_rr": 1.5,
+         "priority_score": 40.0, "priority_tier": "MONITOR"},
+    ]
+
+    with patch.object(daemon, "dispatch_candidate_research", return_value=True) as mock_dispatch, \
+         patch.object(daemon, "_is_job_active_in_db", return_value=False), \
+         patch.object(daemon, "get_active_research_count", return_value=0), \
+         patch("src.tracking.alert_db.queue_for_research"):
+
+        dispatched = daemon.evaluate_and_dispatch_deep_research(candidates, "2029-01-02")
+
+        assert len(dispatched) == 2
+        assert "LYB" in dispatched
+        assert "SHORT_PRIME" in dispatched
+        assert "SHORT_WEAK" not in dispatched
+        assert mock_dispatch.call_count == 2
+
+
 def test_dispatch_gate_is_scoped_to_the_screener_intake():
     """PB was measured on Schwab daily bars. It must gate the screener intake ONLY.
 
@@ -332,12 +373,15 @@ def test_dispatch_gate_is_scoped_to_the_screener_intake():
     """
     from src.screener.schwab_pre_move_scan import _dispatch_eligible
 
-    # Screener intake: PB decides.
+    # Screener intake: PB decides for longs, conviction decides for shorts.
     assert _dispatch_eligible({"side": "LONG", "pb_funnel": True}) == (True, "SCREENER_PB")
     assert _dispatch_eligible({"side": "LONG", "pb_funnel": False})[0] is False
     assert _dispatch_eligible({"side": "LONG", "pb_funnel": None})[0] is False
     assert _dispatch_eligible({"side": "LONG"})[0] is False, "absent pb_funnel must fail closed"
     assert _dispatch_eligible({"side": "SHORT", "pb_funnel": True})[0] is False
+    assert _dispatch_eligible({"side": "SHORT", "priority_tier": "HIGH_PRIORITY"}) == (True, "SCREENER_SHORT_HIGH_PRIORITY")
+    assert _dispatch_eligible({"side": "SHORT", "priority_score": 75.0}) == (True, "SCREENER_SHORT_MONITOR")
+    assert _dispatch_eligible({"side": "SHORT", "priority_tier": "MONITOR", "priority_score": 40.0})[0] is False
 
     # EdgeScanner intake: never scored on PB, regardless of what pb_funnel says.
     ok, basis = _dispatch_eligible({"intake": "EDGESCANNER", "pb_funnel": None})
@@ -356,10 +400,24 @@ def test_autonomous_pipeline_gate_refuses_without_pb():
     for cand in (
         {"symbol": "NOPB", "side": "LONG", "pb_funnel": False, "proxy_rr": 9.0, "priority_score": 99.0},
         {"symbol": "UNMEASURED", "side": "LONG", "pb_funnel": None, "proxy_rr": 9.0, "priority_score": 99.0},
-        {"symbol": "SHORTY", "side": "SHORT", "pb_funnel": True, "proxy_rr": 9.0, "priority_score": 99.0},
+        {"symbol": "SHORT_WEAK", "side": "SHORT", "proxy_rr": 1.5, "priority_score": 40.0, "priority_tier": "MONITOR"},
     ):
         res = run_autonomous_screener_pipeline([cand], auto_max=1, run_deep=True, date_str="2029-01-01")
         assert res == {"count": 0, "researched": []}, f"{cand['symbol']} should be refused"
+
+
+def test_autonomous_pipeline_dispatches_qualifying_short():
+    """Qualified short candidate (HIGH_PRIORITY or score >= 60) clears dispatch gate."""
+    from src.screener.schwab_pre_move_scan import _dispatch_eligible
+
+    ok, basis = _dispatch_eligible({"side": "SHORT", "priority_tier": "HIGH_PRIORITY", "priority_score": 75.0})
+    assert ok is True and basis == "SCREENER_SHORT_HIGH_PRIORITY"
+
+    ok_score, basis_score = _dispatch_eligible({"side": "SHORT", "priority_tier": "MONITOR", "priority_score": 65.0})
+    assert ok_score is True and basis_score == "SCREENER_SHORT_MONITOR"
+
+    refused, r_basis = _dispatch_eligible({"side": "SHORT", "priority_tier": "MONITOR", "priority_score": 45.0})
+    assert refused is False and r_basis == "SCREENER_SHORT_MONITOR"
 
 
 def test_edge_scanner_worker_is_not_gated_on_pb():

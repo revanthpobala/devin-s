@@ -440,11 +440,14 @@ def calc_reversal_zone_scores(
 # PB funnel (long side). This is the only screener gate with a measured, era-STABLE positive in
 # both R:R tiers (+0.089R / +0.193R all-era), while every no-PB band measures stable NEGATIVE --
 # MEDIUM -0.164R, score 50-65 -0.128R, MONITOR -0.151R. So PB is an exclusion you must satisfy,
-# not a bonus you add. "Coiled" = price hugs EMA20 (the Pine's fast MA, NOT the ma20 SMA above),
-# that distance is not an extension outlier vs its OWN prior 252 bars, and proxy R:R clears 3.0.
-# PB_EXT_Z_MAX = 1.0 is the plain one-sigma "not an outlier" boundary -- the single constant
-# introduced for this gate, kept named so a re-measure touches one line.
-PB_EXT_Z_MAX = 1.0
+# not a bonus you add.
+# Setup criteria:
+# 1. Price is not overextended vs EMA20: extz < 1.5 (allows deeply oversold pullbacks which outperform,
+#    dropping only overextended bars). Z-score mean and population standard deviation are taken over
+#    the prior 252 bars.
+# 2. Price holds above recent 10-bar swing low: close > swing_lo.
+# 3. Proxy R:R clears 3.0: proxy_rr >= 3.0.
+PB_EXT_Z_MAX = 1.5
 PB_MIN_BARS = 253
 PB_PROXY_RR_MIN = 3.0
 
@@ -582,8 +585,13 @@ def evaluate_pine_screener_model(
     else:
         ema20 = _ema(close, 20)
         dist_ema20 = (close - ema20) / ema20 * 100.0
-        extz_ema20 = float(_calc_z(dist_ema20, 252).iloc[-1])
-        pb_funnel = bool(abs(extz_ema20) <= PB_EXT_Z_MAX and proxy_rr >= PB_PROXY_RR_MIN)
+        # Z-score mean and population standard deviation (ddof=0) taken strictly over the prior 252 bars
+        prior_dist = dist_ema20.iloc[-253:-1].dropna()
+        prior_mean = float(prior_dist.mean()) if len(prior_dist) > 0 else 0.0
+        prior_std = float(prior_dist.std(ddof=0)) if len(prior_dist) > 0 else 0.0
+        curr_dist = float(dist_ema20.iloc[-1])
+        extz_ema20 = float((curr_dist - prior_mean) / prior_std) if prior_std > 0 else 0.0
+        pb_funnel = bool(extz_ema20 < PB_EXT_Z_MAX and curr_close > swing_lo and proxy_rr >= PB_PROXY_RR_MIN)
 
     # 6. Prime Signal
     is_blowoff = abs(z_vel) > 2.0
