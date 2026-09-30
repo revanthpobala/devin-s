@@ -536,6 +536,9 @@ def evaluate_pine_screener_model(
 
     # 3. Volatility Squeeze & VCP Energy
     sqz_on, vcp_energy, mom_val = detect_volatility_squeeze(close, high, low, bb_len=20, kc_len=20)
+    squeeze_on = bool(sqz_on)
+    recent_ranges = (high - low).iloc[-7:]
+    nr7 = bool((high.iloc[-1] - low.iloc[-1]) <= recent_ranges.min()) if len(recent_ranges) >= 7 else False
 
     # 4. Connors Reversal Zone
     rev_long, rev_short, is_extreme = calc_reversal_zone_scores(df, stage, rsi2, rsi14, z_elast)
@@ -592,43 +595,68 @@ def evaluate_pine_screener_model(
     )
 
     # 8. Composite Conviction / Priority Score (0 to 100)
-    # Phase 6: Rank on R:R and stop proximity; stage and squeeze are used for display only.
+    # Balanced weighting: R:R (30 pts), Stop Proximity (20 pts), Stage Trend (15 pts),
+    # Volatility Squeeze/Compression (15 pts), Reversal Zone (10 pts), Prime Signal (10 pts).
     score = 0.0
 
-    # A. Proxy Risk:Reward (Up to 50 pts — primary ranker)
+    # A. Proxy Risk:Reward (Up to 30 pts)
     if proxy_rr >= 3.5:
-        score += 50.0
+        score += 30.0
     elif proxy_rr >= 3.0:
-        score += 42.0
+        score += 25.0
     elif proxy_rr >= 2.5:
-        score += 34.0
+        score += 20.0
     elif proxy_rr >= 2.0:
-        score += 25.0
-    elif proxy_rr >= 1.5:
         score += 15.0
+    elif proxy_rr >= 1.5:
+        score += 8.0
 
-    # B. Stop Proximity (ATRs Above Stop <= 1.0) (Up to 25 pts)
+    # B. Stop Proximity (ATRs Above Stop <= 1.0) (Up to 20 pts)
     if atrs_up <= 0.5:
-        score += 25.0
+        score += 20.0
     elif atrs_up <= 1.0:
-        score += 18.0
+        score += 15.0
     elif atrs_up <= 1.5:
-        score += 10.0
+        score += 8.0
 
-    # C. Reversal Zone / Connors Mean Reversion (Up to 25 pts)
+    # C. Weinstein Market Stage Trend Alignment (Up to 15 pts)
+    if is_short:
+        if stage == 4:  # Stage 4 Declining trend
+            score += 15.0
+        elif stage == 3:  # Stage 3 Distribution topping
+            score += 10.0
+        elif stage == 2:  # Counter-trend short
+            score -= 10.0
+    else:
+        if stage == 2:  # Stage 2 Advancing trend (strongest momentum)
+            score += 15.0
+        elif stage == 1:  # Stage 1 Basing accumulation (ground floor)
+            score += 12.0
+        elif stage == 5:  # Recovery stage
+            score += 8.0
+        elif stage == 4:  # Falling knife
+            score -= 15.0
+
+    # D. Volatility Squeeze & NR7 Compression (Up to 15 pts)
+    # Coiled energy precedes explosive moves
+    if squeeze_on:
+        score += 10.0
+    if nr7:
+        score += 5.0
+
+    # E. Reversal Zone / Connors Extreme (Up to 10 pts)
     if is_short:
         if rev_short >= 7.0:
-            score += 25.0
+            score += 10.0
         elif rev_short >= 5.0:
-            score += 15.0
+            score += 5.0
     else:
         if rev_long >= 7.0:
-            score += 25.0
+            score += 10.0
         elif rev_long >= 5.0:
-            score += 15.0
+            score += 5.0
 
-    # F. Bayesian Sigma (buy_score/sell_score) (+5 pts each direction)
-    # High buy_score confirms long conviction; high sell_score confirms short conviction.
+    # F. Bayesian Sigma (buy_score/sell_score) (+5 pts)
     if is_short:
         if sell_score >= 80.0:
             score += 5.0
@@ -645,7 +673,6 @@ def evaluate_pine_screener_model(
             score -= 5.0
 
     # G. Prime Signal (+3/+5 for aligned direction)
-    # prime_signal >= 1 confirms long conviction; <= -1 confirms short conviction.
     if is_short:
         if prime_signal <= -2:
             score += 5.0
@@ -660,7 +687,7 @@ def evaluate_pine_screener_model(
     priority_score = round(float(np.clip(score, 0.0, 100.0)), 1)
     if priority_score >= 75.0:
         priority_tier = "HIGH_PRIORITY"
-    elif priority_score >= 55.0:
+    elif priority_score >= 50.0:
         priority_tier = "MEDIUM_PRIORITY"
     else:
         priority_tier = "MONITOR"

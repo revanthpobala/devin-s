@@ -12,7 +12,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import sqlite3
@@ -24,8 +24,12 @@ from pydantic import BaseModel
 
 from src import config
 from src.ui.services.research_queue import (
+    MAX_CONCURRENT_DEEP,
+    MAX_CONCURRENT_LOCAL,
     dispatch_next_queued_job,
     find_live_research_pid,
+    get_active_deep_research_count,
+    get_active_local_research_count,
     get_active_research_count,
     run_research_worker,
 )
@@ -90,12 +94,12 @@ def extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
         pass
 
     # 3. Fallback scan markdown files for embedded json:watch_levels if still missing
-    if not levels_data and not db_target:
+    if not levels_data:
         for md_cand in [rep_dir / f"{ticker_u}_arbitration.md", rep_dir / f"{ticker_u}_summary.md"]:
             if md_cand.exists():
                 try:
                     txt = md_cand.read_text(encoding="utf-8")
-                    m = re.search(r'```json:watch_levels\s*(\{.*?\})\s*```', txt, re.DOTALL)
+                    m = re.search(r'```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?"shares_plan"[\s\S]*?\})\s*```', txt)
                     if m:
                         levels_data = json.loads(m.group(1))
                         break
@@ -1152,11 +1156,32 @@ def get_report_bundle(date: str, ticker: str):
     levels_file = raw_root / target_date / ticker_u / f"{ticker_u}_watch_levels.json"
     if not levels_file.exists():
         levels_file = raw_root / target_date / f"{ticker_u}_watch_levels.json"
+    if not levels_file.exists():
+        levels_file = rep_root / target_date / f"{ticker_u}_watch_levels.json"
     if levels_file.exists():
         try:
             watch_levels = json.loads(levels_file.read_text(encoding="utf-8"))
         except Exception:
             pass
+
+    # Extract directly from embedded json:watch_levels in arbitration_md or summary_md
+    if not watch_levels:
+        for md_txt in [arbitration_md, summary_md]:
+            if md_txt:
+                m_block = re.search(
+                    r"```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?\"shares_plan\"[\s\S]*?\})\s*```",
+                    md_txt,
+                )
+                if m_block:
+                    try:
+                        watch_levels = json.loads(m_block.group(1))
+                        # Persist to raw folder so future lookups are instant
+                        save_p = raw_root / target_date / ticker_u / f"{ticker_u}_watch_levels.json"
+                        save_p.parent.mkdir(parents=True, exist_ok=True)
+                        save_p.write_text(json.dumps(watch_levels, indent=2), encoding="utf-8")
+                        break
+                    except Exception:
+                        pass
 
     if not watch_levels:
         try:
@@ -1479,11 +1504,25 @@ def get_research_jobs():
             item["is_alive"] = is_alive
             jobs_list.append(item)
         conn.commit()
-        return {"jobs": jobs_list, "max_concurrent": MAX_CONCURRENT_RESEARCH}
+        local_queue = [j for j in jobs_list if j.get("mode") == "local_only"]
+        deep_queue = [j for j in jobs_list if j.get("mode") != "local_only"]
+        active_local_count = get_active_local_research_count()
+        active_deep_count = get_active_deep_research_count()
+        return {
+            "jobs": jobs_list,
+            "local_queue": local_queue,
+            "deep_queue": deep_queue,
+            "local_slots_used": active_local_count,
+            "local_slots_max": MAX_CONCURRENT_LOCAL,
+            "deep_slots_used": active_deep_count,
+            "deep_slots_max": MAX_CONCURRENT_DEEP,
+            "max_concurrent": MAX_CONCURRENT_RESEARCH,
+        }
 
 
 class ResearchRequest(BaseModel):
-    ticker: str
+    ticker: Optional[str] = None
+    tickers: Optional[List[str]] = None
     mode: str = "full"  # "full" | "scrape_only" | "deep_only"
     date: Optional[str] = None
     force: bool = False
@@ -1494,7 +1533,9 @@ def trigger_research(req: ResearchRequest):
     """Trigger research pipeline asynchronously with automatic slot queueing and SQLite tracking."""
     init_db()
 
-    ticker_raw = req.ticker.strip()
+    ticker_raw = (req.ticker or "").strip()
+    if not ticker_raw and req.tickers:
+        ticker_raw = ",".join(str(t) for t in req.tickers if t).strip()
     if not ticker_raw:
         raise HTTPException(status_code=400, detail="Ticker is required")
 
@@ -1575,15 +1616,19 @@ def trigger_research(req: ResearchRequest):
     job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ticker_u}"
     log_file = str(LOGS_DIR / f"{job_id}.log")
 
-    active_count = get_active_research_count()
+    is_local_job = (req.mode == "local_only")
+    active_slot_count = get_active_local_research_count() if is_local_job else get_active_deep_research_count()
+    max_slots = MAX_CONCURRENT_LOCAL if is_local_job else MAX_CONCURRENT_DEEP
 
-    if active_count < MAX_CONCURRENT_RESEARCH:
+    if active_slot_count < max_slots:
         try:
             with get_db() as conn:
+                start_stage = "LOCAL_TRIAGE" if is_local_job else "STARTING"
+                start_detail = "Starting Local Triage" if is_local_job else "Starting Deep Research"
                 conn.cursor().execute("""
-                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
-                    VALUES (?, ?, ?, ?, 'STARTING', 'RUNNING', ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, os.getpid(), datetime.now(timezone.utc).isoformat(), log_file, req.date))
+                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail)
+                    VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)
+                """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, req.date, start_detail))
                 conn.commit()
         except sqlite3.IntegrityError:
             # Duplicate active job for this ticker — return the existing one
@@ -1599,15 +1644,17 @@ def trigger_research(req: ResearchRequest):
         worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force), daemon=True)
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
-        append_log(f"🚀 Started research for {ticker_u} in open slot (Active: {active_count + 1}/{MAX_CONCURRENT_RESEARCH}).")
-        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": "STARTING", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+        q_label = "Local Queue" if is_local_job else "Deep Queue"
+        append_log(f"🚀 Started research for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
+        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": start_stage, "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
     else:
         try:
             with get_db() as conn:
+                q_detail = "Queued for Local Triage" if is_local_job else "Queued for Deep Research"
                 conn.cursor().execute("""
-                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date)
-                    VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date))
+                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail)
+                    VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?)
+                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date, q_detail))
                 conn.commit()
         except sqlite3.IntegrityError:
             with get_db() as conn:
@@ -1619,7 +1666,8 @@ def trigger_research(req: ResearchRequest):
                 return {"status": "queued", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode}
             raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
-        append_log(f"📥 [Queue] Concurrency slots full ({active_count}/{MAX_CONCURRENT_RESEARCH}). Queued {ticker_u} for research.")
+        q_label = "Local Queue" if is_local_job else "Deep Queue"
+        append_log(f"📥 [{q_label}] Concurrency slots full ({active_slot_count}/{max_slots}). Queued {ticker_u} for research.")
         return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": "QUEUED", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
 
 

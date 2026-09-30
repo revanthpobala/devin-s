@@ -211,7 +211,8 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         except (ValueError, TypeError):
             det_ev_r = None
 
-    quality_pass = det_pass
+    watch_pass = bool(det == "WATCH" and (det_conv is not None and det_conv >= min_watch_conv))
+    quality_pass = det_pass or watch_pass
     plan = (
         triage.get("long_plan") if triage.get("chosen_side") == "long" else triage.get("short_plan")
     )
@@ -278,7 +279,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     ev_r_ok = quality_pass or (det_ev_r is None or det_ev_r >= min_ev_r)
     send = bool(
         quality_pass
-        and triage.get("pursue") is True
+        and triage.get("pursue", True) is True
         and earnings_gate != "FAIL"
         and conviction_ok
         and (quality_pass or caution_pass)
@@ -484,6 +485,42 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             stop_lvl = float(long_p.get("stop")) if long_p.get("stop") else None
             t1_lvl = float(long_p.get("target")) if long_p.get("target") else None
             t2_lvl = float(long_p.get("target_2")) if long_p.get("target_2") else None
+
+            if not stop_lvl and data_window:
+                for k in ("stop_loss", "Long Stop Loss", "conformal_certified_stop_14d", "stop", "tactical_stop"):
+                    if data_window.get(k) is not None:
+                        try:
+                            val = float(data_window[k])
+                            if val > 0:
+                                stop_lvl = val
+                                break
+                        except Exception:
+                            pass
+
+            if not t1_lvl and data_window:
+                for k in ("Long Target T1 Waypoint", "target_1", "Long Target", "target"):
+                    if data_window.get(k) is not None:
+                        try:
+                            val = float(data_window[k])
+                            if val > 0:
+                                t1_lvl = val
+                                break
+                        except Exception:
+                            pass
+
+            # Guard against invalid stop geometry (stop >= entry_low for LONG)
+            if stop_lvl is not None and e_low is not None and float(stop_lvl) >= float(e_low):
+                atr_ref = None
+                if data_window:
+                    for k in ("RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR"):
+                        if data_window.get(k) is not None:
+                            try:
+                                atr_ref = float(data_window[k])
+                                break
+                            except Exception:
+                                pass
+                atr_buf = atr_ref if (atr_ref and atr_ref > 0) else (float(e_low) * 0.03)
+                stop_lvl = round(float(e_low) - max(0.20 * atr_buf, 0.05), 2)
 
             s_lane = "WATCH_SHADOW" if triage.get("triage") == "WATCH" else (triage.get("setup_lane") or "RR_SETUP")
             dw_bar_date = (data_window.get("date") or data_window.get("time") or data_window.get("Date") or today_str) if data_window else today_str
@@ -697,13 +734,17 @@ def _screener_payload_verdict(ticker, safe_ticker, survivor, payload, thesis_jso
     # Deterministic floor: a candidate without a verified Data Window is never auto-PASS.
     # It reaches paid deep research only if the free LLM explicitly endorses it AND the gates hold.
     quality_pass = True  # WATCH-quality; promotion is decided by send_for_deep_research below
+    prio_score = float(payload.get("priority_score") or 0.0)
+    prio_tier = str(payload.get("priority_tier") or "")
+    is_high_conv_screener = (prio_tier == "HIGH_PRIORITY" or prio_score >= 65.0)
+
     send = bool(
         has_plan
         and earnings_gate != "FAIL"
         and not news_negative
         and not contradicts
         and (llm_conviction is None or float(llm_conviction) >= 50.0)
-        and send_for_deep_research
+        and (send_for_deep_research or is_high_conv_screener)
     )
 
     triage = {

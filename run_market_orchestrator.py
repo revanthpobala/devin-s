@@ -135,6 +135,7 @@ def main():
     external_llm_running = False
     eod_screener_date = None
     eod_screener_process = None
+    morning_briefing_date = None
 
     try:
         while True:
@@ -255,6 +256,26 @@ def main():
                 now_mt = datetime.now(ZoneInfo("America/Denver"))
                 if now_mt.minute % 15 == 0 and now_mt.second < 30:
                     logger.info("Outside market hours. Orchestrator idling...")
+
+            # 7:45 AM MT Morning Executive Briefing Trigger (fires once per weekday morning)
+            now_mt = datetime.now(ZoneInfo("America/Denver"))
+            if now_mt.weekday() < 5 and ((now_mt.hour == 7 and now_mt.minute >= 45) or (7 < now_mt.hour < 15)):
+                today_str = now_mt.strftime("%Y-%m-%d")
+                if morning_briefing_date != today_str:
+                    logger.info(f"🌅 7:45 AM MT: Triggering Morning Executive Briefing for {today_str}...")
+                    try:
+                        import threading
+                        from src.logic.morning_briefing import generate_morning_briefing
+                        morning_briefing_date = today_str
+                        t = threading.Thread(
+                            target=generate_morning_briefing,
+                            kwargs={"target_date": today_str, "force_live_quotes": True},
+                            daemon=True,
+                        )
+                        t.start()
+                        logger.info("Morning executive briefing thread dispatched.")
+                    except Exception as e_brief:
+                        logger.error(f"Failed to launch morning briefing: {e_brief}")
 
             # EOD autonomous dispatch — outside market-hours gate; fires once per calendar day
             now_mt = datetime.now(ZoneInfo("America/Denver"))

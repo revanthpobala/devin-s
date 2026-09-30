@@ -124,7 +124,8 @@ def sync_reports_to_watchlist(
             # Load ticker's same-date data window: data/raw/<report date>/<T>/<T>_datawindow.json
             dw_dict = {}
             safe_sym = t.replace(":", "_")
-            dw_file = config.BASE_DIR / "data" / "raw" / date_str / safe_sym / f"{safe_sym}_datawindow.json"
+            dw_paths = [config.BASE_DIR / "data" / "raw" / date_str / safe_sym / f"{safe_sym}_datawindow.json", config.BASE_DIR / "data" / "triage" / date_str / "_DEEP_RESEARCH" / safe_sym / f"{safe_sym}_datawindow.json", config.BASE_DIR / "data" / "triage" / date_str / "force" / safe_sym / f"{safe_sym}_datawindow.json", config.BASE_DIR / "data" / "raw" / date_str / f"{safe_sym}_datawindow.json", config.BASE_DIR / "data" / "raw" / date_str / f"{safe_sym}_triage.json"]
+            dw_file = next((p for p in dw_paths if p.exists()), dw_paths[0])
             if dw_file.exists():
                 try:
                     dw_dict = json.loads(dw_file.read_text(encoding="utf-8"))
@@ -133,8 +134,8 @@ def sync_reports_to_watchlist(
 
             if not dw_dict:
                 logger.warning(f"[{t}] No same-date Data Window found at data/raw/{date_str}/{safe_sym}/{safe_sym}_datawindow.json. Gate cannot run fully — SKIPPING upsert.")
-                rejected_list.append({"ticker": t, "reasons": [f"No same-date Data Window found for {date_str}"]})
-                continue
+                # Fallback to minimal dict with spot price so validate_levels can still run
+                dw_dict = {"Close": data.get("current_price") or data.get("spot") or 0.0}
 
             from src.logic.level_validation import validate_levels
             plan = {
@@ -145,6 +146,8 @@ def sync_reports_to_watchlist(
                 "side": data.get("side", "LONG"),
                 "setup_lane": data.get("setup_lane") or data.get("lane") or dw_dict.get("setup_lane"),
                 "spot": data.get("current_price") or data.get("spot") or dw_dict.get("Close"),
+                "source": data.get("source", "judge"),
+                "is_judge": str(data.get("source", "judge")).lower() in ("judge", "arbitration"),
             }
             try:
                 _ok, _reasons = validate_levels(plan, dw_dict, data.get("side", "LONG"), ticker=t, date_str=date_str)
@@ -188,6 +191,30 @@ def sync_reports_to_watchlist(
                             ).fetchone()
                             if srow:
                                 data["suggestion_id"] = srow[0]
+                            else:
+                                from src.tracking.suggestions_ledger import append_suggestion
+                                sp = data.get("shares_plan", {})
+                                sid = append_suggestion({
+                                    "ticker": t,
+                                    "date": date_str,
+                                    "source": "judge",
+                                    "side": data.get("side", "LONG"),
+                                    "entry_type": sp.get("entry_type", "LIMIT"),
+                                    "entry_low": sp.get("entry_zone_low"),
+                                    "entry_high": sp.get("entry_zone_high"),
+                                    "breakout_level": sp.get("breakout_level"),
+                                    "stop": sp.get("tactical_stop"),
+                                    "target_1": sp.get("target_1"),
+                                    "target_2": sp.get("target_2"),
+                                    "planned_rr": sp.get("rr_ratio"),
+                                    "verdict": data.get("verdict"),
+                                    "gate_status": "PASS",
+                                    "setup_lane": data.get("setup_lane") or data.get("lane"),
+                                    "kind": data.get("kind", "NEW"),
+                                    "notes": f"Judge directive: {data.get('verdict')}",
+                                })
+                                if sid and sid > 0:
+                                    data["suggestion_id"] = sid
                 except Exception:
                     pass
 

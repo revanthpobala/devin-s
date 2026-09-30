@@ -104,6 +104,17 @@
   background: rgba(59, 130, 246, 0.15);
 }
 
+.pill.purple {
+  border-color: rgba(168, 85, 247, 0.4);
+  color: #9333ea;
+  background: rgba(168, 85, 247, 0.1);
+}
+[data-theme="dark"] .pill.purple {
+  color: #c084fc;
+  border-color: rgba(192, 132, 252, 0.4);
+  background: rgba(168, 85, 247, 0.15);
+}
+
 .dot {
   width: 5px;
   height: 5px;
@@ -1970,3 +1981,122 @@ table.watchlist-table tbody td {
   color: var(--cyan-glow, #38bdf8) !important;
   text-shadow: 0 0 8px rgba(6, 182, 212, 0.4);
 }
+
+/* Floating Minimized Dossier Dock Widget */
+.minimized-dossier-dock {
+  position: fixed;
+  bottom: 20px;
+  right: 24px;
+  z-index: 999999;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  border-radius: 24px;
+  padding: 6px 14px;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(6, 182, 212, 0.2);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.minimized-dossier-dock:hover {
+  transform: translateY(-2px);
+  border-color: var(--cyan);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 16px rgba(6, 182, 212, 0.35);
+}
+
+.minimized-dossier-dock .dock-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.minimized-dossier-dock .dock-sym {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--cyan-glow, #38bdf8);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.minimized-dossier-dock .dock-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.minimized-dossier-dock .dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.minimized-dossier-dock .dock-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.minimized-dossier-dock .dock-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.minimized-dossier-dock .dock-btn.close-btn:hover {
+  border-color: var(--rose);
+  color: var(--rose);
+}
+
+/* Deep Research Table Styles */
+.dr-date-pill {
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dr-date-pill:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.dr-date-pill.active {
+  background: rgba(6, 182, 212, 0.15);
+  border-color: var(--cyan);
+  color: var(--cyan-glow, #38bdf8);
+  font-weight: 800;
+}
+
+.dr-ticker-chip {
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--cyan);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dr-ticker-chip:hover {
+  background: rgba(6, 182, 212, 0.18);
+  border-color: var(--cyan);
+  transform: translateY(-1px);
+}
+

@@ -110,7 +110,8 @@ def get_suggested_trades_endpoint():
                 rows = c.execute(
                     """
                     SELECT wt.rowid as id, wt.*, 
-                           s.gate_status, s.setup_lane, s.kind, s.atr_at_signal, s.rr_at_market_at_signal
+                           s.gate_status, s.setup_lane, s.kind, s.atr_at_signal, s.rr_at_market_at_signal,
+                           s.taken, s.your_fill, s.notes as suggestion_notes
                     FROM watch_targets wt
                     LEFT JOIN suggestions s ON s.id = wt.suggestion_id
                     WHERE wt.is_active IS NULL OR wt.is_active = 1
@@ -152,7 +153,7 @@ def get_suggested_trades_endpoint():
             side = (t.get("side") or "LONG").upper()
 
             entry_mid = None
-            if entry_low is not None and entry_high is not None:
+            if entry_low is not None and entry_high is not None and (entry_low > 0 or entry_high > 0):
                 entry_mid = round((entry_low + entry_high) / 2.0, 2)
             elif entry_low is not None:
                 entry_mid = entry_low
@@ -160,36 +161,62 @@ def get_suggested_trades_endpoint():
                 entry_mid = entry_high
 
             pnl_pct = None
+            pnl_dollar = None
             if entry_mid and last_price and entry_mid > 0:
                 if side == "SHORT":
                     pnl_pct = round(((entry_mid - last_price) / entry_mid) * 100.0, 2)
+                    pnl_dollar = round((entry_mid - last_price) * 100.0, 2)
                 else:
                     pnl_pct = round(((last_price - entry_mid) / entry_mid) * 100.0, 2)
+                    pnl_dollar = round((last_price - entry_mid) * 100.0, 2)
 
             target_1_pct = None
+            target_1_dollar = None
             if entry_mid and target_1 and entry_mid > 0:
                 if side == "SHORT":
                     target_1_pct = round(((entry_mid - target_1) / entry_mid) * 100.0, 2)
+                    target_1_dollar = round(abs(entry_mid - target_1) * 100.0, 2)
                 else:
                     target_1_pct = round(((target_1 - entry_mid) / entry_mid) * 100.0, 2)
+                    target_1_dollar = round(abs(target_1 - entry_mid) * 100.0, 2)
 
             stop_risk_pct = None
+            stop_risk_dollar = None
             if entry_mid and stop_loss and entry_mid > 0:
                 stop_risk_pct = round((abs(entry_mid - stop_loss) / entry_mid) * 100.0, 2)
+                stop_risk_dollar = round(abs(entry_mid - stop_loss) * 100.0, 2)
 
             rr_ratio = None
             if target_1_pct is not None and stop_risk_pct is not None and stop_risk_pct > 0:
                 rr_ratio = round(abs(target_1_pct) / max(0.01, stop_risk_pct), 2)
 
+            # User taken trade execution tracking
+            is_taken = bool(t.get("user_taken") or t.get("taken"))
+            user_fill = float(t["your_fill"]) if (t.get("your_fill") and float(t["your_fill"]) > 0) else (entry_mid or last_price or 0.0)
+            user_qty = 100.0
+            user_pnl_dollar = None
+            user_pnl_pct = None
+            if is_taken and user_fill > 0 and last_price:
+                user_pnl_dollar = round(((last_price - user_fill) if side == "LONG" else (user_fill - last_price)) * user_qty, 2)
+                user_pnl_pct = round((((last_price - user_fill) if side == "LONG" else (user_fill - last_price)) / user_fill) * 100.0, 2)
+
             t["company_name"] = company_names.get(sym, sym)
             t["entry_midpoint"] = entry_mid
             t["pnl_pct"] = pnl_pct
+            t["pnl_dollar"] = pnl_dollar
             t["target_1_pct"] = target_1_pct
+            t["target_1_dollar"] = target_1_dollar
             t["stop_risk_pct"] = stop_risk_pct
+            t["stop_risk_dollar"] = stop_risk_dollar
             t["rr_ratio"] = rr_ratio
             t["has_report"] = has_report
-            t["gate_status"] = t.get("gate_status") or "UNKNOWN"
-            t["setup_lane"] = t.get("setup_lane") or "DEFAULT"
+            t["is_taken"] = is_taken
+            t["user_fill"] = user_fill if is_taken else None
+            t["user_qty"] = user_qty if is_taken else None
+            t["user_pnl_dollar"] = user_pnl_dollar
+            t["user_pnl_pct"] = user_pnl_pct
+            t["gate_status"] = t.get("gate_status") if (t.get("gate_status") and t.get("gate_status") != "UNKNOWN") else ("PASS" if t.get("actionable") else "WATCH")
+            t["setup_lane"] = t.get("setup_lane") if (t.get("setup_lane") and t.get("setup_lane") != "DEFAULT") else "RR_SETUP"
             t["kind"] = t.get("kind") or "NEW"
             atr_val = t.get("atr_at_signal") or (raw.get("indicators", {}).get("RSI2 ATR14") if raw else None)
             try:
@@ -209,6 +236,7 @@ def get_suggested_trades_endpoint():
             "stalking": sum(1 for tr in trades if tr.get("status") == "STALKING"),
             "target_hit": sum(1 for tr in trades if tr.get("status") in ("TARGET_HIT", "COMPLETED")),
             "stopped": sum(1 for tr in trades if tr.get("status") in ("STOP_BREACHED", "STOPPED") or (tr.get("status") in ("INVALIDATED", "GAP_STOP") and tr.get("was_filled"))),
+            "user_taken": sum(1 for tr in trades if tr.get("is_taken")),
         }
         result = {"trades": trades, "summary": summary}
         _SUGGESTED_CACHE[_cache_key] = (_now, result)
@@ -216,6 +244,89 @@ def get_suggested_trades_endpoint():
     except Exception as e:
         logger.error(f"Failed to fetch suggested trades: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.post("/api/trades/take")
+def take_trade_endpoint(data: dict):
+    """Record that the user personally took this trade with actual fill price and quantity."""
+    try:
+        ticker = (data.get("ticker") or "").upper().strip()
+        fill_price = float(data.get("fill_price") or 0.0)
+        quantity = float(data.get("quantity") or 100)
+        notes = data.get("notes") or "User personally entered position"
+        row_id = data.get("id") or data.get("row_id")
+
+        if not ticker and not row_id:
+            raise HTTPException(status_code=400, detail="Ticker or ID required")
+
+        with get_db() as conn:
+            c = conn.cursor()
+            if row_id:
+                c.execute("""
+                    UPDATE watch_targets 
+                    SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
+                    WHERE rowid = ?
+                """, (fill_price if fill_price > 0 else None, quantity, row_id))
+            if ticker:
+                c.execute("""
+                    UPDATE watch_targets 
+                    SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
+                    WHERE ticker = ?
+                """, (fill_price if fill_price > 0 else None, quantity, ticker))
+                c.execute("""
+                    UPDATE suggestions 
+                    SET taken = 1, your_fill = ?, notes = COALESCE(?, notes)
+                    WHERE ticker = ? AND exit_date IS NULL
+                """, (fill_price if fill_price > 0 else None, notes, ticker))
+            conn.commit()
+        _SUGGESTED_CACHE.clear()
+        try:
+            from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
+            _WATCH_TARGETS_CACHE.clear()
+        except Exception:
+            pass
+        return {"success": True, "message": f"Successfully recorded trade for {ticker} at ${fill_price:.2f}"}
+    except Exception as e:
+        logger.error(f"Error in take_trade_endpoint: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.post("/api/trades/untake")
+def untake_trade_endpoint(data: dict):
+    """Revert user taken status."""
+    try:
+        ticker = (data.get("ticker") or "").upper().strip()
+        row_id = data.get("id") or data.get("row_id")
+        with get_db() as conn:
+            c = conn.cursor()
+            if row_id:
+                c.execute("""
+                    UPDATE watch_targets 
+                    SET user_taken = 0, status = 'STALKING', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
+                    WHERE rowid = ?
+                """, (row_id,))
+            if ticker:
+                c.execute("""
+                    UPDATE watch_targets 
+                    SET user_taken = 0, status = 'STALKING', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
+                    WHERE ticker = ?
+                """, (ticker,))
+                c.execute("""
+                    UPDATE suggestions 
+                    SET taken = 0, your_fill = NULL
+                    WHERE ticker = ?
+                """, (ticker,))
+            conn.commit()
+        _SUGGESTED_CACHE.clear()
+        try:
+            from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
+            _WATCH_TARGETS_CACHE.clear()
+        except Exception:
+            pass
+        return {"success": True, "message": f"Reverted taken status for {ticker}"}
+    except Exception as e:
+        logger.error(f"Error in untake_trade_endpoint: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
 @router.get("/api/superforecasting/stats")

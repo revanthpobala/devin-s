@@ -409,6 +409,21 @@ def get_main_record_stats(min_date: str = "2026-09-23") -> Dict[str, Any]:
         except sqlite3.OperationalError:
             return {}
         if not rows:
+            # Fallback to all closed scored suggestions across history so user sees actual track record
+            try:
+                with _get_connection() as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    rows = cursor.execute(
+                        """
+                        SELECT * FROM suggestions
+                        WHERE r_net IS NOT NULL AND exit_date IS NOT NULL
+                        ORDER BY exit_date DESC
+                        """
+                    ).fetchall()
+            except Exception:
+                return {}
+        if not rows:
             return {}
         r_vals = [float(r["r_net"]) for r in rows if r["r_net"] is not None]
         import statistics as _stats

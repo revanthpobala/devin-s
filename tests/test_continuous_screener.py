@@ -284,7 +284,8 @@ def test_evaluate_and_dispatch_deep_research():
 
     with patch.object(daemon, "dispatch_candidate_research", return_value=True) as mock_dispatch, \
          patch.object(daemon, "_is_job_active_in_db", return_value=False), \
-         patch.object(daemon, "get_active_research_count", return_value=0):
+         patch.object(daemon, "get_active_research_count", return_value=0), \
+         patch("src.tracking.alert_db.queue_for_research"):
         
         dispatched = daemon.evaluate_and_dispatch_deep_research(candidates, "2029-01-01")
 
@@ -360,7 +361,9 @@ def test_screener_feature_payload_and_pipeline_sequence(tmp_path):
     # If local research rejects the setup, Playwright scraping is NEVER called!
     with patch("subprocess.run") as mock_subproc, \
          patch("src.clients.schwab_client.get_realtime_quote", return_value={"price": 100.0}), \
-         patch("src.clients.news_client.get_ticker_news", return_value={"raw_news": "ok"}):
+         patch("src.clients.news_client.get_ticker_news", return_value={"raw_news": "ok"}), \
+         patch("src.screener.schwab_pre_move_scan._register_slot", return_value="mock_job_slot"), \
+         patch("src.screener.schwab_pre_move_scan.config.BASE_DIR", tmp_path):
 
         def mock_exists(self):
             # reports do not exist yet (no completed deep research)

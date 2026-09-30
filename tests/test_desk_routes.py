@@ -295,6 +295,38 @@ def test_get_coverage(client):
     assert isinstance(data["deep_missing"], list)
     assert "local_missing" in data
     assert isinstance(data["local_missing"], list)
+    # GOOG is queued without evaluation, so it is missing; AAPL and MSFT are evaluated
+    assert "GOOG" in data["local_missing"]
+    assert "AAPL" not in data["local_missing"]
+    assert "MSFT" not in data["local_missing"]
+
+def test_coverage_intraday_alerts_not_in_local_missing(client):
+    from src.tracking.alert_db import _get_connection as get_alert_conn, _db_lock as alert_lock
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Insert intraday alert with non-PASS/WATCH/CUT decision format
+    with alert_lock:
+        with get_alert_conn() as acon:
+            cur = acon.cursor()
+            cur.execute("""
+                INSERT OR REPLACE INTO alerts (message_id, date, timestamp, symbol, action, strategy, llm_decision, llm_playbook, status, created_at, raw_payload)
+                VALUES (?, ?, ?, 'QQQ', 'LONG', 'Intraday', 'QQQ 10:03 AM ET — TAKE CALLS', 'Calls playbook', 'EXECUTED', ?, '{}')
+            """, (f"msg-qqq-{today}", today, datetime.now().isoformat(), datetime.now().isoformat()))
+            # Insert alert without decision (genuinely unevaluated)
+            cur.execute("""
+                INSERT OR REPLACE INTO alerts (message_id, date, timestamp, symbol, action, strategy, llm_decision, llm_playbook, status, created_at, raw_payload)
+                VALUES (?, ?, ?, 'AMD', 'LONG', 'Swing', NULL, NULL, 'PENDING', ?, '{}')
+            """, (f"msg-amd-{today}", today, datetime.now().isoformat(), datetime.now().isoformat()))
+            acon.commit()
+
+    response = client.get("/api/desk/coverage")
+    assert response.status_code == 200
+    data = response.json()
+    # Intraday alert QQQ has a valid non-empty decision, so it must NOT be in local_missing
+    assert "QQQ" not in data["local_missing"]
+    # AMD has NULL decision, so it MUST be in local_missing
+    assert "AMD" in data["local_missing"]
 
 def test_update_journal_notes(client):
     response = client.patch("/api/desk/journal/1", json={"notes": "new notes"})

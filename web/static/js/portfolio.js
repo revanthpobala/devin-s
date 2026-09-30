@@ -304,13 +304,18 @@ window.AppPortfolio = {
         </div>
       `;
 
+      // Clean Root Equity Symbol
+      let cleanRoot = (underlying || '').trim().toUpperCase();
+      const rootMatch = cleanRoot.match(/^([A-Z]{1,6})/);
+      if (rootMatch) cleanRoot = rootMatch[1];
+
       // Actions Column: 🔬 Deep Research, 📈 TV Chart
       const actions = `
         <div style="display:inline-flex; align-items:center; gap:6px;">
-          <button class="btn" onclick="AppPortfolio.launchDeepResearch('${underlying}')" style="padding:3px 8px; font-size:11px; font-weight:700;" title="Launch full Agentic Deep Research on ${underlying}">
+          <button class="btn" onclick="AppPortfolio.launchDeepResearch('${cleanRoot}')" style="padding:3px 8px; font-size:11px; font-weight:700;" title="Launch full Agentic Deep Research on ${cleanRoot}">
             🔬 Research
           </button>
-          <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${underlying}', 'D')" style="padding:3px 8px; font-size:11px;" title="Open interactive TradingView chart for ${underlying}">
+          <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${cleanRoot}', 'D')" style="padding:3px 8px; font-size:11px;" title="Open interactive TradingView chart for ${cleanRoot}">
             📈 Chart
           </button>
         </div>
@@ -318,7 +323,16 @@ window.AppPortfolio = {
 
       html += `
         <tr style="transition:background 0.15s ease;">
-          <td style="padding:10px 14px;">${symDisplay}</td>
+          <td style="padding:10px 14px;">
+            <div style="display:flex; flex-direction:column; gap:2px;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-size:13.5px; font-weight:800; font-family:var(--font-mono); color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('latest', '${cleanRoot}')" title="Click to open ${cleanRoot} Research Dossier">${underlying}</span>
+                ${assetBadge}
+              </div>
+              ${isOption ? `<span style="font-size:10.5px; color:var(--text-muted); font-family:var(--font-mono);">${p.symbol}</span>` : ''}
+              ${p.description && !isOption ? `<span style="font-size:10.5px; color:var(--text-muted);">${p.description}</span>` : ''}
+            </div>
+          </td>
           <td style="padding:10px 14px;">${acctBadge}</td>
           <td style="padding:10px 14px; text-align:right;">${qtyStr}</td>
           <td style="padding:10px 14px; text-align:right; font-family:var(--font-mono); color:var(--text-muted);">$${(p.average_price || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -334,11 +348,14 @@ window.AppPortfolio = {
     tbody.innerHTML = html;
   },
 
-  launchDeepResearch(ticker) {
+  async launchDeepResearch(ticker) {
     if (!ticker) return;
-    const cleanSym = ticker.trim().toUpperCase();
+    let cleanSym = ticker.trim().toUpperCase();
+    const rootMatch = cleanSym.match(/^([A-Z]{1,6})/);
+    if (rootMatch) cleanSym = rootMatch[1];
+    if (!cleanSym) return;
 
-    // Switch to swing desk and launch research
+    // Switch to swing desk
     App.switchDesk('swing');
     if (window.AppSwing && typeof window.AppSwing.setTicker === 'function') {
       window.AppSwing.setTicker(cleanSym);
@@ -346,8 +363,24 @@ window.AppPortfolio = {
     const input = document.getElementById('ticker-input');
     if (input) input.value = cleanSym;
 
+    const modeSelect = document.getElementById('mode-select');
+    if (modeSelect) modeSelect.value = 'full';
+
+    // Uncollapse and scroll execution queue into view so user sees progress immediately
+    const procsEl = document.getElementById('active-procs-wrapper');
+    if (procsEl) {
+      procsEl.style.display = 'block';
+      const btn = document.getElementById('btn-toggle-procs-panel');
+      if (btn) btn.innerText = 'Collapse ▲';
+      try { localStorage.setItem('launcher_procs_collapsed', '0'); } catch(e){}
+      setTimeout(() => {
+        procsEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+    }
+
+    // Launch research with force = true so the screener triage gate doesn't skip deep research!
     if (window.AppSwing && typeof window.AppSwing.launchResearch === 'function') {
-      window.AppSwing.launchResearch();
+      await window.AppSwing.launchResearch(null, true);
     }
   },
 };

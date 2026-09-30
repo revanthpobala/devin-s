@@ -702,11 +702,11 @@ def run_stage2_technical_scan(
         schwab_sym = cand["schwab_symbol"]
         clean_sym = cand["symbol"]
         cand_lane = cand.get("lane", "BASING")
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 r = client.get_price_history_every_day(schwab_sym)
                 if r.status_code == 429:
-                    time.sleep(1.0)
+                    time.sleep(1.0 + attempt * 0.75)
                     continue
                 if r.status_code == 200:
                     data = r.json()
@@ -1351,6 +1351,11 @@ def run_autonomous_screener_pipeline(
             if not thesis_path.exists():
                 thesis_path = config.BASE_DIR / "data" / "raw" / t_date / f"{sym}_thesis.json"
 
+            # Local triage outcome:
+            # Screener setups (Basing, Continuation, Coiled Runners) without preexisting TV data window
+            # start with a typed screener payload which the deterministic code-20 filter categorizes as WATCH.
+            # We must NOT drop them! If local LLM flags send_for_deep_research, OR if conviction >= 50,
+            # OR if priority_tier is HIGH_PRIORITY / score >= 60, they qualify for chart scraping and deep research.
             send_to_deep = False
             triage_verdict = "UNKNOWN"
             rec = {}
@@ -1363,9 +1368,19 @@ def run_autonomous_screener_pipeline(
                         triage_verdict = str(triage_d.get("triage", "WATCH"))
                     else:
                         triage_verdict = str(triage_d)
-                    send_to_deep = bool(llm_d.get("send_for_deep_research", rec.get("send_for_deep_research", False))) and (triage_verdict == "PASS")
+                    
+                    llm_send = bool(llm_d.get("send_for_deep_research", rec.get("send_for_deep_research", False)))
+                    is_pass = (triage_verdict == "PASS")
+                    is_strong_watch = (triage_verdict == "WATCH") and (
+                        tier == "HIGH_PRIORITY" or score >= 60.0 or llm_send or float(rec.get("conviction") or 0.0) >= 50.0
+                    )
+                    send_to_deep = is_pass or is_strong_watch or llm_send
                 except Exception:
                     pass
+            else:
+                # If local research completed without thesis file, preserve high priority screener candidate
+                if tier == "HIGH_PRIORITY" or score >= 65.0:
+                    send_to_deep = True
 
             logger.info(f"[{sym}] Local triage verdict: {triage_verdict} (send_for_deep_research={send_to_deep})")
 

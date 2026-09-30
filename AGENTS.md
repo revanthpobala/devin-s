@@ -185,7 +185,7 @@ python run_local_research.py --regenerate
 - `output_writer.py`: Writes `<ticker>_summary.md`, `_independent.md`, `_arbitration.md`, and Google Sheets sync.
 
 **Capabilities**:
-- Processes tickers in `data/triage/<date>/_DEEP_RESEARCH/` (and `force/`), ranked by `rank_pass_tickers`; capped at `DEEP_RESEARCH_CAP` (0 = uncapped, rank still sets order)
+- Processes tickers in `data/triage/<date>/_DEEP_RESEARCH/` (and `force/`), ranked by `rank_pass_tickers`; capped at `DEEP_RESEARCH_CAP` (default 35, rank sets order)
 - COST GATE: paid passes run ONLY for tickers the free local triage flagged `send_for_deep_research == true`; an explicit `--ticker` is always run
 - **Debate (local, free)**: Bull vs Bear agents + rebuttals on the full data payload (Data Window, live quote, news dossier, fresh/macro news, social sentiment, GEX, engine math, flags, earnings). Cached to `<ticker>_debate_v2.json`.
 - **Pass 2 (paid or local-vision)**: full multimodal payload (naked + 90d chart images) with tool calling. Provider: Meta AI (`META_AI_API_KEY`) → OpenRouter (`OPENROUTER_MODEL`, default `minimax/minimax-m3`) → fallback to local GPU (Qwen3.8-27B + mmproj vision).

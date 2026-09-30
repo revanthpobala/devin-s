@@ -7,7 +7,7 @@ window.AppDesk = {
         btn.disabled = true;
         btn.innerText = '⏳ Queued...';
       }
-      await window.AppApi.triggerResearch(ticker, 'full');
+      await window.AppApi.triggerResearch(ticker, 'full', null, true);
       setTimeout(() => { window.AppDesk.loadToday(); }, 1200);
     } catch (e) {
       alert('Failed to trigger research: ' + e);
@@ -25,6 +25,57 @@ window.AppDesk = {
     d.style.display = isHidden ? 'table-row' : 'none';
     const ic = document.getElementById(iconId);
     if (ic) ic.innerText = isHidden ? '▼' : '▶';
+  },
+
+  toggleBriefingTier2() {
+    const c = document.getElementById('briefing-t2-container');
+    const t = document.getElementById('briefing-t2-toggle');
+    if (!c) return;
+    const isHidden = (c.style.display === 'none' || !c.style.display);
+    c.style.display = isHidden ? 'block' : 'none';
+    if (t) t.innerText = isHidden ? '▼' : '▶';
+  },
+
+  async refreshBriefing(btn) {
+    if (btn) {
+      btn.disabled = true;
+      btn.innerText = '🔄 Quoting...';
+    }
+    try {
+      await window.AppApi.request('/api/desk/morning-briefing/refresh', { method: 'POST' });
+      await this.loadToday();
+    } catch (e) {
+      alert('Failed refreshing morning briefing quotes: ' + e);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = '🔄 Refresh Live Quotes';
+      }
+    }
+  },
+
+  async setTastytradeAlert(ticker, btn) {
+    if (btn) {
+      btn.disabled = true;
+      btn.innerText = '⏳ Setting...';
+    }
+    try {
+      await window.AppApi.request('/api/tastytrade-alerts/sync-ticker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: ticker })
+      });
+      if (btn) {
+        btn.innerText = '✅ TT Set';
+        btn.style.borderColor = 'var(--green)';
+        btn.style.color = 'var(--green)';
+      }
+    } catch (e) {
+      alert('Failed setting Tastytrade cloud alert for ' + ticker + ': ' + e);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = '📲 TT Alerts';
+      }
+    }
   },
 
   renderInboxTable(items, prefix) {
@@ -119,10 +170,11 @@ window.AppDesk = {
 
   async loadToday() {
     try {
-      const [todayData, recordData, coverageData] = await Promise.all([
+      const [todayData, recordData, coverageData, briefingData] = await Promise.all([
         window.AppApi.request('/api/desk/today'),
         window.AppApi.request('/api/desk/record?scope=all'),
         window.AppApi.request('/api/desk/coverage'),
+        window.AppApi.request('/api/desk/morning-briefing').catch(() => null),
       ]);
 
       const cov = coverageData || {};
@@ -151,6 +203,179 @@ window.AppDesk = {
       const recordSumR = (recordData && recordData.sum_r !== undefined) ? ((recordData.sum_r >= 0 ? '+' : '') + recordData.sum_r.toFixed(2) + ' R') : '0.00 R';
 
       let html = `<div style="display:flex; flex-direction:column; gap:20px;">`;
+
+      // 🌅 MORNING EXECUTIVE INTELLIGENCE & ACTIONABLE OPPORTUNITIES
+      if (briefingData && briefingData.total_researched > 0) {
+        const t1 = briefingData.tier1_actionable || [];
+        const t2 = briefingData.tier2_stalking || [];
+        const genTime = briefingData.generated_at ? new Date(briefingData.generated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '7:45 AM';
+
+        html += `
+        <div class="station-card" style="border-left: 4px solid var(--cyan-glow); background: linear-gradient(180deg, rgba(6,182,212,0.04) 0%, var(--bg-surface) 100%); padding:18px 20px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:22px;">🌅</span>
+                <h3 style="margin:0; font-size:16px; font-weight:800; letter-spacing:0.5px; color:var(--text-main);">
+                  MORNING EXECUTIVE INTELLIGENCE &amp; ACTIONABLE OPPORTUNITIES
+                </h3>
+                <span class="badge" style="border-color:var(--cyan); color:var(--cyan); font-weight:800;">7:45 AM MT</span>
+              </div>
+              <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+                Synthesized from rolling deep research history (evening &amp; overnight) with updated real-time quotes · <b>${briefingData.total_researched}</b> Active Setups
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted);">Updated: ${genTime}</span>
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px; font-weight:700;" onclick="AppDesk.refreshBriefing(this)">
+                🔄 Refresh Live Quotes
+              </button>
+            </div>
+          </div>
+
+          <!-- Tier 1 Actionable Cards -->
+          <div style="margin-bottom:14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+              <span style="font-size:13px; font-weight:800; color:var(--green); letter-spacing:0.5px; text-transform:uppercase;">
+                🏆 TOP ACTIONABLE OPPORTUNITIES (${t1.length})
+              </span>
+              <span style="font-size:11px; color:var(--text-muted);">— Prime qualified setups with defined risk, zone proximity &amp; R:R</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); gap:14px;">
+        `;
+
+        if (t1.length === 0) {
+          html += `<div style="grid-column:1/-1; padding:16px; text-align:center; color:var(--text-muted); font-size:12px; background:var(--bg-main); border-radius:8px;">No setups currently in immediate entry trigger. Check coiled stalking candidates below.</div>`;
+        } else {
+          t1.forEach(s => {
+            const sym = s.ticker;
+            const repDate = s.report_date;
+            const spot = s.spot_price ? '$' + parseFloat(s.spot_price).toFixed(2) : '–';
+            const distTxt = s.in_zone ? '🎯 IN ZONE' : (s.dist_pct > 0 ? `+${s.dist_pct}%` : `${s.dist_pct}%`);
+            const distTone = s.in_zone ? 'good' : (Math.abs(s.dist_pct) <= 1.5 ? 'info' : 'warn');
+            const statePill = this.pill(s.state.replace('_', ' '), distTone);
+            const sidePill = this.pill(s.side, s.side === 'LONG' ? 'good' : 'bad');
+            const rrTxt = s.live_rr > 0 ? `R:R ${s.live_rr}:1` : '–';
+
+            const isOptions = s.vehicle_type === 'OPTIONS';
+            const vehicleBg = isOptions ? 'rgba(168, 85, 247, 0.08)' : 'rgba(56, 189, 248, 0.08)';
+            const vehicleBorder = isOptions ? 'rgba(168, 85, 247, 0.3)' : 'rgba(56, 189, 248, 0.3)';
+            const vehicleIcon = isOptions ? '📦' : '📊';
+
+            html += `
+              <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; justify-content:space-between; gap:10px; box-shadow:0 2px 6px rgba(0,0,0,0.15);">
+                <div>
+                  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <div>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:18px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
+                          ${sym}
+                        </span>
+                        ${sidePill}
+                        ${statePill}
+                      </div>
+                      <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">
+                        ${s.vintage} · Score: <b>${s.score}</b>/100 · Conviction: ${s.conviction}/10
+                      </div>
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="font-size:16px; font-weight:800; font-family:var(--font-mono); color:var(--text-main);">${spot}</div>
+                      <div style="font-size:11px; font-family:var(--font-mono); font-weight:700; color:var(--${distTone === 'good' ? 'green' : distTone === 'info' ? 'cyan' : 'amber'});">${distTxt}</div>
+                    </div>
+                  </div>
+
+                  <div style="margin-top:10px; background:${vehicleBg}; border:1px solid ${vehicleBorder}; border-radius:6px; padding:8px 10px; font-size:11.5px; font-family:var(--font-mono); line-height:1.4;">
+                    <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:2px;">
+                      ${vehicleIcon} EXECUTION VEHICLE
+                    </div>
+                    <div style="font-weight:700; color:var(--text-main);">${s.vehicle_label}</div>
+                    <div style="display:flex; gap:12px; margin-top:4px; font-size:10.5px; color:var(--text-muted);">
+                      <span>Zone: $${s.entry_low.toFixed(2)}–$${s.entry_high.toFixed(2)}</span>
+                      <span>Stop: $${s.tactical_stop.toFixed(2)}</span>
+                      <span>T1: $${s.target_1.toFixed(2)}</span>
+                      <span style="color:var(--green); font-weight:700;">${rrTxt}</span>
+                    </div>
+                  </div>
+
+                  ${s.pm_bullets && s.pm_bullets.length > 0 ? `
+                  <div style="margin-top:8px; font-size:11px; color:var(--text-main); line-height:1.4; background:var(--bg-surface); border-radius:6px; padding:8px 10px; border:1px solid var(--border);">
+                    <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Senior PM Thesis:</div>
+                    ${s.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
+                  </div>` : ''}
+
+                  ${s.gate_warning ? `
+                  <div style="margin-top:4px; font-size:10.5px; color:var(--amber); font-family:var(--font-mono);">
+                    ⚠️ ${s.gate_warning}
+                  </div>` : ''}
+                </div>
+
+                <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:4px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
+                    📑 Dossier
+                  </button>
+                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:4px 8px;" onclick="AppDesk.setTastytradeAlert('${sym}', this)">
+                    📲 TT Alerts
+                  </button>
+                  <a href="https://www.tradingview.com/chart/?symbol=${sym}" target="_blank" class="btn secondary" style="font-size:11px; padding:4px 8px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;">
+                    📈 TV
+                  </a>
+                </div>
+              </div>
+            `;
+          });
+        }
+
+        html += `</div></div>`;
+
+        // Tier 2 Coiled Stalking Accordion
+        if (t2.length > 0) {
+          html += `
+          <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="AppDesk.toggleBriefingTier2()">
+              <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:800; color:var(--amber);">
+                <span id="briefing-t2-toggle">▶</span> ⏳ COILED STALKING CANDIDATES (${t2.length})
+                <span style="font-size:11px; font-weight:400; color:var(--text-muted);">(Sitting 0.5%–3.0% from entry floor · Waiting for limit fill)</span>
+              </div>
+              <div style="font-size:11px; color:var(--cyan); font-weight:700;">Click to view list</div>
+            </div>
+
+            <div id="briefing-t2-container" style="display:none; margin-top:10px;">
+              <table class="data-table" style="width:100%; border-collapse:collapse; font-size:11.5px;">
+                <thead>
+                  <tr style="background:var(--bg-surface); border-bottom:1px solid var(--border);">
+                    <th style="padding:6px; text-align:left;">Ticker</th>
+                    <th style="padding:6px; text-align:left;">Vintage</th>
+                    <th style="padding:6px; text-align:right;">Spot</th>
+                    <th style="padding:6px; text-align:right;">Dist %</th>
+                    <th style="padding:6px; text-align:left;">Vehicle &amp; Plan</th>
+                    <th style="padding:6px; text-align:center;">Score</th>
+                    <th style="padding:6px; text-align:right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${t2.map(s => `
+                    <tr style="border-bottom:1px solid var(--border);">
+                      <td style="padding:6px; font-weight:800; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('${s.report_date}', '${s.ticker}', 'plan')">${s.ticker}</td>
+                      <td style="padding:6px; color:var(--text-muted); font-size:10.5px;">${s.vintage}</td>
+                      <td style="padding:6px; text-align:right; font-family:var(--font-mono); font-weight:700;">$${s.spot_price.toFixed(2)}</td>
+                      <td style="padding:6px; text-align:right; font-family:var(--font-mono); color:var(--amber); font-weight:700;">${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%</td>
+                      <td style="padding:6px; font-family:var(--font-mono); font-size:11px;">${s.vehicle_label}</td>
+                      <td style="padding:6px; text-align:center;">${this.pill(s.score, 'neutral')}</td>
+                      <td style="padding:6px; text-align:right;">
+                        <button class="btn secondary" style="font-size:10px; padding:2px 8px;" onclick="AppSwing.openReportModal('${s.report_date}', '${s.ticker}', 'plan')">📑 View</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          `;
+        }
+
+        html += `</div>`;
+      }
 
       // Coverage bar
       const localMissing = Array.isArray(cov.local_missing) ? cov.local_missing : [];

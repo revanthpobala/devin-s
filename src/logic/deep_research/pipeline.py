@@ -298,7 +298,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 flagged.append((t, load_triage_record(raw_dir, deep_dir, t, tdir=t_parent)))
 
         from src.logic.data_window_filter import rank_pass_tickers
-        cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
+        cap = int(os.getenv("DEEP_RESEARCH_CAP", "35"))
         ranked = rank_pass_tickers([r for _, r in flagged if r])
         kept_recs = ranked if cap <= 0 else ranked[:cap]
         keep = {str(r.get("ticker", "")).upper() for r in kept_recs}

@@ -56,11 +56,19 @@ window.AppAlerts = {
   _modalParentId: null,
   _alertParentId: null,
 
+  _reportsDates: [],
+  _drSelectedDate: 'ALL',
+  _drVerdictFilter: 'ALL',
+  _drSearchQuery: '',
+  _drSortField: 'ticker',
+  _drSortDir: 'asc',
+
   async loadReportsIndex() {
     try {
       const res = await fetch('/api/reports');
       if (!res.ok) return;
       const data = await res.json();
+      this._reportsDates = data.dates || [];
       this._reportsByDate = data.reports_by_date || {};
       this._allReportsByTicker = {};
       for (const dKey in this._reportsByDate) {
@@ -75,6 +83,282 @@ window.AppAlerts = {
       }
     } catch (e) {
       console.warn('Could not load reports index', e);
+    }
+  },
+
+  async refreshDeepResearch() {
+    await this.loadReportsIndex();
+    this.renderDeepResearchTable();
+  },
+
+  async loadDeepResearchTable() {
+    if (!this._reportsDates || this._reportsDates.length === 0) {
+      await this.loadReportsIndex();
+    }
+    if (this._drSelectedDate === 'ALL' && this._reportsDates && this._reportsDates.length > 0) {
+      this._drSelectedDate = this._reportsDates[0];
+    }
+    this.renderDeepResearchTable();
+  },
+
+  setDeepResearchDate(date) {
+    this._drSelectedDate = date || 'ALL';
+    this.renderDeepResearchTable();
+  },
+
+  setDeepResearchVerdictFilter(verdict) {
+    this._drVerdictFilter = (verdict || 'ALL').toUpperCase();
+    document.querySelectorAll('.dr-verdict-filter-btn').forEach(b => {
+      const v = (b.getAttribute('data-v') || 'ALL').toUpperCase();
+      b.classList.toggle('active', v === this._drVerdictFilter);
+    });
+    this.renderDeepResearchTable();
+  },
+
+  filterDeepResearch(query) {
+    this._drSearchQuery = (query || '').toUpperCase().trim();
+    this.renderDeepResearchTable();
+  },
+
+  setDeepResearchSort(field) {
+    if (this._drSortField === field) {
+      this._drSortDir = this._drSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      this._drSortField = field;
+      this._drSortDir = 'asc';
+    }
+    this.renderDeepResearchTable();
+  },
+
+  renderDeepResearchTable() {
+    const tableBody = document.getElementById('dr-reports-table-body');
+    if (!tableBody) return;
+
+    const dates = this._reportsDates || [];
+    const reportsByDate = this._reportsByDate || {};
+
+    // 1. Determine candidate reports based on date
+    let candidateReports = [];
+    if (this._drSelectedDate === 'ALL') {
+      dates.forEach(d => {
+        (reportsByDate[d] || []).forEach(r => candidateReports.push({ ...r, date: d }));
+      });
+    } else {
+      candidateReports = (reportsByDate[this._drSelectedDate] || []).map(r => ({ ...r, date: this._drSelectedDate }));
+    }
+
+    // 2. Update Date Selector Pills & Dropdown
+    const datePillsContainer = document.getElementById('dr-date-pills');
+    if (datePillsContainer) {
+      let pillsHtml = `
+        <button class="dr-date-pill ${this._drSelectedDate === 'ALL' ? 'active' : ''}" onclick="AppAlerts.setDeepResearchDate('ALL')">
+          All Dates (${dates.length})
+        </button>
+      `;
+      const topDates = dates.slice(0, 6);
+      topDates.forEach(d => {
+        const count = (reportsByDate[d] || []).length;
+        const isActive = this._drSelectedDate === d;
+        pillsHtml += `
+          <button class="dr-date-pill ${isActive ? 'active' : ''}" onclick="AppAlerts.setDeepResearchDate('${d}')">
+            ${d} (${count})
+          </button>
+        `;
+      });
+      datePillsContainer.innerHTML = pillsHtml;
+    }
+
+    const dateSelect = document.getElementById('dr-date-select');
+    if (dateSelect) {
+      let opts = '<option value="ALL">📅 All Dates (Archive)</option>';
+      dates.forEach(d => {
+        const count = (reportsByDate[d] || []).length;
+        opts += `<option value="${d}" ${this._drSelectedDate === d ? 'selected' : ''}>${d} (${count} reports)</option>`;
+      });
+      dateSelect.innerHTML = opts;
+      dateSelect.value = this._drSelectedDate;
+    }
+
+    const datePillBadge = document.getElementById('deep-research-selected-date-pill');
+    if (datePillBadge) {
+      datePillBadge.innerText = this._drSelectedDate === 'ALL' ? 'All Sessions' : this._drSelectedDate;
+    }
+
+    // 3. Compute counts for active date dataset
+    const enterCount = candidateReports.filter(r => (r.verdict || '').toUpperCase() === 'ENTER').length;
+    const stalkCount = candidateReports.filter(r => (r.verdict || '').toUpperCase() === 'STALK').length;
+    const avoidCount = candidateReports.filter(r => {
+      const v = (r.verdict || '').toUpperCase();
+      return v !== 'ENTER' && v !== 'STALK';
+    }).length;
+
+    const setElText = (id, txt) => {
+      const el = document.getElementById(id);
+      if (el) el.innerText = String(txt);
+    };
+    setElText('dr-count-all', candidateReports.length);
+    setElText('dr-count-enter', enterCount);
+    setElText('dr-count-stalk', stalkCount);
+    setElText('dr-count-avoid', avoidCount);
+
+    // 4. Render Quick Ticker Jump Ribbon
+    const tickerPillsContainer = document.getElementById('dr-ticker-pills');
+    if (tickerPillsContainer) {
+      if (candidateReports.length > 0) {
+        const ribbonTickers = [...new Set(candidateReports.map(r => (r.ticker || '').toUpperCase()))].sort();
+        tickerPillsContainer.innerHTML = ribbonTickers.map(sym => {
+          const rep = candidateReports.find(r => (r.ticker || '').toUpperCase() === sym);
+          const dateToOpen = rep ? rep.date : (this._drSelectedDate === 'ALL' ? 'latest' : this._drSelectedDate);
+          return `
+            <button class="dr-ticker-chip" onclick="AppSwing.openReportModal('${dateToOpen}', '${sym}')" title="Open ${sym} Dossier">
+              $${sym}
+            </button>
+          `;
+        }).join('');
+      } else {
+        tickerPillsContainer.innerHTML = '<span style="color:var(--text-muted); font-size:11px;">No tickers available</span>';
+      }
+    }
+
+    // 5. Filter reports
+    let filtered = candidateReports;
+    if (this._drVerdictFilter === 'ENTER') {
+      filtered = filtered.filter(r => (r.verdict || '').toUpperCase() === 'ENTER');
+    } else if (this._drVerdictFilter === 'STALK') {
+      filtered = filtered.filter(r => (r.verdict || '').toUpperCase() === 'STALK');
+    } else if (this._drVerdictFilter === 'AVOID') {
+      filtered = filtered.filter(r => {
+        const v = (r.verdict || '').toUpperCase();
+        return v !== 'ENTER' && v !== 'STALK';
+      });
+    }
+
+    if (this._drSearchQuery) {
+      const q = this._drSearchQuery;
+      filtered = filtered.filter(r =>
+        (r.ticker || '').toUpperCase().includes(q) ||
+        (r.options_summary || '').toUpperCase().includes(q) ||
+        (r.verdict || '').toUpperCase().includes(q) ||
+        (r.date || '').includes(q)
+      );
+    }
+
+    // 6. Sort reports
+    const field = this._drSortField || 'ticker';
+    const dir = this._drSortDir === 'desc' ? -1 : 1;
+
+    filtered.sort((a, b) => {
+      if (field === 'ticker') {
+        return dir * (a.ticker || '').localeCompare(b.ticker || '');
+      } else if (field === 'date') {
+        const dateA = a.researched_at || a.date || '';
+        const dateB = b.researched_at || b.date || '';
+        return dir * dateA.localeCompare(dateB);
+      } else if (field === 'verdict') {
+        const rank = v => (v === 'ENTER' ? 1 : v === 'STALK' ? 2 : v === 'WATCH' ? 3 : 4);
+        const rA = rank((a.verdict || '').toUpperCase());
+        const rB = rank((b.verdict || '').toUpperCase());
+        if (rA !== rB) return dir * (rA - rB);
+        return dir * (Number(b.conviction || 0) - Number(a.conviction || 0));
+      } else if (field === 'price') {
+        const pA = Number(a.spot_price || (a.entry_zone ? a.entry_zone[0] : 0) || 0);
+        const pB = Number(b.spot_price || (b.entry_zone ? b.entry_zone[0] : 0) || 0);
+        return dir * (pA - pB);
+      }
+      return 0;
+    });
+
+    // 7. Render Table Rows
+    if (filtered.length === 0) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="9" style="text-align:center; color:var(--text-muted); padding:36px; font-size:13px;">
+            No deep research dossiers found matching active date (<strong>${this._drSelectedDate}</strong>), verdict (<strong>${this._drVerdictFilter}</strong>) or search "<strong>${this._drSearchQuery || ''}</strong>".
+          </td>
+        </tr>
+      `;
+    } else {
+      tableBody.innerHTML = filtered.map(r => {
+        const sym = (r.ticker || '').toUpperCase();
+        const dateStr = r.date || this._drSelectedDate;
+        const v = (r.verdict || 'PENDING').toUpperCase();
+        const vClass = v === 'ENTER' ? 'in_zone' : (v === 'STALK' ? 'stalking' : 'danger');
+        const conv = r.conviction !== undefined && r.conviction !== null ? `${r.conviction}/10` : '--';
+
+        const spotVal = Number(r.spot_price || 0);
+        const spotStr = spotVal > 0 ? `$${spotVal.toFixed(2)}` : '--';
+
+        const entryLow = Array.isArray(r.entry_zone) && r.entry_zone[0] !== undefined ? Number(r.entry_zone[0]).toFixed(2) : null;
+        const entryHigh = Array.isArray(r.entry_zone) && r.entry_zone[1] !== undefined ? Number(r.entry_zone[1]).toFixed(2) : null;
+        const entryStr = (entryLow && entryHigh) ? `$${entryLow} – $${entryHigh}` : (entryLow ? `$${entryLow}` : '--');
+
+        const stopVal = r.tactical_stop ? Number(r.tactical_stop).toFixed(2) : null;
+        const stopStr = stopVal ? `$${stopVal}` : '--';
+
+        const t1Val = r.target_1 ? Number(r.target_1).toFixed(2) : null;
+        const t2Val = r.target_2 ? Number(r.target_2).toFixed(2) : null;
+        const targetStr = (t1Val || t2Val) ? `T1: $${t1Val || '--'}${t2Val ? ` · T2: $${t2Val}` : ''}` : '--';
+
+        const optSummary = r.options_summary || 'Standard Directional / Shares';
+
+        return `
+          <tr style="border-bottom:1px solid var(--border); transition:background 0.15s ease;" onmouseenter="this.style.background='var(--bg-subtle)'" onmouseleave="this.style.background=''">
+            <td style="padding:10px 12px; font-weight:800; font-family:var(--font-mono);">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="ticker-cell-sym tv-symbol-hover" onclick="AppSwing.openReportModal('${dateStr}', '${sym}')" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-size:13.5px;" title="Open ${sym} (${dateStr}) Dossier · Hover for Chart" data-ticker="${sym}">
+                  ${sym}
+                </span>
+                ${r.has_arbitration ? '<span class="pill cyan" style="font-size:8.5px; padding:0 3px;" title="Senior-PM Arbitration Judge Verdict Available">ARB</span>' : ''}
+              </div>
+            </td>
+            <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; color:var(--text-muted); white-space:nowrap;">
+              ${dateStr}
+            </td>
+            <td style="padding:10px 10px; text-align:center;">
+              <span class="badge ${vClass}" style="font-size:10.5px; font-weight:800; padding:2px 7px;">
+                ${v} (${conv})
+              </span>
+            </td>
+            <td style="padding:10px 10px; text-align:right; font-family:var(--font-mono); font-size:12px; font-weight:700;">
+              ${spotStr}
+            </td>
+            <td style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; font-weight:700; color:#059669;">
+              ${entryStr}
+            </td>
+            <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; font-weight:700; color:var(--rose);">
+              ${stopStr}
+            </td>
+            <td style="padding:10px 12px; font-family:var(--font-mono); font-size:11.5px; font-weight:700; color:var(--emerald);">
+              ${targetStr}
+            </td>
+            <td style="padding:10px 12px; font-size:11.5px; color:var(--text-main); line-height:1.35; max-width:320px;">
+              <div style="overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;" title="${optSummary}">
+                ${optSummary}
+              </div>
+            </td>
+            <td style="padding:10px 12px; text-align:center; white-space:nowrap;">
+              <div style="display:inline-flex; align-items:center; gap:6px;">
+                <button class="btn secondary" onclick="AppSwing.openReportModal('${dateStr}', '${sym}')" style="padding:3px 9px; font-size:11px; font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.1);" title="Open Complete Deep Research Dossier & Arbitration">
+                  📑 Dossier
+                </button>
+                <button class="btn secondary" onclick="window.AppTradingView ? window.AppTradingView.openChart('${sym}') : (window.AppSwing ? AppSwing.openLiveChartModal('${sym}') : null)" style="padding:3px 7px; font-size:11px;" title="Open TradingView Chart">
+                  📈
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // 8. Update footer summary & pill
+    const countPill = document.getElementById('deep-research-count-pill');
+    if (countPill) {
+      countPill.innerText = `${filtered.length} Dossiers (${this._drSelectedDate})`;
+    }
+    const summaryEl = document.getElementById('dr-table-summary');
+    if (summaryEl) {
+      summaryEl.innerText = `Showing ${filtered.length} of ${candidateReports.length} dossiers for session ${this._drSelectedDate} (Sorted by: ${field.toUpperCase()} ${dir > 0 ? '▲' : '▼'})`;
     }
   },
 
@@ -399,6 +683,7 @@ window.AppAlerts = {
     // Panels
     const panels = {
       tv:     document.getElementById('alerts-view-tv'),
+      deep:   document.getElementById('alerts-view-deep'),
       schwab: document.getElementById('alerts-view-schwab'),
       edge:   document.getElementById('edge-scanner-panel'),
     };
@@ -415,6 +700,11 @@ window.AppAlerts = {
       btn.style.color         = isActive ? 'var(--bg-surface)' : '';
       btn.style.fontWeight    = isActive ? '800' : '700';
     });
+
+    // Open Deep Research table
+    if (tab === 'deep') {
+      this.loadDeepResearchTable();
+    }
 
     // First time opening Edge Scanner: connect WS + poll status
     if (tab === 'edge' && window.AppEdgeScanner) {

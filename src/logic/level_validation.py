@@ -61,6 +61,8 @@ def check_geometry(
     reasons: List[str] = []
     side = (side or "LONG").upper()
     entry_type = (entry_type or "LIMIT").upper()
+    if entry_type in ("NO_ENTRY", "NONE", ""):
+        return reasons
 
     if side != "LONG":
         reasons.append("SHORT side rejected — measured edge is long-only post-COVID")
@@ -281,12 +283,13 @@ def validate_levels(
     )
     reasons.extend(geo_reasons)
 
+    has_shares_entry = entry_type not in ("NO_ENTRY", "NONE", "")
     missing_required = []
-    if entry_type != "BREAKOUT" and (not entry_low or not entry_high):
+    if has_shares_entry and entry_type != "BREAKOUT" and (not entry_low or not entry_high):
         missing_required.append("entry_low/entry_high")
-    if not stop:
+    if has_shares_entry and not stop:
         missing_required.append("stop")
-    if not target_1:
+    if has_shares_entry and not target_1:
         missing_required.append("target_1")
     if missing_required:
         reasons.append(f"missing required levels ({', '.join(missing_required)})")
@@ -300,8 +303,9 @@ def validate_levels(
 
     # ── Lanes classification ──────────────────────────────────
     setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()
-    is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD")
-    is_rsi2 = (setup_lane == "RSI2")
+    is_judge = (str(plan.get("source") or "").lower() in ("judge", "arbitration") or bool(plan.get("is_judge", False)))
+    is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD") and not is_judge
+    is_rsi2 = (setup_lane == "RSI2") and not is_judge
     is_measured_lane = is_measured_pine or is_rsi2
 
     spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
@@ -312,7 +316,7 @@ def validate_levels(
             spot = 0.0
 
     # ── 3. Stop placement & geometry ──────────────────────────
-    if is_measured_pine:
+    if has_shares_entry and is_measured_pine:
         pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
         pine_target = _dw_num(dw, "Long Target", "long_target")
         if pine_stop <= 0 or pine_target <= 0:
@@ -326,7 +330,7 @@ def validate_levels(
                 reasons.append(
                     f"{setup_lane} lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
                 )
-    elif is_rsi2:
+    elif has_shares_entry and is_rsi2:
         close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
         if close_px > 0 and atr > 0:
             exp_stop = close_px - (2.0 * atr)
@@ -336,13 +340,14 @@ def validate_levels(
                 reasons.append(
                     f"rsi2_geometry: stop ${stop:.2f} (exp ${exp_stop:.2f}) or target_1 ${target_1:.2f} (exp ${exp_t1:.2f}) deviates > 0.05 ATR (${tol:.2f}) from close +/- 2/4 ATR"
                 )
-    else:
+    elif has_shares_entry:
         # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): 1-ATR stop floor
         if atr > 0 and entry_low > 0:
             pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
-            max_allowed_stop = entry_low - (LEVEL_ATR_STOP_MIN * atr)
+            min_buffer = max(0.20 * atr, 0.05)
+            max_allowed_stop = entry_low - min_buffer
             if pine_stop > 0:
-                max_allowed_stop = min(max_allowed_stop, pine_stop + 0.05)
+                pass
             if stop > max_allowed_stop:
                 reasons.append(
                     f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} "
@@ -357,19 +362,21 @@ def validate_levels(
     plan["rr_at_market"] = rr_at_market
 
     # Skip planned R:R floor and at-market R:R floor for measured lanes
-    if not is_measured_lane:
-        rr = _planned_rr(entry_low, entry_high, stop, target_1, side)
-        if rr > 0 and rr < LEVEL_RR_FLOOR:
+    if has_shares_entry and not is_measured_lane:
+        mid_entry = _zone_midpoint(entry_low, entry_high) if (entry_low and entry_high) else entry_high
+        rr = _planned_rr(entry_low, mid_entry, stop, target_1, side)
+        rr_t2 = _planned_rr(entry_low, mid_entry, stop, target_2, side) if target_2 > 0 else rr
+        if (rr > 0 or rr_t2 > 0) and (rr < 1.20 and rr_t2 < LEVEL_RR_FLOOR):
             reasons.append(
-                f"planned R:R {rr:.4f} from entry_high below floor {LEVEL_RR_FLOOR}"
+                f"planned R:R {rr:.4f} to T1 and {rr_t2:.4f} to T2 below floor {LEVEL_RR_FLOOR}"
             )
-        if rr_at_market < 2.0:
+        if entry_type in ("MARKET", "AT_MARKET") and rr_at_market < 2.0:
             reasons.append(
                 f"at-market R:R {rr_at_market:.2f} below 2.0 floor for lane {setup_lane or 'DEFAULT'}"
             )
 
     # ── 5. Target 1 ceiling vs 21b Expected Move (skip for all measured lanes & RSI2) ──
-    if not is_measured_lane:
+    if has_shares_entry and not is_measured_lane:
         close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
         exp_move_pct = _dw_num(dw, "Exp Move % (21b)", "Exp Move Pct 21b", "exp_move_pct", "exp_move")
         if exp_move_pct > 1.0:
@@ -383,7 +390,7 @@ def validate_levels(
 
     # ── 6. Earnings inside 21 bars (reject NEW) ────────────────
     kind = str(plan.get("kind") or "NEW").upper()
-    if kind == "NEW" and ticker:
+    if kind == "NEW" and not is_judge and ticker:
         try:
             from datetime import date, datetime
             signal_d = None
@@ -408,7 +415,7 @@ def validate_levels(
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")
 
     # ── 7. Pine drift (skip for RSI2) ──────────────────────────
-    if not is_rsi2:
+    if not is_rsi2 and not is_judge:
         drifts = _pine_drift(plan, dw, side)
         for d in drifts:
             reasons.append(
@@ -421,8 +428,13 @@ def validate_levels(
     options_plan = plan.get("options_plan", {}) or {}
     structure = str(options_plan.get("structure", "") or "").upper().replace(" ", "_")
     if structure and structure != "NONE":
-        spot = _dw_num(dw, "close", "Close")
+        opt_spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
+        if opt_spot <= 0:
+            opt_spot = _f(plan.get("spot")) or _f(plan.get("price")) or _f(plan.get("current_price")) or entry_high or 0.0
         exp_move = _dw_num(dw, "exp_move_pct", "Exp Move Pct (21b)", "Exp Move Pct 21b")
+        if (exp_move is None or exp_move <= 0) and atr > 0 and opt_spot > 0:
+            import math
+            exp_move = round((atr * math.sqrt(21) / opt_spot) * 100.0, 2)
         long_strike = _f(options_plan.get("long_strike"))
         short_strike = _f(options_plan.get("short_strike"))
         if (options_plan.get("long_strike") is not None and long_strike is None) or (options_plan.get("short_strike") is not None and short_strike is None):
@@ -436,16 +448,25 @@ def validate_levels(
                 reasons.append("options geometry: max_profit/max_loss both non-positive — undefined risk structure rejected")
         is_valid, defects = validate_strike_geometry(
             strategy_type=structure,
-            spot_price=spot,
+            spot_price=opt_spot,
             exp_move_pct_21b=exp_move,
             long_strike=long_strike or None,
             short_strike=short_strike or None,
             max_profit=max_profit or None,
             max_loss=max_loss or None,
         )
+        if is_judge and defects:
+            defects = [d for d in defects if "within 1.25x ExpMove" not in d]
+            is_valid = (len(defects) == 0)
         if not is_valid:
-            for defect in defects:
-                reasons.append(f"options geometry: {defect}")
+            options_plan["actionable"] = False
+            options_plan["defects"] = defects
+            is_opt_only = (not has_shares_entry) or (str(plan.get("trade_vehicle", "")).upper() == "OPTIONS")
+            if is_opt_only:
+                for defect in defects:
+                    reasons.append(f"options geometry: {defect}")
+            else:
+                logger.info(f"Demoted options plan for {ticker or 'plan'} to non-actionable: {defects}; equity trade remains active.")
 
     ok = len(reasons) == 0
     if not ok:

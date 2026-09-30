@@ -675,12 +675,13 @@ class ContinuousScreenerDaemon(threading.Thread):
             self._today_date = target_date
             self.auto_deep_dispatched_today = set()
 
-        # Seed already-completed tickers from reports/ directory
+        # Detect already-completed tickers from reports/ directory to prevent duplicate research
         reports_dir = config.BASE_DIR / "reports" / target_date
+        already_completed_today = set()
         if reports_dir.exists():
             for f in reports_dir.glob("*_summary.md"):
                 t = f.name.replace("_summary.md", "").upper()
-                self.auto_deep_dispatched_today.add(t)
+                already_completed_today.add(t)
 
         slots_left = self.max_auto_deep_per_day - len(self.auto_deep_dispatched_today)
         if slots_left <= 0:
@@ -690,7 +691,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         eligible = []
         for c in candidates:
             sym = str(c.get("symbol") or c.get("Symbol") or c.get("Ticker") or "").upper().strip()
-            if not sym or sym in self.auto_deep_dispatched_today:
+            if not sym or sym in already_completed_today or sym in self.auto_deep_dispatched_today:
                 continue
 
             price = float(c.get("price") or 0.0)
@@ -732,9 +733,9 @@ class ContinuousScreenerDaemon(threading.Thread):
                 queue_for_research(
                     symbol=sym,
                     date_str=target_date,
-                    setup=c.get("setup") or c.get("priority_tier") or "",
+                    setup=c.get("setup") or tier or "",
                     source="schwab_screener",
-                    reason=f"Schwab screener candidate: {c.get('priority_tier')} score={score}",
+                    reason=f"Schwab screener candidate: {tier} score={score}",
                 )
             except Exception as e_q:
                 logger.debug(f"[ContinuousScreener] Failed to queue {sym} in research_queue: {e_q}")

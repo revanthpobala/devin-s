@@ -65,6 +65,66 @@ def _dw_lookup(dw_data: Dict[str, Any], *keys: str) -> float:
     return 0.0
 
 
+def _validate_and_demote_credit_spread(
+    options_struct: str,
+    short_strike: float,
+    long_strike: float,
+    target_credit: float,
+    spot_price: float,
+    tactical_stop: float,
+    em_pct: float,
+    opt_summary: str,
+    safe_ticker: str,
+) -> tuple:
+    """Return (options_struct, opt_summary, clear_strikes) after enforcing strict risk/reward
+    and technical soundness on credit spreads (BULL_PUT_SPREAD, BEAR_CALL_SPREAD, CASH_SECURED_PUT).
+
+    Fatal flaws that force demotion to NON-ACTIONABLE:
+    1. Short strike sits at or inside the tactical stop loss (stop-out triggers ITM options loss).
+    2. Short strike is too close to spot (< 4.0% below spot or inside 1.25x Expected Move).
+    3. Credit-to-width ratio is below 22% (risking > 3.5:1 against the trader).
+    """
+    struct_upper = (options_struct or "").upper()
+    if struct_upper not in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "CASH_SECURED_PUT"):
+        return options_struct, opt_summary, False
+
+    reasons = []
+    # 1. Stop loss containment check
+    if struct_upper in ("BULL_PUT_SPREAD", "CASH_SECURED_PUT") and tactical_stop > 0 and short_strike > 0:
+        if short_strike >= tactical_stop:
+            reasons.append(f"short put (${short_strike:.2f}) sits at/above tactical stop (${tactical_stop:.2f})")
+    elif struct_upper == "BEAR_CALL_SPREAD" and tactical_stop > 0 and short_strike > 0:
+        if short_strike <= tactical_stop:
+            reasons.append(f"short call (${short_strike:.2f}) sits at/below tactical stop (${tactical_stop:.2f})")
+
+    # 2. Distance to spot / Expected Move check
+    if spot_price > 0 and short_strike > 0:
+        dist_pct = abs(spot_price - short_strike) / spot_price
+        if dist_pct < 0.04:
+            reasons.append(f"short strike (${short_strike:.2f}) is only {dist_pct*100:.1f}% from spot (${spot_price:.2f})")
+        elif em_pct > 0 and not _credit_strike_em_consistent(struct_upper, short_strike, spot_price, em_pct):
+            reasons.append(f"short strike (${short_strike:.2f}) is inside 1.25x ExpMove ({em_pct:.1f}%)")
+
+    # 3. Credit-to-width ratio (must collect >= 22% of spread width)
+    if short_strike > 0 and long_strike > 0:
+        width = abs(short_strike - long_strike)
+        if width > 0 and target_credit > 0:
+            cr_ratio = target_credit / width
+            if cr_ratio < 0.22:
+                reasons.append(f"credit ${target_credit:.2f} is only {cr_ratio*100:.0f}% of ${width:.2f} width (risking {1/cr_ratio-1:.1f}:1)")
+
+    if reasons:
+        reason_str = "; ".join(reasons)
+        logger.info(f"[{safe_ticker}] Demoting credit spread {struct_upper}: {reason_str}")
+        return (
+            "NONE",
+            f"{opt_summary} [DEMOTED: {reason_str} — negative expectancy; use equity or Bull Call debit spread]",
+            True,
+        )
+
+    return options_struct, opt_summary, False
+
+
 def _demote_unscaled_credit(
     options_struct: str,
     short_strike: float,
@@ -72,27 +132,58 @@ def _demote_unscaled_credit(
     em_pct: float,
     opt_summary: str,
     safe_ticker: str,
+    long_strike: float = 0.0,
+    target_credit: float = 0.0,
+    tactical_stop: float = 0.0,
 ) -> tuple:
-    """Return (options_struct, opt_summary, clear_strikes) after applying the EM backstop.
+    return _validate_and_demote_credit_spread(
+        options_struct=options_struct,
+        short_strike=short_strike,
+        long_strike=long_strike,
+        target_credit=target_credit,
+        spot_price=spot_price,
+        tactical_stop=tactical_stop,
+        em_pct=em_pct,
+        opt_summary=opt_summary,
+        safe_ticker=safe_ticker,
+    )
 
-    A credit spread whose short strike sits inside 1.25x the Expected Move is demoted to
-    NONE so equity/debit can take primary instead of being buried behind a structurally
-    weak spread. `clear_strikes` signals the caller to zero out long/short strikes so the
-    result stays internally consistent (actionable=false carries no phantom strikes).
-    """
-    if short_strike and spot_price and not _credit_strike_em_consistent(
-        options_struct, short_strike, spot_price, em_pct
-    ):
-        logger.info(
-            f"[{safe_ticker}] Credit spread {options_struct} strike ${short_strike:.2f} is inside "
-            f"1.25x EM (EM={em_pct}%); demoting to NON-ACTIONABLE so equity/debit can be primary."
-        )
-        return (
-            "NONE",
-            f"{opt_summary} [DEMOTED: short strike inside 1.25x Expected Move — IV rich but unscaled; use debit/equity by side]",
-            True,
-        )
-    return options_struct, opt_summary, False
+
+def _apply_options_cleanup(data: dict, dw_data: dict, spot_price: float, safe_ticker: str) -> None:
+    """Helper to clean up defective options plans across all report parsing paths."""
+    options_p = data.get("options_plan")
+    if not options_p:
+        return
+    shares_p = data.get("shares_plan") or {}
+    tactical_stop = float(shares_p.get("tactical_stop") or data.get("tactical_stop") or 0.0)
+    em_pct = _dw_lookup(dw_data, "Exp Move % (21b)", "exp_move_pct", "Exp Move Pct 21b")
+    blk_struct = options_p.get("structure") or "NONE"
+    blk_short = float(options_p.get("short_strike") or 0.0)
+    blk_long = float(options_p.get("long_strike") or 0.0)
+    blk_credit = float(options_p.get("target_credit") or 0.0)
+    blk_spot = float(data.get("spot_price") or spot_price or 0.0)
+
+    new_struct, new_summary, clear_strikes = _validate_and_demote_credit_spread(
+        blk_struct, blk_short, blk_long, blk_credit, blk_spot, tactical_stop, em_pct, options_p.get("summary", ""), safe_ticker
+    )
+    if clear_strikes:
+        options_p["structure"] = "NONE"
+        options_p["long_strike"] = 0.0
+        options_p["short_strike"] = 0.0
+        options_p["actionable"] = False
+        options_p["entry_trigger"] = "NONE"
+        options_p["summary"] = new_summary
+        options_p["target_debit"] = 0.0
+        options_p["target_credit"] = 0.0
+        options_p["max_loss"] = 0.0
+        options_p["max_profit"] = 0.0
+        options_menu = data.get("options_menu") or {}
+        if "tactical_spread" in options_menu:
+            options_menu["tactical_spread"]["structure"] = "NONE"
+            options_menu["tactical_spread"]["long_strike"] = 0.0
+            options_menu["tactical_spread"]["short_strike"] = 0.0
+            options_menu["tactical_spread"]["target_debit"] = 0.0
+            options_menu["tactical_spread"]["target_credit"] = 0.0
 
 
 def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dict[str, Any]]:
@@ -128,17 +219,41 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         logger.warning(f"[{safe_ticker}] No reports or datawindow found for date {date_str}.")
         return None
 
-    # Before extraction, if _arbitration.md contains NO_LEVELS or LEVEL GATE REJECTED, skip; never fall through to _summary.md
-    if arbitration_text and ("NO_LEVELS" in arbitration_text or "LEVEL GATE REJECTED" in arbitration_text):
-        logger.info(f"[{safe_ticker}] Arbitration contains NO_LEVELS or LEVEL GATE REJECTED. Skipping extraction.")
-        return None
-
-    # Spot Price — resolved up front so the embedded-block EM backstop below can use it.
+    # Spot Price — resolved up front so all downstream parsing & validation can use it.
     spot_price = _dw_lookup(dw_data, "close", "Close")
     if not spot_price:
         m_spot = re.search(r"Bar close:\s*\$([0-9.]+)", summary_text)
         if m_spot:
             spot_price = float(m_spot.group(1))
+        elif arbitration_text:
+            m_spot_arb = re.search(r"(?:Spot Price|Price|spot|spot at):\s*\$([0-9.]+)", arbitration_text, re.IGNORECASE)
+            if m_spot_arb:
+                spot_price = float(m_spot_arb.group(1))
+
+    # Before extraction, if _arbitration.md contains NO_LEVELS or LEVEL GATE REJECTED,
+    # try to parse the embedded JSON block anyway so the briefing/UI can show the thesis card.
+    # Return it with level_gate_rejected=True; callers must not treat it as fully actionable.
+    if arbitration_text and ("NO_LEVELS" in arbitration_text or "LEVEL GATE REJECTED" in arbitration_text):
+        logger.info(f"[{safe_ticker}] Arbitration gate-rejected — attempting display-only parse.")
+        m_block = re.search(
+            r"```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?\"shares_plan\"[\s\S]*?\})\s*```",
+            arbitration_text,
+        )
+        if m_block:
+            try:
+                data = json.loads(m_block.group(1))
+                data.setdefault("ticker", safe_ticker)
+                data.setdefault("date", date_str)
+                data["level_gate_rejected"] = True
+                _apply_options_cleanup(data, dw_data, spot_price, safe_ticker)
+                if "options_plan" in data and isinstance(data["options_plan"], dict):
+                    data["options_plan"]["actionable"] = False
+                logger.info(f"[{safe_ticker}] Returning gate-rejected watch_levels for display (verdict={data.get('verdict')}).")
+                return data
+            except Exception as e:
+                logger.debug(f"[{safe_ticker}] Could not parse gate-rejected block: {e}")
+        logger.info(f"[{safe_ticker}] Arbitration contains NO_LEVELS or LEVEL GATE REJECTED. Skipping extraction.")
+        return None
 
     # ── 1. Embedded JSON Block Check ───────────────────────────────────────
     for text_source in (arbitration_text, summary_text):
@@ -253,34 +368,8 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                             "summary": "No income / CSP structure designated.",
                         }
 
-                # EM-consistency backstop (embedded path): apply the same unscaled-credit
-                # demotion here so the priority-1 block path can't bypass the gate. The
-                # embedded block may carry its own spot; fall back to the data window close.
-                em_pct = _dw_lookup(dw_data, "Exp Move % (21b)", "exp_move_pct", "Exp Move Pct 21b")
-                blk_struct = options_p.get("structure") or "NONE"
-                blk_short = float(options_p.get("short_strike") or 0.0)
-                blk_spot = float(data.get("spot_price") or spot_price or 0.0)
-                new_struct, new_summary, clear_strikes = _demote_unscaled_credit(
-                    blk_struct, blk_short, blk_spot, em_pct, options_p.get("summary", ""), safe_ticker
-                )
-                if clear_strikes:
-                    options_p["structure"] = "NONE"
-                    options_p["long_strike"] = 0.0
-                    options_p["short_strike"] = 0.0
-                    options_p["actionable"] = False
-                    options_p["entry_trigger"] = "NONE"
-                    options_p["summary"] = new_summary
-                    # Zero stale P/L fields so UI doesn't render phantom risk/profit numbers
-                    options_p["target_debit"] = 0.0
-                    options_p["target_credit"] = 0.0
-                    options_p["max_loss"] = 0.0
-                    options_p["max_profit"] = 0.0
-                    if "tactical_spread" in options_menu:
-                        options_menu["tactical_spread"]["structure"] = "NONE"
-                        options_menu["tactical_spread"]["long_strike"] = 0.0
-                        options_menu["tactical_spread"]["short_strike"] = 0.0
-                        options_menu["tactical_spread"]["target_debit"] = 0.0
-                        options_menu["tactical_spread"]["target_credit"] = 0.0
+                # Apply options plan cleanup and negative-expectancy credit spread demotion
+                _apply_options_cleanup(data, dw_data, spot_price, safe_ticker)
 
                 # Persist to raw folder
                 save_path = raw_dir / f"{safe_ticker}_watch_levels.json"

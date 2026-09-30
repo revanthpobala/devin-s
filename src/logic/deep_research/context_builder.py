@@ -514,9 +514,7 @@ def build_user_prompt(
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Act as Senior Quantitative Portfolio Manager and EMIT a single-pass, high-conviction trade thesis:
         - ACCURATE STRUCTURAL R:R: Calculate mathematical R:R as `(Target 1 - Entry) / (Entry - Tactical Stop)`. Adhere strictly to validated zone geometry, stop levels, and measured R:R requirements; do not override or invent artificial floors to bypass zone rules.
-        - EXPECTED STOCK PRICE RANGE: support floor, resistance ceiling, and your projected 14-120 day trading range.
-        - OPTIONS PLAN (DUAL HORIZON): Evaluate both Tactical Swing (21-45 DTE credit/debit) AND Multi-Quarter / LEAPS (90-365+ DTE Deep ITM Calls). If IV Rank > 70% and IV/HV spread is positive, explicitly favor defined-risk credit spreads (e.g. Bull Put Spread) over buying expensive extrinsic premium.
-        - ENTRY, STOP LOSS, and PROFIT TARGET (exact prices) with strict binary invalidation ("The ONE Thing").
+        - OPTIONS PLAN (ACTIONABLE POSITIVE EXPECTANCY): For bullish directional setups, prioritize BULL CALL DEBIT SPREADS (30-45 DTE, ATM long / OTM short at Target 1, targeting >= 1.5:1 to 3:1 R:R in trader's favor) or Deep ITM LEAPS (0.75-0.85 delta). FORBIDDEN: NEVER propose near-the-money credit spreads with short strikes inside 5% of spot or above the tactical stop loss (risking > 3:1 to make 1 is mathematically flawed). If an edge-appropriate options structure collecting >= 25% of width strictly below the stop does not exist, set options structure to NONE and trade equity shares.
         - CONVICTION and risk/reward rationale.
         
         CRITICAL: Emit your final Portfolio Manager Thesis EXACTLY as instructed in the system prompt format.

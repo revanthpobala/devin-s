@@ -79,12 +79,12 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
                     return
                 job_id = f"auto-{ticker}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
                 c.execute(
-                    "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date) VALUES (?, ?, 'full', 'QUEUED', 'QUEUED', ?, ?)",
+                    "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date, stage_detail) VALUES (?, ?, 'local_only', 'QUEUED', 'QUEUED', ?, ?, 'Queued for Local Triage')",
                     (job_id, ticker, datetime.now(timezone.utc).isoformat(), date_str),
                 )
                 conn.commit()
                 dispatch_next_queued_job()
-                logger.info(f"🤖 [AutoTriageDaemon] Enqueued deep research for {ticker}: {job_id}")
+                logger.info(f"🤖 [AutoTriageDaemon] Enqueued local research triage for {ticker}: {job_id}")
     except Exception as e:
         logger.warning(f"Failed to dispatch research for {ticker}: {e}")
 

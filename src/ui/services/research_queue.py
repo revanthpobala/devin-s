@@ -6,6 +6,7 @@ Manages concurrency slots (MAX=2), FIFO queueing, and live process inspection.
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import os
 import re
@@ -162,13 +163,19 @@ def rehydrate_active_jobs():
         logger.warning(f"Error rehydrating jobs from DB: {e}")
 
 
-def get_active_research_count() -> int:
-    """Accurately count active research jobs across threads, subprocesses, and running OS processes."""
+MAX_CONCURRENT_DEEP = 2
+MAX_CONCURRENT_LOCAL = 2
+
+
+def get_active_deep_research_count() -> int:
+    """Accurately count active DEEP research jobs."""
     import psutil
     count = 0
     with get_db() as conn:
         c = conn.cursor()
-        running_rows = c.execute("SELECT job_id, ticker, pid FROM active_research_jobs WHERE status = 'RUNNING'").fetchall()
+        running_rows = c.execute(
+            "SELECT job_id, ticker, pid FROM active_research_jobs WHERE status = 'RUNNING' AND mode != 'local_only'"
+        ).fetchall()
         for r in running_rows:
             jid = r["job_id"]
             thread = ACTIVE_RESEARCH_WORKERS.get(jid)
@@ -183,40 +190,91 @@ def get_active_research_count() -> int:
     return count
 
 
+def get_active_local_research_count() -> int:
+    """Accurately count active LOCAL triage jobs."""
+    count = 0
+    with get_db() as conn:
+        c = conn.cursor()
+        running_rows = c.execute(
+            "SELECT job_id, ticker, pid FROM active_research_jobs WHERE status = 'RUNNING' AND mode = 'local_only'"
+        ).fetchall()
+        for r in running_rows:
+            jid = r["job_id"]
+            thread = ACTIVE_RESEARCH_WORKERS.get(jid)
+            if thread is not None and thread.is_alive():
+                count += 1
+            elif jid in ACTIVE_RESEARCH_SUBPROCS and ACTIVE_RESEARCH_SUBPROCS[jid].poll() is None:
+                count += 1
+    return count
+
+
+def get_active_research_count() -> int:
+    """Accurately count total active research jobs across threads and processes."""
+    return get_active_deep_research_count() + get_active_local_research_count()
+
+
 def dispatch_next_queued_job():
-    """Pick next QUEUED job from SQLite in FIFO order and run it if active slots < MAX_CONCURRENT_RESEARCH."""
+    """Pick next QUEUED jobs for both Local Research and Deep Research queues."""
     with _QUEUE_DISPATCH_LOCK:
-        active_count = get_active_research_count()
-        slots_available = MAX_CONCURRENT_RESEARCH - active_count
-        if slots_available <= 0:
-            return
+        # 1. Dispatch Local Research queue
+        active_local = get_active_local_research_count()
+        local_slots_available = MAX_CONCURRENT_LOCAL - active_local
+        if local_slots_available > 0:
+            with get_db() as conn:
+                c = conn.cursor()
+                queued_local = c.execute(
+                    "SELECT job_id, ticker, mode, target_date FROM active_research_jobs WHERE status = 'QUEUED' AND mode = 'local_only' ORDER BY started_at ASC LIMIT ?",
+                    (local_slots_available,)
+                ).fetchall()
+                for job in queued_local:
+                    jid = job["job_id"]
+                    tkr = job["ticker"]
+                    m = job["mode"]
+                    dt = job["target_date"]
+                    c.execute(
+                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'LOCAL_TRIAGE', stage_detail = 'Starting Local Triage', started_at = ? WHERE job_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), jid)
+                    )
+                    conn.commit()
 
-        with get_db() as conn:
-            c = conn.cursor()
-            queued_jobs = c.execute(
-                "SELECT job_id, ticker, mode, target_date FROM active_research_jobs WHERE status = 'QUEUED' ORDER BY started_at ASC LIMIT ?",
-                (slots_available,)
-            ).fetchall()
+                    worker_thread = threading.Thread(
+                        target=run_research_worker,
+                        args=(jid, tkr, m, dt, False),
+                        daemon=True
+                    )
+                    ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
+                    worker_thread.start()
+                    append_log(f"⚖️ [Local Queue] Dispatched local triage for {tkr} (Job ID: {jid}).")
 
-            for job in queued_jobs:
-                jid = job["job_id"]
-                tkr = job["ticker"]
-                m = job["mode"]
-                dt = job["target_date"]
-                c.execute(
-                    "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', started_at = ? WHERE job_id = ?",
-                    (datetime.now(timezone.utc).isoformat(), jid)
-                )
-                conn.commit()
+        # 2. Dispatch Deep Research queue
+        active_deep = get_active_deep_research_count()
+        deep_slots_available = MAX_CONCURRENT_DEEP - active_deep
+        if deep_slots_available > 0:
+            with get_db() as conn:
+                c = conn.cursor()
+                queued_deep = c.execute(
+                    "SELECT job_id, ticker, mode, target_date FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' ORDER BY started_at ASC LIMIT ?",
+                    (deep_slots_available,)
+                ).fetchall()
+                for job in queued_deep:
+                    jid = job["job_id"]
+                    tkr = job["ticker"]
+                    m = job["mode"]
+                    dt = job["target_date"]
+                    c.execute(
+                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', started_at = ? WHERE job_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), jid)
+                    )
+                    conn.commit()
 
-                worker_thread = threading.Thread(
-                    target=run_research_worker,
-                    args=(jid, tkr, m, dt, True),
-                    daemon=True
-                )
-                ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
-                worker_thread.start()
-                append_log(f"⚡ [Queue Dispatcher] Dispatched queued research for {tkr} to open slot (Job ID: {jid}).")
+                    worker_thread = threading.Thread(
+                        target=run_research_worker,
+                        args=(jid, tkr, m, dt, True),
+                        daemon=True
+                    )
+                    ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
+                    worker_thread.start()
+                    append_log(f"🔬 [Deep Queue] Dispatched deep research for {tkr} to open slot (Job ID: {jid}).")
 
 
 _STAGE_MARKERS = [
@@ -370,6 +428,89 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
     current_subproc = None
 
     try:
+        # Dedicated Branch: mode == "local_only" (Fast Alert Triage Gate)
+        if mode == "local_only":
+            t_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
+            raw_ticker_dir = config.BASE_DIR / "data" / "raw" / t_date / ticker_u
+            dw_check = (
+                (raw_ticker_dir / f"{ticker_u}_datawindow.json").exists()
+                or (config.BASE_DIR / "data" / "raw" / t_date / f"{ticker_u}_datawindow.json").exists()
+                or (config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_datawindow.json").exists()
+            )
+            if not dw_check or force:
+                with get_db() as conn:
+                    conn.cursor().execute(
+                        "UPDATE active_research_jobs SET stage = 'SCRAPING', status = 'RUNNING', stage_detail = 'Scraping TradingView (Local Triage)' WHERE job_id = ?",
+                        (job_id,),
+                    )
+                    conn.commit()
+                _log_both(f"📸 [1/2] Scraping TradingView Charts & Data Window (Headless)...")
+                cmd = [py_exe, "run_swing_research.py", t_date, "--ticker", ticker_u, "--headless"]
+                if force:
+                    cmd.append("--force")
+                _run_subproc(cmd, "Scrape phase")
+
+            with get_db() as conn:
+                conn.cursor().execute(
+                    "UPDATE active_research_jobs SET stage = 'LOCAL_TRIAGE', status = 'RUNNING', stage_detail = 'Running Fast Local Triage' WHERE job_id = ?",
+                    (job_id,),
+                )
+                conn.commit()
+            _log_both(f"⚖️ [2/2] Running Local Triage & Prefilter...")
+            triage_cmd = [py_exe, "run_local_research.py", t_date, "--ticker", ticker_u]
+            if force:
+                triage_cmd.extend(["--force", ticker_u])
+            _run_subproc(triage_cmd, "Triage phase")
+
+            # Check if local research is SATISFIED (PASS + send_for_deep_research)
+            th_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json"
+            if not th_path.exists():
+                th_path = config.BASE_DIR / "data" / "triage" / t_date / "force" / ticker_u / f"{ticker_u}_thesis.json"
+            if not th_path.exists():
+                th_path = config.BASE_DIR / "data" / "raw" / t_date / ticker_u / f"{ticker_u}_thesis.json"
+
+            triage_pass = False
+            verdict = "UNKNOWN"
+            if th_path.exists():
+                try:
+                    th_json = json.loads(th_path.read_text(encoding="utf-8"))
+                    tr = th_json.get("triage") or {}
+                    verdict = tr.get("triage") if isinstance(tr, dict) else str(tr)
+                    send_flag = bool(
+                        th_json.get("send_for_deep_research")
+                        or (isinstance(tr, dict) and tr.get("send_for_deep_research"))
+                        or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research"))
+                    )
+                    triage_pass = (verdict == "PASS") and send_flag
+                except Exception as e:
+                    _log_both(f"⚠️ Error parsing thesis JSON: {e}")
+
+            if triage_pass:
+                _log_both(f"🎯 [Triage Pass] {ticker_u} SATISFIED local research (PASS)! Enqueued for Deep Research.")
+                with get_db() as conn:
+                    conn.cursor().execute(
+                        "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'LOCAL_DONE', stage_detail = 'PASS (Satisfied -> Enqueued for Deep)', completed_at = ? WHERE job_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), job_id),
+                    )
+                    # Automatically enqueue into Deep Research Queue
+                    deep_jid = f"auto-{ticker_u}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+                    deep_log = str(LOGS_DIR / f"{deep_jid}.log")
+                    conn.cursor().execute(
+                        "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, log_file, target_date, stage_detail) VALUES (?, ?, 'deep_only', 'QUEUED', 'QUEUED', ?, ?, ?, 'Promoted from Local Triage (PASS)')",
+                        (deep_jid, ticker_u, datetime.now(timezone.utc).isoformat(), deep_log, t_date),
+                    )
+                    conn.commit()
+            else:
+                _log_both(f"⏹️ [Triage Gate] {ticker_u} local verdict: {verdict}. Deep research skipped to preserve slots.")
+                with get_db() as conn:
+                    conn.cursor().execute(
+                        "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'LOCAL_DONE', stage_detail = ?, completed_at = ? WHERE job_id = ?",
+                        (f"{verdict} (Filtered Out)", datetime.now(timezone.utc).isoformat(), job_id),
+                    )
+                    conn.commit()
+
+            return
+
         # Step 1: Scrape
         if mode in ("full", "scrape_only", "scrape_deep"):
             with get_db() as conn:
@@ -387,37 +528,40 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                 cmd.append("--force")
             _run_subproc(cmd, "Scrape phase")
 
-        # Step 1b: Triage pass for mode in ("full", "scrape_deep", "deep_only")
+        # Step 1b: Triage pass for mode in ("full", "scrape_deep")
         proceed_to_deep = True
-        if mode in ("full", "scrape_deep", "deep_only") and not force:
+        if mode in ("full", "scrape_deep"):
             _log_both(f"⚖️ [1b/3] Running Local Triage...")
             triage_cmd = [py_exe, "run_local_research.py"]
             if date and date.strip():
                 triage_cmd.append(date.strip())
             triage_cmd.extend(["--ticker", ticker_u])
+            if force:
+                triage_cmd.extend(["--force", ticker_u])
             _run_subproc(triage_cmd, "Triage phase")
 
-            # Check triage verdict and send_for_deep_research flag
-            t_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
-            th_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json"
-            if not th_path.exists():
-                th_path = config.BASE_DIR / "data" / "triage" / t_date / "force" / ticker_u / f"{ticker_u}_thesis.json"
-            if not th_path.exists():
-                th_path = config.BASE_DIR / "data" / "raw" / t_date / ticker_u / f"{ticker_u}_thesis.json"
-            triage_pass = False
-            if th_path.exists():
-                try:
-                    is_forced = "force" in th_path.parts
-                    th_json = json.loads(th_path.read_text(encoding="utf-8"))
-                    tr = th_json.get("triage") or {}
-                    v = tr.get("triage") if isinstance(tr, dict) else str(tr)
-                    send_flag = bool(th_json.get("send_for_deep_research") or (isinstance(tr, dict) and tr.get("send_for_deep_research")) or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research")))
-                    triage_pass = is_forced or ((v == "PASS") and send_flag)
-                except Exception:
-                    pass
-            if not triage_pass:
-                _log_both(f"⏹️ [Triage Gate] {ticker_u} did not qualify (PASS + send_for_deep_research). Deep research skipped to preserve slots.")
-                proceed_to_deep = False
+            # Check triage verdict and send_for_deep_research flag only when NOT forced
+            if not force:
+                t_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
+                th_path = config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json"
+                if not th_path.exists():
+                    th_path = config.BASE_DIR / "data" / "triage" / t_date / "force" / ticker_u / f"{ticker_u}_thesis.json"
+                if not th_path.exists():
+                    th_path = config.BASE_DIR / "data" / "raw" / t_date / ticker_u / f"{ticker_u}_thesis.json"
+                triage_pass = False
+                if th_path.exists():
+                    try:
+                        is_forced = "force" in th_path.parts
+                        th_json = json.loads(th_path.read_text(encoding="utf-8"))
+                        tr = th_json.get("triage") or {}
+                        v = tr.get("triage") if isinstance(tr, dict) else str(tr)
+                        send_flag = bool(th_json.get("send_for_deep_research") or (isinstance(tr, dict) and tr.get("send_for_deep_research")) or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research")))
+                        triage_pass = is_forced or ((v == "PASS") and send_flag)
+                    except Exception:
+                        pass
+                if not triage_pass:
+                    _log_both(f"⏹️ [Triage Gate] {ticker_u} did not qualify (PASS + send_for_deep_research). Deep research skipped to preserve slots.")
+                    proceed_to_deep = False
 
         # Step 2: Deep Research (Model A & Model B Parallel + PM Arbitration)
         date_to_use = date.strip() if (date and date.strip()) else None
@@ -444,6 +588,8 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
             if date_to_use:
                 cmd.append(date_to_use)
             cmd.extend(["--ticker", ticker_u, "--job-id", job_id])
+            if force:
+                cmd.extend(["--force", ticker_u])
             _run_subproc(cmd, "Deep research phase")
 
             # Verify reports exist before declaring success

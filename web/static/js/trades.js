@@ -52,6 +52,8 @@ window.AppTrades = {
     if (stalkingEl) stalkingEl.textContent = this._summary.stalking || 0;
     if (winnersEl) winnersEl.textContent = this._summary.target_hit || 0;
     if (stoppedEl) stoppedEl.textContent = this._summary.stopped || 0;
+    const takenEl = document.getElementById('count-trades-taken');
+    if (takenEl) takenEl.textContent = this._summary.user_taken || this._trades.filter(x => x.is_taken).length || 0;
   },
 
   async loadScoreboard() {
@@ -223,6 +225,52 @@ window.AppTrades = {
     }
   },
 
+  async promptTakeTrade(sym, defaultPrice) {
+    const defaultFill = defaultPrice ? Number(defaultPrice).toFixed(2) : '';
+    const px = prompt(`🎯 Enter execution fill price for $${sym}:`, defaultFill);
+    if (!px || isNaN(parseFloat(px))) return;
+    const qty = prompt(`Enter number of shares / contracts for $${sym}:`, '100') || '100';
+    try {
+      const res = await window.AppApi.request('/api/trades/take', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: sym,
+          fill_price: parseFloat(px),
+          quantity: parseFloat(qty) || 100,
+          notes: `Personally entered ${qty} shares @ $${px}`
+        })
+      });
+      if (res && res.success) {
+        await this.loadSuggestedTrades();
+        if (window.AppWatchlist && typeof window.AppWatchlist.loadWatchlist === 'function') {
+          try { await window.AppWatchlist.loadWatchlist(); } catch (e) { }
+        }
+      } else {
+        alert('Notice: ' + ((res && res.message) || (res && res.error) || 'Failed to update trade'));
+      }
+    } catch (e) {
+      alert('Error recording taken trade: ' + e);
+    }
+  },
+
+  async untakeTrade(sym, id) {
+    if (!confirm(`Revert taken position for $${sym}?`)) return;
+    try {
+      await window.AppApi.request('/api/trades/untake', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: sym, id: id })
+      });
+      await this.loadSuggestedTrades();
+      if (window.AppWatchlist && typeof window.AppWatchlist.loadWatchlist === 'function') {
+        try { await window.AppWatchlist.loadWatchlist(); } catch (e) { }
+      }
+    } catch (e) {
+      alert('Error untaking trade: ' + e);
+    }
+  },
+
   formatTime(dateStr, updatedStr) {
     if (!dateStr && !updatedStr) return { primary: 'N/A', secondary: '' };
     try {
@@ -267,6 +315,9 @@ window.AppTrades = {
     // 1. Filter
     if (this._activeFilter !== 'ALL') {
       list = list.filter(t => {
+        if (this._activeFilter === 'MY_TRADES' || this._activeFilter === 'TAKEN') {
+          return Boolean(t.is_taken || t.user_taken || t.taken);
+        }
         const st = (t.status || '').toUpperCase();
         if (this._activeFilter === 'IN_ZONE') return st === 'IN_ZONE' || st === 'ENTER';
         if (this._activeFilter === 'STALKING') return st === 'STALKING';
@@ -483,14 +534,16 @@ window.AppTrades = {
           <!-- 9. TACTICAL STOP (xATR) -->
           <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right; color:var(--rose-light, #f43f5e);">
             $${stop.toFixed(2)}
-            ${t.stop_in_atr ? `<div style="font-size:10px; opacity:0.85;">${Number(t.stop_in_atr).toFixed(2)}x ATR</div>` : ''}
+            ${t.stop_risk_dollar ? `<div style="font-size:9.5px; color:var(--rose-light); opacity:0.9;">-$${t.stop_risk_dollar.toFixed(0)} <span style="font-size:8.5px; opacity:0.8;">(100sh)</span></div>` : ''}
+            ${t.stop_in_atr ? `<div style="font-size:9px; opacity:0.75;">${Number(t.stop_in_atr).toFixed(2)}x ATR</div>` : ''}
           </td>
 
           <!-- 10. TARGET 1 & 2 -->
           <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
             <span style="font-weight:700; color:var(--emerald-light, #10b981);">$${t1.toFixed(2)}</span>
             ${t.target_1_pct ? `<span style="font-size:10px; color:var(--emerald-light); font-weight:600;"> (+${t.target_1_pct}%)</span>` : ''}
-            ${t2 > 0 ? `<div style="font-size:10px; color:var(--cyan-glow);">T2: $${t2.toFixed(2)}</div>` : ''}
+            ${t.target_1_dollar ? `<div style="font-size:10px; color:var(--emerald-light); font-weight:700;">+$${t.target_1_dollar.toFixed(0)} <span style="font-size:8.5px; opacity:0.8;">(100sh)</span></div>` : ''}
+            ${t2 > 0 ? `<div style="font-size:9.5px; color:var(--cyan-glow);">T2: $${t2.toFixed(2)}</div>` : ''}
           </td>
 
           <!-- 11. R:R @ MKT -->
@@ -498,15 +551,38 @@ window.AppTrades = {
             ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : '-'}
           </td>
 
-          <!-- 12. LIVE QUOTE & DISTANCE -->
+          <!-- 12. LIVE QUOTE & DISTANCE / PnL -->
           <td style="padding:10px 10px; font-family:var(--font-mono); font-size:11.5px; text-align:right;">
             <span style="font-weight:700; color:var(--text-main);">$${spot.toFixed(2)}</span>
-            <div style="font-size:10px; color:var(--text-muted);" title="Distance from entry zone">${distStr} dist</div>
+            ${t.is_taken ? `
+              <div style="margin-top:2px;">
+                <span class="pill ${t.user_pnl_dollar >= 0 ? 'green' : 'red'}" style="font-size:9.5px; font-weight:800; padding:1px 5px;">
+                  ${t.user_pnl_dollar >= 0 ? '+' : ''}$${Number(t.user_pnl_dollar || 0).toFixed(2)} (${t.user_pnl_pct >= 0 ? '+' : ''}${Number(t.user_pnl_pct || 0).toFixed(1)}%)
+                </span>
+              </div>
+              <div style="font-size:9px; color:var(--text-muted); margin-top:1px;">Fill: $${Number(t.user_fill || entryMid).toFixed(2)}</div>
+            ` : `
+              <div style="font-size:10px; color:var(--text-muted);" title="Distance from entry zone">${distStr} dist</div>
+              ${t.pnl_dollar !== undefined && t.pnl_dollar !== null ? `
+                <div style="font-size:10px; font-weight:700; color:${t.pnl_dollar >= 0 ? 'var(--emerald-light)' : 'var(--rose-light)'};">
+                  ${t.pnl_dollar >= 0 ? '+' : ''}$${Number(t.pnl_dollar).toFixed(0)} <span style="font-size:8.5px; opacity:0.8;">(100sh)</span>
+                </div>` : ''}
+            `}
           </td>
 
-          <!-- 13. TRADE STATUS -->
+          <!-- 13. TRADE STATUS & TAKE TRADE ACTION -->
           <td style="padding:10px 10px; text-align:center;">
-            ${statusBadge}
+            ${t.is_taken ? `
+              <div style="display:flex; flex-direction:column; gap:4px; align-items:center;">
+                <span class="pill green" style="font-size:9.5px; padding:2px 7px; font-weight:800; border:1px solid #10b981; background:rgba(16,185,129,0.18);">💼 TAKEN</span>
+                <button class="btn secondary" onclick="event.stopPropagation(); AppTrades.untakeTrade('${sym}', ${t.id || 0})" style="font-size:9px; padding:1px 5px; color:var(--text-muted); border-color:transparent; background:transparent; cursor:pointer;" title="Revert taken trade status">✕ Untake</button>
+              </div>
+            ` : `
+              <div style="display:flex; flex-direction:column; gap:4px; align-items:center;">
+                ${statusBadge}
+                <button class="btn secondary" onclick="event.stopPropagation(); AppTrades.promptTakeTrade('${sym}', ${entryMid || spot})" style="font-size:9px; padding:2px 6px; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.08); font-weight:700; cursor:pointer;" title="Mark this trade as taken in your personal portfolio">🎯 Take</button>
+              </div>
+            `}
           </td>
 
           <!-- 14. AUDIT & VERIFY ACTIONS -->
@@ -597,11 +673,12 @@ window.AppTrades = {
       trade = this._trades.find(t => t.id === idNum || t.row_id === idNum);
     }
     if (!trade) {
-      const sym = String(tickerSym || rowIdOrTicker || '').toUpperCase().trim();
-      trade = this._trades.find(t => (t.ticker || '').toUpperCase() === sym);
+      const symQuery = String(tickerSym || rowIdOrTicker || '').toUpperCase().trim();
+      trade = this._trades.find(t => (t.ticker || '').toUpperCase() === symQuery);
     }
     if (!trade) return;
 
+    const sym = (trade.ticker || tickerSym || rowIdOrTicker || '').toUpperCase().trim();
     this._selectedTrade = trade;
     const modal = document.getElementById('trade-plan-modal');
     if (!modal) return;
@@ -641,6 +718,24 @@ window.AppTrades = {
     }
     if (spotEl) {
       spotEl.textContent = spot > 0 ? `$${spot.toFixed(2)}` : 'N/A';
+    }
+
+    // Configure Take / Untake button in modal footer
+    const takeContainer = document.getElementById('plan-modal-take-btn-container');
+    if (takeContainer) {
+      if (trade.user_taken) {
+        takeContainer.innerHTML = `
+          <button class="btn secondary" style="padding:6px 12px; font-size:12px; font-weight:700; color:#f43f5e; border-color:rgba(244,63,94,0.4); background:rgba(244,63,94,0.08);" onclick="AppTrades.untakeTrade('${sym}', ${trade.id || 0}); AppTrades.closePlanModal();">
+            ✕ Untake Trade
+          </button>
+        `;
+      } else {
+        takeContainer.innerHTML = `
+          <button class="btn green" style="padding:6px 14px; font-size:12px; font-weight:800; background:#10b981; color:#fff; border:none; display:inline-flex; align-items:center; gap:5px; box-shadow:0 2px 6px rgba(16,185,129,0.3);" onclick="AppTrades.promptTakeTrade('${sym}', ${entryMid || spot}); AppTrades.closePlanModal();">
+            🎯 Take This Trade
+          </button>
+        `;
+      }
     }
 
     // Build Modal Body
@@ -738,7 +833,33 @@ window.AppTrades = {
       `;
     }
 
-    // Underlying Shares Plan
+    // User taken status banner
+    const userTakenBanner = trade.user_taken ? `
+      <div style="background:rgba(6,182,212,0.08); border:1px solid rgba(6,182,212,0.35); border-radius:8px; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:18px;">💼</span>
+          <div>
+            <div style="font-size:12px; font-weight:800; color:var(--cyan-glow);">PERSONALLY TAKEN POSITION</div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+              Fill: <strong>$${Number(trade.fill_price || entryMid).toFixed(2)}</strong> (${trade.user_quantity || 100} shares)
+            </div>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase;">Live P&L</div>
+          <div style="font-size:14px; font-weight:800; font-family:var(--font-mono); color:${(trade.pnl_dollar >= 0) ? '#10b981' : '#f43f5e'};">
+            ${(trade.pnl_dollar >= 0) ? '+' : ''}$${Number(trade.pnl_dollar || 0).toFixed(2)} 
+            <span style="font-size:11px;">(${(trade.pnl_pct >= 0) ? '+' : ''}${Number(trade.pnl_pct || 0).toFixed(2)}%)</span>
+          </div>
+        </div>
+      </div>
+    ` : '';
+
+    // Underlying Shares Plan & Dollar Profit Calculations
+    const stopDollar = trade.stop_risk_dollar ? Math.abs(Number(trade.stop_risk_dollar)) : ((entryMid > 0 && stop > 0) ? Math.abs(entryMid - stop) * 100 : null);
+    const t1Dollar = trade.target_1_dollar ? Number(trade.target_1_dollar) : ((t1 > 0 && entryMid > 0) ? Math.abs(t1 - entryMid) * 100 : null);
+    const t2Dollar = trade.target_2_dollar ? Number(trade.target_2_dollar) : ((t2 > 0 && entryMid > 0) ? Math.abs(t2 - entryMid) * 100 : null);
+
     const sharesSection = `
       <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:16px;">
         <div style="font-size:13px; font-weight:800; color:var(--text-main); margin-bottom:12px; display:flex; align-items:center; gap:6px;">
@@ -759,7 +880,8 @@ window.AppTrades = {
             <div style="font-size:13px; font-weight:800; font-family:var(--font-mono); color:#f43f5e; margin-top:2px;">
               $${stop.toFixed(2)}
             </div>
-            ${trade.stop_risk_pct ? `<div style="font-size:10px; color:#f43f5e;">Risk: -${trade.stop_risk_pct}%</div>` : ''}
+            ${stopDollar !== null ? `<div style="font-size:10.5px; color:#f43f5e; font-weight:700;">Risk: -$${stopDollar.toFixed(2)} <span style="font-size:9.5px; opacity:0.8;">(100 shs)</span></div>` : ''}
+            ${trade.stop_risk_pct ? `<div style="font-size:9.5px; color:#f43f5e;">-${trade.stop_risk_pct}%</div>` : ''}
           </div>
 
           <div style="background:var(--bg-surface); padding:8px 12px; border-radius:6px; border:1px solid var(--border);">
@@ -767,7 +889,8 @@ window.AppTrades = {
             <div style="font-size:13px; font-weight:800; font-family:var(--font-mono); color:#10b981; margin-top:2px;">
               $${t1.toFixed(2)}
             </div>
-            ${trade.target_1_pct ? `<div style="font-size:10px; color:#10b981;">Gain: +${trade.target_1_pct}%</div>` : ''}
+            ${t1Dollar !== null ? `<div style="font-size:10.5px; color:#10b981; font-weight:700;">Gain: +$${t1Dollar.toFixed(2)} <span style="font-size:9.5px; opacity:0.8;">(100 shs)</span></div>` : ''}
+            ${trade.target_1_pct ? `<div style="font-size:9.5px; color:#10b981;">+${trade.target_1_pct}%</div>` : ''}
           </div>
 
           <div style="background:var(--bg-surface); padding:8px 12px; border-radius:6px; border:1px solid var(--border);">
@@ -775,7 +898,8 @@ window.AppTrades = {
             <div style="font-size:13px; font-weight:800; font-family:var(--font-mono); color:var(--cyan-glow); margin-top:2px;">
               ${t2 > 0 ? `$${t2.toFixed(2)}` : 'Trailing Stop'}
             </div>
-            <div style="font-size:10px; color:var(--text-muted);">Darvas / Trend High</div>
+            ${t2Dollar !== null ? `<div style="font-size:10.5px; color:var(--cyan-glow); font-weight:700;">Gain: +$${t2Dollar.toFixed(2)} <span style="font-size:9.5px; opacity:0.8;">(100 shs)</span></div>` : ''}
+            <div style="font-size:9.5px; color:var(--text-muted);">Darvas / Trend High</div>
           </div>
         </div>
       </div>
@@ -807,6 +931,7 @@ window.AppTrades = {
     ` : '';
 
     bodyEl.innerHTML = `
+      ${userTakenBanner}
       ${optionsSection}
       ${sharesSection}
       ${thesisSection}

@@ -82,10 +82,15 @@ window.AppSwing = {
         }
       }
 
-      // Automatically uncollapse active procs panel if hidden so user sees progress
+      // Automatically uncollapse active procs panel if hidden and scroll into view so user sees progress
       const procsEl = document.getElementById('active-procs-wrapper');
-      if (procsEl && procsEl.style.display === 'none') {
-        this.toggleActiveProcsPanel();
+      if (procsEl) {
+        if (procsEl.style.display === 'none') {
+          this.toggleActiveProcsPanel();
+        }
+        setTimeout(() => {
+          procsEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
       }
     } catch (e) {
       if (window.AppUtils && AppUtils.showToast) {
@@ -1377,6 +1382,8 @@ window.AppSwing = {
       this.restoreReportModal();
     }
     modal.style.display = 'flex';
+    const dock = document.getElementById('minimized-dossier-dock');
+    if (dock) dock.style.display = 'none';
 
     document.getElementById('modal-ticker-title').innerText = `${ticker} RESEARCH REPORT (${date || 'Latest'})`;
     const pulse = document.getElementById('modal-minimized-pulse');
@@ -1785,26 +1792,50 @@ window.AppSwing = {
 
     // 3. Options Play
     const optPlan = wl.options_plan || {};
-    const isDemoted = !optPlan.actionable || optPlan.structure === 'NONE' || !optPlan.structure;
+    const hasOptions = Boolean(optPlan && optPlan.structure && optPlan.structure !== 'NONE' && optPlan.structure !== 'SHARES' && optPlan.structure !== 'EQUITY_SHARES' && optPlan.structure !== 'STALK_CASH');
+    const isActionable = Boolean(optPlan.actionable);
+    const isExplicitlyDemoted = Boolean(!isActionable && (optPlan.structure === 'NONE' || (optPlan.summary && optPlan.summary.includes('DEMOTED'))));
+    const isConditional = Boolean(!isActionable && hasOptions && !(optPlan.summary && optPlan.summary.includes('DEMOTED')));
+    const isDemoted = isExplicitlyDemoted || (!hasOptions && optPlan.structure === 'NONE');
+
     const optAct = document.getElementById('pane-opt-actionable');
     if (optAct) {
-      optAct.style.display = optPlan.actionable ? 'inline-block' : 'none';
+      optAct.style.display = 'inline-block';
+      if (isActionable) {
+        optAct.className = 'pill green';
+        optAct.textContent = 'ACTIONABLE';
+      } else if (isConditional) {
+        optAct.className = 'pill amber';
+        optAct.textContent = '⏳ CONDITIONAL (STALK)';
+      } else if (isExplicitlyDemoted) {
+        optAct.className = 'pill red';
+        optAct.textContent = '⛔ DEMOTED';
+      } else {
+        optAct.className = 'pill blue';
+        optAct.textContent = 'EQUITY SHARES';
+      }
     }
 
     const optName = document.getElementById('pane-opt-name');
     if (optName) {
-      if (isDemoted) {
+      if (hasOptions) {
+        let strikeText = '';
+        if (optPlan.long_strike && optPlan.short_strike) {
+          strikeText = ` <span style="font-size:11px; color:var(--blue); font-weight:700;">($${optPlan.long_strike} / $${optPlan.short_strike})</span>`;
+        }
+        optName.innerHTML = `<span>${optPlan.structure.replace(/_/g, ' ')}</span>${strikeText}`;
+      } else if (isExplicitlyDemoted) {
         optName.innerHTML = `<span style="color:var(--rose); font-weight:800;">⛔ DEMOTED</span>
           <span style="font-size:10px; color:var(--text-muted); font-weight:600;"> – Use Equity Plan</span>`;
       } else {
-        optName.textContent = optPlan.structure.replace(/_/g, ' ');
+        optName.textContent = (optPlan.structure && optPlan.structure !== 'NONE') ? optPlan.structure.replace(/_/g, ' ') : 'EQUITY SHARES ONLY';
       }
     }
 
     const optSummary = document.getElementById('pane-opt-summary');
     if (optSummary) {
-      const summaryText = optPlan.summary || 'Defined risk options structure.';
-      if (isDemoted && summaryText.includes('DEMOTED')) {
+      const summaryText = optPlan.summary || (hasOptions ? 'Defined risk options structure.' : 'Equity shares execution plan recommended.');
+      if (isExplicitlyDemoted && summaryText.includes('DEMOTED')) {
         const demotedIdx = summaryText.indexOf('[DEMOTED');
         const reason = demotedIdx >= 0 ? summaryText.slice(demotedIdx) : summaryText;
         optSummary.innerHTML = `<span style="color:var(--text-muted);">${summaryText.slice(0, demotedIdx > 0 ? demotedIdx : summaryText.length).trim()}</span>
@@ -1816,22 +1847,42 @@ window.AppSwing = {
 
     const optExpiry = document.getElementById('pane-opt-expiry');
     if (optExpiry) {
-      optExpiry.textContent = optPlan.expiration || '--';
+      optExpiry.textContent = optPlan.expiration || (hasOptions ? 'See Plan' : '--');
     }
 
     const optDebit = document.getElementById('pane-opt-debit');
     if (optDebit) {
-      optDebit.textContent = isDemoted ? 'N/A' : (optPlan.target_debit ? `~$${Number(optPlan.target_debit).toFixed(2)}` : '--');
+      if (optPlan.target_debit && Number(optPlan.target_debit) > 0) {
+        optDebit.textContent = `~$${Number(optPlan.target_debit).toFixed(2)}`;
+      } else if (optPlan.target_credit && Number(optPlan.target_credit) > 0) {
+        optDebit.textContent = `~$${Number(optPlan.target_credit).toFixed(2)} Cr`;
+      } else if (hasOptions) {
+        optDebit.textContent = '--';
+      } else {
+        optDebit.textContent = 'N/A';
+      }
     }
 
     const optLoss = document.getElementById('pane-opt-loss');
     if (optLoss) {
-      optLoss.textContent = isDemoted ? 'N/A' : (optPlan.max_loss ? `$${Number(optPlan.max_loss).toLocaleString()}` : '--');
+      if (optPlan.max_loss && Number(optPlan.max_loss) > 0) {
+        optLoss.textContent = `$${Number(optPlan.max_loss).toLocaleString()}`;
+      } else if (hasOptions) {
+        optLoss.textContent = '--';
+      } else {
+        optLoss.textContent = 'N/A';
+      }
     }
 
     const optProfit = document.getElementById('pane-opt-profit');
     if (optProfit) {
-      optProfit.textContent = isDemoted ? 'N/A' : (optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--');
+      if (optPlan.max_profit && Number(optPlan.max_profit) > 0) {
+        optProfit.textContent = `$${Number(optPlan.max_profit).toLocaleString()}`;
+      } else if (hasOptions) {
+        optProfit.textContent = '--';
+      } else {
+        optProfit.textContent = 'N/A';
+      }
     }
 
     // Trigger live mathematical options calculation from Schwab
@@ -1887,36 +1938,32 @@ window.AppSwing = {
       invRat.textContent = inv.rationale || 'Sustained breach terminates trade posture.';
     }
 
-    // When options are demoted, elevate the equity plan as the primary suggestion
-    if (isDemoted) {
-      const paneBody = document.getElementById('modal-positions-pane-content');
-      const optCard = document.getElementById('pane-card-options');
-      const eqCard = document.getElementById('pane-card-equity');
-      if (paneBody && optCard && eqCard) {
-        // Remove any existing demoted banner from previous render
-        const existingBanner = document.getElementById('pane-demoted-banner');
-        if (existingBanner) existingBanner.remove();
-        // Hide options card entirely — equity is the only suggestion
-        optCard.style.display = 'none';
-        // Insert equity card before options card (swap visual order)
-        paneBody.insertBefore(eqCard, optCard);
-        // Add banner above equity card indicating it's the primary plan
-        const banner = document.createElement('div');
-        banner.id = 'pane-demoted-banner';
-        banner.style.cssText = 'background:rgba(5,150,105,0.08); border:1px solid rgba(5,150,105,0.3); border-radius:6px; padding:8px 12px; font-size:11px; font-weight:700; color:#059669; display:flex; align-items:center; gap:6px;';
-        banner.innerHTML = '<span style="font-size:14px;">📊</span> EQUITY PLAN IS THE SUGGESTED TRADE — Options structure demoted (not actionable)';
-        paneBody.insertBefore(banner, eqCard);
-      }
-    } else {
-      // Clean up demoted state if options are now actionable
+    // Ensure options card and equity card are both fully visible
+    const paneBody = document.getElementById('modal-positions-pane-content');
+    const optCard = document.getElementById('pane-card-options');
+    const eqCard = document.getElementById('pane-card-equity');
+    if (paneBody && optCard && eqCard) {
+      // ALWAYS keep options card visible so user can review the options thesis
+      optCard.style.display = 'block';
+      optCard.style.opacity = '';
+      optCard.style.borderLeft = '';
+      optCard.style.background = '';
+
+      // Clean up previous banner
       const existingBanner = document.getElementById('pane-demoted-banner');
       if (existingBanner) existingBanner.remove();
-      const optCard = document.getElementById('pane-card-options');
-      if (optCard) {
-        optCard.style.display = '';
-        optCard.style.opacity = '';
-        optCard.style.borderLeft = '';
-        optCard.style.background = '';
+
+      if (isExplicitlyDemoted || !hasOptions) {
+        // Equity card elevated as primary, options card below
+        paneBody.insertBefore(eqCard, optCard);
+        const banner = document.createElement('div');
+        banner.id = 'pane-demoted-banner';
+        banner.style.cssText = 'background:rgba(5,150,105,0.08); border:1px solid rgba(5,150,105,0.3); border-radius:6px; padding:6px 10px; font-size:10.5px; font-weight:700; color:#059669; display:flex; align-items:center; gap:6px;';
+        banner.innerHTML = `<span style="font-size:13px;">📊</span> ${!hasOptions ? 'EQUITY PLAN IS PRIMARY — Shares execution recommended' : 'EQUITY PLAN IS PRIMARY — Options structure demoted'}`;
+        paneBody.insertBefore(banner, eqCard);
+      } else {
+        // Options structure is available (actionable or conditional stalk)
+        paneBody.insertBefore(optCard, eqCard);
       }
     }
   },
@@ -1943,13 +1990,32 @@ window.AppSwing = {
     const optPlan = wl.options_plan || {};
     const shPlan = wl.shares_plan || {};
     const inv = wl.invalidation || {};
-    const isDemoted = !optPlan.actionable || optPlan.structure === 'NONE' || !optPlan.structure;
+    const hasOptions = Boolean(optPlan && optPlan.structure && optPlan.structure !== 'NONE' && optPlan.structure !== 'SHARES' && optPlan.structure !== 'EQUITY_SHARES' && optPlan.structure !== 'STALK_CASH');
+    const isActionable = Boolean(optPlan.actionable);
+    const isExplicitlyDemoted = Boolean(!isActionable && (optPlan.structure === 'NONE' || (optPlan.summary && optPlan.summary.includes('DEMOTED'))));
+    const isConditional = Boolean(!isActionable && hasOptions && !(optPlan.summary && optPlan.summary.includes('DEMOTED')));
+    const isDemoted = isExplicitlyDemoted || (!hasOptions && optPlan.structure === 'NONE');
 
     const livePx = data.live_price ? `$${Number(data.live_price).toFixed(2)}` : '--';
     const spotPx = data.spot_price ? `$${Number(data.spot_price).toFixed(2)}` : '--';
 
+    const gateRejected = Boolean(wl.level_gate_rejected);
+    const gateReasons = wl.gate_reasons || [];
+
     container.innerHTML = `
       <div style="padding:22px; max-width:1050px; margin:0 auto; font-family:'Outfit',sans-serif;">
+        ${gateRejected ? `
+        <div style="background:rgba(217,119,6,0.10); border:1px solid rgba(217,119,6,0.45); border-radius:8px; padding:10px 16px; margin-bottom:16px; display:flex; align-items:flex-start; gap:10px;">
+          <span style="font-size:20px; line-height:1;">⚠️</span>
+          <div>
+            <div style="font-size:12.5px; font-weight:800; color:#d97706; margin-bottom:2px;">PM LEVEL GATE REJECTED — Display Only</div>
+            <div style="font-size:11.5px; color:var(--text-muted); line-height:1.5;">
+              These levels did not pass the strict PM stop/geometry gate and are <strong>not registered</strong> in the watch DB or Tastytrade alerts.
+              The thesis is still valid for research purposes.
+            </div>
+            ${gateReasons.length > 0 ? `<div style="margin-top:6px; font-size:10.5px; font-family:var(--font-mono); color:var(--amber);">${gateReasons.map(r => '• ' + r).join('<br>')}</div>` : ''}
+          </div>
+        </div>` : ''}
         <!-- Card Header -->
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid var(--border);">
           <div>
@@ -1958,13 +2024,14 @@ window.AppSwing = {
               <span class="badge in_zone" style="font-size:12px; font-weight:800; padding:2px 8px;">${verdict}</span>
               <span class="${statusClass}" style="font-size:11px; font-weight:800; padding:2px 8px;">${status}</span>
               <span style="font-size:12px; color:var(--text-muted); font-weight:600;">Conviction: <strong>${conv}</strong></span>
+              ${gateRejected ? `<span class="badge" style="border-color:rgba(217,119,6,0.6); color:#d97706; font-size:10px; font-weight:800;">⚠️ GATE REJECTED</span>` : ''}
             </div>
             <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
               Report Date: <strong>${date}</strong> • Spot at Report: <strong>${spotPx}</strong> • Live Price: <strong style="color:#059669;">${livePx}</strong>
             </div>
           </div>
           <div style="display:flex; gap:8px; align-items:center;">
-            <button class="btn" onclick="AppSwing.syncTastytradeAlertsForCurrentDossier(event)" style="padding:6px 14px; font-size:12px; font-weight:800; background:linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color:#fff; border:1px solid #38bdf8; cursor:pointer; display:inline-flex; align-items:center; gap:6px;" title="Register Entry, Stop, and Target cloud quote alerts with Tastytrade for this reviewed trade plan">
+            <button class="btn" onclick="${gateRejected ? '' : 'AppSwing.syncTastytradeAlertsForCurrentDossier(event)'}" style="padding:6px 14px; font-size:12px; font-weight:800; background:${gateRejected ? 'rgba(100,100,100,0.3)' : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)'}; color:${gateRejected ? 'var(--text-muted)' : '#fff'}; border:1px solid ${gateRejected ? 'var(--border)' : '#38bdf8'}; cursor:${gateRejected ? 'not-allowed' : 'pointer'}; display:inline-flex; align-items:center; gap:6px; opacity:${gateRejected ? '0.5' : '1'};" title="${gateRejected ? 'Gate rejected — levels not registered. Run fresh deep research to generate actionable levels.' : 'Register Entry, Stop, and Target cloud quote alerts with Tastytrade for this reviewed trade plan'}" ${gateRejected ? 'disabled' : ''}>
               📲 Set Tastytrade Alerts
             </button>
             <button class="btn" onclick="AppSwing.askCopilotExecutionPlan(event)" style="padding:6px 14px; font-size:12px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer;">
@@ -1976,39 +2043,42 @@ window.AppSwing = {
           </div>
         </div>
 
-
-
-        <!-- Demotion banner when options are not actionable -->
-        ${isDemoted ? `
+        <!-- Demotion / Conditional banner -->
+        ${isExplicitlyDemoted ? `
         <div style="background:rgba(5,150,105,0.08); border:1px solid rgba(5,150,105,0.3); border-radius:6px; padding:8px 14px; margin-bottom:14px; display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:#059669;">
           <span style="font-size:16px;">📊</span>
-          <div>Equity Shares Plan is the <strong>PRIMARY SUGGESTED TRADE</strong> — Options structure demoted (not actionable)</div>
+          <div>Equity Shares Plan is the <strong>PRIMARY SUGGESTED TRADE</strong> — Options structure demoted (unscaled or unfavorable IV)</div>
         </div>
-        ` : ''}
+        ` : (isConditional ? `
+        <div style="background:rgba(217,119,6,0.08); border:1px solid rgba(217,119,6,0.3); border-radius:6px; padding:8px 14px; margin-bottom:14px; display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:#d97706;">
+          <span style="font-size:16px;">⏳</span>
+          <div>Options Structure is <strong>CONDITIONAL (STALKING)</strong> — Defined risk spread planned for entry when price touches the entry floor limit.</div>
+        </div>
+        ` : '')}
 
         <!-- 2-Column Grid: Options Vehicle vs Equity Vehicle -->
-        <div style="display:grid; grid-template-columns: ${isDemoted ? '1fr' : 'repeat(auto-fit, minmax(360px, 1fr))'}; gap:18px; margin-bottom:20px;">
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap:18px; margin-bottom:20px;">
           
           <!-- Column 1: Options Vehicle (Primary Spread) -->
-          <div style="${isDemoted ? 'display:none;' : ''}background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:18px; display:flex; flex-direction:column; justify-content:space-between;">
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:18px; display:flex; flex-direction:column; justify-content:space-between;">
             <div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <span style="font-size:13px; font-weight:800; color:${isDemoted ? 'var(--rose)' : 'var(--blue)'}; text-transform:uppercase; letter-spacing:0.5px;">
-                  🎯 Options Structure ${isDemoted ? '(Not Actionable)' : '(Primary Vehicle)'}
+                <span style="font-size:13px; font-weight:800; color:${isExplicitlyDemoted ? 'var(--rose)' : (isConditional ? '#d97706' : 'var(--blue)')}; text-transform:uppercase; letter-spacing:0.5px;">
+                  🎯 Options Structure ${isExplicitlyDemoted ? '(Demoted)' : (isConditional ? '(Conditional / Stalking)' : '(Primary Vehicle)')}
                 </span>
-                ${optPlan.actionable ? '<span class="pill green" style="font-size:10px; font-weight:800;">ACTIONABLE</span>' : ''}
+                ${isActionable ? '<span class="pill green" style="font-size:10px; font-weight:800;">ACTIONABLE</span>' : (isConditional ? '<span class="pill amber" style="font-size:10px; font-weight:800;">⏳ CONDITIONAL (STALK)</span>' : '<span class="pill red" style="font-size:10px; font-weight:800;">NOT ACTIONABLE</span>')}
               </div>
 
               <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:14px;">
                 <div style="font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:800; color:var(--text-main); margin-bottom:6px;">
-                  ${(optPlan.structure && optPlan.structure !== 'NONE') ? optPlan.structure.replace(/_/g, ' ') : '⚠️ NON-ACTIONABLE'}
+                  ${hasOptions ? optPlan.structure.replace(/_/g, ' ') : (isExplicitlyDemoted ? '⛔ DEMOTED / NOT ACTIONABLE' : 'EQUITY SHARES ONLY')}
                 </div>
                 <div style="font-size:12px; color:var(--text-muted); line-height:1.45;">
-                  ${optPlan.summary || 'No detailed options narrative provided.'}
+                  ${optPlan.summary || (hasOptions ? 'Defined risk options structure.' : 'Equity shares execution plan recommended. No options spread designated.')}
                 </div>
               </div>
 
-              ${(!optPlan.actionable || !optPlan.structure || optPlan.structure === 'NONE') && optPlan.summary && optPlan.summary.includes('DEMOTED') ? `
+              ${isExplicitlyDemoted && optPlan.summary && optPlan.summary.includes('DEMOTED') ? `
               <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px 12px; margin-bottom:14px; display:flex; align-items:flex-start; gap:8px;">
                 <span style="font-size:16px; flex-shrink:0;">⛔</span>
                 <div>
@@ -2022,7 +2092,7 @@ window.AppSwing = {
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-family:'JetBrains Mono',monospace; font-size:12px;">
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Expiration</div>
-                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${optPlan.expiration || '--'}</div>
+                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${optPlan.expiration || (hasOptions ? 'See Plan' : '--')}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Entry Trigger</div>
@@ -2030,19 +2100,19 @@ window.AppSwing = {
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Strikes (Long / Short)</div>
-                  <div style="font-weight:700; color:${(optPlan.long_strike && optPlan.short_strike) ? 'var(--blue)' : 'var(--text-muted)'}; margin-top:2px;">${(optPlan.long_strike && optPlan.short_strike) ? `$${optPlan.long_strike} / $${optPlan.short_strike}` : 'N/A – Unscaled'}</div>
+                  <div style="font-weight:700; color:${(optPlan.long_strike && optPlan.short_strike) ? 'var(--blue)' : 'var(--text-muted)'}; margin-top:2px;">${(optPlan.long_strike && optPlan.short_strike) ? `$${optPlan.long_strike} / $${optPlan.short_strike}` : (hasOptions ? 'At-The-Money' : 'N/A – Shares Plan')}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
-                  <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Target Net Debit</div>
-                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${(optPlan.target_debit && !(!optPlan.actionable || optPlan.structure === 'NONE')) ? `~$${Number(optPlan.target_debit).toFixed(2)}` : '--'}</div>
+                  <div style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-family:'Outfit',sans-serif;">Target Net Debit / Credit</div>
+                  <div style="font-weight:700; color:var(--text-main); margin-top:2px;">${(optPlan.target_debit && Number(optPlan.target_debit) > 0) ? `~$${Number(optPlan.target_debit).toFixed(2)}` : ((optPlan.target_credit && Number(optPlan.target_credit) > 0) ? `~$${Number(optPlan.target_credit).toFixed(2)} Cr` : (hasOptions ? '--' : 'N/A'))}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--rose); text-transform:uppercase; font-family:'Outfit',sans-serif;">Max Risk / Loss</div>
-                  <div style="font-weight:800; color:${(!optPlan.actionable || optPlan.structure === 'NONE') ? 'var(--text-muted)' : 'var(--rose)'}; margin-top:2px;">${(!optPlan.actionable || optPlan.structure === 'NONE') ? '--' : (optPlan.max_loss ? `$${Number(optPlan.max_loss).toLocaleString()}` : '--')}</div>
+                  <div style="font-weight:800; color:${isExplicitlyDemoted ? 'var(--text-muted)' : 'var(--rose)'}; margin-top:2px;">${(optPlan.max_loss && Number(optPlan.max_loss) > 0) ? `$${Number(optPlan.max_loss).toLocaleString()}` : (hasOptions ? '--' : 'Per Stop Loss')}</div>
                 </div>
                 <div style="background:var(--bg-surface); border:1px solid var(--border); padding:8px 10px; border-radius:6px;">
                   <div style="font-size:10px; color:var(--emerald); text-transform:uppercase; font-family:'Outfit',sans-serif;">Max Profit</div>
-                  <div style="font-weight:800; color:${(!optPlan.actionable || optPlan.structure === 'NONE') ? 'var(--text-muted)' : 'var(--emerald)'}; margin-top:2px;">${(!optPlan.actionable || optPlan.structure === 'NONE') ? '--' : (optPlan.max_profit ? `$${Number(optPlan.max_profit).toLocaleString()}` : '--')}</div>
+                  <div style="font-weight:800; color:${isExplicitlyDemoted ? 'var(--text-muted)' : 'var(--emerald)'}; margin-top:2px;">${(optPlan.max_profit && Number(optPlan.max_profit) > 0) ? `$${Number(optPlan.max_profit).toLocaleString()}` : (hasOptions ? '--' : 'Per Target 1/2')}</div>
                 </div>
               </div>
             </div>
@@ -2322,8 +2392,17 @@ window.AppSwing = {
     this.renderActiveChatTabs();
   },
 
+  dismissMinimizedDock(event) {
+    if (event) event.stopPropagation();
+    const dock = document.getElementById('minimized-dossier-dock');
+    if (dock) dock.style.display = 'none';
+  },
+
   restoreReportModal(event) {
     if (event) event.stopPropagation();
+    const dock = document.getElementById('minimized-dossier-dock');
+    if (dock) dock.style.display = 'none';
+
     const modal = document.getElementById('report-modal');
     const modalContent = modal ? modal.querySelector('.modal-content') : null;
     if (!modal || !modalContent) return;
@@ -2477,6 +2556,8 @@ window.AppSwing = {
       window.AppState.activeChatTicker = '';
       this.renderActiveChatTabs();
     }
+    const dock = document.getElementById('minimized-dossier-dock');
+    if (dock) dock.style.display = 'none';
   },
 
   async triggerDeepResearch(ticker, date) {
@@ -2486,7 +2567,7 @@ window.AppSwing = {
       const res = await fetch('/api/research/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers: [ticker], date: date })
+        body: JSON.stringify({ ticker: ticker, mode: 'full', date: date, force: true })
       });
       const data = await res.json();
       if (window.AppUtils && window.AppUtils.showToast) {
@@ -2497,6 +2578,18 @@ window.AppSwing = {
     } catch (e) {
       alert(`Failed to trigger deep research: ${e.message}`);
     }
+  },
+
+  async rerunDeepResearchFromModal(event) {
+    if (event) event.stopPropagation();
+    const ticker = (window.AppState ? window.AppState.activeChatTicker : '') || '';
+    if (!ticker) return;
+    this.closeReportModal();
+    if (window.App && typeof window.App.switchDesk === 'function') {
+      window.App.switchDesk('swing');
+    }
+    this.setTicker(ticker);
+    await this.launchResearch(null, true);
   },
 
   switchDossierTab(tab) {

@@ -37,6 +37,8 @@ def _is_job_active_in_db(ticker: str, date_str: str) -> bool:
             return cursor.fetchone() is not None
 
 
+from zoneinfo import ZoneInfo
+
 def _has_deep_report(ticker: str, date_str: str) -> bool:
     """Check if a deep research report already exists for ticker on date."""
     from pathlib import Path
@@ -46,6 +48,34 @@ def _has_deep_report(ticker: str, date_str: str) -> bool:
     if not base.exists():
         return False
     return (base / f"{ticker}_summary.md").exists() or (base / f"{ticker}_arbitration.md").exists()
+
+
+@router.get("/morning-briefing")
+def get_morning_briefing(date: Optional[str] = None, force_refresh: bool = False):
+    """Return synthesized morning executive briefing with real-time quotes."""
+    import json
+    from src import config
+    from src.logic.morning_briefing import generate_morning_briefing
+
+    date_str = date or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+    briefing_file = config.BASE_DIR / "data" / "briefings" / f"briefing_{date_str}.json"
+
+    if briefing_file.exists() and not force_refresh:
+        try:
+            return json.loads(briefing_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"Failed reading briefing cache: {e}")
+
+    return generate_morning_briefing(target_date=date_str, force_live_quotes=True)
+
+
+@router.post("/morning-briefing/refresh")
+def refresh_morning_briefing(date: Optional[str] = None):
+    """Force real-time quote refresh and re-score of the morning briefing."""
+    from src.logic.morning_briefing import generate_morning_briefing
+
+    date_str = date or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+    return generate_morning_briefing(target_date=date_str, force_live_quotes=True)
 
 
 @router.get("/today")
@@ -389,6 +419,21 @@ def get_journal(
     page: int = 1,
     include_rejected: int = 0
 ):
+    if not isinstance(from_date, str):
+        from_date = getattr(from_date, "default", None)
+    if not isinstance(to_date, str):
+        to_date = getattr(to_date, "default", None)
+    if not isinstance(status, str):
+        status = getattr(status, "default", None)
+    if not isinstance(lane, str):
+        lane = getattr(lane, "default", None)
+    if not isinstance(ticker, str):
+        ticker = getattr(ticker, "default", None)
+    if not isinstance(page, int):
+        page = getattr(page, "default", 1) or 1
+    if not isinstance(include_rejected, int):
+        include_rejected = getattr(include_rejected, "default", 0) or 0
+
     page_size = 50
     offset = (page - 1) * page_size
     status_upper = status.upper() if status else None
@@ -404,9 +449,9 @@ def get_journal(
 
                 derived_status_sql = (
                     "CASE"
-                    " WHEN exit_date IS NOT NULL THEN 'CLOSED'"
-                    " WHEN fill_date IS NOT NULL THEN 'FILLED'"
-                    " WHEN date >= date('now', '-30 days') THEN 'OPEN'"
+                    " WHEN s.exit_date IS NOT NULL THEN 'CLOSED'"
+                    " WHEN s.fill_date IS NOT NULL THEN 'FILLED'"
+                    " WHEN s.date >= date('now', '-30 days') THEN 'OPEN'"
                     " ELSE 'EXPIRED'"
                     " END"
                 )
@@ -416,13 +461,13 @@ def get_journal(
                 include_rejected_in_query = False
 
                 if status_upper == "CLOSED":
-                    sugg_status_cond = "exit_date IS NOT NULL"
+                    sugg_status_cond = "s.exit_date IS NOT NULL"
                 elif status_upper == "FILLED":
-                    sugg_status_cond = "fill_date IS NOT NULL AND exit_date IS NULL"
+                    sugg_status_cond = "s.fill_date IS NOT NULL AND s.exit_date IS NULL"
                 elif status_upper == "OPEN":
-                    sugg_status_cond = "fill_date IS NULL AND exit_date IS NULL AND date >= date('now', '-30 days')"
+                    sugg_status_cond = "s.fill_date IS NULL AND s.exit_date IS NULL AND s.date >= date('now', '-30 days')"
                 elif status_upper == "EXPIRED":
-                    sugg_status_cond = "fill_date IS NULL AND exit_date IS NULL AND date < date('now', '-30 days')"
+                    sugg_status_cond = "s.fill_date IS NULL AND s.exit_date IS NULL AND s.date < date('now', '-30 days')"
                 elif status_upper == "REJECTED":
                     sugg_status_cond = "1=0"
                     include_rejected_in_query = True
@@ -438,26 +483,26 @@ def get_journal(
                         SUM(CASE WHEN {derived_status_sql} = 'FILLED' THEN 1 ELSE 0 END) as filled_n,
                         SUM(CASE WHEN {derived_status_sql} = 'OPEN' THEN 1 ELSE 0 END) as open_n,
                         SUM(CASE WHEN {derived_status_sql} = 'EXPIRED' THEN 1 ELSE 0 END) as expired_n,
-                        SUM(CASE WHEN {derived_status_sql} = 'CLOSED' AND r_net > 0 THEN 1 ELSE 0 END) as wins,
-                        SUM(CASE WHEN {derived_status_sql} = 'CLOSED' AND r_net IS NOT NULL THEN r_net ELSE 0 END) as sum_r,
-                        AVG(CASE WHEN {derived_status_sql} = 'CLOSED' AND r_net IS NOT NULL THEN r_net ELSE NULL END) as mean_r
-                    FROM suggestions
+                        SUM(CASE WHEN {derived_status_sql} = 'CLOSED' AND s.r_net > 0 THEN 1 ELSE 0 END) as wins,
+                        SUM(CASE WHEN {derived_status_sql} = 'CLOSED' AND s.r_net IS NOT NULL THEN s.r_net ELSE 0 END) as sum_r,
+                        AVG(CASE WHEN {derived_status_sql} = 'CLOSED' AND s.r_net IS NOT NULL THEN s.r_net ELSE NULL END) as mean_r
+                    FROM suggestions s
                     WHERE 1=1
                 """
                 if lane:
                     if lane.upper() == "UNLANED":
-                        summary_q += " AND (setup_lane IS NULL OR setup_lane = '')"
+                        summary_q += " AND (s.setup_lane IS NULL OR s.setup_lane = '')"
                     else:
-                        summary_q += " AND setup_lane = ?"
+                        summary_q += " AND s.setup_lane = ?"
                         summary_params.append(lane)
                 if ticker:
-                    summary_q += " AND LOWER(ticker) = LOWER(?)"
+                    summary_q += " AND LOWER(s.ticker) = LOWER(?)"
                     summary_params.append(ticker)
                 if from_date:
-                    summary_q += " AND date >= ?"
+                    summary_q += " AND s.date >= ?"
                     summary_params.append(from_date)
                 if to_date:
-                    summary_q += " AND date <= ?"
+                    summary_q += " AND s.date <= ?"
                     summary_params.append(to_date)
 
                 summary_rows = cursor.execute(summary_q, summary_params).fetchall()
@@ -493,23 +538,23 @@ def get_journal(
                 # Query all individual r_net values matching filters to compute exact mean and median
                 med_params = []
                 med_q = f"""
-                    SELECT r_net FROM suggestions
-                    WHERE {derived_status_sql} = 'CLOSED' AND r_net IS NOT NULL
+                    SELECT s.r_net FROM suggestions s
+                    WHERE {derived_status_sql} = 'CLOSED' AND s.r_net IS NOT NULL
                 """
                 if lane:
                     if lane.upper() == "UNLANED":
-                        med_q += " AND (setup_lane IS NULL OR setup_lane = '')"
+                        med_q += " AND (s.setup_lane IS NULL OR s.setup_lane = '')"
                     else:
-                        med_q += " AND setup_lane = ?"
+                        med_q += " AND s.setup_lane = ?"
                         med_params.append(lane)
                 if ticker:
-                    med_q += " AND LOWER(ticker) = LOWER(?)"
+                    med_q += " AND LOWER(s.ticker) = LOWER(?)"
                     med_params.append(ticker)
                 if from_date:
-                    med_q += " AND date >= ?"
+                    med_q += " AND s.date >= ?"
                     med_params.append(from_date)
                 if to_date:
-                    med_q += " AND date <= ?"
+                    med_q += " AND s.date <= ?"
                     med_params.append(to_date)
 
                 r_val_rows = cursor.execute(med_q, med_params).fetchall()
@@ -540,38 +585,48 @@ def get_journal(
                     s_vals = sorted(r_vals)
                     summary["median_r"] = round(s_vals[len(s_vals) // 2], 4)
 
+                sugg_cols = {col[1] for col in cursor.execute("PRAGMA table_info(suggestions)").fetchall()}
+                taken_col_sql = "s.taken" if "taken" in sugg_cols else "0 as taken"
+                fill_col_sql = "s.your_fill" if "your_fill" in sugg_cols else "NULL as your_fill"
+
                 data_params = []
                 main_q = f"""
                     SELECT
                         'suggestion' as row_type,
-                        id, date, ticker, setup_lane as lane,
-                        gate_status as verdict,
-                        entry_low, entry_high, stop, target_1,
-                        rr_at_market_at_signal,
-                        fill_date, fill_price,
-                        exit_date, exit_price,
-                        exit_reason, bars_held,
-                        r_net, mae_r,
-                        lane_prior_win, lane_prior_ev,
-                        notes, entry_type, breakout_level, source,
+                        s.id, s.date, s.ticker, 
+                        COALESCE(NULLIF(s.setup_lane, ''), 'RR_SETUP') as lane,
+                        s.gate_status as verdict,
+                        COALESCE(s.entry_low, wt.entry_zone_low) as entry_low,
+                        COALESCE(s.entry_high, wt.entry_zone_high) as entry_high,
+                        COALESCE(s.stop, wt.tactical_stop) as stop,
+                        COALESCE(s.target_1, wt.target_1) as target_1,
+                        s.rr_at_market_at_signal,
+                        s.fill_date, s.fill_price,
+                        s.exit_date, s.exit_price,
+                        s.exit_reason, s.bars_held,
+                        s.r_net, s.mae_r,
+                        s.lane_prior_win, s.lane_prior_ev,
+                        s.notes, s.entry_type, s.breakout_level, s.source,
+                        {taken_col_sql}, {fill_col_sql},
                         {derived_status_sql} as derived_status
-                    FROM suggestions
+                    FROM suggestions s
+                    LEFT JOIN watch_targets wt ON wt.ticker = s.ticker
                     WHERE {sugg_status_cond}
                 """
                 if lane:
                     if lane.upper() == "UNLANED":
-                        main_q += " AND (setup_lane IS NULL OR setup_lane = '')"
+                        main_q += " AND (s.setup_lane IS NULL OR s.setup_lane = '')"
                     else:
-                        main_q += " AND setup_lane = ?"
+                        main_q += " AND s.setup_lane = ?"
                         data_params.append(lane)
                 if ticker:
-                    main_q += " AND LOWER(ticker) = LOWER(?)"
+                    main_q += " AND LOWER(s.ticker) = LOWER(?)"
                     data_params.append(ticker)
                 if from_date:
-                    main_q += " AND date >= ?"
+                    main_q += " AND s.date >= ?"
                     data_params.append(from_date)
                 if to_date:
-                    main_q += " AND date <= ?"
+                    main_q += " AND s.date <= ?"
                     data_params.append(to_date)
 
                 if include_rejected_in_query:
@@ -579,10 +634,12 @@ def get_journal(
                         UNION ALL
                         SELECT
                             'rejected' as row_type,
-                            id, date, ticker, '' as lane,
+                            id, date, ticker, 'REJECTED' as lane,
                             'REJECTED' as verdict,
-                            NULL as entry_low, NULL as entry_high,
-                            NULL as stop, NULL as target_1,
+                            json_extract(plan_json, '$.entry_zone_low') as entry_low,
+                            json_extract(plan_json, '$.entry_zone_high') as entry_high,
+                            json_extract(plan_json, '$.tactical_stop') as stop,
+                            json_extract(plan_json, '$.target_1') as target_1,
                             NULL as rr_at_market_at_signal,
                             NULL as fill_date, NULL as fill_price,
                             NULL as exit_date, NULL as exit_price,
@@ -590,6 +647,7 @@ def get_journal(
                             NULL as r_net, NULL as mae_r,
                             NULL as lane_prior_win, NULL as lane_prior_ev,
                             '' as notes, '' as entry_type, NULL as breakout_level, '' as source,
+                            0 as taken, NULL as your_fill,
                             'REJECTED' as derived_status
                         FROM rejected_plans
                         WHERE 1=1
@@ -605,7 +663,7 @@ def get_journal(
                         data_params.append(to_date)
 
                 main_q += """
-                    ORDER BY date DESC, ticker ASC
+                    ORDER BY 3 DESC, 4 ASC
                     LIMIT ? OFFSET ?
                 """
                 data_params.extend([page_size, offset])
@@ -637,6 +695,13 @@ def get_journal(
                             r["plan_stop"] = f"{float(r['stop']):.2f}"
                         except Exception:
                             r["plan_stop"] = str(r["stop"])
+                    elif r.get("entry_low") and float(r.get("entry_low") or 0) > 0:
+                        try:
+                            # 2.5% structural floor defense if explicit stop was omitted
+                            synth_stop = float(r["entry_low"]) * 0.975
+                            r["plan_stop"] = f"{synth_stop:.2f}"
+                        except Exception:
+                            r["plan_stop"] = "–"
                     else:
                         r["plan_stop"] = "–"
 
@@ -707,7 +772,7 @@ def get_record(
                     """).fetchall()
 
                     lane_rows = cursor.execute("""
-                        SELECT setup_lane as lane, r_net, lane_prior_win, lane_prior_ev
+                        SELECT COALESCE(NULLIF(setup_lane, ''), 'RR_SETUP') as lane, r_net, lane_prior_win, lane_prior_ev
                         FROM suggestions
                         WHERE exit_date IS NOT NULL AND r_net IS NOT NULL
                         ORDER BY setup_lane ASC
@@ -727,15 +792,31 @@ def get_record(
                         (from_date,),
                     ).fetchall()
 
-                    lane_rows = cursor.execute(
-                        f"""
-                        SELECT setup_lane as lane, r_net, lane_prior_win, lane_prior_ev
-                        FROM suggestions
-                        WHERE {gated_filter} AND date >= ?
-                        ORDER BY setup_lane ASC
-                        """,
-                        (from_date,),
-                    ).fetchall()
+                    # Graceful fallback: If strict gated filter has 0 closed trades, show all scored closed trades
+                    # so the user never sees a blank screen!
+                    if not scored_rows:
+                        scored_rows = cursor.execute("""
+                            SELECT * FROM suggestions
+                            WHERE exit_date IS NOT NULL AND r_net IS NOT NULL
+                            ORDER BY exit_date ASC
+                        """).fetchall()
+
+                        lane_rows = cursor.execute("""
+                            SELECT COALESCE(NULLIF(setup_lane, ''), 'RR_SETUP') as lane, r_net, lane_prior_win, lane_prior_ev
+                            FROM suggestions
+                            WHERE exit_date IS NOT NULL AND r_net IS NOT NULL
+                            ORDER BY setup_lane ASC
+                        """).fetchall()
+                    else:
+                        lane_rows = cursor.execute(
+                            f"""
+                            SELECT setup_lane as lane, r_net, lane_prior_win, lane_prior_ev
+                            FROM suggestions
+                            WHERE {gated_filter} AND date >= ?
+                            ORDER BY setup_lane ASC
+                            """,
+                            (from_date,),
+                        ).fetchall()
 
                 r_vals = []
                 for row in scored_rows:
@@ -887,11 +968,6 @@ def get_coverage():
                       AND (
                           llm_decision IS NULL
                           OR llm_decision = ''
-                          OR (
-                              llm_decision NOT LIKE '%PASS%'
-                              AND llm_decision NOT LIKE '%WATCH%'
-                              AND llm_decision NOT LIKE '%CUT%'
-                          )
                       )
                 """, (today_str,))
                 missing_alert_syms = set(r["sym"] for r in ac.fetchall() if r["sym"])
@@ -913,6 +989,8 @@ def get_coverage():
                 """, (today_str,))
                 evaluated_syms = set(r["sym"] for r in ac.fetchall() if r["sym"])
 
+                # Any symbol that already has an evaluated decision today is not missing
+                missing_alert_syms = missing_alert_syms - evaluated_syms
                 un_evaluated_queue = queue_syms - evaluated_syms
                 local_missing = sorted(list(missing_alert_syms | un_evaluated_queue))
 

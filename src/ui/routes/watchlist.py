@@ -65,6 +65,14 @@ def get_watch_targets():
         with get_db() as conn:
             c = conn.cursor()
             rows = c.execute("SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1").fetchall()
+            if len(rows) < 500:
+                try:
+                    from src.tracking.watch_manager import ensure_universe_prepopulated
+                    ensure_universe_prepopulated()
+                    rows = c.execute("SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1").fetchall()
+                except Exception as ex:
+                    logger.warning(f"Could not auto-prepopulate universe: {ex}")
+
             targets = []
 
             for r in rows:
@@ -76,6 +84,15 @@ def get_watch_targets():
                         item["parsed_json"] = {}
 
                 sym = item.get("ticker", "").upper()
+                st_upper = str(item.get("status", "")).upper()
+                if st_upper == "UNRESEARCHED":
+                    item["research_timestamp"] = "1970-01-01T00:00:00"
+                    item["is_open_position"] = False
+                    item["trade_ideas"] = []
+                    item["last_price"] = None
+                    targets.append(item)
+                    continue
+
                 d_str = item.get("date", "")
                 target_mtime = None
 
@@ -99,91 +116,23 @@ def get_watch_targets():
                 item["trade_ideas"] = generate_trade_ideas_for_target(item)
                 targets.append(item)
 
-            all_symbols = [t.get("ticker", "").upper() for t in targets if t.get("ticker")]
+            # Only fetch live quotes for symbols that have actual research/setups (prevents blocking 983 HTTP batch queries)
             try:
-                from src.clients.schwab_client import get_realtime_quotes_batch
-                schwab_quotes = get_realtime_quotes_batch(all_symbols)
+                from src.clients.schwab_client import _QUOTE_CACHE
                 for item in targets:
+                    if str(item.get("status", "")).upper() == "UNRESEARCHED":
+                        continue
                     sym = item.get("ticker", "").upper()
-                    q = schwab_quotes.get(sym)
-                    if q and q.get("last_price"):
-                        live_px = float(q["last_price"])
-                        item["last_price"] = live_px
-                        item["net_change"] = q.get("net_change", 0.0)
-                        item["net_percent_change"] = q.get("net_percent_change", 0.0)
-                        item["quote_source"] = "SCHWAB"
-
-                        entry_low = item.get("entry_zone_low")
-                        entry_high = item.get("entry_zone_high")
-                        side = str(item.get("side") or "LONG").upper()
-                        inv_price = item.get("invalidation_price")
-                        inv_cond = str(item.get("invalidation_condition") or "DAILY_CLOSE_BELOW").upper()
-                        target_1 = item.get("target_1")
-                        target_2 = item.get("target_2")
-                        old_status = str(item.get("status") or "STALKING").upper()
-
-                        from src.tracking.execution_validator import evaluate_setup_lifecycle
-
-                        session_low = float(q.get("low") or 0.0)
-                        session_high = float(q.get("high") or 0.0)
-                        item["session_low"] = session_low
-                        item["session_high"] = session_high
-
-                        entry_low = float(item.get("entry_zone_low") or 0.0)
-                        entry_high = float(item.get("entry_zone_high") or 0.0)
-                        breakout_lvl = float(item.get("breakout_level") or 0.0)
-                        side = str(item.get("side") or "LONG").upper()
-                        inv_price = float(item.get("invalidation_price") or item.get("tactical_stop") or 0.0)
-                        target_1 = float(item.get("target_1") or 0.0)
-                        target_2 = float(item.get("target_2") or 0.0)
-                        old_status = str(item.get("status") or "STALKING").upper()
-                        setup_date = str(item.get("date") or "")
-
-                        # Calculate distance to entry zone %
-                        dist_pct = 0.0
-                        if entry_high > 0 and side == "LONG":
-                            if entry_low <= live_px <= entry_high:
-                                dist_pct = 0.0
-                            elif live_px > entry_high:
-                                dist_pct = round(((live_px - entry_high) / entry_high) * 100, 2)
-                            else:
-                                dist_pct = round(((live_px - entry_low) / entry_low) * 100, 2)
-                        elif entry_low > 0 and side == "SHORT":
-                            if entry_low <= live_px <= entry_high:
-                                dist_pct = 0.0
-                            elif live_px < entry_low:
-                                dist_pct = round(((entry_low - live_px) / entry_low) * 100, 2)
-                            else:
-                                dist_pct = round(((entry_high - live_px) / entry_high) * 100, 2)
-
-                        item["distance_to_entry_pct"] = dist_pct
-
-                        # Deterministic Bar-Based Lifecycle Evaluation
-                        eval_res = evaluate_setup_lifecycle(
-                            ticker=sym,
-                            setup_date=setup_date,
-                            side=side,
-                            entry_type=item.get("entry_type", "LIMIT"),
-                            entry_low=entry_low,
-                            entry_high=entry_high,
-                            breakout_level=breakout_lvl,
-                            stop_loss=inv_price,
-                            target_1=target_1,
-                            target_2=target_2,
-                            live_price=live_px,
-                            session_low=session_low,
-                            session_high=session_high,
-                            current_status=old_status,
-                            proximity_tolerance_pct=0.5,
-                        )
-
-                        item["status"] = eval_res["status"]
-                        item["was_filled"] = eval_res["was_filled"]
-                        item["fill_price"] = eval_res["fill_price"]
-                        item["unrealized_pnl_pct"] = eval_res["unrealized_pnl_pct"]
-                        item["reclaimed"] = (old_status in ("INVALIDATED", "STOP_BREACHED") and eval_res["status"] in ("IN_TRADE", "IN_ZONE"))
+                    cached_q = _QUOTE_CACHE.get(sym)
+                    if cached_q and len(cached_q) > 1 and cached_q[1]:
+                        q = cached_q[1]
+                        if q.get("last_price"):
+                            item["last_price"] = float(q["last_price"])
+                            item["net_change"] = q.get("net_change", 0.0)
+                            item["net_percent_change"] = q.get("net_percent_change", 0.0)
+                            item["quote_source"] = "SCHWAB"
             except Exception as q_err:
-                logger.debug(f"Error enriching watch targets with Schwab quotes: {q_err}")
+                logger.debug(f"Error enriching watch targets with cached quotes: {q_err}")
 
             # Calculate Suggested Trade R-Multiples and performance summary
             won_r = []
@@ -192,6 +141,12 @@ def get_watch_targets():
             actionable_count = 0
 
             for item in targets:
+                if str(item.get("status") or "").upper() == "UNRESEARCHED":
+                    item["trade_type"] = "SHARES"
+                    item["trade_label"] = "Constituent"
+                    item["is_actionable"] = False
+                    continue
+
                 entry_low = item.get("entry_zone_low")
                 entry_high = item.get("entry_zone_high")
                 side = str(item.get("side") or "LONG").upper()
@@ -270,17 +225,34 @@ def get_watch_targets():
                         else:
                             trade_r = None
 
+                # Calculate real dollar P&L and targets (per 100 shares or options contract)
+                trade_dollar_pnl = 0.0
+                target_1_dollar = max_prof if (is_options and max_prof > 0) else None
+                risk_dollar = max_loss if (is_options and max_loss > 0) else None
+                if not is_options:
+                    if entry_mid and target_1 and entry_mid > 0:
+                        target_1_dollar = round(abs(target_1 - entry_mid) * 100.0, 2)
+                    if entry_mid and tactical_stop and entry_mid > 0:
+                        risk_dollar = round(abs(entry_mid - tactical_stop) * 100.0, 2)
+                    if eff_entry and live_px and eff_entry > 0:
+                        trade_dollar_pnl = round(((live_px - eff_entry) if side == "LONG" else (eff_entry - live_px)) * 100.0, 2)
+                else:
+                    if trade_r is not None and max_loss > 0:
+                        trade_dollar_pnl = round(max(-max_loss, min(max_prof, trade_r * max_loss)), 2)
+
                 item["trade_type"] = trade_type
                 item["trade_label"] = trade_label
                 item["r_multiple"] = trade_r
-                item["trade_dollar_pnl"] = 0.0
-                item["trade_roc_pct"] = 0.0
-                item["modeled_dollar_pnl"] = 0.0
-                item["modeled_roc_pct"] = 0.0
+                item["trade_dollar_pnl"] = trade_dollar_pnl
+                item["target_1_dollar"] = target_1_dollar
+                item["risk_dollar"] = risk_dollar
+                item["trade_roc_pct"] = pnl_pct or 0.0
+                item["modeled_dollar_pnl"] = trade_dollar_pnl
+                item["modeled_roc_pct"] = pnl_pct or 0.0
                 item["is_modeled"] = False
                 item["accounting_mode"] = "R_MULTIPLE"
-                item["trade_max_profit"] = max_prof
-                item["trade_max_loss"] = max_loss
+                item["trade_max_profit"] = max_prof or target_1_dollar
+                item["trade_max_loss"] = max_loss or risk_dollar
 
                 # Risk to Reward ratio
                 rr_ratio = None
@@ -324,6 +296,15 @@ def get_watch_targets():
     except Exception as e:
         logger.error(f"Error fetching watch targets: {e}")
         return {"targets": [], "count": 0, "error": str(e)}
+
+
+@router.post("/api/watch-targets/sync-universe")
+def sync_universe():
+    """Explicitly pre-populate or refresh universe constituents and existing research."""
+    from src.tracking.watch_manager import ensure_universe_prepopulated
+    total = ensure_universe_prepopulated()
+    _WATCH_TARGETS_CACHE.clear()
+    return {"status": "ok", "total_constituents": total}
 
 
 @router.post("/api/watch-targets/delete")

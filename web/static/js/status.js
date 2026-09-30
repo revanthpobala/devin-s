@@ -151,23 +151,26 @@ window.AppStatus = {
         if (data.gpu_stats && data.gpu_stats.length > 0) {
           let maxPct = 0;
           gpuContainer.innerHTML = data.gpu_stats.map(g => {
-            if (g.pct > maxPct) maxPct = g.pct;
+            const pct = Number(g.pct_used ?? 0);
+            const usedGb = (Number(g.used_mb ?? 0) / 1024).toFixed(1);
+            const totalGb = (Number(g.total_mb ?? 0) / 1024).toFixed(1);
+            if (pct > maxPct) maxPct = pct;
             let color = '#34d399';
-            if (g.pct > 90) color = '#fb7185';
-            else if (g.pct > 75) color = '#fbbf24';
+            if (pct > 90) color = '#fb7185';
+            else if (pct > 75) color = '#fbbf24';
 
             return `
               <div style="background:var(--bg-subtle); padding:10px 14px; border-radius:8px; border:1px solid var(--border);">
                 <div style="display:flex; justify-content:space-between; font-size:12px; font-family:'JetBrains Mono', monospace; margin-bottom:6px;">
                   <span style="font-weight:700; color:var(--text-main);">GPU ${g.index}: ${g.name}</span>
-                  <span style="color:${color}; font-weight:700;">${g.used_gb} GB / ${g.total_gb} GB (${g.pct}%)</span>
+                  <span style="color:${color}; font-weight:700;">${usedGb} GB / ${totalGb} GB (${pct}%)</span>
                 </div>
                 <div style="height:6px; background:var(--border); border-radius:999px; overflow:hidden; margin-bottom:5px;">
-                  <div style="height:100%; width:${g.pct}%; background:${color}; border-radius:999px;"></div>
+                  <div style="height:100%; width:${pct}%; background:${color}; border-radius:999px;"></div>
                 </div>
                 <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); font-family:'JetBrains Mono', monospace;">
-                  <span>Utilization: ${g.util}%</span>
-                  <span>Temp: ${g.temp}°C</span>
+                  <span>Utilization: ${g.util_pct ?? 0}%</span>
+                  <span>Temp: ${g.temp_c ?? '--'}°C</span>
                 </div>
               </div>
             `;
@@ -203,150 +206,278 @@ window.AppStatus = {
 
       const data = await window.AppApi.getJobs();
       const targets = [
-        document.getElementById('active-procs-container'),
-        document.getElementById('active-procs-container-logs')
+        document.getElementById('active-procs-container')
       ].filter(Boolean);
       if (targets.length === 0) return;
 
-      const activeJobs = (data.jobs || []).filter(j => j.status === 'RUNNING');
-      const queuedJobs = (data.jobs || []).filter(j => j.status === 'QUEUED');
-      const recentJobs = (data.jobs || []).filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED').slice(0, 8);
+      const localJobs = data.local_queue || (data.jobs || []).filter(j => j.mode === 'local_only');
+      const deepJobs = data.deep_queue || (data.jobs || []).filter(j => j.mode !== 'local_only');
 
-      const slotCount = activeJobs.length;
-      const slotColor = slotCount >= (data.max_concurrent || 2) ? 'red' : (slotCount === 1 ? 'amber' : 'green');
-      const queuedBadge = queuedJobs.length > 0 ? ` (${queuedJobs.length} Queued)` : '';
+      const activeLocal = localJobs.filter(j => j.status === 'RUNNING');
+      const queuedLocal = localJobs.filter(j => j.status === 'QUEUED');
+      const recentLocal = localJobs.filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED').slice(0, 6);
 
-      let html = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:11px; font-family:'JetBrains Mono', monospace;">
-          <span style="color:var(--text-muted); font-weight:700;">CONCURRENCY SLOTS:</span>
-          <span class="pill ${slotColor}" style="font-size:10px; padding:2px 6px;">${slotCount} / ${data.max_concurrent || 2} Slots In Use${queuedBadge}</span>
+      const activeDeep = deepJobs.filter(j => j.status === 'RUNNING');
+      const queuedDeep = deepJobs.filter(j => j.status === 'QUEUED');
+      const recentDeep = deepJobs.filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED').slice(0, 6);
+
+      const localMax = data.local_slots_max || 2;
+      const deepMax = data.deep_slots_max || 2;
+      const localUsed = data.local_slots_used !== undefined ? data.local_slots_used : activeLocal.length;
+      const deepUsed = data.deep_slots_used !== undefined ? data.deep_slots_used : activeDeep.length;
+
+      const localSlotColor = localUsed >= localMax ? 'red' : (localUsed > 0 ? 'amber' : 'green');
+      const deepSlotColor = deepUsed >= deepMax ? 'red' : (deepUsed > 0 ? 'amber' : 'green');
+
+      // Helper to render Local Queue table
+      const renderLocalQueue = () => {
+        let rowsHtml = '';
+        if (activeLocal.length > 0) {
+          activeLocal.forEach(j => {
+            const startDt = new Date(j.started_at);
+            const elapsedMin = Math.floor((new Date() - startDt) / 60000);
+            const elapsedSec = Math.floor(((new Date() - startDt) % 60000) / 1000);
+            const timeStr = `${elapsedMin}m ${elapsedSec}s`;
+            const comp = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+            const stageLabel = j.stage_detail || j.stage || 'Local Triage';
+
+            rowsHtml += `
+              <tr style="border-bottom:1px solid var(--border); background:rgba(16, 185, 129, 0.05);">
+                <td style="padding:6px 8px;">
+                  <span class="pill green pulse" style="font-size:9px; padding:1px 5px;">ACTIVE</span>
+                  <strong style="color:var(--blue); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                </td>
+                <td style="padding:6px 8px; color:var(--text-main); font-size:11px;">${escHtml(stageLabel)}</td>
+                <td style="padding:6px 8px; color:var(--amber); font-size:11px; white-space:nowrap;">⏳ ${timeStr}</td>
+                <td style="padding:6px 8px; text-align:right; white-space:nowrap;">
+                  <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" style="padding:1px 6px; font-size:10px;">📋 Log</button>
+                  <button class="btn danger" onclick="AppStatus.killJob('${escJsAttr(j.job_id)}')" style="padding:1px 6px; font-size:10px;">🛑 Kill</button>
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        if (queuedLocal.length > 0) {
+          queuedLocal.forEach((q, idx) => {
+            const comp = (window.AppUtils ? AppUtils.getCompanyName(q.ticker) : q.ticker) || q.ticker || '';
+            rowsHtml += `
+              <tr style="border-bottom:1px solid var(--border); opacity:0.85;">
+                <td style="padding:5px 8px;">
+                  <span class="pill amber" style="font-size:9px; padding:1px 5px;">#${idx + 1} QUEUE</span>
+                  <strong style="color:var(--text-main); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(q.ticker)}">$${escHtml(q.ticker)}</strong>
+                </td>
+                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">${escHtml(q.stage_detail || 'Waiting for local slot')}</td>
+                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">Pending</td>
+                <td style="padding:5px 8px; text-align:right;">
+                  <button class="btn secondary" onclick="AppStatus.killJob('${escJsAttr(q.job_id)}')" style="padding:1px 6px; font-size:10px;">Cancel</button>
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        if (recentLocal.length > 0) {
+          recentLocal.forEach(j => {
+            const isFailed = (j.status === 'FAILED' || j.status === 'KILLED');
+            const timeDisplay = AppStatus.formatJobTime(j.completed_at || j.started_at);
+            const comp = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+            const detailStr = j.stage_detail || '';
+            let verdictBadge = '';
+            if (detailStr.includes('PASS') || j.stage === 'DONE') {
+              verdictBadge = `<span class="pill green" style="font-size:9px; padding:1px 6px; font-weight:700;">🎯 PASS → Enqueued Deep</span>`;
+            } else if (detailStr.includes('WATCH')) {
+              verdictBadge = `<span class="pill amber" style="font-size:9px; padding:1px 6px;">⏹️ WATCH (Filtered Out)</span>`;
+            } else if (detailStr.includes('CUT')) {
+              verdictBadge = `<span class="pill red" style="font-size:9px; padding:1px 6px;">⏹️ CUT (Filtered Out)</span>`;
+            } else if (isFailed) {
+              verdictBadge = `<span class="pill red" style="font-size:9px; padding:1px 6px;">❌ FAILED</span>`;
+            } else {
+              verdictBadge = `<span class="pill gray" style="font-size:9px; padding:1px 6px;">⚖️ LOCAL DONE</span>`;
+            }
+
+            rowsHtml += `
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:5px 8px;">
+                  <strong style="color:var(--text-main); cursor:pointer;" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}')" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                </td>
+                <td style="padding:5px 8px;">${verdictBadge}</td>
+                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px; white-space:nowrap;">${timeDisplay}</td>
+                <td style="padding:5px 8px; text-align:right; white-space:nowrap;">
+                  <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" style="padding:1px 6px; font-size:10px;">📋 Log</button>
+                  <button class="btn primary" onclick="AppStatus.restartResearch('${escJsAttr(j.ticker)}', 'deep_only', '${escJsAttr(j.target_date || '')}')" title="Force into Deep Research" style="padding:1px 6px; font-size:10px; background:linear-gradient(135deg, #2563eb, #1d4ed8); color:#fff; border:none; border-radius:3px;">⚡ Deep</button>
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        if (!rowsHtml) {
+          rowsHtml = `<tr><td colspan="4" style="text-align:center; padding:16px 8px; color:var(--text-muted); font-size:11px;">No local triage tasks active or queued. Incoming alerts will queue here automatically.</td></tr>`;
+        }
+
+        return `
+          <div style="background:var(--bg-card, #121722); border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
+              <div>
+                <div style="font-size:11.5px; font-weight:800; color:var(--text-main); display:flex; align-items:center; gap:6px;">
+                  <span>⚖️ LOCAL RESEARCH QUEUE</span>
+                  <span class="pill cyan" style="font-size:9.5px; padding:1px 5px;">Alert Triage Gate</span>
+                </div>
+                <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Fast filter & Qwen news. Only SATISFIED setups enter Deep Research.</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span class="pill ${localSlotColor}" style="font-size:10px; padding:2px 6px; font-weight:700;">${localUsed} / ${localMax} Slots${queuedLocal.length > 0 ? ` (${queuedLocal.length} Q)` : ''}</span>
+              </div>
+            </div>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:11px; font-family:'JetBrains Mono', monospace;">
+                <thead>
+                  <tr style="color:var(--text-muted); font-size:9.5px; text-transform:uppercase; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
+                    <th style="text-align:left; padding:4px 8px;">Ticker</th>
+                    <th style="text-align:left; padding:4px 8px;">Stage / Verdict</th>
+                    <th style="text-align:left; padding:4px 8px;">Time</th>
+                    <th style="text-align:right; padding:4px 8px;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      };
+
+      // Helper to render Deep Queue table
+      const renderDeepQueue = () => {
+        let rowsHtml = '';
+        if (activeDeep.length > 0) {
+          activeDeep.forEach(j => {
+            const startDt = new Date(j.started_at);
+            const elapsedMin = Math.floor((new Date() - startDt) / 60000);
+            const elapsedSec = Math.floor(((new Date() - startDt) % 60000) / 1000);
+            const timeStr = `${elapsedMin}m ${elapsedSec}s`;
+            const comp = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+            const stageLabel = j.stage_detail ? `${j.stage} — ${j.stage_detail}` : j.stage;
+
+            rowsHtml += `
+              <tr style="border-bottom:1px solid var(--border); background:rgba(168, 85, 247, 0.05);">
+                <td style="padding:6px 8px;">
+                  <span class="pill purple pulse" style="font-size:9px; padding:1px 5px;">ACTIVE</span>
+                  <strong style="color:var(--blue); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                </td>
+                <td style="padding:6px 8px; color:var(--text-main); font-size:11px;">${escHtml(stageLabel)}</td>
+                <td style="padding:6px 8px; color:var(--amber); font-size:11px; white-space:nowrap;">⏳ ${timeStr}</td>
+                <td style="padding:6px 8px; text-align:right; white-space:nowrap;">
+                  <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" style="padding:1px 6px; font-size:10px;">📋 Log</button>
+                  <button class="btn danger" onclick="AppStatus.killJob('${escJsAttr(j.job_id)}')" style="padding:1px 6px; font-size:10px;">🛑 Kill</button>
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        if (queuedDeep.length > 0) {
+          queuedDeep.forEach((q, idx) => {
+            const comp = (window.AppUtils ? AppUtils.getCompanyName(q.ticker) : q.ticker) || q.ticker || '';
+            const qStage = q.stage_detail || 'Waiting for GPU slot';
+            rowsHtml += `
+              <tr style="border-bottom:1px solid var(--border); opacity:0.85;">
+                <td style="padding:5px 8px;">
+                  <span class="pill purple" style="font-size:9px; padding:1px 5px;">#${idx + 1} QUEUE</span>
+                  <strong style="color:var(--text-main); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(q.ticker)}">$${escHtml(q.ticker)}</strong>
+                </td>
+                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">${escHtml(qStage)}</td>
+                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">Pending</td>
+                <td style="padding:5px 8px; text-align:right;">
+                  <button class="btn secondary" onclick="AppStatus.killJob('${escJsAttr(q.job_id)}')" style="padding:1px 6px; font-size:10px;">Cancel</button>
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        if (recentDeep.length > 0) {
+          recentDeep.forEach(j => {
+            const isFailed = (j.status === 'FAILED' || j.status === 'KILLED');
+            const timeDisplay = AppStatus.formatJobTime(j.completed_at || j.started_at);
+            const comp = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+            let stBadge = '';
+            if (j.stage === 'DONE' || j.status === 'COMPLETED') {
+              stBadge = `<span class="pill purple" style="font-size:9px; padding:1px 6px; font-weight:700;">✅ ARBITRATION DONE</span>`;
+            } else if (isFailed) {
+              stBadge = `<span class="pill red" style="font-size:9px; padding:1px 6px; font-weight:700;">❌ FAILED</span>`;
+            } else {
+              stBadge = `<span class="pill gray" style="font-size:9px; padding:1px 6px;">[${escHtml(j.stage || j.status)}]</span>`;
+            }
+
+            rowsHtml += `
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:5px 8px;">
+                  <strong style="color:var(--text-main); cursor:pointer;" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}')" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                </td>
+                <td style="padding:5px 8px;">${stBadge}</td>
+                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px; white-space:nowrap;">${timeDisplay}</td>
+                <td style="padding:5px 8px; text-align:right; white-space:nowrap;">
+                  <button class="btn secondary" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}')" style="padding:1px 6px; font-size:10px; color:var(--blue);">📖 Dossier ↗</button>
+                  <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" style="padding:1px 6px; font-size:10px;">📋 Log</button>
+                  ${isFailed ? `<button class="btn primary" onclick="AppStatus.restartResearch('${escJsAttr(j.ticker)}', 'deep_only', '${escJsAttr(j.target_date || '')}')" style="padding:1px 6px; font-size:10px; background:linear-gradient(135deg, #2563eb, #1d4ed8); color:#fff; border:none; border-radius:3px;">🔄 Retry</button>` : ''}
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        if (!rowsHtml) {
+          rowsHtml = `<tr><td colspan="4" style="text-align:center; padding:16px 8px; color:var(--text-muted); font-size:11px;">No deep research tasks active or queued. Tickers satisfied by local triage will appear here.</td></tr>`;
+        }
+
+        return `
+          <div style="background:var(--bg-card, #121722); border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
+              <div>
+                <div style="font-size:11.5px; font-weight:800; color:var(--text-main); display:flex; align-items:center; gap:6px;">
+                  <span>🔬 DEEP RESEARCH QUEUE</span>
+                  <span class="pill purple" style="font-size:9.5px; padding:1px 5px;">Arbitration & Options</span>
+                </div>
+                <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Debate + Vision Synthesis + PM Arbitration (Capped at 35).</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span class="pill ${deepSlotColor}" style="font-size:10px; padding:2px 6px; font-weight:700;">${deepUsed} / ${deepMax} Slots${queuedDeep.length > 0 ? ` (${queuedDeep.length} Q)` : ''}</span>
+              </div>
+            </div>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:11px; font-family:'JetBrains Mono', monospace;">
+                <thead>
+                  <tr style="color:var(--text-muted); font-size:9.5px; text-transform:uppercase; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
+                    <th style="text-align:left; padding:4px 8px;">Ticker</th>
+                    <th style="text-align:left; padding:4px 8px;">Stage / Detail</th>
+                    <th style="text-align:left; padding:4px 8px;">Time</th>
+                    <th style="text-align:right; padding:4px 8px;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      };
+
+      const finalHtml = `
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(460px, 1fr)); gap:12px; width:100%;">
+          ${renderLocalQueue()}
+          ${renderDeepQueue()}
         </div>
       `;
 
-      if (activeJobs.length > 0) {
-        activeJobs.forEach(j => {
-          const startDt = new Date(j.started_at);
-          const elapsedMin = Math.floor((new Date() - startDt) / 60000);
-          const elapsedSec = Math.floor(((new Date() - startDt) % 60000) / 1000);
-          const timeStr = `${elapsedMin}m ${elapsedSec}s`;
-          const compActive = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
-          const stageLabel = j.stage_detail ? `${j.stage} — ${j.stage_detail}` : j.stage;
-
-          html += `
-            <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px solid var(--border); padding:8px 12px; border-radius:8px; font-family:'JetBrains Mono', monospace; font-size:12px; margin-bottom:6px;">
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span class="pill green pulse" style="font-size:10px; padding:2px 6px;">ACTIVE</span>
-                <strong style="font-weight:700; color:var(--blue); cursor:help;" title="${String(compActive).replace(/"/g, '&quot;')}" data-ticker="${j.ticker || ''}">$${j.ticker || ''}</strong>
-                <span style="color:var(--text-muted); font-size:11px;">(${stageLabel})</span>
-              </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span style="color:var(--amber); font-size:11px;">⏳ ${timeStr}</span>
-                <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker || '')}', null)" title="View live log stream" style="padding:2px 8px; font-size:10.5px;">📋 Log</button>
-                <button class="btn danger" onclick="AppStatus.killJob('${j.job_id}')" style="padding:2px 8px; font-size:11px;">🛑 Kill</button>
-              </div>
-            </div>
-          `;
-        });
-      }
-
-      if (queuedJobs.length > 0) {
-        html += `<div style="font-size:10px; color:var(--text-muted); margin-top:6px; margin-bottom:4px; font-weight:700; text-transform:uppercase;">⏳ Queued (Auto-Dispatches When Slot Frees)</div>`;
-        queuedJobs.forEach((q, idx) => {
-          const compQueued = (window.AppUtils ? AppUtils.getCompanyName(q.ticker) : q.ticker) || q.ticker || '';
-          html += `
-            <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-subtle); border:1px dashed var(--border); padding:6px 12px; border-radius:6px; font-family:'JetBrains Mono', monospace; font-size:11.5px; margin-bottom:4px;">
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span class="pill purple" style="font-size:9px; padding:1px 5px; font-weight:700;">#${idx + 1} QUEUE</span>
-                <strong style="color:var(--text-main); font-size:12px; cursor:help;" title="${String(compQueued).replace(/"/g, '&quot;')}" data-ticker="${q.ticker || ''}">$${q.ticker || ''}</strong>
-                <span style="color:var(--text-muted); font-size:10.5px;">(Waiting for slot)</span>
-              </div>
-              <button class="btn secondary" onclick="AppStatus.killJob('${q.job_id}')" style="padding:1px 7px; font-size:10.5px;">Cancel</button>
-            </div>
-          `;
-        });
-      }
-
-      if (recentJobs.length > 0) {
-        html += `<div style="font-size:10px; color:var(--text-muted); margin-top:8px; margin-bottom:4px; font-weight:700; text-transform:uppercase;">Recent Finished Research (Click to Open Dossier)</div>`;
-        recentJobs.forEach(j => {
-          const isFailed = (j.status === 'FAILED' || j.status === 'KILLED');
-          const stColor = j.status === 'COMPLETED' ? 'green' : (j.status === 'KILLED' ? 'amber' : 'red');
-          const timeDisplay = this.formatJobTime(j.completed_at || j.started_at);
-          const rawTime = j.completed_at || j.started_at || '';
-          
-          // Reason kept strictly in tooltip on status pill (no inline table clutter)
-          const errReason = j.error_message 
-            ? j.error_message.replace(/"/g, '&quot;') 
-            : (isFailed ? 'Research process terminated or interrupted' : 'Deep research completed successfully');
-          const pillTitle = ` title="${errReason}"`;
-
-          // Company name tooltip on ticker
-          const compName = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
-          const compTitle = String(compName).replace(/"/g, '&quot;');
-
-          const restartBtn = isFailed ? `
-            <button class="btn primary"
-                    onclick="event.stopPropagation(); AppStatus.restartResearch('${escJsAttr(j.ticker)}', '${escJsAttr(j.mode || 'full')}', '${escJsAttr(j.target_date || '')}')"
-                    title="Retry deep research for ${escHtml(j.ticker)} (forces fresh run)"
-                    style="padding:2px 8px; font-size:10.5px; font-weight:700; display:inline-flex; align-items:center; gap:3px; background:linear-gradient(135deg, #2563eb, #1d4ed8); border:none; color:#fff; border-radius:4px; box-shadow:0 1px 4px rgba(37,99,235,0.4); cursor:pointer;">
-              🔄 Restart
-            </button>
-          ` : '';
-
-          const errFirstLine = isFailed && j.error_message
-            ? escHtml(j.error_message.split('\n')[0])
-            : '';
-
-          const rowOnclick = isFailed
-            ? `AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', ${JSON.stringify(escHtml(j.error_message || ''))})`
-            : `AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(rawTime)}')`;
-          const rowTitle = isFailed
-            ? `Click to view ${escHtml(j.ticker)} failure logs`
-            : `Click to open ${escHtml(j.ticker)} (${compTitle}) research dossier`;
-          const rightAction = isFailed
-            ? `<button class="view-logs-btn" data-job-id="${escHtml(j.job_id)}" data-ticker="${escHtml(j.ticker)}" data-error="${escHtml(j.error_message || '')}" style="color:var(--red-light,#f87171); font-size:11px; font-weight:700; white-space:nowrap; background:none; border:none; cursor:pointer; padding:2px 4px; font-family:'JetBrains Mono',monospace;">📋 View Logs</button>`
-            : `<span style="color:var(--blue); font-size:11px; font-weight:700; display:inline-flex; align-items:center; gap:3px; white-space:nowrap;">📖 Dossier ↗</span>`;
-
-          html += `
-            <div class="recent-job-row"
-                 onclick="${rowOnclick}"
-                 title="${rowTitle}"
-                 style="background:var(--bg-subtle); border:1px solid var(--border); padding:7px 12px; border-radius:6px; font-family:'JetBrains Mono', monospace; font-size:11px; margin-bottom:5px; cursor:pointer; transition:all 0.15s ease;">
-              <div style="display:flex; align-items:center; justify-content:space-between;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <span class="pill ${stColor}" style="font-size:9px; padding:2px 6px; cursor:help;"${pillTitle}>${j.status}${j.error_message ? ' ⚠️' : ''}</span>
-                  <strong style="font-weight:700; font-size:12.5px; color:var(--text-main); cursor:help;" title="${compTitle}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
-                  <span style="color:var(--text-muted); font-size:10.5px;">[${j.mode}]</span>
-                </div>
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <span style="color:var(--text-muted); font-size:11px; font-weight:600; white-space:nowrap;" title="${rawTime}">${timeDisplay}</span>
-                  ${restartBtn}
-                  ${rightAction}
-                </div>
-              </div>
-              ${errFirstLine ? `<div style="margin-top:4px; padding:3px 8px; background:rgba(239,68,68,0.08); border-left:2px solid rgba(239,68,68,0.5); border-radius:3px; font-size:10.5px; color:#fca5a5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${errReason}">${errFirstLine}</div>` : ''}
-            </div>
-          `;
-        });
-      }
-
       targets.forEach(c => {
-        c.innerHTML = html;
+        c.innerHTML = finalHtml;
         if (window.AppUtils && window.AppUtils.decorateTickerTooltips) {
           window.AppUtils.decorateTickerTooltips(c);
         }
-
-        // Bind View Logs buttons via event delegation
-        c.querySelectorAll('.view-logs-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const jobId = btn.dataset.jobId;
-            const ticker = btn.dataset.ticker;
-            const error = btn.dataset.error || '';
-            console.log('[AppStatus] View Logs clicked:', jobId, ticker);
-            AppStatus.showJobLogModal(jobId, ticker, error);
-          });
-        });
       });
     } catch (e) {
       console.error('Failed loading jobs', e);
@@ -355,7 +486,7 @@ window.AppStatus = {
 
   async restartResearch(ticker, mode = 'full', date = '') {
     try {
-      const res = await window.AppApi.triggerResearch(ticker, mode, date, false);
+      const res = await window.AppApi.triggerResearch(ticker, mode, date, true);
       if (res.status === 'started') {
         alert(`🚀 Restarted deep research for ${ticker} in open slot!`);
       } else if (res.status === 'queued') {

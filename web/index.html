@@ -168,9 +168,10 @@
 
           <!-- Active AI & Scraping Processes / Recent Research Dossiers -->
           <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
               <div style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">⚡ Active AI & Scraping Tasks</span>
+                <span style="font-size:11px; font-weight:800; color:var(--text-main); text-transform:uppercase; letter-spacing:0.5px;">⚡ RESEARCH EXECUTION QUEUES</span>
+                <span class="pill cyan" style="font-size:9.5px; padding:1px 6px;">Fast Alert Triage & Multimodal Arbitration</span>
               </div>
               <button class="btn secondary" id="btn-toggle-procs-panel" onclick="AppSwing.toggleActiveProcsPanel()" style="padding:1px 8px; font-size:10.5px;">
                 Collapse ▲
@@ -178,7 +179,7 @@
             </div>
             <div id="active-procs-wrapper">
               <div id="active-procs-container" style="display:flex; flex-direction:column; gap:6px;">
-                <div style="color:var(--text-muted); font-size:12px;">Scanning active processes...</div>
+                <div style="color:var(--text-muted); font-size:12px;">Scanning active research queues...</div>
               </div>
             </div>
           </div>
@@ -193,15 +194,25 @@
             </div>
             
             <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
-              <!-- Sort Selector (Default: Research Time) -->
+              <!-- Date Filter -->
+              <div style="display:flex; align-items:center; gap:5px;">
+                <span style="font-size:11px; font-weight:700; color:var(--text-muted);">DATE:</span>
+                <select id="radar-date-select" class="select-mode" onchange="AppWatchlist.setRadarDateFilter(this.value)" style="font-size:11.5px; padding:4px 8px; font-weight:700;">
+                  <option value="ALL" selected>📅 All Dates</option>
+                </select>
+              </div>
+
+              <!-- Sort Selector -->
               <div style="display:flex; align-items:center; gap:5px;">
                 <span style="font-size:11px; font-weight:700; color:var(--text-muted);">SORT:</span>
                 <select id="radar-sort-select" class="select-mode" onchange="AppWatchlist.setRadarSort(this.value)" style="font-size:11.5px; padding:4px 8px; font-weight:700;">
                   <option value="research_time" selected>⏱️ Deep Research Time (Newest)</option>
+                  <option value="ticker_asc">🔤 Ticker A-Z</option>
+                  <option value="ticker_desc">🔤 Ticker Z-A</option>
+                  <option value="date_desc">📅 Date (Newest)</option>
+                  <option value="date_asc">📅 Date (Oldest)</option>
                   <option value="status">🎯 In-Zone / Actionable First</option>
                   <option value="distance">📍 Nearest Distance</option>
-                  <option value="date">📅 Date (Newest)</option>
-                  <option value="ticker">🔤 Ticker A-Z</option>
                 </select>
               </div>
 
@@ -215,8 +226,13 @@
                 🔄 Poll Prices
               </button>
 
-              <button class="btn secondary" onclick="App.switchDesk('watchlist')" style="padding:4px 10px; font-size:11.5px;">
-                📊 Table View ↗
+              <div class="view-mode-toggle" style="margin-left:2px;">
+                <button class="view-mode-btn active" id="radar-view-cards" onclick="AppWatchlist.setRadarViewMode('cards')">🎴 Cards</button>
+                <button class="view-mode-btn" id="radar-view-table" onclick="AppWatchlist.setRadarViewMode('table')">📋 Table</button>
+              </div>
+
+              <button class="btn secondary" onclick="App.switchDesk('watchlist')" style="padding:4px 10px; font-size:11.5px;" title="Switch to Full Watchlist Desk">
+                📊 Watchlist ↗
               </button>
 
               <button class="btn secondary" onclick="App.switchDesk('logs')" style="padding:4px 10px; font-size:11.5px;" title="View Cloud Quote Alerts in Operations Desk">
@@ -308,6 +324,9 @@
         <div style="display:flex; align-items:center; gap:8px;">
           <button class="btn alerts-subtab-btn active" id="btn-subtab-tv" onclick="AppAlerts.switchSubTab('tv')" style="padding:6px 16px; font-size:12.5px; font-weight:800; background:var(--text-main); color:var(--bg-surface);">
             🚨 TradingView Alerts
+          </button>
+          <button class="btn secondary alerts-subtab-btn" id="btn-subtab-deep" onclick="AppAlerts.switchSubTab('deep')" style="padding:6px 16px; font-size:12.5px; font-weight:700;">
+            🔬 Deep Research by Date
           </button>
           <button class="btn secondary alerts-subtab-btn" id="btn-subtab-schwab" onclick="AppAlerts.switchSubTab('schwab')" style="padding:6px 16px; font-size:12.5px; font-weight:700;">
             ⚡ Schwab Pre-Move Screener
@@ -693,6 +712,94 @@
           </div>
         </div>
 
+        <!-- SUB-VIEW 4: INSTITUTIONAL DEEP RESEARCH DOSSIERS BY DATE -->
+        <div id="alerts-view-deep" style="display:none; flex-direction:column; gap:18px;">
+          <div class="station-card">
+            <div class="card-head" style="flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span class="card-title">🔬 INSTITUTIONAL DEEP RESEARCH DOSSIERS & ARBITRATION</span>
+                <span class="pill cyan" id="deep-research-count-pill">Loading dossiers...</span>
+                <span class="pill" id="deep-research-selected-date-pill" style="border-color:var(--blue); color:var(--blue);">Latest Session</span>
+              </div>
+              
+              <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
+                <button class="btn secondary" onclick="AppAlerts.refreshDeepResearch()" style="padding:4px 12px; font-size:12px;" title="Reload deep research dossiers and arbitration decisions">
+                  🔄 Refresh Reports
+                </button>
+              </div>
+            </div>
+
+            <!-- Date Picker & Filter Controls Bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+              <!-- Date Pills & Dropdown -->
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;" id="dr-date-selector-row">
+                <span style="font-size:11px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">📅 Date:</span>
+                <div id="dr-date-pills" style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+                  <!-- Dynamic Date Pills injected by AppAlerts -->
+                </div>
+                <select id="dr-date-select" class="select-mode" onchange="AppAlerts.setDeepResearchDate(this.value)" style="font-size:11px; padding:3px 8px; font-weight:700; margin-left:4px;">
+                  <option value="ALL">📅 All Dates</option>
+                </select>
+              </div>
+
+              <!-- Verdict & Search Filters -->
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <div style="display:flex; align-items:center; gap:4px;">
+                  <button class="btn secondary dr-verdict-filter-btn active" data-v="ALL" onclick="AppAlerts.setDeepResearchVerdictFilter('ALL')" style="padding:3px 9px; font-size:11px; font-weight:700;">All (<span id="dr-count-all">0</span>)</button>
+                  <button class="btn secondary dr-verdict-filter-btn" data-v="ENTER" onclick="AppAlerts.setDeepResearchVerdictFilter('ENTER')" style="padding:3px 9px; font-size:11px; font-weight:700; color:#10b981;">🟢 Enter (<span id="dr-count-enter">0</span>)</button>
+                  <button class="btn secondary dr-verdict-filter-btn" data-v="STALK" onclick="AppAlerts.setDeepResearchVerdictFilter('STALK')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--amber);">⏳ Stalk (<span id="dr-count-stalk">0</span>)</button>
+                  <button class="btn secondary dr-verdict-filter-btn" data-v="AVOID" onclick="AppAlerts.setDeepResearchVerdictFilter('AVOID')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--rose);">🛑 Avoid/Pass (<span id="dr-count-avoid">0</span>)</button>
+                </div>
+
+                <div class="search-filter-box" style="min-width:180px; max-width:240px;">
+                  <span class="search-filter-icon" style="font-size:11px;">🔍</span>
+                  <input type="text" id="dr-search-input" class="search-filter-input" placeholder="Search Ticker, Play, Option..." oninput="AppAlerts.filterDeepResearch(this.value)" style="font-size:11.5px; padding:4px 8px 4px 26px; height:28px;">
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Ticker Jump Ribbon for Current Date -->
+            <div id="dr-ticker-jump-ribbon" style="margin-top:10px; padding:8px 12px; background:var(--bg-subtle); border-radius:6px; border:1px solid var(--border); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span style="font-size:11px; font-weight:800; color:var(--cyan); text-transform:uppercase;">⚡ Jump to Ticker:</span>
+              <div id="dr-ticker-pills" style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;"></div>
+            </div>
+          </div>
+
+          <!-- Deep Research Table Card -->
+          <div class="station-card" style="padding:0; overflow:hidden;">
+            <div style="overflow-x:auto;">
+              <table class="data-table" id="dr-reports-table" style="width:100%; min-width:1150px; border-collapse:collapse; font-size:12px;">
+                <thead>
+                  <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                    <th onclick="AppAlerts.setDeepResearchSort('ticker')" style="text-align:left; padding:10px 12px; width:120px; cursor:pointer;" title="Click to sort by Ticker">Ticker ⇅</th>
+                    <th onclick="AppAlerts.setDeepResearchSort('date')" style="text-align:left; padding:10px 10px; width:110px; cursor:pointer;" title="Click to sort by Date">Date &amp; Time ⇅</th>
+                    <th onclick="AppAlerts.setDeepResearchSort('verdict')" style="text-align:center; padding:10px 10px; width:125px; cursor:pointer;" title="Click to sort by Verdict &amp; Conviction">Verdict &amp; Score ⇅</th>
+                    <th onclick="AppAlerts.setDeepResearchSort('price')" style="text-align:right; padding:10px 10px; width:90px; cursor:pointer;" title="Click to sort by Spot Price">Spot Price ⇅</th>
+                    <th style="text-align:left; padding:10px 12px; width:130px;">Limit Entry Zone</th>
+                    <th style="text-align:left; padding:10px 10px; width:95px;">Tactical Stop</th>
+                    <th style="text-align:left; padding:10px 12px; width:140px;">Targets (T1 / T2)</th>
+                    <th style="text-align:left; padding:10px 12px;">Options Play &amp; Suggested Structure</th>
+                    <th style="text-align:center; padding:10px 12px; width:140px;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="dr-reports-table-body">
+                  <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:36px;">Loading Deep Research reports...</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Table Footer / Stats -->
+            <div style="padding:10px 16px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; font-size:11.5px; font-family:'JetBrains Mono', monospace;">
+              <div style="color:var(--text-muted);" id="dr-table-summary">
+                Showing 0 dossiers
+              </div>
+              <div style="color:var(--text-muted); font-size:11px;">
+                Multi-pass Bull/Bear debate · Senior-PM arbitration · Multimodal charts
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <!-- ================================================================= -->
@@ -726,6 +833,12 @@
               <button class="tab-pill-btn active" data-tab="ACTIONABLE" onclick="AppWatchlist.setFilterTab('ACTIONABLE')" style="background:rgba(16,185,129,0.08); border-color:rgba(16,185,129,0.45); color:var(--emerald-light); font-weight:800;" title="Immediately actionable setups: In Zone, In Trade, or near zone (|dist| <= 1.5%)">
                 ⚡ Actionable / Near Zone <span class="pill green" style="font-size:10px; padding:1px 5px; font-weight:800;" id="count-tab-actionable">0</span>
               </button>
+              <button class="tab-pill-btn" data-tab="MY_TRADES" onclick="AppWatchlist.setFilterTab('MY_TRADES')" style="color:var(--cyan); font-weight:800; border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.1);" title="Positions you personally marked as taken in your portfolio">
+                💼 My Taken Trades <span class="pill cyan" style="font-size:10px; padding:1px 5px; font-weight:800;" id="count-tab-my-trades">0</span>
+              </button>
+              <button class="tab-pill-btn" data-tab="RESEARCHED" onclick="AppWatchlist.setFilterTab('RESEARCHED')" style="color:var(--cyan-glow); font-weight:800;" title="All tickers with completed deep research dossiers">
+                🔬 Researched Targets <span class="pill cyan" style="font-size:10px; padding:1px 5px;" id="count-tab-researched">0</span>
+              </button>
               <button class="tab-pill-btn" data-tab="IN_ZONE" onclick="AppWatchlist.setFilterTab('IN_ZONE')">
                 🎯 In Zone <span class="pill green" style="font-size:10px; padding:1px 5px;" id="count-tab-in-zone">0</span>
               </button>
@@ -736,7 +849,10 @@
                 ⏳ Stalking <span class="pill amber" style="font-size:10px; padding:1px 5px;" id="count-tab-stalking">0</span>
               </button>
               <button class="tab-pill-btn" data-tab="ALL" onclick="AppWatchlist.setFilterTab('ALL')">
-                All Targets <span class="pill" style="font-size:10px; padding:1px 5px;" id="count-tab-all">0</span>
+                All Universe (983) <span class="pill" style="font-size:10px; padding:1px 5px;" id="count-tab-all">0</span>
+              </button>
+              <button class="tab-pill-btn" data-tab="UNRESEARCHED" onclick="AppWatchlist.setFilterTab('UNRESEARCHED')" style="color:var(--text-muted);" title="Schwab 1000 constituents waiting for initial research pass">
+                ⏳ Unresearched <span class="pill" style="font-size:10px; padding:1px 5px;" id="count-tab-unresearched">0</span>
               </button>
               <button class="tab-pill-btn" data-tab="TARGET_HIT" onclick="AppWatchlist.setFilterTab('TARGET_HIT')">
                 🏁 Target Hit <span class="pill" style="font-size:10px; padding:1px 5px; background:rgba(16,185,129,0.2); color:var(--emerald-light); font-weight:800;" id="count-tab-target-hit">0</span>
@@ -771,10 +887,11 @@
               <div style="display:flex; align-items:center; gap:6px;">
                 <span style="font-size:11.5px; color:var(--text-muted); font-weight:700;">Page Size:</span>
                 <select id="select-watchlist-pagesize" class="select-pagesize" onchange="AppWatchlist.setPageSize(this.value)">
-                  <option value="10" selected>10 per page</option>
-                  <option value="25">25 per page</option>
+                  <option value="10">10 per page</option>
+                  <option value="25" selected>25 per page</option>
                   <option value="50">50 per page</option>
-                  <option value="all">Show All</option>
+                  <option value="100">100 per page</option>
+                  <option value="all">Show All Universe (900+)</option>
                 </select>
               </div>
               <span id="watchlist-pagination-badge" class="pill cyan" style="font-size:10.5px; padding:2px 8px; font-weight:700;">
@@ -840,6 +957,7 @@
             <!-- Status Filter Pills -->
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
               <button class="btn secondary trades-filter-btn active" data-filter="ALL" onclick="AppTrades.setFilter('ALL')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">All Trades</button>
+              <button class="btn secondary trades-filter-btn" data-filter="MY_TRADES" onclick="AppTrades.setFilter('MY_TRADES')" style="padding:4px 11px; font-size:11.5px; font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12);" title="Show trades you personally marked as taken in your portfolio">💼 My Taken Trades (<span id="count-trades-taken">0</span>)</button>
               <button class="btn secondary trades-filter-btn" data-filter="IN_ZONE" onclick="AppTrades.setFilter('IN_ZONE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🎯 In Zone</button>
               <button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Stalking</button>
               <button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Target Hit</button>
@@ -1231,21 +1349,10 @@
             <span class="card-title">🎮 HARDWARE VRAM LOAD & ACTIVE AI PROCESSES</span>
             <span class="pill" id="vram-summary-pill">Scanning GPUs...</span>
           </div>
-          <div style="display:grid; grid-template-columns: 1.1fr 1fr; gap: 20px;">
-            
-            <!-- GPU VRAM Bars -->
+          <div>
             <div id="gpu-cards-container" style="display:flex; flex-direction:column; gap:10px;">
               <div style="color:var(--text-muted); font-size:12px;">Querying NVIDIA SMI...</div>
             </div>
-
-            <!-- Active Processes / Tasks -->
-            <div>
-              <div style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">Active AI & Scraping Processes</div>
-              <div id="active-procs-container-logs" style="display:flex; flex-direction:column; gap:8px;">
-                <div style="color:var(--text-muted); font-size:12px;">Scanning active processes...</div>
-              </div>
-            </div>
-
           </div>
         </div>
 
@@ -1851,9 +1958,12 @@
 
       <!-- Modal Footer Toolbar -->
       <div style="padding:12px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <button class="btn secondary" id="btn-copy-trade-order" onclick="AppTrades.copyOrderString()" style="padding:6px 14px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;">
-          📋 Copy Broker Order String
-        </button>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn secondary" id="btn-copy-trade-order" onclick="AppTrades.copyOrderString()" style="padding:6px 14px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;">
+            📋 Copy Broker Order String
+          </button>
+          <div id="plan-modal-take-btn-container"></div>
+        </div>
         <div style="display:flex; align-items:center; gap:8px;">
           <button class="btn secondary" id="btn-modal-open-chart" onclick="AppTrades.openSelectedChart()" style="padding:6px 14px; font-size:12px; font-weight:700;">
             📈 Open Chart
@@ -2038,6 +2148,7 @@
           </div>
         </div>
         <div class="modal-window-actions" onclick="event.stopPropagation()" style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+          <button class="btn" id="btn-modal-rerun-dr" onclick="AppSwing.rerunDeepResearchFromModal(event)" style="padding:3px 10px; font-size:11.5px; font-weight:700; background:linear-gradient(135deg, #7c3aed, #6d28d9); color:#fff; border:none; cursor:pointer; border-radius:4px;" title="Force a fresh Deep Research pass (Debate + Vision + PM Arbitration) for this ticker">⚡ Re-run Deep</button>
           <button class="btn secondary" id="btn-modal-sync-tt" onclick="AppSwing.syncTastytradeAlertsForCurrentDossier(event)" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#38bdf8; border-color:#0284c7; background:rgba(2, 132, 199, 0.12); cursor:pointer;" title="Register cloud quote alerts in Tastytrade for this reviewed setup">📲 Set TT Alerts</button>
           <button class="btn secondary" id="btn-toggle-positions-pane" onclick="AppSwing.togglePositionsPane()" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#059669; border-color:#059669; background:rgba(5, 150, 105, 0.08); cursor:pointer;" title="Toggle Suggested Positions side pane">🎯 Trade Plan</button>
           <button class="modal-action-btn primary" id="btn-modal-expand-full" onclick="AppSwing.restoreReportModal(event)" title="Maximize to full dossier modal" style="display:none; font-weight:700;">🗖 Maximize</button>
@@ -2616,10 +2727,10 @@
 
   <!-- Floating Minimized Dossier Dock Widget -->
 
-  <div class="minimized-dossier-dock" id="minimized-dossier-dock" onclick="AppSwing.restoreReportModal()">
+  <div class="minimized-dossier-dock" id="minimized-dossier-dock" style="display:none;" onclick="AppSwing.restoreReportModal()">
     <div class="dock-content">
       <span class="dot pulse" style="background:var(--cyan-glow);"></span>
-      <span class="dock-sym" id="dock-ticker-sym">WMT</span>
+      <span class="dock-sym" id="dock-ticker-sym">--</span>
       <span class="dock-title" id="dock-ticker-title">Research Dossier</span>
     </div>
     <div class="dock-actions" onclick="event.stopPropagation()">
@@ -2633,7 +2744,7 @@
   <script src="/static/js/utils.js?v=76"></script>
   <script src="/static/js/api.js?v=76"></script>
   <script src="/static/js/status.js?v=78"></script>
-  <script src="/static/js/swing.js?v=76"></script>
+  <script src="/static/js/swing.js?v=77"></script>
   <script src="/static/js/watchlist.js?v=76"></script>
   <script src="/static/js/trades.js?v=76"></script>
   <script src="/static/js/intraday.js?v=76"></script>
@@ -2641,7 +2752,7 @@
   <script src="/static/js/logs.js?v=76"></script>
   <script src="/static/js/alerts.js?v=85"></script>
   <script src="/static/js/chat.js?v=76"></script>
-  <script src="/static/js/desk.js?v=5"></script>
+  <script src="/static/js/desk.js?v=6"></script>
   <script src="/static/js/tv_hover.js?v=1"></script>
   <script src="/static/js/app.js?v=76"></script>
 </body>

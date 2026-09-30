@@ -285,9 +285,20 @@ window.AppApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticker, mode, date, force })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || `Failed to run research (${res.status})`);
-    return data;
+    if (!res.ok) {
+      let msg = `Failed to run research (${res.status})`;
+      try {
+        const errData = await res.json();
+        if (errData && errData.detail) msg = errData.detail;
+      } catch (_) {
+        try {
+          const errText = await res.text();
+          if (errText) msg = errText;
+        } catch (_2) {}
+      }
+      throw new Error(msg);
+    }
+    return await res.json();
   },
 
   async syncAlerts() {

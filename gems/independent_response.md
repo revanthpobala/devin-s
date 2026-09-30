@@ -23,7 +23,7 @@
    - Clarify whether a pullback is broad multiple compression or fundamental company deterioration.
 
 6. **Multi-Horizon Options Architecture (Tactical vs Multi-Quarter)**:
-   - **Plan B-1: Tactical Defined-Risk Credit Spread (Primary when IV Rank ≥ 50% or IV/HV > 0; strictly mandatory if IV Rank > 70%)**: Sell premium below structural support (e.g. Bull Put Spread) to harvest elevated implied volatility without needing an aggressive rally.
+   - **Plan B-1: Tactical Directional Spread (30–45 DTE)**: For bullish setups, prioritize **Bull Call Debit Spreads** (ATM long / OTM short at Target 1, targeting >= 1.5:1 to 3:1 R:R in trader's favor). A credit spread (e.g. Bull Put) is ONLY permitted if the short strike sits STRICTLY BELOW the tactical stop loss AND collects >= 25% of spread width (risking <= 3:1). Near-the-money credit spreads (short strike inside 5% of spot or above stop loss) are STRICTLY FORBIDDEN due to negative expectancy. If no edge-appropriate spread exists, set structure to NONE and rely on equity shares.
    - **Plan B-2: Multi-Quarter / LEAPS (90–365+ DTE)**: Evaluate Deep ITM Calls (Delta 0.70–0.85) for secular compounding ONLY when IV is cheap/moderate. If IV is rich or the stock is in heavy distribution, state why buying long-dated extrinsic premium is deferred.
 
 7. **Actionable Structural Execution & ASCII Diagram**:

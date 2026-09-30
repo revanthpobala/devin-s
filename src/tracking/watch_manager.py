@@ -87,6 +87,10 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN user_taken INTEGER DEFAULT 0")
             if "suggestion_id" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN suggestion_id INTEGER")
+            if "fill_price" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN fill_price REAL")
+            if "quantity" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN quantity REAL DEFAULT 100")
 
             cursor.execute(
                 """
@@ -393,6 +397,11 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                 ),
             )
             conn.commit()
+            try:
+                from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
+                _WATCH_TARGETS_CACHE.clear()
+            except Exception:
+                pass
             logger.info(f"[{ticker}] Registered in Watchlist DB (Side: {side}, Verdict: {data.get('verdict')}, Status: {data.get('status')})")
 
 
@@ -641,4 +650,127 @@ def record_last_researched(
                 (sym, date_str, int(action_code or 0), int(in_zone or 0), float(rr_at_market or 0.0), float(stop or 0.0), float(target or 0.0), now),
             )
             conn.commit()
+
+
+def ensure_universe_prepopulated() -> int:
+    """Pre-populate watch_targets with the full Schwab 1000 constituent universe (~983 tickers).
+
+    1. Loads all constituents from All_tickrs/Schwab_1000_Index®_Index_Constituents.csv.
+    2. Syncs any existing deep research reports from reports/ so researched tickers have their
+       latest research timestamp, levels, verdict, conviction, and status.
+    3. Inserts unresearched constituents with status='UNRESEARCHED' and updated_at='1970-01-01T00:00:00'.
+    Returns total count of targets in watch_targets.
+    """
+    csv_path = config.BASE_DIR / "All_tickrs" / "Schwab_1000_Index®_Index_Constituents.csv"
+    if not csv_path.exists():
+        logger.warning(f"Schwab 1000 constituents CSV not found at {csv_path}")
+        return 0
+
+    import csv
+    constituents = {}
+    try:
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                sym = (row.get("Ticker") or "").strip().upper()
+                if sym and sym not in constituents:
+                    constituents[sym] = {
+                        "name": (row.get("Name") or "").strip(),
+                        "weight": float(row.get("IndexWeighting") or 0.0),
+                    }
+    except Exception as e:
+        logger.error(f"Error loading constituents CSV: {e}")
+        return 0
+
+    # Extract all latest deep research reports from disk
+    rep_root = config.BASE_DIR / "reports"
+    reports_on_disk = {}
+    if rep_root.exists():
+        for d in sorted(rep_root.iterdir()):
+            if not d.is_dir():
+                continue
+            d_str = d.name
+            for f in d.glob("*_summary.md"):
+                sym = f.name.replace("_summary.md", "").upper()
+                mtime = f.stat().st_mtime
+                if sym not in reports_on_disk or mtime > reports_on_disk[sym]["mtime"]:
+                    reports_on_disk[sym] = {"date": d_str, "mtime": mtime}
+
+    extracted_cards = {}
+    if reports_on_disk:
+        try:
+            from src.ui.routes.research import extract_report_card
+            for sym, meta in reports_on_disk.items():
+                card = extract_report_card(meta["date"], sym)
+                if card:
+                    extracted_cards[sym] = card
+        except Exception as e:
+            logger.warning(f"Error extracting report cards for universe prepopulation: {e}")
+
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            existing_rows = {r["ticker"]: dict(r) for r in cursor.execute("SELECT * FROM watch_targets").fetchall()}
+
+            # Upsert all researched cards
+            for sym, card in extracted_cards.items():
+                date_str = card.get("date") or ""
+                verdict = (card.get("verdict") or "STALK").upper()
+                conviction = card.get("conviction") or 5
+                ez = card.get("entry_zone") or [None, None]
+                ez_low = ez[0] if len(ez) > 0 else None
+                ez_high = ez[1] if len(ez) > 1 else None
+                stop = card.get("tactical_stop")
+                t1 = card.get("target_1")
+                t2 = card.get("target_2")
+                opt = card.get("options_summary") or ""
+                res_time = card.get("researched_at") or f"{date_str}T12:00:00"
+                status = "IN_ZONE" if verdict == "ENTER" else "STALKING"
+
+                if sym in existing_rows:
+                    old_st = existing_rows[sym].get("status")
+                    if old_st in ("IN_TRADE", "TARGET_HIT", "MISSED_RUNAWAY", "STOP_BREACHED"):
+                        status = old_st
+
+                cursor.execute(
+                    """
+                    INSERT INTO watch_targets (
+                        ticker, date, verdict, conviction, actionable, side,
+                        entry_type, entry_zone_low, entry_zone_high, tactical_stop,
+                        target_1, target_2, options_summary, status, updated_at, is_active
+                    ) VALUES (?, ?, ?, ?, 1, 'LONG', 'LIMIT', ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    ON CONFLICT(ticker) DO UPDATE SET
+                        date=excluded.date,
+                        verdict=excluded.verdict,
+                        conviction=excluded.conviction,
+                        entry_zone_low=COALESCE(excluded.entry_zone_low, watch_targets.entry_zone_low),
+                        entry_zone_high=COALESCE(excluded.entry_zone_high, watch_targets.entry_zone_high),
+                        tactical_stop=COALESCE(excluded.tactical_stop, watch_targets.tactical_stop),
+                        target_1=COALESCE(excluded.target_1, watch_targets.target_1),
+                        target_2=COALESCE(excluded.target_2, watch_targets.target_2),
+                        options_summary=COALESCE(excluded.options_summary, watch_targets.options_summary),
+                        updated_at=excluded.updated_at,
+                        is_active=1
+                    """,
+                    (sym, date_str, verdict, conviction, ez_low, ez_high, stop, t1, t2, opt, status, res_time),
+                )
+
+            # Insert unresearched constituents
+            for sym, meta in constituents.items():
+                if sym not in extracted_cards and sym not in existing_rows:
+                    name = meta.get("name") or sym
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO watch_targets (
+                            ticker, date, verdict, conviction, actionable, side,
+                            entry_type, status, options_summary, updated_at, is_active
+                        ) VALUES (?, '', 'UNRESEARCHED', 0, 0, 'LONG', 'LIMIT', 'UNRESEARCHED', ?, '1970-01-01T00:00:00', 1)
+                        """,
+                        (sym, f"Schwab 1000 ({name})"),
+                    )
+
+            conn.commit()
+            total = cursor.execute("SELECT count(1) FROM watch_targets").fetchone()[0]
+            logger.info(f"[WATCHLIST] Universe pre-populated. Total constituents tracked: {total}")
+            return total
+
 
