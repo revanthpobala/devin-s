@@ -393,10 +393,16 @@ class EdgeScannerBridge:
         trigger = str(alert.get("trigger", ""))
         suggested_stop = alert.get("suggested_stop")
 
+        # This intake is NOT screened by the PB funnel: that gate was measured on the Schwab
+        # screener's daily-bar population and never saw an EdgeScanner alert. This alert already
+        # cleared EdgeScanner's own min_score at ingest and again at dispatch, so that is the
+        # gate. Declared explicitly so nobody later mistakes this for a PB-qualified dispatch.
         cand_payload = {
             "symbol": sym,
+            "intake": "EDGESCANNER",
             "priority_tier": "HIGH_PRIORITY",
             "priority_score": score,
+            "pb_funnel": None,
             "side": direction,
             "support_level": suggested_stop if direction == "LONG" else None,
             "ceiling_level": suggested_stop if direction == "SHORT" else None,
@@ -404,14 +410,21 @@ class EdgeScannerBridge:
         }
         try:
             from src.screener.schwab_pre_move_scan import run_autonomous_screener_pipeline
-            logger.info(f"🔬 Starting autonomous pipeline for {sym}...")
-            run_autonomous_screener_pipeline(
+            logger.info(f"🔬 Starting autonomous pipeline for {sym} (intake=EDGESCANNER, score={score:.1f})...")
+            res = run_autonomous_screener_pipeline(
                 [cand_payload],
                 auto_max=1,
                 run_deep=True,
                 date_str=today_str,
                 headless=True,
             )
+            # count=0 with no exception means the gate refused it. Reporting COMPLETED on that
+            # is a silent no-op, so surface it instead.
+            if not res or int(res.get("count", 0) or 0) <= 0:
+                msg = f"dispatch gate refused {sym} — nothing dispatched"
+                logger.warning(f"🚫 {msg}")
+                _set_candidate_status(sym, "SKIPPED_NO_DISPATCH", error=msg)
+                return
             logger.info(f"✅ Autonomous deep research pipeline finished for {sym}.")
 
             # Verify research verdict and sync watch alerts only if approved

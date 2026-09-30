@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import logging
 import sqlite3
@@ -400,13 +400,22 @@ def get_today():
         return {"error": traceback.format_exc()}
 
 
-PRIORS_MAP = {
-    "RR_SETUP_STRONG": (25.0, 0.13),
-    "RR_SETUP": (30.0, 0.08),
-    "CODE20": (45.0, 0.08),
-    "OVERSOLD": (51.0, 0.06),
-    "RSI2": (61.0, 0.06),
-}
+from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior
+
+# setup_lane -> triage reason, so the PB-split priors can be resolved from a ledger row.
+_SETUP_LANE_TO_REASON = {v: k for k, v in LANE_TO_SETUP_LANE.items()}
+
+
+def _lane_priors(setup_lane: Optional[str], pb_funnel) -> Tuple[Optional[float], Optional[float]]:
+    """(win %, R) prior for a ledger row. PB-split where the bit was measured, legacy otherwise."""
+    return lane_prior(_SETUP_LANE_TO_REASON.get(setup_lane), pb_funnel) or (None, None)
+
+
+def _pb_bucket(pb_funnel) -> str:
+    """UI grouping label. Rows written before the bit existed stay NULL -> 'pre-PB'."""
+    if pb_funnel is None:
+        return "pre-PB"
+    return "PB" if bool(pb_funnel) else "no PB"
 
 
 @router.get("/journal")
@@ -588,6 +597,7 @@ def get_journal(
                 sugg_cols = {col[1] for col in cursor.execute("PRAGMA table_info(suggestions)").fetchall()}
                 taken_col_sql = "s.taken" if "taken" in sugg_cols else "0 as taken"
                 fill_col_sql = "s.your_fill" if "your_fill" in sugg_cols else "NULL as your_fill"
+                pb_col_sql = "s.pb_funnel" if "pb_funnel" in sugg_cols else "NULL as pb_funnel"
 
                 data_params = []
                 main_q = f"""
@@ -606,6 +616,7 @@ def get_journal(
                         s.exit_reason, s.bars_held,
                         s.r_net, s.mae_r,
                         s.lane_prior_win, s.lane_prior_ev,
+                        {pb_col_sql},
                         s.notes, s.entry_type, s.breakout_level, s.source,
                         {taken_col_sql}, {fill_col_sql},
                         {derived_status_sql} as derived_status
@@ -646,6 +657,7 @@ def get_journal(
                             reasons as exit_reason, 0 as bars_held,
                             NULL as r_net, NULL as mae_r,
                             NULL as lane_prior_win, NULL as lane_prior_ev,
+                            NULL as pb_funnel,
                             '' as notes, '' as entry_type, NULL as breakout_level, '' as source,
                             0 as taken, NULL as your_fill,
                             'REJECTED' as derived_status
@@ -763,6 +775,14 @@ def get_record(
                 cursor.execute("PRAGMA journal_mode=WAL;")
                 cursor.execute("PRAGMA busy_timeout=30000;")
 
+                # A DB that has not run ensure_suggestions_schema() yet has no pb_funnel.
+                # Read it as NULL rather than 500-ing the scorecard; NULL groups as "pre-PB".
+                _pb_sql = (
+                    "pb_funnel" if "pb_funnel" in
+                    {c[1] for c in cursor.execute("PRAGMA table_info(suggestions)").fetchall()}
+                    else "NULL as pb_funnel"
+                )
+
                 if scope == "all":
                     # All history: every closed suggestion, labelled legacy
                     scored_rows = cursor.execute("""
@@ -771,8 +791,8 @@ def get_record(
                         ORDER BY exit_date ASC
                     """).fetchall()
 
-                    lane_rows = cursor.execute("""
-                        SELECT COALESCE(NULLIF(setup_lane, ''), 'RR_SETUP') as lane, r_net, lane_prior_win, lane_prior_ev
+                    lane_rows = cursor.execute(f"""
+                        SELECT COALESCE(NULLIF(setup_lane, ''), 'RR_SETUP') as lane, r_net, lane_prior_win, lane_prior_ev, {_pb_sql}
                         FROM suggestions
                         WHERE exit_date IS NOT NULL AND r_net IS NOT NULL
                         ORDER BY setup_lane ASC
@@ -801,8 +821,8 @@ def get_record(
                             ORDER BY exit_date ASC
                         """).fetchall()
 
-                        lane_rows = cursor.execute("""
-                            SELECT COALESCE(NULLIF(setup_lane, ''), 'RR_SETUP') as lane, r_net, lane_prior_win, lane_prior_ev
+                        lane_rows = cursor.execute(f"""
+                            SELECT COALESCE(NULLIF(setup_lane, ''), 'RR_SETUP') as lane, r_net, lane_prior_win, lane_prior_ev, {_pb_sql}
                             FROM suggestions
                             WHERE exit_date IS NOT NULL AND r_net IS NOT NULL
                             ORDER BY setup_lane ASC
@@ -810,7 +830,7 @@ def get_record(
                     else:
                         lane_rows = cursor.execute(
                             f"""
-                            SELECT setup_lane as lane, r_net, lane_prior_win, lane_prior_ev
+                            SELECT setup_lane as lane, r_net, lane_prior_win, lane_prior_ev, {_pb_sql}
                             FROM suggestions
                             WHERE {gated_filter} AND date >= ?
                             ORDER BY setup_lane ASC
@@ -848,7 +868,7 @@ def get_record(
                     l = lr["lane"] or "UNLANED"
                     rv = lr["r_net"]
                     if l not in by_lane:
-                        p_win, p_ev = PRIORS_MAP.get(l, (None, None))
+                        p_win, p_ev = _lane_priors(l, lr["pb_funnel"])
                         if p_win is None and lr["lane_prior_win"] is not None:
                             p_win = lr["lane_prior_win"]
                         if p_ev is None and lr["lane_prior_ev"] is not None:
@@ -863,11 +883,17 @@ def get_record(
                             "sum_r": 0.0,
                             "prior_win": p_win,
                             "prior_ev": p_ev,
+                            "pb_split": {},
                         }
                     bl = by_lane[l]
+                    bucket = bl["pb_split"].setdefault(
+                        _pb_bucket(lr["pb_funnel"]),
+                        {"total": 0, "wins": 0, "mean_r": 0.0, "sum_r": 0.0},
+                    )
                     bl["total"] += 1
                     if rv is not None and rv > 0:
                         bl["wins"] += 1
+                        bucket["wins"] += 1
                     elif rv is not None:
                         bl["losses"] += 1
                     if rv is not None:
@@ -877,6 +903,14 @@ def get_record(
                             4,
                         )
                         bl["win_rate"] = round(bl["wins"] / bl["total"] * 100, 1) if bl["total"] > 0 else 0.0
+                        bucket["total"] += 1
+                        bucket["sum_r"] = round(bucket["sum_r"] + float(rv), 4)
+                        bucket["mean_r"] = round(bucket["sum_r"] / bucket["total"], 4)
+                for bl in by_lane.values():
+                    for bucket in bl["pb_split"].values():
+                        bucket["win_rate"] = (
+                            round(bucket["wins"] / bucket["total"] * 100, 1) if bucket["total"] else 0.0
+                        )
 
                 open_gated = cursor.execute(
                     """

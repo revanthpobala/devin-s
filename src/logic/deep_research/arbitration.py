@@ -372,6 +372,13 @@ def run_arbitration(
             rr_at_market_at_signal = float(raw_rr_mkt) if raw_rr_mkt is not None else None
         except (ValueError, TypeError):
             rr_at_market_at_signal = None
+        # PB funnel: Signal Pack bit 32. Stays None when the column is absent (pre-PB scrape) so a
+        # ledger row is never mistaken for a measured no-PB row.
+        try:
+            raw_sig = dw_dict.get("Signal Pack") if dw_dict.get("Signal Pack") is not None else dw_dict.get("signal_pack")
+            pb_funnel = None if raw_sig is None else int(bool(int(round(float(raw_sig))) & 32))
+        except (ValueError, TypeError):
+            pb_funnel = None
 
         sugg_id = append_suggestion({
             "ticker": ticker,
@@ -395,6 +402,7 @@ def run_arbitration(
             "rr_at_market_at_signal": rr_at_market_at_signal,
             "lane_prior_win": lane_prior_win,
             "lane_prior_ev": lane_prior_ev,
+            "pb_funnel": pb_funnel,
             "_datawindow": dw_dict,
             "notes": f"Judge directive: {watch_data.get('verdict')}",
         })

@@ -179,16 +179,25 @@ def _manual_dispatch_via_bridge(sym: str) -> bool:
         try:
             from src.screener.schwab_pre_move_scan import run_autonomous_screener_pipeline
             today_str = datetime.now().strftime("%Y-%m-%d")
+            # Not a PB intake -- that gate was measured on the Schwab screener's daily bars and
+            # never saw an EdgeScanner alert. This one already cleared the scanner's min_score.
             cand_payload = {
                 "symbol": sym,
+                "intake": "EDGESCANNER",
                 "priority_tier": "HIGH_PRIORITY",
                 "priority_score": 75.0,
+                "pb_funnel": None,
                 "side": "LONG",
                 "trigger_reason": "EdgeScanner:ManualDispatch",
             }
-            run_autonomous_screener_pipeline(
+            res = run_autonomous_screener_pipeline(
                 [cand_payload], auto_max=1, run_deep=True, date_str=today_str, headless=True,
             )
+            if not res or int(res.get("count", 0) or 0) <= 0:
+                msg = f"dispatch gate refused {sym} — nothing dispatched"
+                logger.warning(f"Edge scanner manual dispatch skipped for {sym}")
+                _bridge_mod._set_candidate_status(sym, "SKIPPED_NO_DISPATCH", error=msg)
+                return
             _bridge_mod._set_candidate_status(sym, "COMPLETED")
         except Exception as e:
             logger.error(f"Edge scanner manual dispatch failed for {sym}: {e}", exc_info=True)

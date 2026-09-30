@@ -624,15 +624,15 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 or (verdict_record.get("reason") if isinstance(verdict_record, dict) else "")
                 or ""
             )
-            from src.logic.data_window_filter import LANE_PRIORS
-            lane_priors_map = {
-                "RR_SETUP_STRONG": LANE_PRIORS.get("rr_at_market_lane_strong", (25.0, 0.13)),
-                "RR_SETUP": LANE_PRIORS.get("rr_at_market_lane", (30.0, 0.08)),
-                "CODE20": LANE_PRIORS.get("reversal_buy_lane", (45.0, 0.08)),
-                "OVERSOLD": LANE_PRIORS.get("oversold_lane", (51.0, 0.06)),
-                "RSI2": LANE_PRIORS.get("rsi2_setup_lane", (61.0, 0.06)),
-            }
-            lane_prior_win, lane_prior_ev = lane_priors_map.get(resolved_lane, (None, None))
+            from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior
+            _pb = triage_record.get("pb_funnel") if isinstance(triage_record, dict) else None
+            # PB-split prior when the triage record carries the Signal Pack bit; otherwise fall
+            # back to the lane name, since old rows and non-R:R lanes were never PB-split.
+            _reason = triage_reason or next(
+                (r for r, lane in LANE_TO_SETUP_LANE.items() if lane == resolved_lane), None
+            )
+            prior = lane_prior(_reason, _pb)
+            lane_prior_win, lane_prior_ev = prior if prior is not None else (None, None)
             if lane_prior_win is None and isinstance(triage_record, dict):
                 lane_prior_win = triage_record.get("lane_prior_win")
                 lane_prior_ev = triage_record.get("lane_prior_ev")

@@ -437,6 +437,18 @@ def calc_reversal_zone_scores(
 # 5. Full Pine Screener Analysis Engine
 # =============================================================================
 
+# PB funnel (long side). This is the only screener gate with a measured, era-STABLE positive in
+# both R:R tiers (+0.089R / +0.193R all-era), while every no-PB band measures stable NEGATIVE --
+# MEDIUM -0.164R, score 50-65 -0.128R, MONITOR -0.151R. So PB is an exclusion you must satisfy,
+# not a bonus you add. "Coiled" = price hugs EMA20 (the Pine's fast MA, NOT the ma20 SMA above),
+# that distance is not an extension outlier vs its OWN prior 252 bars, and proxy R:R clears 3.0.
+# PB_EXT_Z_MAX = 1.0 is the plain one-sigma "not an outlier" boundary -- the single constant
+# introduced for this gate, kept named so a re-measure touches one line.
+PB_EXT_Z_MAX = 1.0
+PB_MIN_BARS = 253
+PB_PROXY_RR_MIN = 3.0
+
+
 def evaluate_pine_screener_model(
     df: pd.DataFrame,
     benchmark_df: Optional[pd.DataFrame] = None,
@@ -463,6 +475,7 @@ def evaluate_pine_screener_model(
       - entry_rank (0 to 100)
       - priority_score (0 to 100 composite conviction)
       - priority_tier ('HIGH_PRIORITY', 'MEDIUM_PRIORITY', 'MONITOR')
+      - pb_funnel (bool, long side only; None on shorts and on < 253 bars)
     """
     n = len(df)
     if n < 30:
@@ -480,6 +493,7 @@ def evaluate_pine_screener_model(
             "entry_rank": 50.0,
             "priority_score": 50.0,
             "priority_tier": "MONITOR",
+            "pb_funnel": None,
         }
 
     close = df["close"].astype(float)
@@ -559,6 +573,17 @@ def evaluate_pine_screener_model(
         reward = max(range_hi - curr_close, 0.01)
         proxy_rr = round(reward / risk, 2)
         atrs_up = round((curr_close - swing_lo) / max(atr14, 0.01), 2)
+
+    # 5b. PB funnel -- long side only, and only with a full 252-bar self-referenced ext-Z window.
+    # Bar depth is resolved upstream (schwab-py returns multi-year daily history and
+    # evaluate_technical_coiling passes the full frame), so the < 253 guard only trips new listings.
+    if is_short or n < PB_MIN_BARS:
+        pb_funnel = None
+    else:
+        ema20 = _ema(close, 20)
+        dist_ema20 = (close - ema20) / ema20 * 100.0
+        extz_ema20 = float(_calc_z(dist_ema20, 252).iloc[-1])
+        pb_funnel = bool(abs(extz_ema20) <= PB_EXT_Z_MAX and proxy_rr >= PB_PROXY_RR_MIN)
 
     # 6. Prime Signal
     is_blowoff = abs(z_vel) > 2.0
@@ -706,4 +731,5 @@ def evaluate_pine_screener_model(
         "entry_rank": entry_rank,
         "priority_score": priority_score,
         "priority_tier": priority_tier,
+        "pb_funnel": pb_funnel,
     }

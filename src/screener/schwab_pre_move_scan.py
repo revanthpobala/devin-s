@@ -24,7 +24,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 # Ensure project root is in sys.path
@@ -734,11 +734,13 @@ def run_stage2_technical_scan(
             if res:
                 survivors.append(res)
 
-    # Sort deterministically: Priority score > Extreme reversal > Squeeze active > Long R:R
+    # Sort deterministically: PB funnel > proxy R:R > Extreme reversal > Squeeze active > Long R:R.
+# Mirrors the autonomous dispatch gate (continuous_screener_daemon): PB is the only measured
+    # era-stable positive, so it leads; priority_score is legacy and ranks nothing.
     survivors.sort(
         key=lambda x: (
-            x.get("priority_tier") == "HIGH_PRIORITY",
-            float(x.get("priority_score", 0.0)),
+            bool(x.get("pb_funnel")),
+            float(x.get("proxy_rr", x.get("long_rr", 0.0)) or 0.0),
             bool(x.get("is_extreme_reversal", False)),
             bool(x.get("squeeze_on", False)),
             float(x.get("long_rr", 0.0)),
@@ -808,6 +810,10 @@ def save_survivors_manifest(top_picks: List[Dict[str, Any]], date_str: str) -> P
                 "entry_rank": float(p.get("entry_rank", 50.0)),
                 "priority_score": float(p.get("priority_score", 50.0)),
                 "priority_tier": str(p.get("priority_tier", "MONITOR")),
+                # PB funnel is the autonomous-dispatch gate; proxy_rr is the tiebreak. Both must
+                # survive the manifest or the UI sorts on long_rr and shows no PB badge at all.
+                "pb_funnel": p.get("pb_funnel"),
+                "proxy_rr": (float(p["proxy_rr"]) if p.get("proxy_rr") is not None else None),
                 "tastytrade": p.get("tastytrade"),
                 "tastytrade_alert_active": bool(p.get("tastytrade_alert_active", False)),
             }
@@ -1181,6 +1187,31 @@ def _register_slot(t_date: str, selected: List[Dict[str, Any]]) -> str:
     return job_id
 
 
+def _dispatch_eligible(cand: Dict[str, Any]) -> Tuple[bool, str]:
+    """(eligible, basis) for one autonomous-dispatch candidate.
+
+    SCHWAB_SCREENER (default) uses the PB funnel. It was measured by replaying
+    evaluate_pine_screener_model over Schwab daily bars across the Schwab-1000 universe
+    (348,879 bars / 528 tickers): every no-PB band is era-stable NEGATIVE (MEDIUM -0.164R,
+    score 50-65 -0.128R, MONITOR -0.151R) and HIGH_PRIORITY's +0.417R is 99% PB with a -1R median,
+    so PB is an exclusion to satisfy, not a bonus. The legacy tier/score gate is retired.
+
+    Any OTHER intake keeps its own gate. The audit above never saw an EdgeScanner intraday alert,
+    so scoring one on it would transfer a threshold across populations and call the result
+    measured. Those candidates arrive here already filtered by their own scanner (EdgeScanner
+    applies min_score at ingest and again at dispatch), so their basis is that ingest score and
+    nothing here invents a number for them.
+
+    pb_funnel is never fabricated to reach the PB lane: absent means absent, and it fails closed.
+    """
+    intake = str(cand.get("intake") or "SCHWAB_SCREENER").upper()
+    if intake != "SCHWAB_SCREENER":
+        return True, f"{intake}_INGEST_SCORE"
+    if str(cand.get("side") or "LONG").upper() != "LONG":
+        return False, "SCREENER_PB_NOT_LONG"
+    return bool(cand.get("pb_funnel")), "SCREENER_PB"
+
+
 def run_autonomous_screener_pipeline(
     candidates: List[Dict[str, Any]],
     auto_max: int = 3,
@@ -1210,29 +1241,31 @@ def run_autonomous_screener_pipeline(
     results = []
     t_date = date_str or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
-    # Strict Quality Gate for Autonomous Dispatch:
-    # Only dispatch candidates that are HIGH_PRIORITY or top MEDIUM_PRIORITY (score >= min conviction).
-    # Shares config.SCREENER_MIN_CONVICTION with the daemon gate so the two can never drift.
-    min_conv = config.SCREENER_MIN_CONVICTION
-    high_priority_picks = [
-        c for c in candidates
-        if (c.get("priority_tier") == "HIGH_PRIORITY" or float(c.get("priority_score", 0.0)) >= min_conv)
-    ]
+    # Quality Gate for Autonomous Dispatch. Same gate as the daemon
+    # (continuous_screener_daemon.evaluate_and_dispatch_deep_research) so the two cannot drift.
+    gates = [(c, *_dispatch_eligible(c)) for c in candidates]
+    high_priority_picks = [c for c, ok, _basis in gates if ok]
     if not high_priority_picks:
-        logger.info(f"🤖 [AUTONOMOUS ENGINE] No high-priority setups met conviction threshold (score >= {min_conv:.1f}) today.")
+        logger.info("🤖 [AUTONOMOUS ENGINE] No candidate cleared its dispatch gate today.")
         logger.info("🛡️ Preserving system resources & GPU bandwidth — 0 junk tickers dispatched.")
         print("\n" + "=" * 115)
-        print(f">> 🤖 AUTONOMOUS SCREENER: 0 High-Conviction Setups Met Conviction Bar (Score >= {min_conv:.1f}).")
+        print(">> 🤖 AUTONOMOUS SCREENER: 0 candidates cleared the dispatch gate. Nothing dispatched.")
         print(">> Preserving GPU bandwidth & system resources — 0 junk tickers dispatched.")
         print("=" * 115 + "\n")
         return {"count": 0, "researched": []}
 
-    # Sort strictly by priority tier and score
+    _by_basis: Dict[str, int] = {}
+    for _c, _ok, _b in gates:
+        if _ok:
+            _by_basis[_b] = _by_basis.get(_b, 0) + 1
+    logger.info(f"🤖 [AUTONOMOUS ENGINE] Dispatch gate breakdown: {_by_basis}")
+
+    # Sort strictly by PB funnel, then proxy R:R
     sorted_picks = sorted(
         high_priority_picks,
         key=lambda x: (
-            x.get("priority_tier") == "HIGH_PRIORITY",
-            float(x.get("priority_score", 0.0)),
+            bool(x.get("pb_funnel")),
+            float(x.get("proxy_rr") or x.get("long_rr", x.get("short_rr", 0.0)) or 0.0),
             bool(x.get("is_extreme_reversal", False)),
             bool(x.get("squeeze_on", False)),
             float(x.get("long_rr", x.get("short_rr", 0.0))),

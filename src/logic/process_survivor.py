@@ -588,6 +588,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "rr_at_market_at_signal": float(triage.get("rr_at_market") or triage.get("rr") or 0.0) if (triage.get("rr_at_market") or triage.get("rr")) else None,
                 "lane_prior_win": triage.get("lane_prior_win"),
                 "lane_prior_ev": triage.get("lane_prior_ev"),
+                "pb_funnel": triage.get("pb_funnel"),
                 "_datawindow": data_window,
                 "notes": f"Rule triage: {triage.get('triage')} ({triage.get('reason')})",
             })

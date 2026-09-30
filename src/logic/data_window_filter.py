@@ -89,6 +89,32 @@ LANE_PRIORS = {
     "rsi2_setup_lane": (61.0, 0.06),
 }
 
+# Same lanes split by the Signal Pack PB-funnel bit (32), measured on post-COVID onsets
+# (Mar-2020 to Jul-2026, path-accurate 21 bars, R relative to the same-day universe):
+# PB is positive and era-stable in BOTH R:R tiers (+0.089R / +0.193R all-era); no-PB is not
+# (+0.030R / -0.005R era-unstable). PB is a reliable exclusion, R:R tier is not a substitute
+# for it -- R:R 2-3 with PB (+0.072R) beats R:R >= 3 without PB (+0.030R). PB is NOT measured on
+# code 20 / RSI2 / OVERSOLD, so those lanes deliberately fall back to LANE_PRIORS.
+LANE_PRIORS_PB = {
+    ("rr_at_market_lane", True): (34.4, 0.072),
+    ("rr_at_market_lane", False): (31.7, -0.005),
+    ("rr_at_market_lane_strong", True): (25.8, 0.151),
+    ("rr_at_market_lane_strong", False): (22.8, 0.030),
+}
+
+
+def lane_prior(reason: Optional[str], pb: Optional[bool]) -> Optional[Tuple[float, float]]:
+    """(win %, R) prior for a lane, split by the PB funnel bit when that split was measured.
+
+    `pb` is the decoded pb_funnel (1.0/0.0/None). None means the scrape predates Signal Pack,
+    so the PB split was never measured for that bar -> legacy LANE_PRIORS.
+    """
+    if pb is not None:
+        hit = LANE_PRIORS_PB.get((reason, bool(pb)))
+        if hit is not None:
+            return hit
+    return LANE_PRIORS.get(reason)
+
 LANE_TO_SETUP_LANE = {
     "rr_at_market_lane_strong": "RR_SETUP_STRONG",
     "rr_at_market_lane": "RR_SETUP",
@@ -474,11 +500,13 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
         f["rsi2_skip_code"] = (ep >> 8) & 3
         f["rsi2_state_code"] = (ep >> 10) & 7
 
-    # Signal Pack bits: 1 strongBuy  2 strongSell  4 NOT-fade  8 isTopping  16 isBottoming.
+    # Signal Pack bits: 1 strongBuy  2 strongSell  4 NOT-fade  8 isTopping  16 isBottoming
+    # 32 PB funnel (the measured long-side gate; see LANE_PRIORS_PB).
     # BIT 2 IS INVERTED in the Pine ('not fadeZoneLong ? 4 : 0'), so bit2 == 0 means the fade /
     # DO NOT CHASE gate is ACTIVE. That state measures -0.038R era-stable, so it is an exclusion.
-    # fade_long stays None when the column is absent (pre-2026-08-13 scrapes have no Signal Pack):
-    # treating missing as "no fade" would silently promote the bars this is meant to exclude.
+    # fade_long and pb_funnel both stay None when the column is absent (pre-2026-08-13 scrapes have
+    # no Signal Pack): treating missing as "no fade" / "no PB" would silently promote the bars these
+    # are meant to exclude, and would silently apply the no-PB priors to an unmeasured bar.
     sig_pack = f.get("signal_pack")
     if sig_pack is not None:
         m = int(round(sig_pack))
@@ -487,8 +515,10 @@ def parse_data_window(raw: dict) -> Dict[str, Optional[float]]:
         f["fade_long"] = 0.0 if (m & 4) else 1.0
         f["is_topping"] = 1.0 if (m & 8) else 0.0
         f["is_bottoming"] = 1.0 if (m & 16) else 0.0
+        f["pb_funnel"] = 1.0 if (m & 32) else 0.0
     else:
         f["fade_long"] = None
+        f["pb_funnel"] = None
 
     return f
 
@@ -934,9 +964,11 @@ def run_data_window_filter(
     except Exception:
         rank_model_score = None
 
-    # Assign post-COVID empirical priors for PASS lanes; None for WATCH/CUT
-    if triage == "PASS" and reason in LANE_PRIORS:
-        win_prob, ev_r = LANE_PRIORS[reason]
+    # Assign post-COVID empirical priors for PASS lanes; None for WATCH/CUT.
+    # PB-split where the split was measured (R:R lanes with a Signal Pack), legacy otherwise.
+    pb_prior = lane_prior(reason, f.get("pb_funnel")) if triage == "PASS" else None
+    if pb_prior is not None:
+        win_prob, ev_r = pb_prior
     else:
         win_prob, ev_r = None, None
 
@@ -993,6 +1025,7 @@ def run_data_window_filter(
         # the same as "no trade". Consumers should read these instead of re-deriving them.
         "no_fresh_long": no_fresh_long,
         "fade_long": f.get("fade_long"),
+        "pb_funnel": f.get("pb_funnel"),
         "long_bot": f.get("long_zbot"),
         "long_top": f.get("long_ztop"),
         "structure": structure,
@@ -1035,26 +1068,31 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
 # ---------------------------------------------------------------------------
 # 5. RANK — sort candidates for deep research selection
 # ---------------------------------------------------------------------------
-def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, float, float, float]:
+def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, int, float, float, float]:
     """THE single ranking key for deep-research selection.
 
     Priority order (all derived from the gem/bible measured rules, NOT from
     cross-sectional ranking fields the gem forbids):
     1. PASS verdict outranks WATCH/CUT.
-    2. REVERSAL BUY action code (action == "REVERSAL BUY") — the one measured
-       counter-trend lane (code 20, era-robust +0.61/+0.72 across both eras).
+    2. `pb_funnel` on the R:R lanes — the Signal Pack PB-funnel bit. Post-COVID onsets:
+       PB is +0.089R / +0.193R all-era in the two R:R tiers and is the ONLY lane field
+       with a stable positive in both; the no-PB halves are era-unstable. It is ranked
+       ahead of R:R because R:R 2-3 with PB (+0.072R) beats R:R >= 3 without PB (+0.030R).
+       Not measured on code 20 / RSI2 / OVERSOLD, so it does not reorder those.
     3. `rr_at_market` (Long RR At Market) — the field the gem's ⚖️ R:R callout
        gates on. Measured: +0.116R at >=2 (4/4 eras, 12/12 sectors), +0.252R at
        >=5. This is the only continuous field with a measured, era-stable,
-       breadth-verified edge, so it orders candidates.
-    4. `is_rsi2` — RSI2 pullback long candidate.
-    5. `ev_r` — expected-value ratio (win_prob * rr - (1-win_prob)), deterministic
+       breadth-verified edge, so it orders candidates within the PB halves.
+    4. REVERSAL BUY action code (action == "REVERSAL BUY") — the one measured
+       counter-trend lane (code 20, era-robust +0.61/+0.72 across both eras).
+    5. `is_rsi2` — RSI2 pullback long candidate.
+    6. `ev_r` — expected-value ratio (win_prob * rr - (1-win_prob)), deterministic
        and side-guarded. Ties the rr_at_market order.
-    6. `ext_pct` — DEMOTED to a tiebreak.
-    7. `conviction` — final deterministic tiebreak.
+    7. `ext_pct` — DEMOTED to a tiebreak.
+    8. `conviction` — final deterministic tiebreak.
     """
     if not rec:
-        return (0, 0, -1e9, 0, -1e9, 0.0, 0.0)
+        return (0, 0, 0, -1e9, 0, -1e9, 0.0, 0.0)
 
     # Unpack nested triage dict if outer record passed
     if isinstance(rec.get("triage"), dict):
@@ -1066,11 +1104,17 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, f
     # already excluded from the paid pass upstream (_deep_research_gate), so this
     # is a belt-and-braces guard: if one ever reaches here, sort it last.
     if rec.get("no_fresh_long"):
-        return (0, 0, -1e9, 0, -1e9, 0.0, 0.0)
+        return (0, 0, 0, -1e9, 0, -1e9, 0.0, 0.0)
 
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
     is_rsi2 = 1 if rec.get("mode") == "RSI2_LONG" else 0
+
+    # pb_rank: 1 only for an R:R-lane record whose PB-funnel bit is set. Scoped to the R:R
+    # lanes because PB was not measured on code 20 / RSI2 / OVERSOLD — it must not reorder them.
+    reason = rec.get("reason") or ""
+    pb_rank = 1 if (str(reason).startswith("rr_at_market_lane")
+                    and rec.get("pb_funnel") == 1.0) else 0
 
     # rr_at_market: the measured alpha field (gem ⚖️ R:R callout). 0 = invalid
     # (4.5% of bars); treat as the lowest possible value so it sorts last.
@@ -1098,7 +1142,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, f
 
     conviction = float(rec.get("conviction") or 0.0)
 
-    return (is_pass, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
+    return (is_pass, pb_rank, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""
@@ -1364,6 +1408,29 @@ def _self_test() -> None:
             zone_rr_flags=5.0,   # bit0 in-zone + bit2 rr-valid
             signal_pack=4.0,     # bit2 set -> fade OFF
         ),
+        # Case 10: Same R:R-lane bar with the PB-funnel bit (32) SET. Same verdict, but the
+        # PB-split prior applies (+0.151R vs +0.030R no-PB) and pb_rank flips to 1.
+        "RR_LANE_PB": dict(
+            price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
+            buy=80.0, sell=30.0, stage=2, dir_prob=60.0, regime=0,
+            ext_pct=11.0, exhaustion=0.1, rev_l=0.0, rev_s=0.0,
+            action_long=1.0,
+            long_zbot=99.0, long_ztop=101.0,
+            long_stop_loss=95.0, long_target=115.0,
+            zone_rr_flags=5.0,
+            signal_pack=36.0,    # bit2 set (fade OFF) + bit5 set (PB funnel)
+        ),
+        # Case 11: Same bar from a scrape with NO Signal Pack column -> pb_funnel must stay None
+        # so the legacy (unsplit) prior is used, not the no-PB prior.
+        "RR_LANE_NO_PACK": dict(
+            price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
+            buy=80.0, sell=30.0, stage=2, dir_prob=60.0, regime=0,
+            ext_pct=11.0, exhaustion=0.1, rev_l=0.0, rev_s=0.0,
+            action_long=1.0,
+            long_zbot=99.0, long_ztop=101.0,
+            long_stop_loss=95.0, long_target=115.0,
+            zone_rr_flags=5.0,
+        ),
         # Case 7: Identical bar with the fade gate ACTIVE (signal_pack bit2 clear) -> CUT
         "RR_FADE": dict(
             price=100.0, ma20=98.0, ma50=95.0, ma200=90.0, weinstein=92.0,
@@ -1496,6 +1563,8 @@ def _self_test() -> None:
         "STAGE0": ("long", "TREND_LONG", "CUT", "warmup_stage_0"),
         "CAT": ("long", "NONE", "WATCH", "no_setup"),
         "RR_LANE": ("long", "TREND_LONG", "PASS", "rr_at_market_lane_strong"),
+        "RR_LANE_PB": ("long", "TREND_LONG", "PASS", "rr_at_market_lane_strong"),
+        "RR_LANE_NO_PACK": ("long", "TREND_LONG", "PASS", "rr_at_market_lane_strong"),
         "RR_FADE": ("long", "TREND_LONG", "WATCH", "structure_only_no_fresh_long"),
         "RR_NO_FALLBACK": ("short", "NONE", "WATCH", "no_setup"),
         "EV_SIDE_GUARD": ("long", "TREND_LONG", "PASS", "rr_at_market_lane_strong"),
@@ -1531,12 +1600,49 @@ def _self_test() -> None:
             logger.error(f"SELF-TEST RR_NO_FALLBACK {name}: got {nf.get(name)!r}, expected None "
                          f"(rr_to_target must never be used as a fallback)")
 
-    # Assert lane prior semantics on EV_SIDE_GUARD (strong lane prior EV = 0.13)
+    # Assert lane prior semantics on EV_SIDE_GUARD. Its Signal Pack (4.0) has the PB bit CLEAR, so
+    # the PB-split prior applies: rr_at_market_lane_strong without PB = +0.030R (was the
+    # unsplit +0.13R before the bit was measured).
     esg = results.get("EV_SIDE_GUARD", {})
-    if esg.get("ev_r") != 0.13:
+    if esg.get("pb_funnel") != 0.0 or esg.get("ev_r") != 0.030:
         ok = False
-        logger.error(f"SELF-TEST EV_SIDE_GUARD ev_r: got {esg.get('ev_r')!r}, expected 0.13 "
-                     f"(lane prior semantics for rr_at_market_lane_strong)")
+        logger.error(f"SELF-TEST EV_SIDE_GUARD pb/ev: got {esg.get('pb_funnel')!r}/{esg.get('ev_r')!r}, "
+                     f"expected 0.0/0.03 (no-PB prior for rr_at_market_lane_strong)")
+
+    # ---- PB funnel (Signal Pack bit 32) ----
+    # Bit set -> pb_funnel 1.0 and the PB prior; bit clear -> 0.0 and the no-PB prior;
+    # column absent -> None and the legacy unsplit prior.
+    for tk, exp_pb, exp_ev in (
+        ("RR_LANE_PB", 1.0, 0.151),
+        ("RR_LANE", 0.0, 0.030),
+        ("RR_LANE_NO_PACK", None, 0.13),
+    ):
+        r = results.get(tk, {})
+        if r.get("pb_funnel") != exp_pb or r.get("lane_prior_ev") != exp_ev or r.get("ev_r") != exp_ev:
+            ok = False
+            logger.error(f"SELF-TEST {tk} PB: got pb_funnel={r.get('pb_funnel')!r} "
+                         f"lane_prior_ev={r.get('lane_prior_ev')!r} ev_r={r.get('ev_r')!r}, "
+                         f"expected {exp_pb!r}/{exp_ev!r}")
+
+    # A PB record with a WEAKER R:R must still outrank a no-PB record with a stronger one:
+    # +0.072R (RR 2-3 with PB) beats +0.030R (RR >= 3 without PB), so PB sorts ahead of R:R.
+    _pb = {"triage": "PASS", "reason": "rr_at_market_lane", "pb_funnel": 1.0,
+           "rr_at_market": 2.2, "ev_r": 0.072, "ext_pct": 5.0, "conviction": 50.0}
+    _no_pb = {"triage": "PASS", "reason": "rr_at_market_lane_strong", "pb_funnel": 0.0,
+              "rr_at_market": 3.5, "ev_r": 0.030, "ext_pct": 5.0, "conviction": 50.0}
+    if deep_research_sort_key(_pb) <= deep_research_sort_key(_no_pb):
+        ok = False
+        logger.error(f"SELF-TEST PB sort: PB/RR2.2 {deep_research_sort_key(_pb)} must outrank "
+                     f"no-PB/RR3.5 {deep_research_sort_key(_no_pb)}")
+
+    # PB was NOT measured on code 20, so it must not reorder that lane: the key is identical
+    # with the bit set and clear.
+    _c20_pb = {"triage": "PASS", "reason": "reversal_buy_lane", "action": "REVERSAL BUY",
+               "pb_funnel": 1.0, "rr_at_market": 3.0, "ev_r": 0.08, "ext_pct": 5.0, "conviction": 50.0}
+    _c20_no_pb = dict(_c20_pb, pb_funnel=0.0)
+    if deep_research_sort_key(_c20_pb) != deep_research_sort_key(_c20_no_pb):
+        ok = False
+        logger.error("SELF-TEST code20 PB: pb_funnel must not affect the reversal_buy_lane sort key")
 
     # A blocked long must still carry a usable structure read, otherwise the demotion-instead-of-CUT
     # is pointless -- the whole reason for not CUTting is that a trade remains constructible.

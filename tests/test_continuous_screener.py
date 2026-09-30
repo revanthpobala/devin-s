@@ -54,6 +54,7 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
             "target_level": 69.0,
             "priority_score": 75.0,
             "priority_tier": "HIGH_PRIORITY",
+            "pb_funnel": True,
         }
     ]
     short_picks = [
@@ -65,6 +66,7 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
             "target_level": 90.0,
             "priority_score": 70.0,
             "priority_tier": "HIGH_PRIORITY",
+            "pb_funnel": True,
         }
     ]
 
@@ -102,9 +104,10 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
 
         alerts_created = daemon.enrich_with_tastytrade(long_picks, short_picks)
 
-        # 2 alerts per pick (support/ceiling + target) = 4 alerts
-        assert alerts_created == 4
-        assert mock_tt.create_quote_alert.call_count == 4
+        # Cloud alerts follow the same gate as autonomous dispatch: PB funnel, LONG side only.
+        # So LYB gets 2 alerts (support + target) and the SHORT pick gets none.
+        assert alerts_created == 2
+        assert mock_tt.create_quote_alert.call_count == 2
 
         # Verify LYB enrichment
         lyb_tt = long_picks[0].get("tastytrade")
@@ -117,12 +120,12 @@ def test_enrich_with_tastytrade_metrics_and_alerts():
         assert lyb_tt["lendability"] == "Easy To Borrow"
         assert long_picks[0]["tastytrade_alert_active"] is True
 
-        # Verify XYZ enrichment
+        # Verify XYZ enrichment (metrics still attached; alerts are long-side only)
         xyz_tt = short_picks[0].get("tastytrade")
         assert xyz_tt is not None
         assert xyz_tt["iv_rank"] == 80.0
         assert xyz_tt["borrow_rate"] == 1.5
-        assert short_picks[0]["tastytrade_alert_active"] is True
+        assert short_picks[0].get("tastytrade_alert_active") is None
 
 
 def test_enrich_with_tastytrade_idempotent_dedup():
@@ -138,6 +141,7 @@ def test_enrich_with_tastytrade_idempotent_dedup():
             "target_level": 69.0,
             "priority_score": 75.0,
             "priority_tier": "HIGH_PRIORITY",
+            "pb_funnel": True,
         }
     ]
 
@@ -201,6 +205,7 @@ def test_enrich_with_tastytrade_failure_not_marked_active():
             "target_level": 12.0,
             "priority_score": 80.0,
             "priority_tier": "HIGH_PRIORITY",
+            "pb_funnel": True,
         }
     ]
 
@@ -269,31 +274,43 @@ def test_continuous_screener_module_lifecycle():
 def test_evaluate_and_dispatch_deep_research():
     daemon = ContinuousScreenerDaemon(poll_interval=300, auto_deep_research=True, max_concurrent_slots=2)
     daemon.max_auto_deep_per_day = 2
-    daemon.min_conviction_score = 70.0
 
     candidates = [
-        # Qualified candidate 1
-        {"symbol": "LYB", "price": 62.5, "priority_score": 75.0, "priority_tier": "HIGH_PRIORITY", "long_rr": 3.5},
-        # Disqualified (low score)
-        {"symbol": "LOW", "price": 50.0, "priority_score": 45.0, "priority_tier": "MONITOR", "long_rr": 1.0},
-        # Qualified candidate 2
-        {"symbol": "MBGL", "price": 30.0, "priority_score": 72.0, "priority_tier": "HIGH_PRIORITY", "long_rr": 2.0},
-        # Qualified candidate 3 (exceeds cap of 2)
-        {"symbol": "EXCEED", "price": 80.0, "priority_score": 71.0, "priority_tier": "HIGH_PRIORITY", "long_rr": 1.5},
+        # PB set, highest proxy R:R -> dispatched first
+        {"symbol": "LYB", "side": "LONG", "price": 62.5, "pb_funnel": True, "proxy_rr": 3.5,
+         "priority_score": 75.0, "priority_tier": "HIGH_PRIORITY"},
+        # No PB -> refused regardless of legacy score (every no-PB band measures stable negative)
+        {"symbol": "NOPB", "side": "LONG", "price": 50.0, "pb_funnel": False, "proxy_rr": 9.0,
+         "priority_score": 95.0, "priority_tier": "HIGH_PRIORITY"},
+        # PB set, lower proxy R:R -> dispatched second
+        {"symbol": "MBGL", "side": "LONG", "price": 30.0, "pb_funnel": True, "proxy_rr": 3.1,
+         "priority_score": 40.0, "priority_tier": "MONITOR"},
+        # PB set but exceeds cap of 2
+        {"symbol": "EXCEED", "side": "LONG", "price": 80.0, "pb_funnel": True, "proxy_rr": 3.05,
+         "priority_score": 71.0, "priority_tier": "HIGH_PRIORITY"},
+        # PB unmeasured (None) -> refused, never promoted to a measured half
+        {"symbol": "UNMEASURED", "side": "LONG", "price": 40.0, "pb_funnel": None, "proxy_rr": 5.0,
+         "priority_score": 90.0, "priority_tier": "HIGH_PRIORITY"},
+        # Short side is out of scope for the PB gate
+        {"symbol": "SHORTY", "side": "SHORT", "price": 40.0, "pb_funnel": True, "proxy_rr": 5.0,
+         "priority_score": 90.0, "priority_tier": "HIGH_PRIORITY"},
     ]
 
     with patch.object(daemon, "dispatch_candidate_research", return_value=True) as mock_dispatch, \
          patch.object(daemon, "_is_job_active_in_db", return_value=False), \
          patch.object(daemon, "get_active_research_count", return_value=0), \
          patch("src.tracking.alert_db.queue_for_research"):
-        
+
         dispatched = daemon.evaluate_and_dispatch_deep_research(candidates, "2029-01-01")
 
-        # Must dispatch top 2 (LYB, MBGL) up to cap of 2
+        # Must dispatch top 2 by (pb_funnel, proxy_rr): LYB (3.5) then MBGL (3.1)
         assert len(dispatched) == 2
         assert "LYB" in dispatched
         assert "MBGL" in dispatched
         assert "EXCEED" not in dispatched
+        assert "NOPB" not in dispatched
+        assert "UNMEASURED" not in dispatched
+        assert "SHORTY" not in dispatched
         assert mock_dispatch.call_count == 2
 
         # Second call on same day should dispatch 0 because cap (2) is reached
@@ -304,6 +321,126 @@ def test_evaluate_and_dispatch_deep_research():
         status = daemon.get_status()
         assert status["auto_deep_count_today"] == 2
         assert "LYB" in status["auto_deep_dispatched_today"]
+
+
+def test_dispatch_gate_is_scoped_to_the_screener_intake():
+    """PB was measured on Schwab daily bars. It must gate the screener intake ONLY.
+
+    EdgeScanner alerts are a different population the audit never saw. They keep their own
+    scanner's score gate -- transferring PB to them would present an unmeasured threshold as a
+    measurement. Screener candidates must still fail closed on a missing pb_funnel.
+    """
+    from src.screener.schwab_pre_move_scan import _dispatch_eligible
+
+    # Screener intake: PB decides.
+    assert _dispatch_eligible({"side": "LONG", "pb_funnel": True}) == (True, "SCREENER_PB")
+    assert _dispatch_eligible({"side": "LONG", "pb_funnel": False})[0] is False
+    assert _dispatch_eligible({"side": "LONG", "pb_funnel": None})[0] is False
+    assert _dispatch_eligible({"side": "LONG"})[0] is False, "absent pb_funnel must fail closed"
+    assert _dispatch_eligible({"side": "SHORT", "pb_funnel": True})[0] is False
+
+    # EdgeScanner intake: never scored on PB, regardless of what pb_funnel says.
+    ok, basis = _dispatch_eligible({"intake": "EDGESCANNER", "pb_funnel": None})
+    assert ok is True and basis == "EDGESCANNER_INGEST_SCORE"
+    assert _dispatch_eligible({"intake": "EDGESCANNER", "pb_funnel": False})[0] is True
+
+
+def test_autonomous_pipeline_gate_refuses_without_pb():
+    """The pipeline gate must refuse a no-PB / unmeasured screener candidate instead of researching it.
+
+    Callers read `count` to decide whether research actually happened -- several used to mark the
+    job COMPLETED unconditionally, which turned a refusal into a silent no-op.
+    """
+    from src.screener.schwab_pre_move_scan import run_autonomous_screener_pipeline
+
+    for cand in (
+        {"symbol": "NOPB", "side": "LONG", "pb_funnel": False, "proxy_rr": 9.0, "priority_score": 99.0},
+        {"symbol": "UNMEASURED", "side": "LONG", "pb_funnel": None, "proxy_rr": 9.0, "priority_score": 99.0},
+        {"symbol": "SHORTY", "side": "SHORT", "pb_funnel": True, "proxy_rr": 9.0, "priority_score": 99.0},
+    ):
+        res = run_autonomous_screener_pipeline([cand], auto_max=1, run_deep=True, date_str="2029-01-01")
+        assert res == {"count": 0, "researched": []}, f"{cand['symbol']} should be refused"
+
+
+def test_edge_scanner_worker_is_not_gated_on_pb():
+    """EdgeScanner dispatches must reach the pipeline, tagged as their own intake.
+
+    Regression: the payload carried pb_funnel=None with no intake tag, so the screener's PB gate
+    refused every EdgeScanner dispatch, and the worker still reported COMPLETED on count=0.
+    """
+    from src.streaming import edge_scanner_bridge as bridge
+
+    seen = {}
+    statuses = []
+
+    def _fake_pipeline(payload, **kwargs):
+        seen.update(payload[0])
+        seen["_count"] = 1
+        return {"count": 1, "researched": []}
+
+    bridge_obj = bridge.EdgeScannerBridge(auto_deep=True)
+    with patch("src.screener.schwab_pre_move_scan.run_autonomous_screener_pipeline", _fake_pipeline), \
+         patch.object(bridge, "_set_candidate_status", lambda s, st, error=None: statuses.append(st)), \
+         patch.object(bridge_obj, "_post_research_sync"):
+        bridge_obj._spawn_research_worker(
+            "ZZZZ", {"direction": "LONG", "score": 88.0, "trigger": "VolSpike"}, "2029-01-01"
+        )
+
+    assert seen["intake"] == "EDGESCANNER"
+    assert seen["pb_funnel"] is None, "must never fabricate pb_funnel to reach the PB lane"
+    assert statuses == ["COMPLETED"]
+
+
+def test_edge_scanner_worker_reports_a_refusal_instead_of_completing():
+    """count=0 means the gate refused it. Reporting COMPLETED there is a silent no-op."""
+    from src.streaming import edge_scanner_bridge as bridge
+
+    statuses = []
+    bridge_obj = bridge.EdgeScannerBridge(auto_deep=True)
+    with patch("src.screener.schwab_pre_move_scan.run_autonomous_screener_pipeline",
+               return_value={"count": 0, "researched": []}), \
+         patch.object(bridge, "_set_candidate_status",
+                      lambda s, st, error=None: statuses.append(st)), \
+         patch.object(bridge_obj, "_post_research_sync") as sync:
+        bridge_obj._spawn_research_worker(
+            "ZZZZ", {"direction": "LONG", "score": 88.0, "trigger": "VolSpike"}, "2029-01-01"
+        )
+
+    assert statuses == ["SKIPPED_NO_DISPATCH"]
+    assert not sync.called
+
+
+def test_survivors_manifest_preserves_pb_funnel_and_proxy_rr(tmp_path):
+    """The manifest is an explicit projection, so it silently drops any key it does not name.
+
+    pb_funnel and proxy_rr are the dispatch gate and the sort tiebreak. If the projection drops
+    them, routes/screener.py sorts on long_rr instead of proxy_rr and the UI PB badge never
+    renders -- with no error anywhere. Lock the projection down.
+    """
+    import json
+    from src.screener.schwab_pre_move_scan import save_survivors_manifest
+
+    cand = {
+        "symbol": "ACME", "side": "LONG", "price": 100.0, "atr_pct": 2.0,
+        "squeeze_on": True, "nr7": False, "relative_strength_20d": 1.5,
+        "support_level": 98.0, "long_rr": 2.5, "pb_funnel": True, "proxy_rr": 3.42,
+        "priority_score": 80.0, "priority_tier": "HIGH_PRIORITY",
+    }
+    no_pb = dict(cand, symbol="NOPB", pb_funnel=False, proxy_rr=1.1)
+    unmeasured = dict(cand, symbol="UNMEASURED", pb_funnel=None, proxy_rr=None)
+
+    with patch("src.screener.schwab_pre_move_scan.config.BASE_DIR", tmp_path):
+        out = save_survivors_manifest([cand, no_pb, unmeasured], "2029-01-01")
+
+    rows = {r["symbol"]: r for r in json.loads(out.read_text(encoding="utf-8"))}
+
+    assert rows["ACME"]["pb_funnel"] is True
+    assert rows["ACME"]["proxy_rr"] == 3.42
+    assert rows["NOPB"]["pb_funnel"] is False
+    assert rows["NOPB"]["proxy_rr"] == 1.1
+    # Unmeasured must survive as None, not be defaulted to False/0.0.
+    assert rows["UNMEASURED"]["pb_funnel"] is None
+    assert rows["UNMEASURED"]["proxy_rr"] is None
 
 
 def test_screener_feature_payload_and_pipeline_sequence(tmp_path):
@@ -325,6 +462,7 @@ def test_screener_feature_payload_and_pipeline_sequence(tmp_path):
         "target_level": 110.0,
         "priority_score": 80.0,
         "priority_tier": "HIGH_PRIORITY",
+        "pb_funnel": True,
         "weinstein_stage": 1,
         "long_rr": 2.5,
         "ext_200_pct": 11.1,

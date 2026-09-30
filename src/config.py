@@ -123,10 +123,12 @@ MARKET_CLOSE_MINUTE = int(os.getenv("MARKET_CLOSE_MINUTE", "30"))
 # A per-process --market-hours-only CLI flag can still override this for one-off runs.
 SCREENER_MARKET_HOURS_ONLY = os.getenv("SCREENER_MARKET_HOURS_ONLY", "true").lower() in ("1", "true", "yes")
 
-# Minimum priority_score (0-100) a non-HIGH_PRIORITY screener candidate needs to be
-# eligible for autonomous dispatch. Single source of truth shared by the daemon gate
-# (continuous_screener_daemon) and the pipeline quality gate (run_autonomous_screener_pipeline)
-# so the two can never drift apart. Set via CONTINUOUS_MIN_CONVICTION in .env.
+# DISPLAY-ONLY. Retired as a dispatch gate on the measured result: over 348,879 replayed screener
+# bars, the MEDIUM_PRIORITY band it selects measures -0.063R era-stable and MEDIUM-without-PB
+# -0.164R era-stable; HIGH_PRIORITY's +0.417R is 99% PB with a -1R median and a 16.7% win rate, so
+# it is a proxy-R:R payoff artifact rather than tier skill. Autonomous eligibility is now the PB
+# funnel (long side) in continuous_screener_daemon and schwab_pre_move_scan. Kept so the legacy
+# score still has a reference scale in the UI. Set via CONTINUOUS_MIN_CONVICTION in .env.
 SCREENER_MIN_CONVICTION = float(os.getenv("CONTINUOUS_MIN_CONVICTION", "60.0"))
 
 # Level-validation gate (src/logic/level_validation.py).

@@ -111,7 +111,8 @@ def get_suggested_trades_endpoint():
                     """
                     SELECT wt.rowid as id, wt.*, 
                            s.gate_status, s.setup_lane, s.kind, s.atr_at_signal, s.rr_at_market_at_signal,
-                           s.taken, s.your_fill, s.notes as suggestion_notes
+                           s.taken, s.your_fill, s.notes as suggestion_notes,
+                           s.pb_funnel
                     FROM watch_targets wt
                     LEFT JOIN suggestions s ON s.id = wt.suggestion_id
                     WHERE wt.is_active IS NULL OR wt.is_active = 1

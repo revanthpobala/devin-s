@@ -975,12 +975,13 @@ window.AppDesk = {
                 <th style="padding:8px; text-align:right;">Prior EV</th>
                 <th style="padding:8px; text-align:right;">Actual Mean R</th>
                 <th style="padding:8px; text-align:right;">Sum R</th>
+                <th style="padding:8px; text-align:right;">PB / no PB split</th>
               </tr>
             </thead>
             <tbody>`;
 
         if (Object.keys(lanes).length === 0) {
-          html += `<tr><td colspan="8" style="text-align:center; padding:12px; color:var(--text-muted);">No lane data.</td></tr>`;
+          html += `<tr><td colspan="9" style="text-align:center; padding:12px; color:var(--text-muted);">No lane data.</td></tr>`;
         } else {
           for (let lane in lanes) {
             const ld = lanes[lane];
@@ -988,6 +989,14 @@ window.AppDesk = {
             const rColor = ld.sum_r !== undefined && ld.sum_r !== null && ld.sum_r >= 0 ? 'var(--green)' : 'var(--text-main)';
             const pWin = ld.prior_win !== undefined && ld.prior_win !== null ? ld.prior_win + '%' : '–';
             const pEv = ld.prior_ev !== undefined && ld.prior_ev !== null ? ld.prior_ev.toFixed(2) + ' R' : '–';
+            // PB funnel split. Rows written before the Signal Pack bit existed land in
+            // 'pre-PB' and are never folded into a measured half.
+            const split = ld.pb_split || {};
+            const splitHtml = ['PB', 'no PB', 'pre-PB'].filter(k => split[k] && split[k].total > 0)
+              .map(k => {
+                const b = split[k];
+                return `<span title="${k} — measured, not a prior">${k}: n=${b.total}, ${b.win_rate.toFixed(1)}%, ${b.mean_r >= 0 ? '+' : ''}${b.mean_r.toFixed(2)}R</span>`;
+              }).join('<br>') || '–';
             html += `<tr style="border-bottom:1px solid var(--border);">
               <td style="padding:8px; font-weight:700;">${lane}</td>
               <td style="padding:8px; text-align:right; font-family:var(--font-mono);">${ld.total || 0}</td>
@@ -997,6 +1006,7 @@ window.AppDesk = {
               <td style="padding:8px; text-align:right; font-family:var(--font-mono); color:var(--text-muted);">${pEv}</td>
               <td style="padding:8px; text-align:right; font-family:var(--font-mono);">${ld.mean_r !== undefined ? ld.mean_r.toFixed(2) : '0.00'}</td>
               <td style="padding:8px; text-align:right; font-family:var(--font-mono); color:${rColor}; font-weight:700;">${ld.sum_r !== undefined && ld.sum_r !== null ? ((ld.sum_r >= 0 ? '+' : '') + ld.sum_r.toFixed(2)) : '0.00'}</td>
+              <td style="padding:8px; text-align:right; font-family:var(--font-mono); color:var(--text-muted); font-size:11px; line-height:1.5;">${splitHtml}</td>
             </tr>`;
           }
         }

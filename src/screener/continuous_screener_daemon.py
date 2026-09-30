@@ -104,9 +104,10 @@ def enrich_candidates_with_tastytrade(
         # duplicate registrations, and `tastytrade_alert_active` is only set when at
         # least one alert was actually created or already exists on the cloud.
         if auto_alerts:
-            prio_score = float(p.get("priority_score", 0.0))
-            prio_tier = str(p.get("priority_tier", "MONITOR"))
-            is_qualified = prio_tier in ("HIGH_PRIORITY", "MEDIUM_PRIORITY") or prio_score >= 55.0
+            # Cloud alerts follow the same gate as autonomous dispatch: PB funnel, long side.
+            is_qualified = (
+                str(p.get("side", "LONG")).upper() == "LONG" and p.get("pb_funnel")
+            )
 
             if is_qualified:
                 side = str(p.get("side", "LONG")).upper()
@@ -203,7 +204,8 @@ class ContinuousScreenerDaemon(threading.Thread):
             os.getenv("CONTINUOUS_AUTO_DEEP_RESEARCH", "1").lower() in ("1", "true", "yes")
         )
         self.max_auto_deep_per_day = int(os.getenv("CONTINUOUS_MAX_AUTO_DEEP", "3"))
-        # Shared with run_autonomous_screener_pipeline via config so both gates agree.
+        # Display-only. The dispatch gate is pb_funnel (long side); see
+        # evaluate_and_dispatch_deep_research and config.SCREENER_MIN_CONVICTION.
         self.min_conviction_score = config.SCREENER_MIN_CONVICTION
         self.max_concurrent_slots = max(1, int(os.getenv("CONTINUOUS_MAX_CONCURRENT_SLOTS", str(max_concurrent_slots))))
         self._active_research_threads: List[threading.Thread] = []
@@ -710,17 +712,15 @@ class ContinuousScreenerDaemon(threading.Thread):
 
             score = float(c.get("priority_score") or 0.0)
             tier = str(c.get("priority_tier") or "MONITOR")
-            setup_val = c.get("setup")
 
-            # Only genuine coiling setups or high/medium priority qualify for autonomous deep research.
-            # Generic MONITOR candidates without an actionable setup pattern must not be scraped or dispatched.
-            if tier not in ("HIGH_PRIORITY", "MEDIUM_PRIORITY") and not setup_val:
-                continue
-
-            if tier == "HIGH_PRIORITY":
-                if score < self.min_conviction_score * 0.5:
-                    continue
-            elif score < self.min_conviction_score:
+            # Shared gate with run_autonomous_screener_pipeline so the two cannot drift:
+            # PB funnel, screener intake, long side. Every no-PB band measures era-stable
+            # NEGATIVE (MEDIUM -0.164R, score 50-65 -0.128R, MONITOR -0.151R) and
+            # HIGH_PRIORITY's +0.417R is 99% PB with a -1R median -- a proxy-RR payoff artifact,
+            # not tier skill. min_conviction_score is display-only.
+            from src.screener.schwab_pre_move_scan import _dispatch_eligible
+            ok, basis = _dispatch_eligible(c)
+            if not ok:
                 continue
 
             # Check if active job already running or queued in SQLite
@@ -735,7 +735,7 @@ class ContinuousScreenerDaemon(threading.Thread):
                     date_str=target_date,
                     setup=c.get("setup") or tier or "",
                     source="schwab_screener",
-                    reason=f"Schwab screener candidate: {tier} score={score}",
+                    reason=f"Schwab screener candidate: {basis}, proxy_rr={c.get('proxy_rr')} (legacy {tier} score={score})",
                 )
             except Exception as e_q:
                 logger.debug(f"[ContinuousScreener] Failed to queue {sym} in research_queue: {e_q}")
@@ -752,12 +752,13 @@ class ContinuousScreenerDaemon(threading.Thread):
             )
             return []
 
-        # Sort: HIGH_PRIORITY first, highest score, highest R:R
+        # Sort: PB funnel first, then proxy R:R. PB outranks R:R on the measured result -- R:R 2-3 with
+        # PB (+0.072R) beats R:R >= 3 without PB (+0.030R). Everything is PB by now, so proxy_rr
+        # does the ordering.
         eligible.sort(
             key=lambda x: (
-                x.get("priority_tier") == "HIGH_PRIORITY",
-                float(x.get("priority_score", 0.0)),
-                float(x.get("long_rr", x.get("short_rr", 0.0))),
+                bool(x.get("pb_funnel")),
+                float(x.get("proxy_rr") or x.get("long_rr", x.get("short_rr", 0.0)) or 0.0),
             ),
             reverse=True,
         )

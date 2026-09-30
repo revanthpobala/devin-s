@@ -149,6 +149,101 @@ def test_ledger_a776_pass_default_rebuild(tmp_path):
     conn.close()
 
 
+def test_ledger_adds_pb_funnel_column_and_keeps_old_rows_null(tmp_path):
+    """A pre-PB ledger gains pb_funnel; its existing rows must read back NULL, never backfilled.
+
+    pb_funnel is the Signal Pack PB-funnel bit (32). A row that predates the bit was never
+    measured, so it must NOT be coerced to 0 -- that would silently apply the measured no-PB
+    priors to an unmeasured bar.
+    """
+    db_file = tmp_path / "test_pb_migration.db"
+    conn = sqlite3.connect(str(db_file))
+    cur = conn.cursor()
+
+    # Legacy schema: every column except pb_funnel.
+    cur.execute("""
+        CREATE TABLE suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            date TEXT NOT NULL,
+            source TEXT NOT NULL,
+            report_hash TEXT,
+            gate_status TEXT,
+            verdict TEXT,
+            setup_lane TEXT,
+            kind TEXT,
+            lane_prior_win REAL,
+            lane_prior_ev REAL,
+            scorer_version INTEGER DEFAULT 2,
+            created_at TEXT NOT NULL,
+            UNIQUE(ticker, date, source)
+        )
+    """)
+    cur.execute(
+        "INSERT INTO suggestions (ticker, date, source, report_hash, setup_lane, created_at)"
+        " VALUES ('MSFT', '2026-09-01', 'judge', 'h1', 'RR_SETUP', '2026-09-01 10:00:00')"
+    )
+    conn.commit()
+
+    assert "pb_funnel" not in [
+        c[1] for c in cur.execute("PRAGMA table_info(suggestions)").fetchall()
+    ]
+
+    ensure_suggestions_schema(conn)
+    conn.commit()
+
+    col_names = [c[1] for c in cur.execute("PRAGMA table_info(suggestions)").fetchall()]
+    assert "pb_funnel" in col_names
+    # Nullable integer, no default -- an absent value must stay absent.
+    pb_col = next(c for c in cur.execute("PRAGMA table_info(suggestions)").fetchall() if c[1] == "pb_funnel")
+    assert pb_col[2] == "INTEGER"
+    assert pb_col[3] == 0
+    assert pb_col[4] is None
+
+    rows = cur.execute("SELECT ticker, pb_funnel FROM suggestions").fetchall()
+    assert len(rows) == 1
+    assert rows[0][1] is None, "legacy rows must stay NULL — never backfilled to a measured no-PB"
+
+    # Idempotent: a second ensure must not fail or mutate the NULL.
+    ensure_suggestions_schema(conn)
+    conn.commit()
+    assert cur.execute("SELECT pb_funnel FROM suggestions").fetchone()[0] is None
+    conn.close()
+
+
+def test_append_suggestion_persists_pb_funnel_and_preserves_it_on_rerun(tmp_path):
+    """pb_funnel round-trips through append_suggestion; an unmeasured re-append never clears it."""
+    db_file = tmp_path / "test_pb_roundtrip.db"
+    with patch("src.tracking.watch_manager.DB_PATH", db_file):
+        conn = sqlite3.connect(str(db_file))
+        ensure_suggestions_schema(conn)
+        conn.close()
+
+        base = {
+            "ticker": "AAPL", "date": "2026-09-10", "source": "judge",
+            "side": "LONG", "entry_type": "LIMIT",
+            "stop": 200.0, "target_1": 250.0, "entry_low": 210.0, "entry_high": 215.0,
+            "gate_status": "PASS", "setup_lane": "RR_SETUP", "kind": "NEW",
+        }
+
+        append_suggestion({**base, "pb_funnel": 1.0})
+        conn = sqlite3.connect(str(db_file))
+        assert conn.execute("SELECT pb_funnel FROM suggestions WHERE ticker='AAPL'").fetchone()[0] == 1
+        conn.close()
+
+        # No-PB writes 0, not NULL.
+        append_suggestion({**base, "pb_funnel": 0.0})
+        conn = sqlite3.connect(str(db_file))
+        assert conn.execute("SELECT pb_funnel FROM suggestions WHERE ticker='AAPL'").fetchone()[0] == 0
+        conn.close()
+
+        # A later append without the field must not wipe the measured value.
+        append_suggestion({**base, "notes": "note only"})
+        conn = sqlite3.connect(str(db_file))
+        assert conn.execute("SELECT pb_funnel FROM suggestions WHERE ticker='AAPL'").fetchone()[0] == 0
+        conn.close()
+
+
 def test_append_suggestion_levels_and_outcome_clearing(tmp_path):
     """Same levels keep outcome; changed levels or changed side/entry_type clear outcome."""
     db_file = tmp_path / "test_append_clear.db"

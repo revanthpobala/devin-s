@@ -3,6 +3,21 @@
  * Provides a structured table of AI/Orchestrator suggested trades with time, levels, live quotes,
  * theoretical PnL, sorting by date (freshest first), pagination, and an interactive position modal.
  */
+/**
+ * PB funnel badge (Signal Pack bit 32). The measured long-side gate: PB is era-stable positive
+ * in both R:R tiers, every no-PB band is stable negative. NULL = pre-PB row, nothing is shown so
+ * an unmeasured row can never be read as a measured no-PB row.
+ */
+function pbBadge(pb) {
+  if (pb === 1 || pb === 1.0 || pb === true) {
+    return `<span class="pill green" title="PB funnel set (Signal Pack bit 32) — measured era-stable positive" style="font-size:9px; padding:1px 5px; margin-top:2px;">PB</span>`;
+  }
+  if (pb === 0 || pb === 0.0 || pb === false) {
+    return `<span class="pill" title="No PB funnel — measured era-unstable / negative" style="font-size:9px; padding:1px 5px; margin-top:2px; color:var(--text-muted);">no PB</span>`;
+  }
+  return '';
+}
+
 window.AppTrades = {
   _trades: [],
   _summary: { total: 0, in_zone: 0, stalking: 0, target_hit: 0, stopped: 0 },
@@ -129,7 +144,7 @@ window.AppTrades = {
           html += `
             <tr style="border-bottom:1px solid var(--border);">
               <td style="padding:6px 10px; font-weight:700;">${s.source}</td>
-              <td style="padding:6px 10px; color:var(--cyan-glow);">${s.setup_lane || s.lane}</td>
+              <td style="padding:6px 10px; color:var(--cyan-glow);">${s.setup_lane || s.lane}${pbBadge(s.pb_funnel)}</td>
               <td style="padding:6px 8px; text-align:center;"><span class="pill ${s.gate_status === 'PASS' ? 'green' : 'red'}" style="font-size:9px;">${s.gate_status}</span></td>
               <td style="padding:6px 8px; text-align:right; font-weight:700;">${s.n}</td>
               <td style="padding:6px 8px; text-align:right;">${s.fill_rate}%</td>
@@ -504,6 +519,7 @@ window.AppTrades = {
             <span class="pill cyan" style="font-size:9.5px; padding:2px 6px; font-weight:700;">
               ${t.setup_lane || 'DEFAULT'}
             </span>
+            ${pbBadge(t.pb_funnel)}
           </td>
 
           <!-- 5. KIND -->

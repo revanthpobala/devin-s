@@ -134,6 +134,15 @@ def format_unmasked_recency_block(dw_dict: dict) -> str:
         if v is not None:
             lines.append(f"  {k}: {v}")
             found = True
+    sig = dw_dict.get("Signal Pack") if dw_dict.get("Signal Pack") is not None else dw_dict.get("signal_pack")
+    if sig is not None:
+        try:
+            pb = bool(int(round(float(sig))) & 32)
+            # Pre-decoded so the model never does bit math on the pack integer.
+            lines.append(f"  PB funnel (Signal Pack bit 32): {'yes' if pb else 'no'}")
+            found = True
+        except (TypeError, ValueError):
+            pass
     if not found:
         return ""
     return "\n".join(lines)
@@ -492,7 +501,7 @@ def build_user_prompt(
            - `Exp Move Pct 21b` (21-bar Expected Move percentage)
            - `ADX 14`, `DMI DI Plus`, `DMI DI Minus`
         8. Bitmasks & Signal Packs:
-           - `Signal Pack` (Bit 2 = Fade Gate active/inactive)
+           - `Signal Pack` (bit 1 strongBuy · 2 strongSell · 4 NOT-fade (INVERTED: bit clear = fade/DO-NOT-CHASE gate ACTIVE) · 8 isTopping · 16 isBottoming · 32 PB funnel). Bit 32 is the PB-funnel gate: PB set is +0.089R / +0.193R era-stable across the two R:R tiers, no-PB is era-unstable, and R:R 2-3 with PB beats R:R >= 3 without PB. Decode it, do not rank on the raw integer.
            - `Reversal Pattern Mask`, `Bear Warning Mask`, `Weak Level Mask`
            - `MTF Long Short Pack` (Multi-Timeframe alignment)
 

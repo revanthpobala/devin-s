@@ -248,7 +248,9 @@ window.AppSwing = {
                 <th style="text-align:center; padding:8px 10px;">Long R:R</th>
                 <th style="text-align:center; padding:8px 10px;">Stage</th>
                 <th style="text-align:center; padding:8px 10px;">Rev Zone</th>
-                <th style="text-align:center; padding:8px 10px;">Priority</th>
+                <th style="text-align:center; padding:8px 10px;">PB Funnel</th>
+                <th style="text-align:center; padding:8px 10px;">Proxy R:R</th>
+                <th style="text-align:center; padding:8px 10px;">Legacy Score</th>
                 <th style="text-align:left; padding:8px 10px;">Support Anchor</th>
                 <th style="text-align:center; padding:8px 10px;">Posture / Headroom</th>
                 <th style="text-align:center; padding:8px 10px;">Squeeze (SQZ)</th>
@@ -317,14 +319,22 @@ window.AppSwing = {
             revBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; font-weight:700;">Z2 (${revLong.toFixed(1)})</span>`;
           }
 
+          // Legacy score: computed and shown for continuity, but it NO LONGER gates dispatch.
+          // Measured over 348,879 replayed bars: MEDIUM_PRIORITY is -0.063R era-stable, MONITOR
+          // without PB is -0.151R, and HIGH_PRIORITY's +0.417R is 99% PB with a -1R median.
           const prioScore = c.priority_score !== undefined ? Number(c.priority_score) : 50.0;
-          const prioTier = c.priority_tier || 'MONITOR';
-          let prioBadge = `<span class="badge" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">MONITOR (${prioScore.toFixed(0)})</span>`;
-          if (prioTier === 'HIGH_PRIORITY' || prioScore >= 75) {
-            prioBadge = `<span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981; border:1px solid rgba(16,185,129,0.5); font-weight:800; font-size:11.5px;" title="Autonomous Dispatch Eligible: High-Priority Pine Setup">🔥 HIGH (${prioScore.toFixed(0)})</span>`;
-          } else if (prioTier === 'MEDIUM_PRIORITY' || prioScore >= 55) {
-            prioBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); font-weight:700; font-size:11px;">MED (${prioScore.toFixed(0)})</span>`;
+          const prioBadge = `<span class="badge" title="Legacy composite score — display only, no longer a dispatch gate" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">${prioScore.toFixed(0)}</span>`;
+
+          // PB funnel is the autonomous-dispatch gate (long side). proxy_rr is the tiebreak.
+          let pbBadge = `<span style="color:var(--text-muted); font-size:11px;">–</span>`;
+          if (c.pb_funnel === true || c.pb_funnel === 1) {
+            pbBadge = `<span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981; border:1px solid rgba(16,185,129,0.5); font-weight:800; font-size:11px;" title="PB funnel set — autonomous dispatch eligible (era-stable positive)">✅ PB</span>`;
+          } else if (c.pb_funnel === false || c.pb_funnel === 0) {
+            pbBadge = `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:700; font-size:11px;" title="No PB funnel — every no-PB band measures stable negative">⛔ no PB</span>`;
           }
+          const proxyRr = c.proxy_rr !== undefined && c.proxy_rr !== null
+            ? `<span class="badge" style="font-size:11px; font-family:var(--font-mono); color:${Number(c.proxy_rr) >= 3 ? '#10b981' : 'var(--text-muted)'};">${Number(c.proxy_rr).toFixed(2)}</span>`
+            : `<span style="color:var(--text-muted); font-size:11px;">–</span>`;
 
           let postureBadge = '-';
           if (c.headroom_pct !== undefined && Number(c.headroom_pct) >= 12.0) {
@@ -347,6 +357,8 @@ window.AppSwing = {
               <td style="text-align:center; padding:8px 10px;">${longRRBadge}</td>
               <td style="text-align:center; padding:8px 10px;">${stageBadge}</td>
               <td style="text-align:center; padding:8px 10px;">${revBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${pbBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${proxyRr}</td>
               <td style="text-align:center; padding:8px 10px;">${prioBadge}</td>
               <td style="padding:8px 10px; color:var(--blue); font-weight:600;">
                 ${setup} (${sup})
@@ -387,7 +399,7 @@ window.AppSwing = {
                 <th style="text-align:center; padding:8px 10px;">Short R:R</th>
                 <th style="text-align:center; padding:8px 10px;">Stage</th>
                 <th style="text-align:center; padding:8px 10px;">Rev Short</th>
-                <th style="text-align:center; padding:8px 10px;">Priority</th>
+                <th style="text-align:center; padding:8px 10px;">Legacy Score</th>
                 <th style="text-align:right; padding:8px 10px;">50 SMA Target</th>
                 <th style="text-align:right; padding:8px 10px;">Profit Runway</th>
                 <th style="text-align:center; padding:8px 10px;">Squeeze (SQZ)</th>
@@ -454,13 +466,9 @@ window.AppSwing = {
           }
 
           const prioScore = c.priority_score !== undefined ? Number(c.priority_score) : 50.0;
-          const prioTier = c.priority_tier || 'MONITOR';
-          let prioBadge = `<span class="badge" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">MONITOR (${prioScore.toFixed(0)})</span>`;
-          if (prioTier === 'HIGH_PRIORITY' || prioScore >= 75) {
-            prioBadge = `<span class="badge" style="background:rgba(239,68,68,0.2); color:#f87171; border:1px solid rgba(239,68,68,0.5); font-weight:800; font-size:11.5px;" title="Autonomous Dispatch Eligible: High-Priority Pine Short Setup">🔥 HIGH (${prioScore.toFixed(0)})</span>`;
-          } else if (prioTier === 'MEDIUM_PRIORITY' || prioScore >= 55) {
-            prioBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); font-weight:700; font-size:11px;">MED (${prioScore.toFixed(0)})</span>`;
-          }
+          // Shorts: the PB gate is LONG-side only and the short scan is unchanged here, so the
+          // legacy score still labels this table. Display only.
+          const prioBadge = `<span class="badge" title="Legacy composite score — display only, no longer a dispatch gate" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">${prioScore.toFixed(0)}</span>`;
 
           const pat = c.pattern || 'Ceiling Stall';
           let patBadge = `<span class="badge" style="background:rgba(245,158,11,0.15); color:#fbbf24; border:1px solid rgba(245,158,11,0.3); font-weight:700;">🧱 ${pat}</span>`;
