@@ -527,7 +527,7 @@ class ContinuousScreenerDaemon(threading.Thread):
             self._active_research_threads = [t for t in self._active_research_threads if t.is_alive()]
             count += len(self._active_research_threads)
 
-        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        db_path = config.research_watch_db_path()
         if db_path.exists():
             try:
                 import sqlite3
@@ -564,7 +564,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         not. Called at the start of get_active_research_count so every slot
         availability check sees accurate state.
         """
-        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        db_path = config.research_watch_db_path()
         if not db_path.exists():
             return
         try:
@@ -611,7 +611,7 @@ class ContinuousScreenerDaemon(threading.Thread):
 
     def _is_job_active_in_db(self, sym: str) -> bool:
         """Check if ticker currently has an active RUNNING or QUEUED research job in SQLite."""
-        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        db_path = config.research_watch_db_path()
         if not db_path.exists():
             return False
         try:

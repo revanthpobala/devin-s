@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import collections
 import logging
+import os
 import sqlite3
 import subprocess
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from src import config
@@ -65,11 +67,22 @@ def append_log(msg: str):
     logger.info(msg)
 
 
+def db_path() -> "Path":
+    """Path of the cockpit's shared SQLite database.
+
+    STOCK_DB_PATH overrides it. That override exists so tests never open the live database --
+    without it any test touching get_db() writes into data/research_watch.db and leaves debris
+    behind, because the default is the real trading data.
+    """
+    override = os.getenv("STOCK_DB_PATH")
+    return Path(override) if override else (config.research_watch_db_path())
+
+
 def get_db():
     """Context manager for thread-safe SQLite connection with dictionary rows."""
-    db_path = config.BASE_DIR / "data" / "research_watch.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=10.0)
+    path = db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 

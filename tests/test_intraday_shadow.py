@@ -154,18 +154,21 @@ def test_postmortem_stats_generation(tmp_path, monkeypatch):
     monkeypatch.setattr(adb, "DB_PATH", db_file)
     adb.init_db()
 
-    # Insert mock records
+    # Insert mock records. R is only scoreable with a risk denominator, so each carries a stop.
     adb.upsert_intraday_signal({
         "trade_id": "T_A1", "ticker": "AAPL", "date": "2026-09-23", "entry_ts": "09:35",
         "hour": 9, "grade": "A", "score": 95, "entry_px": 150.0, "exit_r": 1.5, "taken": 1,
+        "side": "LONG", "entry_price": 150.0, "entry_stop": 145.0,
     })
     adb.upsert_intraday_signal({
         "trade_id": "T_A2", "ticker": "MSFT", "date": "2026-09-23", "entry_ts": "10:15",
         "hour": 10, "grade": "A", "score": 90, "entry_px": 400.0, "exit_r": -1.0, "taken": 1,
+        "side": "LONG", "entry_price": 400.0, "entry_stop": 395.0,
     })
     adb.upsert_intraday_signal({
         "trade_id": "T_B1", "ticker": "GOOGL", "date": "2026-09-23", "entry_ts": "11:00",
         "hour": 11, "grade": "B", "score": 75, "entry_px": 170.0, "exit_r": -0.8, "taken": 0,
+        "side": "LONG", "entry_price": 170.0, "entry_stop": 165.0,
         "veto_reason": "⛔ STAND ASIDE (GRADE B)",
     })
 
@@ -487,36 +490,39 @@ def test_by_llm_present_with_correct_means(tmp_path, monkeypatch):
     monkeypatch.setattr(adb, "DB_PATH", db_file)
     adb.init_db()
 
+    # R is only scoreable when the row carries a risk denominator, so every seed carries a stop.
+    risk = {"side": "LONG", "entry_price": 100.0, "entry_stop": 97.0}
+
     # Insert TAKE rows (+1.0, +2.0 -> mean 1.5)
     adb.upsert_intraday_signal({
         "trade_id": "T_T1", "ticker": "AAPL", "date": "2026-09-23",
-        "llm_verdict": "TAKE", "exit_r": 1.0,
+        "llm_verdict": "TAKE", "exit_r": 1.0, **risk,
     })
     adb.upsert_intraday_signal({
         "trade_id": "T_T2", "ticker": "MSFT", "date": "2026-09-23",
-        "llm_verdict": "TAKE", "exit_r": 2.0,
+        "llm_verdict": "TAKE", "exit_r": 2.0, **risk,
     })
 
     # Insert VETO rows (-1.0, -0.5 -> mean -0.75)
     adb.upsert_intraday_signal({
         "trade_id": "T_V1", "ticker": "NVDA", "date": "2026-09-23",
-        "llm_verdict": "VETO:Midday exhaustion", "exit_r": -1.0,
+        "llm_verdict": "VETO:Midday exhaustion", "exit_r": -1.0, **risk,
     })
     adb.upsert_intraday_signal({
         "trade_id": "T_V2", "ticker": "AMD", "date": "2026-09-23",
-        "llm_verdict": "VETO:Chop", "exit_r": -0.5,
+        "llm_verdict": "VETO:Chop", "exit_r": -0.5, **risk,
     })
 
     # Insert GATE row (-1.0)
     adb.upsert_intraday_signal({
         "trade_id": "T_G1", "ticker": "TSLA", "date": "2026-09-23",
-        "llm_verdict": "GATE:grade", "exit_r": -1.0,
+        "llm_verdict": "GATE:grade", "exit_r": -1.0, **risk,
     })
 
     # Insert UNKNOWN row: no verdict, no veto_reason, not taken
     adb.upsert_intraday_signal({
         "trade_id": "T_U1", "ticker": "UNKN", "date": "2026-09-23",
-        "exit_r": 0.3,
+        "exit_r": 0.3, **risk,
     })
 
     stats = generate_postmortem_stats(db_path=db_file)
@@ -563,6 +569,9 @@ def test_no_read_stub_prints_when_n_under_30(tmp_path, monkeypatch):
             "grade": "A",
             "score": 90,
             "exit_r": 0.5,
+            "side": "LONG",
+            "entry_price": 100.0,
+            "entry_stop": 97.0,
         })
     clear_bucket_stats_cache()
     res5 = lookup_bucket_stats(grade="A", hour=10, score=90, min_n=30, db_path=db_file)
@@ -581,6 +590,9 @@ def test_no_read_stub_prints_when_n_under_30(tmp_path, monkeypatch):
             "grade": "A",
             "score": 90,
             "exit_r": 0.5,
+            "side": "LONG",
+            "entry_price": 100.0,
+            "entry_stop": 97.0,
         })
     clear_bucket_stats_cache()
     res30 = lookup_bucket_stats(grade="A", hour=10, score=90, min_n=30, db_path=db_file)
@@ -613,6 +625,9 @@ def test_scoreboard_returns_both_sections(tmp_path, monkeypatch):
         "score": 90,
         "llm_verdict": "TAKE",
         "exit_r": 1.2,
+        "side": "LONG",
+        "entry_price": 100.0,
+        "entry_stop": 97.0,
     })
 
     sb = get_scoreboard(since=None)

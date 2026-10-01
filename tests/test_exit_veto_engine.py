@@ -7,7 +7,21 @@ from src.tracking import position_state
 from src.tracking.position_monitor import PositionManager, PositionMonitor, review_tv_exit
 
 
-def test_review_tv_exit_vetoes_intrabar_wick_for_long(tmp_path):
+def _pin_atr(monkeypatch, atr):
+    """Pin the live intraday-ATR fallback.
+
+    position_monitor falls back to `calculate_intraday_atr(ticker)` -- a real Schwab call -- wherever
+    a rule needs ATR. Any test whose assertion depends on that value MUST pin it, or it is gated on
+    the market: the BE+ ratchet test passed only while NVDA's real intraday ATR stayed under $0.70,
+    and the catastrophic wide-stop test flipped depending on what that call returned.
+    """
+    import src.clients.schwab_client as schwab_client
+
+    monkeypatch.setattr(schwab_client, "calculate_intraday_atr", lambda ticker: atr)
+
+
+def test_review_tv_exit_vetoes_intrabar_wick_for_long(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
         # Open LONG position: Entry 500.0, Stop 499.70, Target 505.0
@@ -48,7 +62,8 @@ def test_review_tv_exit_vetoes_intrabar_wick_for_long(tmp_path):
             mgr._stop_monitor.assert_not_called()
 
 
-def test_review_tv_exit_confirms_valid_stop_breach(tmp_path):
+def test_review_tv_exit_confirms_valid_stop_breach(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
         # Open LONG position: Entry 200.0, Stop 199.0
@@ -84,7 +99,8 @@ def test_review_tv_exit_confirms_valid_stop_breach(tmp_path):
             mgr._stop_monitor.assert_called_with("TSLA")
 
 
-def test_review_tv_exit_confirms_target_hit(tmp_path):
+def test_review_tv_exit_confirms_target_hit(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
         position_state.open_position(
@@ -109,7 +125,8 @@ def test_review_tv_exit_confirms_target_hit(tmp_path):
             assert "Target reached" in decision["reason"]
 
 
-def test_review_tv_exit_catastrophic_safeguard(tmp_path):
+def test_review_tv_exit_catastrophic_safeguard(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
         position_state.open_position(
@@ -136,10 +153,13 @@ def test_review_tv_exit_catastrophic_safeguard(tmp_path):
             assert "Catastrophic stop safeguard breached" in decision["reason"]
 
 
-def test_review_tv_exit_catastrophic_wide_stop_within_risk_budget(tmp_path):
+def test_review_tv_exit_catastrophic_wide_stop_within_risk_budget(tmp_path, monkeypatch):
     """Tier 2 must NOT fire on a wide-ATR setup when the drawdown is inside the
     designed risk budget (stop distance). The trade keeps running to its real stop."""
     fake_positions = tmp_path / "positions.json"
+    # Pin the ATR fallback: this test was the one that flipped run-to-run, because the breaker
+    # reaches a live Schwab intraday call whenever a record has no usable stored stop.
+    _pin_atr(monkeypatch, 8.00)
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
         position_state.open_position(
             "AAPL",
@@ -170,7 +190,8 @@ def test_review_tv_exit_catastrophic_wide_stop_within_risk_budget(tmp_path):
             assert "Catastrophic stop safeguard breached" in decision["reason"]
 
 
-def test_review_tv_exit_catastrophic_option_premium_leg(tmp_path):
+def test_review_tv_exit_catastrophic_option_premium_leg(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     """Option trades use the 30% premium-loss leg instead of the flat 2.5%."""
     fake_positions = tmp_path / "positions.json"
     with patch.object(position_state, "POSITIONS_FILE", fake_positions):
@@ -199,11 +220,12 @@ def test_review_tv_exit_catastrophic_option_premium_leg(tmp_path):
             assert "premium loss" in decision["reason"]
 
 
-def test_position_monitor_catastrophic_breaker_uses_atr_stop_distance(tmp_path):
+def test_position_monitor_catastrophic_breaker_uses_atr_stop_distance(tmp_path, monkeypatch):
     """The monitor's breaker must respect the ATR risk budget: a -3% drawdown on a
     wide-ATR setup (stop distance 5%) is NOT catastrophic; breaking the real stop is."""
     fake_positions = tmp_path / "positions.json"
     fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    _pin_atr(monkeypatch, 8.00)
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
          patch("src.tracking.alert_db.get_eastern_now", return_value=fake_now):
         position_state.open_position(
@@ -231,9 +253,17 @@ def test_position_monitor_catastrophic_breaker_uses_atr_stop_distance(tmp_path):
         assert "TSLA" not in state
 
 
-def test_position_monitor_autonomous_profit_locking_trailing_stop(tmp_path):
+def test_position_monitor_autonomous_profit_locking_trailing_stop(tmp_path, monkeypatch):
+    """Target hit -> 50% scale and the stop ratchets to BE+.
+
+    The BE buffer is max($0.05, 0.1 x ATR). This assertion used to be
+    `stop in (100.0, 100.05, 100.24) or stop >= 100.0` -- a vacuous clause that accepted any stop
+    at or above break-even, over a live ATR that had already produced three different values.
+    Pinned to ATR 0.40 the buffer is the $0.05 floor, so the expected stop is exact.
+    """
     fake_positions = tmp_path / "positions.json"
     fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    _pin_atr(monkeypatch, 0.40)
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
          patch("src.tracking.alert_db.get_eastern_now", return_value=fake_now):
         # Open LONG trade: Entry 100.0, Stop 99.0, Target 102.0
@@ -255,12 +285,34 @@ def test_position_monitor_autonomous_profit_locking_trailing_stop(tmp_path):
 
         state = position_state.load_state()
         assert "AMD" in state
-        # Stop must be autonomously moved to break-even or BE + ATR buffer
-        assert state["AMD"]["stop"] in (100.0, 100.05, 100.24) or state["AMD"]["stop"] >= 100.0
+        assert state["AMD"]["be_locked"] is True, "a target hit must lock break-even"
+        assert state["AMD"]["stop"] == 100.05, \
+            "max($0.05, 0.1 x 0.40) -> the $0.05 floor, and never below entry"
         assert any(k in state["AMD"]["last_eval"] for k in ("Break-Even", "BE+", "Target hit"))
 
 
-def test_position_monitor_autonomous_stop_breach_close(tmp_path):
+def test_runner_trail_scales_with_atr_not_the_flat_buffer(tmp_path, monkeypatch):
+    """The companion case: a wide ATR must widen the buffer above the $0.05 floor."""
+    fake_positions = tmp_path / "positions.json"
+    fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    _pin_atr(monkeypatch, 2.40)
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
+         patch("src.tracking.alert_db.get_eastern_now", return_value=fake_now):
+        position_state.open_position(
+            "AMD", side="LONG", strategy="Intraday",
+            entry_price=100.0, stop=99.0, target=102.0,
+        )
+        monitor = PositionMonitor("AMD", poll_interval=1)
+        monitor._eval_playbook = MagicMock(return_value="Hold strong")
+        with patch("src.tracking.position_monitor.get_current_price", return_value=102.50):
+            monitor._tick()
+
+        state = position_state.load_state()
+        assert state["AMD"]["stop"] == 100.24, "0.1 x 2.40 = 0.24"
+
+
+def test_position_monitor_autonomous_stop_breach_close(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     fake_positions = tmp_path / "positions.json"
     fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
@@ -288,7 +340,13 @@ def test_position_monitor_autonomous_stop_breach_close(tmp_path):
 
 
 def test_position_monitor_early_gain_traction_breakeven_ratchet(tmp_path):
-    """Test that a trade achieving +$100 unrealized gain (or 0.5R) ratchets stop to BE+ 0.05 immediately."""
+    """Test that a trade achieving +$100 unrealized gain (or 0.5R) ratchets stop to BE+ 0.05 immediately.
+
+    The BE buffer is max($0.05, 0.1 x ATR), and the ATR came from a LIVE Schwab intraday call.
+    With ATR pinned at 0.30 the buffer is the $0.05 floor, which is what this asserts. Unpinned,
+    the test passed only while NVDA's real intraday ATR happened to sit below $0.70 and started
+    failing as soon as it did -- a unit test silently gated on live market data.
+    """
     fake_positions = tmp_path / "positions.json"
     fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
@@ -307,20 +365,44 @@ def test_position_monitor_early_gain_traction_breakeven_ratchet(tmp_path):
         monitor._eval_playbook = MagicMock(return_value="Hold")
 
         # Price climbs to 501.50 (+1.50 = +$150 unrealized gain, before target 508.0)
-        with patch("src.tracking.position_monitor.get_current_price", return_value=501.50):
+        with patch("src.tracking.position_monitor.get_current_price", return_value=501.50), \
+             patch("src.clients.schwab_client.calculate_intraday_atr", return_value=0.30):
             monitor._tick()
 
         state = position_state.load_state()
         assert "NVDA" in state
         assert state["NVDA"]["be_locked"] is True
-        assert state["NVDA"]["stop"] in (500.05, 500.06, 500.07)
+        assert state["NVDA"]["stop"] == 500.05, "max($0.05, 0.1 x 0.30) -> the $0.05 floor"
         assert "Gain traction" in state["NVDA"]["last_eval"]
 
 
-def test_position_monitor_post_t1_runner_trailing_protection(tmp_path):
+def test_be_buffer_uses_the_atr_floor_when_atr_is_wide(tmp_path):
+    """0.1 x ATR above $0.50 must win over the flat $0.05 -- the rule is a max(), not a constant."""
+    fake_positions = tmp_path / "positions.json"
+    fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
+         patch("src.tracking.alert_db.get_eastern_now", return_value=fake_now):
+        position_state.open_position(
+            "NVDA", side="LONG", strategy="Intraday",
+            entry_price=500.0, stop=496.0, target=508.0,
+        )
+        monitor = PositionMonitor("NVDA", poll_interval=1)
+        monitor._eval_playbook = MagicMock(return_value="Hold")
+
+        with patch("src.tracking.position_monitor.get_current_price", return_value=501.50), \
+             patch("src.clients.schwab_client.calculate_intraday_atr", return_value=0.80):
+            monitor._tick()
+
+        state = position_state.load_state()
+        assert state["NVDA"]["be_locked"] is True
+        assert state["NVDA"]["stop"] == 500.08, "0.1 x 0.80 = 0.08, above the $0.05 floor"
+
+
+def test_position_monitor_post_t1_runner_trailing_protection(tmp_path, monkeypatch):
     """Test that post-T1 runner trails stop to protect at least 65% of peak gains."""
     fake_positions = tmp_path / "positions.json"
     fake_now = datetime(2026, 9, 17, 10, 15, tzinfo=ZoneInfo("America/New_York"))
+    _pin_atr(monkeypatch, 1.30)
     with patch.object(position_state, "POSITIONS_FILE", fake_positions), \
          patch("src.tracking.alert_db.get_eastern_now", return_value=fake_now):
         # Position already scaled at T1
@@ -481,7 +563,8 @@ def test_evaluate_risk_vetoes_mid_morning_trap():
         assert res_high is None
 
 
-def test_review_tv_exit_confirms_strategic_exits(tmp_path):
+def test_review_tv_exit_confirms_strategic_exits(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     """Verify that structural/strategic exits (bias flipped, chop stall, EOD flat, etc.)
     are immediately confirmed and NEVER mistakenly vetoed as intra-bar wick noise."""
     fake_positions = tmp_path / "positions.json"
@@ -534,7 +617,8 @@ def test_review_tv_exit_confirms_strategic_exits(tmp_path):
             assert res["action"] == "CONFIRM_EXIT"
 
 
-def test_position_manager_vetoes_low_grade_and_counter_stage_before_opening(tmp_path):
+def test_position_manager_vetoes_low_grade_and_counter_stage_before_opening(tmp_path, monkeypatch):
+    _pin_atr(monkeypatch, 8.00)
     """Verify that PositionManager._handle_alert rejects sub-Grade-B (score < 65) or
     counter-stage alerts and never opens them into position_state."""
     fake_positions = tmp_path / "positions.json"

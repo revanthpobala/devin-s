@@ -2310,6 +2310,8 @@ window.AppWatchlist = {
     setAuditBadge('audit-tab-count-stopped', tc.stopped);
     setAuditBadge('audit-tab-count-active', tc.active);
     setAuditBadge('audit-tab-count-stalking', tc.stalking);
+    setAuditBadge('audit-tab-count-income', tc.income);
+    setAuditBadge('audit-tab-count-invalid', tc.invalid);
 
     // 4. Update Pagination Bar
     this.renderAuditPagination(p);
@@ -2420,7 +2422,13 @@ window.AppWatchlist = {
 
     tbody.innerHTML = trades.map(t => {
       const isOptions = t.trade_type === 'OPTIONS';
-      const typeBadge = isOptions
+      const isIncome = t.trade_type === 'INCOME';
+      // A covered call / CSP rendered with an OPTIONS or SHARES pill is worse than no row at
+      // all: it puts an income structure in the same R-scale bucket as a debit spread.
+      const typeBadge = isIncome
+        ? `<span class="pill green" style="font-size:10px; padding:1px 6px; font-weight:700;"
+               title="Income structure — not R-scored. See the INCOME alert tier.">💵 INCOME</span>`
+        : isOptions
         ? `<span class="pill cyan" style="font-size:10px; padding:1px 6px; font-weight:700;">OPTIONS</span>`
         : `<span class="pill blue" style="font-size:10px; padding:1px 6px; font-weight:700;">SHARES</span>`;
 

@@ -64,7 +64,7 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
     )
     if has_report:
         return
-    db_path = config.BASE_DIR / "data" / "research_watch.db"
+    db_path = config.research_watch_db_path()
     if not db_path.exists():
         return
     try:

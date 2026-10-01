@@ -24,7 +24,7 @@ from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(os.getenv("ALERT_DB_PATH", str(config.BASE_DIR / "data" / "trading_alerts.db")))
+DB_PATH = config.alerts_db_path()
 _db_lock = threading.Lock()
 
 

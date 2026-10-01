@@ -23,6 +23,58 @@ logger = logging.getLogger(__name__)
 
 _BUCKET_CACHE: Dict[str, Any] = {"timestamp": 0.0, "db_path": "", "rows": []}
 
+# intraday_signals is written by several producers (position_state computes R from prices, main.py
+# copies alert.exit_r straight through), so the stored value is not guaranteed to be an R multiple.
+# The one thing every R share is a fixed function of: risk per share = entry - stop, signed to the
+# trade direction. A row with no stop, or a stop on the wrong side of entry, has no denominator --
+# dividing by the residual produces nonsense (a 0.31% stop on an $822 name yields R = +124).
+MAX_PLAUSIBLE_R = 20.0
+
+
+def _risk_per_share(row: Dict[str, Any]) -> Optional[float]:
+    """Risk per share for this row, or None when the stop cannot produce a valid R denominator."""
+    entry = row.get("entry_price") or row.get("entry_px")
+    stop = row.get("initial_stop") or row.get("entry_stop") or row.get("stop")
+    try:
+        entry = float(entry)
+        stop = float(stop)
+    except (TypeError, ValueError):
+        return None
+    if entry <= 0:
+        return None
+    side = str(row.get("side") or "LONG").upper()
+    risk = (entry - stop) if "LONG" in side else (stop - entry)
+    if risk <= 0:
+        return None
+    return risk
+
+
+def _scoreable_r(row: Dict[str, Any]) -> Optional[float]:
+    """The row's R multiple, or None when it is missing or is not an R multiple at all.
+
+    Dropping (rather than clamping) is deliberate: a percent or dollar figure averaged in as R
+    silently inflates the mean, which is how the scoreboard ended up reporting +51R for a bucket
+    whose real expectancy is inside noise.
+    """
+    raw = row.get("pine_exit_r")
+    if raw is None:
+        raw = row.get("exit_r")
+    if raw is None:
+        raw = row.get("replay_r")
+    if raw is None:
+        return None
+    try:
+        r_val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if r_val != r_val or r_val in (float("inf"), float("-inf")):
+        return None
+    if _risk_per_share(row) is None:
+        return None
+    if abs(r_val) > MAX_PLAUSIBLE_R:
+        return None
+    return r_val
+
 
 def clear_bucket_stats_cache() -> None:
     """Clear in-memory 5-minute bucket stats cache."""
@@ -51,7 +103,7 @@ def _get_cached_scored_rows(db_path: Optional[Path] = None) -> List[Dict[str, An
         cur.execute(
             """
             SELECT * FROM intraday_signals
-            WHERE COALESCE(pine_exit_r, exit_r) IS NOT NULL
+            WHERE COALESCE(pine_exit_r, exit_r, replay_r) IS NOT NULL
             ORDER BY date ASC, entry_ts ASC
             """
         )
@@ -88,28 +140,38 @@ def _sanitize_veto_reason(reason: Optional[str]) -> str:
 
 
 def compute_group_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Calculate n, mean R, win rate, and stop rate for a list of signal dicts."""
+    """Calculate n, mean R, win rate, and stop rate for a list of signal dicts.
+
+    Rows are R-scored only when they carry a valid risk denominator and a plausible R (see
+    _scoreable_r). `n` counts every row handed in; `scored_n` counts what actually entered the mean.
+    """
     n = len(records)
     if n == 0:
-        return {"n": 0, "scored_n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0}
+        return {
+            "n": 0, "scored_n": 0, "mean_r": 0.0, "win_rate": 0.0, "stop_rate": 0.0,
+            "dropped_n": 0, "dropped_no_stop": 0, "dropped_implausible_r": 0,
+        }
 
     r_values = []
     wins = 0
     stops = 0
+    dropped_no_stop = 0
+    dropped_implausible = 0
     for r in records:
-        val = r.get("pine_exit_r")
-        if val is None:
-            val = r.get("exit_r") or r.get("replay_r")
-        if val is not None:
-            try:
-                r_num = float(val)
-                r_values.append(r_num)
-                if r_num > 0:
-                    wins += 1
-                elif r_num <= -0.9:
-                    stops += 1
-            except (ValueError, TypeError):
-                pass
+        r_num = _scoreable_r(r)
+        if r_num is None:
+            if r.get("pine_exit_r") is None and r.get("exit_r") is None and r.get("replay_r") is None:
+                continue
+            if _risk_per_share(r) is None:
+                dropped_no_stop += 1
+            else:
+                dropped_implausible += 1
+            continue
+        r_values.append(r_num)
+        if r_num > 0:
+            wins += 1
+        elif r_num <= -0.9:
+            stops += 1
 
     scored_n = len(r_values)
     mean_r = round(sum(r_values) / scored_n, 3) if scored_n > 0 else 0.0
@@ -122,6 +184,9 @@ def compute_group_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "mean_r": mean_r,
         "win_rate": win_rate,
         "stop_rate": stop_rate,
+        "dropped_n": dropped_no_stop + dropped_implausible,
+        "dropped_no_stop": dropped_no_stop,
+        "dropped_implausible_r": dropped_implausible,
     }
 
 
@@ -149,11 +214,7 @@ def lookup_bucket_stats(
             parts.append("Score NULL")
         prefix = f"{' · '.join(parts)} " if parts else ""
         return {
-            "n": 0,
-            "scored_n": 0,
-            "mean_r": 0.0,
-            "win_rate": 0.0,
-            "stop_rate": 0.0,
+            **compute_group_stats([]),
             "read": False,
             "text": f"{prefix}n=0, no read yet".strip(),
         }
@@ -162,11 +223,7 @@ def lookup_bucket_stats(
         score_num = float(score)
     except (ValueError, TypeError):
         return {
-            "n": 0,
-            "scored_n": 0,
-            "mean_r": 0.0,
-            "win_rate": 0.0,
-            "stop_rate": 0.0,
+            **compute_group_stats([]),
             "read": False,
             "text": "Score NULL n=0, no read yet",
         }
@@ -175,11 +232,7 @@ def lookup_bucket_stats(
         hour_num = int(hour)
     except (ValueError, TypeError):
         return {
-            "n": 0,
-            "scored_n": 0,
-            "mean_r": 0.0,
-            "win_rate": 0.0,
-            "stop_rate": 0.0,
+            **compute_group_stats([]),
             "read": False,
             "text": "n=0, no read yet",
         }
@@ -367,17 +420,11 @@ def generate_postmortem_stats(
 
         # Track Grade-A Go/No-Go condition
         if grade == "A":
-            r_val = row.get("pine_exit_r")
-            if r_val is None:
-                r_val = row.get("exit_r")
-            if r_val is not None:
-                try:
-                    r_f = float(r_val)
-                    grade_a_scored_pairs.append(r_f)
-                    d_str = row.get("date") or "UNKNOWN"
-                    by_day_grade_a[d_str].append(r_f)
-                except (ValueError, TypeError):
-                    pass
+            r_f = _scoreable_r(row)
+            if r_f is not None:
+                d_str = row.get("date") or "UNKNOWN"
+                grade_a_scored_pairs.append(r_f)
+                by_day_grade_a[d_str].append(r_f)
 
     # Go / No-Go calculation
     n_a = len(grade_a_scored_pairs)
@@ -399,10 +446,7 @@ def generate_postmortem_stats(
         st["read"] = st.get("scored_n", st.get("n", 0)) >= 30
         return st
 
-    n_scored = sum(
-        1 for r in rows
-        if r.get("exit_r") is not None or r.get("pine_exit_r") is not None or r.get("replay_r") is not None
-    )
+    n_scored = sum(1 for r in rows if _scoreable_r(r) is not None)
 
     return {
         "total_count": len(rows),

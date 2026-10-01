@@ -249,8 +249,11 @@ window.AppSwing = {
                 <th style="text-align:center; padding:8px 10px;">Stage</th>
                 <th style="text-align:center; padding:8px 10px;">Rev Zone</th>
                 <th style="text-align:center; padding:8px 10px;">PB Funnel</th>
+                <th style="text-align:center; padding:8px 10px;"
+                    title="Stop distance in ATR. Corpus median is 0.69 ATR and 65% of stops get hit; under 0.7 ATR the R:R is an artifact.">Stop ATR</th>
                 <th style="text-align:center; padding:8px 10px;">Proxy R:R</th>
-                <th style="text-align:center; padding:8px 10px;">Legacy Score</th>
+                <th style="text-align:center; padding:8px 10px;"
+                    title="Measured win rate / expectancy for this lane and PB state. Replaces the retired priority-tier badge.">Lane Prior</th>
                 <th style="text-align:left; padding:8px 10px;">Support Anchor</th>
                 <th style="text-align:center; padding:8px 10px;">Posture / Headroom</th>
                 <th style="text-align:center; padding:8px 10px;">Squeeze (SQZ)</th>
@@ -319,19 +322,39 @@ window.AppSwing = {
             revBadge = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; font-weight:700;">Z2 (${revLong.toFixed(1)})</span>`;
           }
 
-          // Legacy score: computed and shown for continuity, but it NO LONGER gates dispatch.
-          // Measured over 348,879 replayed bars: MEDIUM_PRIORITY is -0.063R era-stable, MONITOR
-          // without PB is -0.151R, and HIGH_PRIORITY's +0.417R is 99% PB with a -1R median.
-          const prioScore = c.priority_score !== undefined ? Number(c.priority_score) : 50.0;
-          const prioBadge = `<span class="badge" title="Legacy composite score — display only, no longer a dispatch gate" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">${prioScore.toFixed(0)}</span>`;
+          // The legacy composite score is gone from this column. Measured over 348,879 replayed bars,
+          // MEDIUM_PRIORITY is -0.063R era-stable and HIGH_PRIORITY's +0.417R is 99% PB with a
+          // -1R median, so the tier badge was displaying a proxy-R:R artifact as if it were
+          // skill. What is shown instead is the lane's measured prior.
+          const priorWin = c.display_prior_win !== undefined && c.display_prior_win !== null ? Number(c.display_prior_win) : null;
+          const priorEv = c.display_prior_ev !== undefined && c.display_prior_ev !== null ? Number(c.display_prior_ev) : null;
+          const priorBadge = priorWin === null
+            ? `<span style="color:var(--text-muted); font-size:11px;"
+                 title="No lane prior on file for this R:R tier and PB state.">–</span>`
+            : `<span class="badge" style="font-size:10.5px; font-weight:800; font-family:var(--font-mono);
+                        color:${priorEv > 0.05 ? '#10b981' : (priorEv < 0 ? '#f87171' : 'var(--text-muted)')};"
+                 title="Measured win rate and expectancy for this lane${c.pb_bucket === 'PB' ? ' with the PB funnel set' : ''} (post-2020 onsets).">
+                 ${priorWin.toFixed(0)}% / ${priorEv >= 0 ? '+' : ''}${priorEv.toFixed(2)}R</span>`;
 
           // PB funnel is the autonomous-dispatch gate (long side). proxy_rr is the tiebreak.
-          let pbBadge = `<span style="color:var(--text-muted); font-size:11px;">–</span>`;
+          let pbBadge = `<span style="color:var(--text-muted); font-size:11px;"
+                             title="PB funnel not measured on this bar.">– unmeasured</span>`;
           if (c.pb_funnel === true || c.pb_funnel === 1) {
             pbBadge = `<span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981; border:1px solid rgba(16,185,129,0.5); font-weight:800; font-size:11px;" title="PB funnel set — autonomous dispatch eligible (era-stable positive)">✅ PB</span>`;
           } else if (c.pb_funnel === false || c.pb_funnel === 0) {
-            pbBadge = `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:700; font-size:11px;" title="No PB funnel — every no-PB band measures stable negative">⛔ no PB</span>`;
+            pbBadge = `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:700; font-size:11px;" title="No PB funnel — post-2020 non-PB onsets measure +0.012R (noise). A measured exclusion.">⛔ no PB</span>`;
           }
+          // Stop width in ATR. A stop inside daily noise makes the R:R column meaningless.
+          const stopAtrVal = c.stop_width_atr !== undefined && c.stop_width_atr !== null ? Number(c.stop_width_atr) : null;
+          const stopAtrCell = stopAtrVal === null
+            ? `<span style="color:var(--text-muted); font-size:11px;" title="No ATR available for this candidate.">–</span>`
+            : (() => {
+                const tight = stopAtrVal < 0.7;
+                return `<span style="font-family:var(--font-mono); font-weight:${tight ? 800 : 600}; font-size:11px;
+                               color:${tight ? 'var(--amber)' : 'var(--text-main)'};"
+                             title="${tight ? 'Stop is inside daily noise (<0.7 ATR). Corpus median is 0.69 ATR and 65% of stops are hit — the R:R on this row is an artifact.' : 'Stop distance in ATR'}">
+                        ${stopAtrVal.toFixed(2)}${tight ? ' ⚠️' : ''}</span>`;
+              })();
           const proxyRr = c.proxy_rr !== undefined && c.proxy_rr !== null
             ? `<span class="badge" style="font-size:11px; font-family:var(--font-mono); color:${Number(c.proxy_rr) >= 3 ? '#10b981' : 'var(--text-muted)'};">${Number(c.proxy_rr).toFixed(2)}</span>`
             : `<span style="color:var(--text-muted); font-size:11px;">–</span>`;
@@ -346,8 +369,13 @@ window.AppSwing = {
           const compName = window.AppUtils ? AppUtils.getCompanyName(sym) : sym;
           const compTitle = (compName || sym).replace(/"/g, '&quot;');
 
+          // A non-PB long is a measured exclusion, not a candidate of equal standing. Grey the whole row
+          // so it cannot be read as one of the seven "LONG candidates" alongside the four PB names.
+          const rowDim = (c.eligible === false) ? 'opacity:0.42;' : '';
           html += `
-            <tr style="border-bottom:1px solid var(--border); transition:background 0.2s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
+            <tr style="border-bottom:1px solid var(--border); transition:background 0.2s; ${rowDim}"
+                ${c.eligible === false ? 'title="No PB funnel — a measured exclusion. Post-2020 non-PB onsets average +0.012R, which is noise."' : ''}
+                onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
               <td style="padding:8px 10px;">
                 <button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer;" title="${compTitle} ($${sym}) - Click to view live TradingView Chart" data-ticker="${sym}">$${sym}</button>
               </td>
@@ -358,8 +386,9 @@ window.AppSwing = {
               <td style="text-align:center; padding:8px 10px;">${stageBadge}</td>
               <td style="text-align:center; padding:8px 10px;">${revBadge}</td>
               <td style="text-align:center; padding:8px 10px;">${pbBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${stopAtrCell}</td>
               <td style="text-align:center; padding:8px 10px;">${proxyRr}</td>
-              <td style="text-align:center; padding:8px 10px;">${prioBadge}</td>
+              <td style="text-align:center; padding:8px 10px;">${priorBadge}</td>
               <td style="padding:8px 10px; color:var(--blue); font-weight:600;">
                 ${setup} (${sup})
                 ${c.pattern && c.pattern !== 'Support Coil' ? `<div style="font-size:11px; margin-top:2px; font-weight:700; color:#059669;" title="TA-Lib Bullish Candlestick Pattern">🕯️ ${c.pattern}</div>` : ''}
@@ -3396,16 +3425,32 @@ window.AppSwing = {
     const a = data.model_a || { total: 0, resolved: 0, brier_score: 0.0, accuracy_pct: 0.0 };
     const b = data.model_b || { total: 0, resolved: 0, brier_score: 0.0, accuracy_pct: 0.0 };
 
+    // 0.25 is the score of a coin flipping 50/50 and then being honest about it. Anything at or
+    // above it is not calibration, it is the absence of it -- so the badge says "no skill" until
+    // the model has both beaten the coin flip AND resolved enough forecasts for the comparison to
+    // mean anything (n >= 200). Labelling 0.253 at n=70 as "well-calibrated" is what turned a
+    // panel with no skill into a panel that looked like it had some.
+    const BRIER_COINFLIP = 0.25;
+    const BRIER_MIN_RESOLVED = 200;
+
     const getModelBadge = (score, resolved, total) => {
       if (!resolved || resolved === 0) {
         return `<span class="pill cyan" style="font-weight:600;">⏳ ${total} Active (Pending Maturity)</span>`;
       }
-      if (resolved < 5) {
-        return `<span class="pill amber" style="font-weight:600;">🧪 Early Sample (${resolved}/${total} Matured)</span>`;
+      if (resolved < BRIER_MIN_RESOLVED) {
+        // Reached only while resolved < BRIER_MIN_RESOLVED, so the message is unconditional here.
+        return `<span class="pill amber" style="font-weight:700;"
+          title="A Brier score of 0.25 is what an honest coin flip scores. ${resolved} of the ${BRIER_MIN_RESOLVED} resolved forecasts needed to call this skill are in; until they beat 0.25 there is no measurable calibration here."
+          >🎲 No skill yet (${resolved}/${BRIEF_MIN_RESOLVED}) · 0.25 = coin flip</span>`;
       }
-      if (score <= 0.15) return `<span class="pill green" style="font-weight:700;">⭐ Brier: ${score} (Superforecaster)</span>`;
-      if (score <= 0.25) return `<span class="pill cyan" style="font-weight:700;">✅ Brier: ${score} (Well-Calibrated)</span>`;
-      return `<span class="pill amber" style="font-weight:700;">⚠️ Brier: ${score} (High Variance)</span>`;
+      if (score < BRIER_COINFLIP) {
+        return `<span class="pill green" style="font-weight:700;"
+          title="Beats the 0.25 coin-flip baseline over ${resolved} resolved forecasts."
+          >⭐ Brier ${score} beats coin flip (n=${resolved})</span>`;
+      }
+      return `<span class="pill red" style="font-weight:700;"
+        title="At or above the 0.25 coin-flip baseline over ${resolved} resolved forecasts. No calibration skill."
+        >🚫 No skill vs 0.25 coin-flip Brier (n=${resolved})</span>`;
     };
 
     const getHitRateDisplay = (resolved, accuracy_pct) => {

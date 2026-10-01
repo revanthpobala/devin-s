@@ -243,7 +243,7 @@ def test_continuous_screener_run_scan_cycle():
     ]
     fake_short = []
 
-    with patch("src.screener.schwab_pre_move_scan.check_market_tide", return_value={"bullish": True}), \
+    with patch("src.screener.schwab_pre_move_scan.check_market_tide", return_value={"is_bullish": True, "available": True, "trend_str": "BULLISH (TIDE ON)"}), \
          patch("src.screener.schwab_pre_move_scan.run_schwab_pre_move_scan", return_value={"long": fake_long, "short": fake_short}), \
          patch("src.screener.schwab_pre_move_scan.save_survivors_manifest") as mock_save_long, \
          patch("src.screener.schwab_pre_move_scan.save_short_manifest") as mock_save_short, \

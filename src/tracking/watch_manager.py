@@ -17,7 +17,7 @@ from src import config
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = config.BASE_DIR / "data" / "research_watch.db"
+DB_PATH = config.research_watch_db_path()
 _db_lock = threading.RLock()
 
 

@@ -14,10 +14,19 @@ from src.tracking.alert_db import (
     get_eastern_date_str,
 )
 from src.tracking.suggestion_scorer import get_main_record_stats
+from src.tracking import rr_config
+from src.logic.setup_lane_map import inbox_row_mapping
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/desk", tags=["desk"])
+
+# Measured and not configurable: the corpus median stop is 0.69 ATR and 65% of stops get hit, so
+# anything narrower is inside daily noise and inflates R:R without adding information.
+STOP_ATR_NOISE_FLOOR = rr_config.STOP_ATR_MIN
+
+# Single definition of "is this a coverage gap", shared with the OPS tier.
+from src.tracking.ops_alerts import CORE_SYMBOLS, is_test_ticker  # noqa: E402,F401
 
 
 class JournalNotesUpdate(BaseModel):
@@ -76,6 +85,53 @@ def refresh_morning_briefing(date: Optional[str] = None):
 
     date_str = date or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
     return generate_morning_briefing(target_date=date_str, force_live_quotes=True)
+
+
+class RRConfigUpdate(BaseModel):
+    """Partial update. Omitted keys keep their current value."""
+    rr_market_min: Optional[float] = None
+    rr_hi_rr: Optional[float] = None
+
+
+@router.get("/rr-config")
+def get_rr_config_endpoint():
+    """Current R:R thresholds plus bounds, defaults, and what is deliberately not tunable."""
+    return rr_config.as_ui_payload()
+
+
+@router.post("/rr-config")
+def set_rr_config_endpoint(req: RRConfigUpdate):
+    """Persist new R:R thresholds. Applies to the desk and to the ENTRY push gate immediately."""
+    try:
+        updated = rr_config.set_rr_config(**{
+            k: v for k, v in req.model_dump().items() if v is not None
+        })
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    payload = rr_config.as_ui_payload()
+    payload["updated"] = updated
+    logger.info("R:R thresholds updated via UI: %s", updated)
+    return payload
+
+
+@router.post("/rr-config/preset/{name}")
+def apply_rr_preset_endpoint(name: str):
+    """Apply a named preset (1:1 / 1:2 / 1:3 / 1:5)."""
+    try:
+        updated = rr_config.apply_preset(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    payload = rr_config.as_ui_payload()
+    payload["updated"] = updated
+    logger.info("R:R preset applied via UI: %s -> %s", name, updated)
+    return payload
+
+
+@router.post("/rr-config/reset")
+def reset_rr_config_endpoint():
+    """Back to the measured defaults."""
+    rr_config.reset_rr_config()
+    return {**rr_config.as_ui_payload(), "updated": rr_config.get_rr_config()}
 
 
 @router.get("/today")
@@ -201,6 +257,7 @@ def get_today():
                 watch_list = []
                 cut_list = []
                 needs_you = []
+                unmeasured = []
                 missing_symbols = set()
                 processed_syms = set()
 
@@ -257,6 +314,51 @@ def get_today():
                     else:
                         r["stop_width_atr"] = None
 
+                    # Measured lane, split by the PB bit when the split was measured.
+                    r["setup_lane"] = r.get("setup_lane") or None
+                    r["pb_bucket"] = _pb_bucket(r.get("pb_funnel"))
+
+                    # R:R measured at the market. rr_at_market_at_signal is only persisted when the signal bar carried
+                    # a spot (7 of 177 rows today), so when it is absent we compute the same ratio
+                    # from the live print and the persisted stop/target, and say which one it is.
+                    # A row with neither is genuinely unmeasured and must not be ranked.
+                    rr_at_signal = r.get("rr_at_market_at_signal")
+                    try:
+                        rr_at_signal = float(rr_at_signal) if rr_at_signal else None
+                    except (TypeError, ValueError):
+                        rr_at_signal = None
+
+                    if rr_at_signal is not None:
+                        rr_at_market, rr_source = rr_at_signal, "signal"
+                    elif last_px and stop and last_px > stop and target and target > last_px:
+                        rr_at_market = round((target - last_px) / (last_px - stop), 2)
+                        rr_source = "live"
+                    else:
+                        rr_at_market, rr_source = None, None
+
+                    r["rr_at_market_at_signal"] = rr_at_signal
+                    r["rr_at_market"] = rr_at_market
+                    r["rr_at_market_source"] = rr_source
+                    r["measured"] = bool(r["setup_lane"] and rr_at_market is not None)
+
+                    # setup_lane is PERSISTED at triage time by the Pine's own thresholds, so it
+                    # does not follow a UI change to the R:R floor. Re-tier the R:R lanes from the
+                    # live number so the badge agrees with the bucket the row just landed in;
+                    # CODE20 / OVERSOLD / RSI2 / WATCH_SHADOW keep their identity untouched.
+                    r["lane"] = _live_lane_tier(r["setup_lane"], rr_at_market)
+                    r["lane_persisted"] = r["setup_lane"]
+                    prior_win, prior_ev = _lane_priors(r["lane"], r.get("pb_funnel"))
+                    r["lane_prior_win"] = prior_win
+                    r["lane_prior_ev"] = prior_ev
+
+                    # A stop inside daily noise makes any R:R an artifact. The corpus median is
+                    # 0.69 ATR and 65% of stops get hit; 0.2 ATR produces "RR 14" and nothing else.
+                    r["stop_tight"] = bool(
+                        r["stop_width_atr"] is not None and r["stop_width_atr"] < STOP_ATR_NOISE_FLOOR
+                    )
+                    # Sorting on raw RR promotes exactly these rows. Never sort on it.
+                    r["sort_rr"] = -1.0 if r["stop_tight"] else (rr_at_market or -1.0)
+
                     live_rr = None
                     flag = None
                     if last_px and last_px > stop and target and target > last_px:
@@ -283,13 +385,28 @@ def get_today():
                     r["llm_playbook"] = local.get("llm_playbook") or r.get("llm_playbook") or ""
 
                     if "PASS" in local_dec:
-                        if has_real_deep and deep_status == "COMPLETED":
+                        if not r["measured"]:
+                            # No lane and no measured R:R means nothing on this row can be acted
+                            # on. It goes to its own collapsed group rather than pretending.
+                            unmeasured.append(r)
+                        elif has_real_deep and deep_status == "COMPLETED":
                             if status in ("IN_ZONE", "IN_TRADE") or near:
                                 actionable.append(r)
                             else:
                                 stalking.append(r)
-                        else:
+                        elif rr_at_market is not None and rr_at_market >= rr_config.min_rr():
+                            # Needs-you is a work queue, not a backlog. A PASS with nothing
+                            # actionable in it is noise on the one screen you read before the open.
                             needs_you.append(r)
+                        else:
+                            # Distinguish "never measured" from "measured, but under the bar you
+                            # have dialled in". Collapsing both under one label misrepresents a
+                            # setup that simply missed your threshold.
+                            r["unmeasured_reason"] = (
+                                "below_bar" if rr_at_market is not None else
+                                "no_rr" if not r.get("setup_lane") else "no_lane"
+                            )
+                            unmeasured.append(r)
                     elif "WATCH" in local_dec:
                         watch_list.append(r)
                     elif "CUT" in local_dec:
@@ -331,10 +448,22 @@ def get_today():
                         "live_rr": None,
                         "live_rr_flag": None,
                         "stop_width_atr": None,
+                        # An alert with no suggestion row has no lane and no measured R:R.
+                        "setup_lane": None,
+                        "lane": None,
+                        "lane_prior_win": None,
+                        "lane_prior_ev": None,
+                        "pb_bucket": "unmeasured",
+                        "rr_at_market_at_signal": None,
+                        "rr_at_market": None,
+                        "rr_at_market_source": None,
+                        "measured": False,
+                        "stop_tight": False,
+                        "sort_rr": -1.0,
                     }
 
                     if "PASS" in local_dec:
-                        needs_you.append(item)
+                        unmeasured.append(item)
                     elif "WATCH" in local_dec:
                         watch_list.append(item)
                     elif "CUT" in local_dec:
@@ -356,10 +485,19 @@ def get_today():
                         ib_deep_status = "COMPLETED"
                     else:
                         ib_deep_status = j_st
+                    setup_name = local.get("setup") or ""
+                    lane_map = inbox_row_mapping(setup_name)
                     inbox.append({
                         "ticker": local.get("ticker") or sym.upper(),
                         "date": local.get("date") or today_str,
-                        "setup": local.get("setup") or "",
+                        "setup": setup_name,
+                        # A+ Trend Long / Early Action Long are never labelled "measured".
+                        "lane": lane_map.get("lane"),
+                        "setup_tag": lane_map.get("tag"),
+                        "setup_tag_label": lane_map.get("label"),
+                        "setup_prior_win": lane_map.get("prior_win"),
+                        "setup_prior_ev": lane_map.get("prior_ev"),
+                        "measured": lane_map.get("tag") == "measured",
                         "llm_decision": local.get("llm_decision") or "",
                         "local_score": score_val,
                         "llm_playbook": (local.get("llm_playbook") or "")[:120],
@@ -369,21 +507,50 @@ def get_today():
                         "last_price": (s_match["last_price"] if s_match else None) or local.get("alert_price") or local.get("market_price"),
                     })
 
+                # The inbox is a list of unmeasured names wearing the same typography as measured
+                # ones. Partition it so the counts are honest.
+                inbox_measured = [r for r in inbox if r.get("measured")]
+                inbox_unmeasured = [r for r in inbox if not r.get("measured")]
+
                 actionable.sort(key=lambda x: (
                     1 if x.get("status") == "IN_TRADE" else
                     2 if x.get("status") == "IN_ZONE" else 3,
-                    -(x.get("live_rr") if x.get("live_rr") is not None else -9999.0)
+                    # sort_rr demotes stop-inside-noise rows below every measurable one, so a
+                    # "RR 250" off a 0.02-ATR stop can never sit at the top of the desk.
+                    -(x.get("sort_rr") if x.get("sort_rr") is not None else -9999.0),
                 ))
+                unmeasured.sort(key=lambda x: (x.get("ticker") or ""))
+
+                # Fixture tickers are not coverage gaps. GOODTICKER sat in missing_symbols next
+                # to SPY/QQQ/AMZN and made the list unreadable. They are separated out rather than
+                # counted; ops_alerts.purge_test_rows() removes the underlying rows on request.
+                missing_all = sorted(missing_symbols)
+                missing_test = sorted(s for s in missing_all if is_test_ticker(s))
+                missing_real = [s for s in missing_all if not is_test_ticker(s)]
+                missing_core = sorted(s for s in missing_real if s.upper() in CORE_SYMBOLS)
 
                 return {
                     "found": found,
                     "inbox": inbox,
+                    "inbox_measured_count": len(inbox_measured),
+                    "inbox_unmeasured_count": len(inbox_unmeasured),
                     "actionable": actionable,
                     "stalking": stalking,
                     "watch": watch_list,
                     "cut": cut_list,
                     "needs_you": needs_you,
-                    "missing_symbols": list(missing_symbols),
+                    "unmeasured": unmeasured,
+                    "missing_symbols": missing_real,
+                    "missing_symbols_excluded_test_rows": missing_test,
+                    "missing_symbols_core_gaps": missing_core,
+                    # The card labels are generated server-side, so they always state the
+                    # threshold actually in force rather than a hardcoded ">= 2".
+                    "rr_gates": rr_config.as_ui_payload(),
+                    # Rows held back purely because of the dial, split out so the unmeasured group
+                    # does not imply they were never measured.
+                    "below_bar_count": sum(
+                        1 for r in unmeasured if r.get("unmeasured_reason") == "below_bar"
+                    ),
                     "coverage": {
                         "found_count": len(found_rows) if found_rows else 0,
                         "inbox_count": len(inbox),
@@ -392,7 +559,11 @@ def get_today():
                         "watch_count": len(watch_list),
                         "cut_count": len(cut_list),
                         "needs_you_count": len(needs_you),
-                        "missing_symbols_count": len(missing_symbols),
+                        "unmeasured_count": len(unmeasured),
+                        "measured_count": len(actionable) + len(stalking) + len(needs_you),
+                        "missing_symbols_count": len(missing_real),
+                        "missing_symbols_test_rows_excluded": len(missing_test),
+                        "missing_symbols_core_gaps": len(missing_core),
                     },
                 }
     except Exception as e:
@@ -404,6 +575,24 @@ from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior
 
 # setup_lane -> triage reason, so the PB-split priors can be resolved from a ledger row.
 _SETUP_LANE_TO_REASON = {v: k for k, v in LANE_TO_SETUP_LANE.items()}
+
+_RR_LANES = ("RR_SETUP", "RR_SETUP_STRONG")
+
+
+def _live_lane_tier(setup_lane: Optional[str], rr_at_market: Optional[float]) -> Optional[str]:
+    """Re-tier an R:R lane from the live R:R and the live thresholds.
+
+    Non-R:R lanes (CODE20, OVERSOLD, RSI2, WATCH_SHADOW) are returned as-is: their tier is a
+    property of the setup, not of the current dial. An R:R lane with no measurable R:R also stays
+    as persisted, because there is nothing to re-tier it with.
+    """
+    if setup_lane not in _RR_LANES or rr_at_market is None:
+        return setup_lane
+    if rr_at_market >= rr_config.hi_rr():
+        return "RR_SETUP_STRONG"
+    if rr_at_market >= rr_config.min_rr():
+        return "RR_SETUP"
+    return None
 
 
 def _lane_priors(setup_lane: Optional[str], pb_funnel) -> Tuple[Optional[float], Optional[float]]:

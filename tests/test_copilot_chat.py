@@ -1,5 +1,4 @@
 import pytest
-import uuid
 from datetime import datetime, timezone, timedelta
 from run_ui import (
     _init_db,
@@ -12,6 +11,18 @@ from run_ui import (
     _get_company_name,
     _build_copilot_context_and_tools,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_copilot_db(tmp_path, monkeypatch):
+    """Point copilot chat persistence at a throwaway database.
+
+    get_db() resolves data/research_watch.db by default, so a test run used to write rows into the
+    live database. Combined with a uuid4() session id, every run also left a different orphan
+    session behind -- the suite accumulated debris in production data.
+    """
+    monkeypatch.setenv("STOCK_DB_PATH", str(tmp_path / "copilot_test.db"))
+    _init_db()
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +44,10 @@ def mock_copilot_network_services(monkeypatch):
 
 def test_copilot_chat_persistence_and_sessions():
     _init_db()
-    sid = f"test_session_{uuid.uuid4().hex[:8]}"
+    # Deterministic session id. A uuid4 here meant every run wrote a different session and, if the
+    # cleanup at the end failed or the run was interrupted, left it behind forever in whatever DB
+    # was open. Fixed id + explicit delete makes the test idempotent and re-runnable.
+    sid = "test_session_persistence"
     ticker = "AVGO"
     date_str = "2026-09-01"
 
@@ -178,7 +192,6 @@ def test_copilot_chat_request_multimodal_fields():
 
 
 def test_unified_options_chain_and_memory_cache(monkeypatch):
-    import time
     from src.clients import options_client
     from src.clients.options_client import fetch_options_chain_tool, _CHAIN_MEM_CACHE
 
@@ -190,22 +203,27 @@ def test_unified_options_chain_and_memory_cache(monkeypatch):
     monkeypatch.setattr(options_client, "fetch_targeted_chain", lambda *args, **kwargs: fake_table)
     monkeypatch.setattr(options_client, "_alpaca_underlying_last", lambda sym: 180.0)
 
-    # Call 1: Fetches unified chain
-    t0 = time.time()
+    # Call 1: fetches the unified chain.
     chain = fetch_options_chain_tool("GOOGL", direction="BOTH", min_dte=20, max_dte=50)
-    d1 = time.time() - t0
     assert chain is not None
     assert "Call Bid/Ask" in chain or "Call" in chain
     assert "Put Bid/Ask" in chain or "Put" in chain
-    # Verify compact size: well under 5,000 chars (not 40k!)
+    # Compact size: well under 5,000 chars (not 40k!)
     assert len(chain) < 5000
 
-    # Call 2: In-memory cache hit (<10ms)
-    t1 = time.time()
+    # Call 2: served from the in-memory cache.
+    #
+    # This used to assert the cache hit took under 50ms of wall clock. That is a measurement of
+    # the machine, not of the code: on a loaded CI box or under a debugger it fails with nothing
+    # wrong with the cache. What matters is that the fetcher was NOT called a second time.
+    calls = []
+    monkeypatch.setattr(
+        options_client, "fetch_targeted_chain",
+        lambda *a, **k: (calls.append(1), fake_table)[1],
+    )
     cached_chain = fetch_options_chain_tool("GOOGL", direction="BOTH", min_dte=20, max_dte=50)
-    d2 = time.time() - t1
     assert cached_chain == chain
-    assert d2 < 0.05  # Instant memory cache hit
+    assert calls == [], "the second call must be served from memory, not re-fetched"
 
 
 

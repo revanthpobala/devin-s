@@ -370,9 +370,16 @@ def validate_levels(
             reasons.append(
                 f"planned R:R {rr:.4f} to T1 and {rr_t2:.4f} to T2 below floor {LEVEL_RR_FLOOR}"
             )
-        if entry_type in ("MARKET", "AT_MARKET") and rr_at_market < 2.0:
+        # The at-market floor follows the UI-tunable gate (src/tracking/rr_config) so this check
+        # and the desk/ENTRY gate cannot disagree about what "actionable" means. Only the
+        # at-market leg is tunable; LEVEL_RR_FLOOR above is a different quantity (planned R:R from
+        # the zone low to T1/T2) and stays pinned.
+        from src.tracking.rr_config import min_rr as at_market_floor
+
+        if entry_type in ("MARKET", "AT_MARKET") and rr_at_market < at_market_floor():
             reasons.append(
-                f"at-market R:R {rr_at_market:.2f} below 2.0 floor for lane {setup_lane or 'DEFAULT'}"
+                f"at-market R:R {rr_at_market:.2f} below {at_market_floor():.2f} floor "
+                f"for lane {setup_lane or 'DEFAULT'}"
             )
 
     # ── 5. Target 1 ceiling vs 21b Expected Move (skip for all measured lanes & RSI2) ──

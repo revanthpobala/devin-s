@@ -185,7 +185,7 @@ def build_daily_alerts_block(ticker: str, raw_dir: Path) -> tuple[str, list[str]
     """
     alerts_list = []
     try:
-        watch_db = config.BASE_DIR / "data" / "research_watch.db"
+        watch_db = config.research_watch_db_path()
         if watch_db.exists():
             with sqlite3.connect(str(watch_db)) as wconn:
                 wcur = wconn.cursor()

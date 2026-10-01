@@ -1,5 +1,7 @@
 import time
 from pathlib import Path
+from unittest.mock import patch
+
 from src.data.artifact_cache import ArtifactCache
 
 
@@ -45,7 +47,10 @@ def test_artifact_ttl_expiration(tmp_path: Path):
     # Fresh hit
     assert cache.get(date_str, ticker, artifact_type, ttl_seconds=10) == {"price": 150.0}
 
-    # Expired hit (ttl_seconds=0 with small sleep or manual mock)
-    # When ttl_seconds is 0, any age > 0 is expired
-    time.sleep(0.05)
-    assert cache.get(date_str, ticker, artifact_type, ttl_seconds=0) is None
+    # Expired hit. Driven by a frozen clock rather than time.sleep: a sleep of 50ms is a coin
+    # flip on a loaded machine, and if the filesystem stamps a coarse mtime the whole elapsed
+    # time can round to zero and the assertion below fails for no real reason.
+    with patch("src.data.artifact_cache.time.time", return_value=time.time() + 3600):
+        assert cache.get(date_str, ticker, artifact_type, ttl_seconds=10) is None
+        # ttl=0 expires everything with any age at all
+        assert cache.get(date_str, ticker, artifact_type, ttl_seconds=0) is None

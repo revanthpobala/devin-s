@@ -11,6 +11,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LOGS_DIR = BASE_DIR / "logs"
 
 
+def research_watch_db_path() -> Path:
+    """Path of the shared cockpit/watch database.
+
+    STOCK_DB_PATH overrides it. The override exists so that a test run cannot write into trading
+    data -- and the override has to live here, not in a consumer, because six modules used to build
+    the path inline as `config.BASE_DIR / "data" / "research_watch.db"`. Patching one module's
+    DB_PATH left the other five pointing at production, which is how a full pytest run came to
+    mutate data/research_watch.db while every test passed.
+    """
+    override = os.getenv("STOCK_DB_PATH")
+    return Path(override) if override else (BASE_DIR / "data" / "research_watch.db")
+
+
+def alerts_db_path() -> Path:
+    """Path of the alerts / intraday-signals database. ALERT_DB_PATH overrides it."""
+    override = os.getenv("ALERT_DB_PATH")
+    return Path(override) if override else (BASE_DIR / "data" / "trading_alerts.db")
+
+
 def get_python_exe() -> str:
     """Return absolute path to virtual environment python executable (macOS + Windows)."""
     import sys

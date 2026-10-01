@@ -15,7 +15,7 @@ logging.basicConfig(
 
 def _ensure_job_registered(ticker: str | None, date_str: str, job_id: str | None = None) -> str | None:
     """Ensure any standalone/CLI research job is tracked in SQLite for the Cockpit UI."""
-    db_path = config.BASE_DIR / "data" / "research_watch.db"
+    db_path = config.research_watch_db_path()
     if not db_path.exists():
         return None
     try:
@@ -76,7 +76,7 @@ def _mark_job_complete(job_id: str | None, success: bool = True, error_msg: str 
     """Mark the tracked research job as COMPLETED or FAILED upon process exit."""
     if not job_id:
         return
-    db_path = config.BASE_DIR / "data" / "research_watch.db"
+    db_path = config.research_watch_db_path()
     if not db_path.exists():
         return
     try:

@@ -112,8 +112,10 @@ def client(tmp_path, monkeypatch):
 
             cursor.execute("INSERT INTO rejected_plans (ticker, date, side, reasons) VALUES ('REJ', '2026-09-24', 'LONG', 'Low R:R')", ())
 
-            cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, updated_at) VALUES ('MSFT', ?, 'IN_ZONE', 'ENTER', 0.5, ?)", (today, today))
-            cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, updated_at) VALUES ('AAPL', ?, 'STALKING', 'STALK', 3.0, ?)", (today, today))
+            # last_price drives RR@mkt: MSFT at 105 against stop 95 / target 130 gives 2.5, which
+            # is what earns it a place in needs-you rather than the unmeasured group.
+            cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, last_price, updated_at) VALUES ('MSFT', ?, 'IN_ZONE', 'ENTER', 0.5, 105.0, ?)", (today, today))
+            cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, last_price, updated_at) VALUES ('AAPL', ?, 'STALKING', 'STALK', 3.0, 205.0, ?)", (today, today))
 
             cursor.execute("INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date) VALUES ('job-1', 'AAPL', 'full', 'DONE', 'COMPLETED', ?, ?)", (datetime.now().isoformat(), today))
 

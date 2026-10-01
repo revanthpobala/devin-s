@@ -75,8 +75,32 @@ HV_HIGH = 35.9       # HV20 80th percentile (ann %; measured threshold)
 # it is deliberately NOT used -- the same standard that rejected PRIME and code 20 for breadth.
 # Win rate FALLS as the ratio rises (34% at >=2, 23% at >=5): the edge is payoff, not hit rate.
 # User specification: R:R >= 1.5 is accepted for the PASS lane.
-RR_MKT_PASS = float(os.getenv("RR_MKT_PASS", "2.0"))
-RR_MKT_STRONG = 3.0
+# Both thresholds now come from src/tracking/rr_config, so the desk, the ENTRY push gate, the
+# screener and this triage step read ONE number. They were separate literals here (2.0 / 3.0),
+# which meant a persisted setup_lane was tiered at 3.0 while every other surface showed 5.0 -- so
+# a row at R:R 4 read as a non-strong lane everywhere except its own persisted column.
+# The legacy env overrides still win when explicitly set.
+_RR_PASS_ENV = os.getenv("RR_MKT_PASS")
+_RR_STRONG_ENV = os.getenv("RR_MKT_STRONG")
+
+# Module mirrors for existing importers. Read min_rr()/hi_rr() at the decision site below for the
+# live value; these are the values as of import.
+from src.tracking.rr_config import (  # noqa: E402
+    STOP_ATR_MIN,   # noqa: F401  re-exported: the measured stop-width floor lives there now
+    hi_rr,
+    min_rr,
+)
+
+RR_MKT_PASS = float(_RR_PASS_ENV) if _RR_PASS_ENV else min_rr()
+RR_MKT_STRONG = float(_RR_STRONG_ENV) if _RR_STRONG_ENV else hi_rr()
+
+# The R:R band a triage row must clear to PASS, and the band that makes it the STRONG tier.
+def rr_pass_floor() -> float:
+    return float(_RR_PASS_ENV) if _RR_PASS_ENV else min_rr()
+
+
+def rr_strong_floor() -> float:
+    return float(_RR_STRONG_ENV) if _RR_STRONG_ENV else hi_rr()
 # Set RR_LANE_ENABLED=0 to restore code-20-only PASS behaviour for an A/B comparison.
 RR_LANE_ENABLED = os.getenv("RR_LANE_ENABLED", "1") not in ("0", "false", "False")
 
@@ -853,7 +877,7 @@ def run_data_window_filter(
     elif W["target"] is None and W["chased"] and not is_rsi2_setup:
         triage, reason = "CUT", "chasing_without_target"  # no target: no plan to construct
     # Code 20 (REVERSAL BUY): requires at-market R:R >= 2.0 per Phase 6
-    elif act_code == 20 and rr_mkt is not None and rr_mkt >= RR_MKT_PASS:
+    elif act_code == 20 and rr_mkt is not None and rr_mkt >= rr_pass_floor():
         triage = "PASS"
         reason = "reversal_buy_lane"
     # THE BREADTH-VERIFIED LANE. Mirrors the chart's slate/teal callout exactly: in long zone AND
@@ -864,11 +888,11 @@ def run_data_window_filter(
         and not no_fresh_long
         and W["in_zone"]
         and rr_mkt is not None
-        and rr_mkt >= RR_MKT_PASS
+        and rr_mkt >= rr_pass_floor()
         and act_code not in _ACTION_SOFT_CAUTION_CODES
     ):
         triage = "PASS"
-        reason = "rr_at_market_lane_strong" if rr_mkt >= RR_MKT_STRONG else "rr_at_market_lane"
+        reason = "rr_at_market_lane_strong" if rr_mkt >= rr_strong_floor() else "rr_at_market_lane"
     # RSI2 branch ranked below at-market R:R lane; requires not no_fresh_long per Phase 6
     elif is_rsi2_setup and not no_fresh_long:
         triage = "PASS"
@@ -933,7 +957,7 @@ def run_data_window_filter(
     elif ext_z_self <= -1.5 or (W["rev"] or 0.0) >= 10:
         # Washed out: put side, and P(DN touch) < P(UP touch) at every distance (30.2% vs 38.2%).
         structure = "cash_secured_put_or_put_credit" if premium_rich else "put_side_watch"
-    elif premium_rich and (W["chased"] or W["missed"] or (rr_mkt is not None and rr_mkt < RR_MKT_PASS)):
+    elif premium_rich and (W["chased"] or W["missed"] or (rr_mkt is not None and rr_mkt < rr_pass_floor())):
         # Rich premium on a dead-geometry / chased bar: call credit or covered call
         structure = "call_credit_or_covered_call"
     elif iv_rank is not None and iv_rank <= 20:

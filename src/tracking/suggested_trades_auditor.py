@@ -24,6 +24,114 @@ logger = logging.getLogger("suggested_trades_auditor")
 _AUDIT_CACHE: Dict[str, tuple[float, dict]] = {}
 _AUDIT_CACHE_TTL = 30  # 30 seconds
 
+_MULTIPLIER = 100
+
+
+def _mark_vertical_pnl(
+    struct: str,
+    mark_spot: float,
+    long_k: float,
+    short_k: float,
+    debit: float,
+    exit_px: float,
+    fill_val: float,
+    side: str,
+    max_loss: float,
+    max_profit: float,
+) -> float:
+    """P&L for a defined-risk vertical, per contract, marked off the spread's own value.
+
+    The old path scaled the UNDERLYING's point move by max_loss and clamped. That is only coherent
+    when the structure is worth at most its risk; when it is not, the clamp saturates and every
+    adverse tick reads as an identical max-loss -- including for a spread sitting at full width,
+    which is a maximum gain.
+
+    Without an options chain the honest mark is the value floor: intrinsic at worst, width at best,
+    with the point where it saturating called out via `notes` by the caller.
+    """
+    if long_k <= 0 or short_k <= 0 or debit <= 0:
+        return 0.0
+
+    from src.logic.strike_validator import vertical_mark_value
+
+    is_call = "CALL" in (struct or "").upper()
+    mark = vertical_mark_value(mark_spot, long_k, short_k, debit, is_call, _MULTIPLIER)
+    pnl = round(mark - debit * _MULTIPLIER, 2)
+
+    # Clamp to the structure's own payoff. `abs(max_profit or 0.0) or pnl` used to skip the upper
+    # clamp entirely whenever max_profit was 0 or unset, so an unbounded mark could be booked.
+    risk = abs(debit * _MULTIPLIER)
+    payoff = abs(max_profit)
+    payoff = risk + payoff if payoff <= 0 else payoff
+    return max(-risk, min(pnl, payoff))
+
+
+def revalidate_impossible_verticals() -> int:
+    """Quarantine ledger rows written before the creation-time spread gate existed.
+
+    Rows already in `suggested_trades_audit` were scored by the old underlying-scaled clamp, so a
+    spread priced off a stale quote reads as a max-loss trade today. Re-run the same gate and mark
+    the failures INVALID_GEOMETRY -- the evaluation loop already skips that status, so they leave
+    the R statistics instead of sitting in them as fabricated losses.
+    """
+    from src.logic.strike_validator import validate_spread_geometry
+
+    quarantined = 0
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                rows = cursor.execute(
+                    """
+                    SELECT id, trade_structure, last_price, entry_price,
+                           long_strike, short_strike, target_debit
+                    FROM suggested_trades_audit
+                    WHERE trade_type = 'OPTIONS'
+                      AND long_strike > 0 AND short_strike > 0
+                      AND COALESCE(status, '') != 'INVALID_GEOMETRY'
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return 0
+
+            for r in rows:
+                t = dict(r)
+                # Price the gate at the ENTRY, never at today's spot. The strikes and the debit
+                # were chosen against the entry quote; re-pricing them at a later print invents
+                # geometry failures on rows that were fine when they were opened, and quarantining
+                # nulls r_multiple permanently with no way back.
+                spot = float(t.get("entry_price") or 0.0)
+                ok, _defects = validate_spread_geometry(
+                    t.get("trade_structure") or "",
+                    spot,
+                    t.get("long_strike"),
+                    t.get("short_strike"),
+                    t.get("target_debit"),
+                )
+                if ok:
+                    continue
+                cursor.execute(
+                    """
+                    UPDATE suggested_trades_audit
+                    SET status = 'INVALID_GEOMETRY',
+                        outcome_notes = ?,
+                        r_multiple = NULL,
+                        dollar_pnl = 0.0
+                    WHERE id = ?
+                    """,
+                    (
+                        "QUARANTINED: impossible vertical geometry (strikes vs spot, or "
+                        "intrinsic > debit). Row predates the creation-time gate.",
+                        t["id"],
+                    ),
+                )
+                quarantined += 1
+            conn.commit()
+
+    if quarantined:
+        logger.warning("Quarantined %d impossible options vertical(s) from the audit ledger", quarantined)
+    return quarantined
+
 
 def sync_suggested_trades_from_watch_targets() -> int:
     """
@@ -38,6 +146,7 @@ def sync_suggested_trades_from_watch_targets() -> int:
             targets = cursor.execute("SELECT * FROM watch_targets").fetchall()
 
             synced_count = 0
+            rejected_geometry: List[str] = []
             for row in targets:
                 t = dict(row)
                 ticker = (t.get("ticker") or "").strip().upper()
@@ -143,7 +252,38 @@ def sync_suggested_trades_from_watch_targets() -> int:
                     opt_primary = 0
                     sh_primary = 0
 
+                # Vertical spreads get a creation-time price gate. check_geometry above validates
+                # the UNDERLYING's levels; it cannot see that the strikes were picked off a
+                # different quote than the entry, which is how a 30-wide AMD spread with a 105
+                # intrinsic landed in the ledger as a -$1270 max-loss trade.
+                opt_defects: List[str] = []
+                if (is_income or has_actionable_options) and opt_struct:
+                    # Gate on HAVING TWO STRIKES, not on the word "SPREAD". A structure named
+                    # BULL_CALL_VERTICAL skipped validation entirely that way -- and the validator
+                    # now refuses unknown or multi-leg structures itself, so this is the right
+                    # place to hand it everything two-legged.
+                    if long_strike > 0 and short_strike > 0:
+                        from src.logic.strike_validator import validate_spread_geometry
+                        # Price the structure at the entry the row will be stored with, falling back
+                        # to the live print. Entry is the quote the strikes were meant to describe.
+                        opt_defects = validate_spread_geometry(
+                            opt_struct,
+                            entry_price or last_price,
+                            long_strike,
+                            short_strike,
+                            target_debit,
+                        )[1]
+                        if opt_defects:
+                            status = "INVALID_GEOMETRY"
+                            opt_primary = 0
+                            sh_primary = 0
+
                 # 1. Insert/Update Options / Income Trade
+                #
+                # Defective verticals are NOT skipped here. `and not opt_defects` made the whole
+                # insert unreachable for exactly the rows the gate rejects, so a bad structure
+                # vanished instead of being recorded as INVALID_GEOMETRY -- invisible to the ledger,
+                # to the quarantine counts, and to anyone asking why a candidate vanished.
                 if is_income or has_actionable_options:
                     struct_clean = opt_struct.replace("_", " ").upper()
                     strike_label = f" ({long_strike:g}/{short_strike:g})" if (long_strike and short_strike) else ""
@@ -197,6 +337,18 @@ def sync_suggested_trades_from_watch_targets() -> int:
                         ),
                     )
                     synced_count += 1
+                    if opt_defects:
+                        # Recorded and flagged, with the reasons on the row itself, rather than
+                        # silently never inserted.
+                        cursor.execute(
+                            "UPDATE suggested_trades_audit SET outcome_notes = ? "
+                            "WHERE ticker = ? AND date = ? AND trade_structure = ?",
+                            (
+                                "QUARANTINED: " + " | ".join(opt_defects),
+                                ticker, date_val, opt_struct.upper(),
+                            ),
+                        )
+                        rejected_geometry.append(f"{ticker} {opt_struct}")
 
                 # 2. Insert/Update Equity Shares Trade
                 if is_shares_actionable:
@@ -241,6 +393,11 @@ def sync_suggested_trades_from_watch_targets() -> int:
                     synced_count += 1
 
             conn.commit()
+            if rejected_geometry:
+                logger.warning(
+                    "%d vertical(s) quarantined for impossible geometry: %s",
+                    len(rejected_geometry), ", ".join(rejected_geometry[:5]),
+                )
             return synced_count
 
 
@@ -252,6 +409,10 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
     """
     # 1. Sync from watch targets
     sync_suggested_trades_from_watch_targets()
+
+    # Quarantine rows that predate the creation-time spread gate, so they are not re-scored by the
+    # old underlying-scaled clamp on the way through.
+    revalidate_impossible_verticals()
 
     # Also evaluate append-only suggestions ledger
     try:
@@ -358,9 +519,31 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
 
                         if r_mult is not None:
                             if is_options:
-                                clamped = max(-max_loss, min(max_prof, r_mult * max_loss if max_loss > 0 else 0.0))
-                                dollar_pnl = clamped
-                                notes += " (est)"
+                                if long_k > 0 and short_k > 0:
+                                    dollar_pnl = _mark_vertical_pnl(
+                                        struct=struct,
+                                        mark_spot=exit_px if status in (
+                                            "TARGET_HIT", "COMPLETED", "STOP_BREACHED",
+                                            "STOPPED", "GAP_STOP", "TIME_EXIT", "RECOVERY_EXIT",
+                                        ) else spot,
+                                        long_k=long_k,
+                                        short_k=short_k,
+                                        debit=debit,
+                                        exit_px=exit_px,
+                                        fill_val=fill_val,
+                                        side=side,
+                                        max_loss=max_loss,
+                                        max_profit=max_prof,
+                                    )
+                                    notes += " (spread mark)"
+                                else:
+                                    # Single-leg / naked: no spread to mark against, so the risk-scaled
+                                    # clamp is the only available estimate.
+                                    dollar_pnl = max(
+                                        -max_loss,
+                                        min(max_prof, r_mult * max_loss if max_loss > 0 else 0.0),
+                                    )
+                                    notes += " (est)"
                             else:
                                 dollar_pnl = r_mult * risk_amt * 100.0
                     else:
@@ -377,6 +560,20 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                     status = "NO_QUOTE"
                     notes = f"{status}: no live quote available"
                     r_mult = None
+                    # dollar_pnl was computed above from spot=0.0, which for a vertical means
+                    # "worth zero" -- a fabricated full max loss on a row we simply have no price
+                    # for. Clear it with r_multiple so the row reports no verdict, not a loss.
+                    dollar_pnl = 0.0
+
+                # r_multiple and dollar_pnl must agree. For a vertical the old code derived
+                # r_multiple from the UNDERLYING's point move while dollar_pnl came from the
+                # spread, so one row could report r=-1.00 next to $0.00. Derive both from the
+                # spread for options rows and say so in the notes.
+                if is_options and long_k > 0 and short_k > 0 and debit > 0:
+                    risk_per_contract = debit * 100
+                    if risk_per_contract > 0 and dollar_pnl is not None:
+                        r_mult = round(dollar_pnl / risk_per_contract, 4)
+                    notes += " | R from spread value, not the underlying"
 
                 # Update row in DB
                 cursor.execute(

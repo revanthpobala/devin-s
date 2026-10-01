@@ -117,7 +117,7 @@ window.AppDesk = {
         <tr style="border-bottom:1px solid var(--border); cursor:pointer;" onclick="AppDesk.toggleRowDrawer('${rowId}', '${iconId}')">
           <td style="padding:6px; text-align:center; color:var(--text-muted); font-size:10px;"><span id="${iconId}">▶</span></td>
           <td style="padding:6px 8px; font-weight:700; color:var(--cyan);"><a href="javascript:void(0)" class="tv-symbol-hover" data-ticker="${sym}" title="$${sym} · Click to open Dossier · Hover for Live TradingView Chart" onclick="event.stopPropagation(); AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</a></td>
-          <td style="padding:6px 8px;">${this.fmt(ib.setup)}</td>
+          <td style="padding:6px 8px;">${this.fmt(ib.setup)}${this.setupTagChip(ib)}</td>
           <td style="padding:6px 8px; text-align:center;">${this.pill(dec || '–', decTone)}</td>
           <td style="padding:6px 8px; text-align:center;">${this.pill((ib.deep_status || 'none').toUpperCase(), ib.deep_status === 'COMPLETED' ? 'good' : ib.deep_status === 'RUNNING' ? 'info' : 'neutral')}</td>
           <td style="padding:6px 8px; text-align:right;">
@@ -150,6 +150,197 @@ window.AppDesk = {
   fmt(v, d) {
     d = d || '–';
     return (v === null || v === undefined || v === '') ? d : v;
+  },
+
+  // PB funnel chip. 'unmeasured' is rendered as a dash, never as a green check.
+  pbChip(bucket) {
+    if (!bucket || bucket === 'unmeasured' || bucket === 'pre-PB') return '';
+    const isPb = bucket === 'PB';
+    const tone = isPb ? 'var(--green)' : 'var(--text-muted)';
+    const label = isPb ? 'PB' : 'no PB';
+    return `<span title="${isPb ? 'PB funnel set: the measured long-side gate' : 'PB funnel clear: a measured exclusion'}"
+                 style="margin-left:4px; font-size:9.5px; font-weight:800; color:${tone};">${label}</span>`;
+  },
+
+  // TradingView setup name -> measured lane. A+ Trend Long and Early Action Long are the two
+  // biggest families in the inbox (41 and 27 rows) and neither has ever been measured, so they
+  // are tagged rather than left to read like a tradable setup.
+  setupTagChip(ib) {
+    const tag = ib.setup_tag;
+    if (!tag) return '';
+    const tone = {
+      measured: 'var(--green)',
+      'no edge': 'var(--rose-light)',
+      excluded: 'var(--rose-light)',
+      'hard cut': 'var(--rose-light)',
+      unmeasured: 'var(--text-muted)',
+      'watch only': 'var(--amber)'
+    }[tag] || 'var(--text-muted)';
+
+    let tip = tag;
+    if (tag === 'no edge') tip = 'Early Action maps to ACTION (code 2), which measured flat/unstable. Not an edge.';
+    if (tag === 'unmeasured') tip = 'This alert family has never been measured. Treat levels only.';
+    if (tag === 'measured' && ib.setup_prior_win) {
+      tip = `Measured: ${parseFloat(ib.setup_prior_win).toFixed(0)}% win / ${parseFloat(ib.setup_prior_ev) >= 0 ? '+' : ''}${parseFloat(ib.setup_prior_ev).toFixed(2)}R`;
+    }
+    const prior = (tag === 'measured' && ib.setup_prior_win)
+      ? ` <span style="color:var(--text-muted);">${parseFloat(ib.setup_prior_win).toFixed(0)}% / ${parseFloat(ib.setup_prior_ev) >= 0 ? '+' : ''}${parseFloat(ib.setup_prior_ev).toFixed(2)}R</span>`
+      : '';
+    return `<span title="${tip}" style="display:block; font-size:9.5px; font-weight:800; color:${tone}; margin-top:2px;">${tag.toUpperCase()}${prior}</span>`;
+  },
+
+  // Stop width in ATR. Under 0.7 ATR the stop sits inside daily noise, so any R:R computed from
+  // it is an artifact -- the corpus median is 0.69 ATR and 65% of stops get hit.
+  stopAtrCell(r) {
+    const v = r.stop_width_atr;
+    if (v === null || v === undefined || v === '') {
+      return `<span style="color:var(--text-muted);" title="No ATR at signal, so the stop width cannot be measured.">–</span>`;
+    }
+    const tight = parseFloat(v) < 0.7;
+    return `<span style="font-family:var(--font-mono); font-weight:${tight ? 800 : 600};
+                   color:${tight ? 'var(--amber)' : 'var(--text-main)'};"
+                   title="${tight ? 'Stop is inside daily noise (&lt;0.7 ATR). The R:R on this row is an artifact of the denominator, not an edge.' : 'Stop distance in ATR'}">
+              ${parseFloat(v).toFixed(2)}${tight ? ' ⚠️' : ''}</span>`;
+  },
+
+  // The measured base rate for the row's lane, so the ticker is read against it.
+  lanePriorCell(r) {
+    if (r.lane_prior_win === null || r.lane_prior_win === undefined) {
+      return `<span style="color:var(--text-muted);">no prior</span>`;
+    }
+    const win = parseFloat(r.lane_prior_win);
+    const ev = parseFloat(r.lane_prior_ev);
+    const tone = ev > 0.05 ? 'var(--green)' : (ev < 0 ? 'var(--rose-light)' : 'var(--text-muted)');
+    return `<span style="color:${tone}; font-weight:600;"
+                  title="Measured win rate and expectancy for the ${r.lane || ''} lane${r.pb_bucket === 'PB' ? ' with the PB funnel set' : ''}.">
+              ${win.toFixed(0)}% / ${(ev >= 0 ? '+' : '') + ev.toFixed(2)}R</span>`;
+  },
+
+  // R:R gate control. Sits on the KPI strip because it decides what "needs you" contains, and it
+  // shows the measured lane prior next to the number so the bar is tuned against the base rate
+  // rather than against a hunch. Preset buttons, bounds, and defaults all come from the server --
+  // nothing about the gates is hardcoded here.
+  rrGateControl(todayData) {
+    const gates = (todayData && todayData.rr_gates) ? todayData.rr_gates : null;
+    if (!gates || !gates.values) return '';
+
+    const v = gates.values, b = gates.bounds || {}, ov = gates.overridden || {}, hints = gates.hints || {};
+    const presets = gates.presets || [];
+
+    const presetRow = presets.length ? `
+      <div style="display:flex; gap:4px; align-items:center; margin-left:2px;">
+        ${presets.map(p => `
+          <button class="btn secondary"
+                  style="font-size:11px; font-weight:800; padding:3px 8px; font-family:var(--font-mono);
+                         ${p.active ? 'border-color:var(--amber); color:var(--amber); background:rgba(251,191,36,0.12); font-weight:900;' : ''}"
+                  title="${p.blurb}"
+                  onclick="AppDesk.applyRRPreset('${p.name}')">${p.label}</button>`).join('')}
+      </div>` : '';
+
+    const input = (key) => {
+      const bd = b[key] || { min: 0, max: 100 };
+      const isOver = ov[key];
+      return `<label style="display:flex; flex-direction:column; gap:2px; font-size:10px;
+                     font-weight:700; color:var(--text-muted); letter-spacing:0.3px;">
+          <span>${(gates.labels && gates.labels[key]) || key.toUpperCase()}</span>
+          <input id="rr-${key}" type="number" step="0.1" min="${bd.min}" max="${bd.max}"
+                 value="${v[key]}"
+                 title="${hints[key] || ''}"
+                 style="width:88px; padding:3px 6px; font-size:12px; font-weight:700;
+                        font-family:var(--font-mono); border-radius:5px;
+                        border:1px solid ${isOver ? 'var(--amber)' : 'var(--border)'};
+                        background:var(--bg-input, var(--bg-main)); color:var(--text-main);" />
+          ${isOver ? `<span style="font-size:9px; color:var(--amber);">changed from ${gates.defaults[key]}</span>` : ''}
+        </label>`;
+    };
+
+    return `<div style="display:flex; align-items:center; gap:10px; padding:8px 12px;
+                          border:1px dashed var(--border); border-radius:10px;
+                          background:var(--bg-subtle); flex-wrap:wrap;">
+      <div style="display:flex; flex-direction:column; gap:2px;">
+        <div style="font-size:10px; font-weight:800; letter-spacing:0.5px; color:var(--text-muted);">R:R GATES</div>
+        <div style="font-size:9.5px; color:var(--text-muted); font-weight:600; max-width:210px; line-height:1.3;">
+          Moves the needs-you queue and the ENTRY push gate. It does not loosen the stop-ATR floor
+          or the PB requirement.</div>
+      </div>
+      ${presetRow}
+      ${input('rr_market_min')}
+      ${input('rr_hi_rr')}
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <button class="btn secondary" style="font-size:10.5px; padding:3px 10px;"
+                title="Apply, then reload the desk"
+                onclick="AppDesk.saveRRConfig()">Save</button>
+        <button class="btn secondary" style="font-size:10.5px; padding:3px 10px;"
+                title="Restore the measured defaults"
+                onclick="AppDesk.resetRRConfig()">Reset</button>
+      </div>
+      <div id="rr-config-status" style="font-size:10px; font-weight:700; color:var(--text-muted);"></div>
+    </div>`;
+  },
+
+  async applyRRPreset(name) {
+    const status = document.getElementById('rr-config-status');
+    if (status) { status.textContent = 'applying…'; status.style.color = 'var(--text-muted)'; }
+    try {
+      const res = await fetch(`/api/desk/rr-config/preset/${encodeURIComponent(name)}`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+      if (status) { status.textContent = `${body.active_preset || name} applied`; status.style.color = 'var(--green)'; }
+      this.loadToday();
+    } catch (e) {
+      if (status) { status.textContent = e.message; status.style.color = 'var(--rose-light)'; }
+    }
+  },
+
+  async saveRRConfig() {
+    const status = document.getElementById('rr-config-status');
+    const payload = {};
+    for (const key of ['rr_market_min', 'rr_hi_rr']) {
+      const el = document.getElementById(`rr-${key}`);
+      if (!el) continue;
+      const parsed = parseFloat(el.value);
+      // parseFloat('') is NaN, which JSON.stringify turns into null, which the route drops as
+      // "leave alone" -- so a cleared box silently no-ops while still reporting 'saved'.
+      if (Number.isFinite(parsed)) payload[key] = parsed;
+      else {
+        if (status) {
+          status.textContent = `${key} is not a number`;
+          status.style.color = 'var(--rose-light)';
+        }
+        return;
+      }
+    }
+    if (!Object.keys(payload).length) return;
+
+    if (status) { status.textContent = 'saving…'; status.style.color = 'var(--text-muted)'; }
+    try {
+      await fetch('/api/desk/rr-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+        return body;
+      });
+      if (status) { status.textContent = 'saved'; status.style.color = 'var(--green)'; }
+      this.loadToday();
+    } catch (e) {
+      if (status) { status.textContent = e.message; status.style.color = 'var(--rose-light)'; }
+    }
+  },
+
+  async resetRRConfig() {
+    const status = document.getElementById('rr-config-status');
+    if (status) { status.textContent = 'resetting…'; status.style.color = 'var(--text-muted)'; }
+    try {
+      const res = await fetch('/api/desk/rr-config/reset', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (status) { status.textContent = 'reset'; status.style.color = 'var(--green)'; }
+      this.loadToday();
+    } catch (e) {
+      if (status) { status.textContent = e.message; status.style.color = 'var(--rose-light)'; }
+    }
   },
 
   pill(text, tone) {
@@ -207,6 +398,9 @@ window.AppDesk = {
       const watchList = (todayData && todayData.watch) ? todayData.watch : [];
       const cutList = (todayData && todayData.cut) ? todayData.cut : [];
       const needsYou = (todayData && todayData.needs_you) ? todayData.needs_you : [];
+      const unmeasured = (todayData && todayData.unmeasured) ? todayData.unmeasured : [];
+      const inboxMeasured = (todayData && todayData.inbox_measured_count) || 0;
+      const inboxUnmeasured = (todayData && todayData.inbox_unmeasured_count) || 0;
 
       const inTradeCount = actionable.filter(a => a.status === 'IN_TRADE').length;
       const inZoneCount = actionable.filter(a => a.status === 'IN_ZONE').length;
@@ -401,13 +595,21 @@ window.AppDesk = {
       </div>`;
 
       // KPI strip
-      html += `<div style="display:flex; gap:12px; flex-wrap:wrap;">
+      const rrMin = (todayData && todayData.rr_gates && todayData.rr_gates.values)
+        ? todayData.rr_gates.values.rr_market_min : 2.0;
+      const rrHi = (todayData && todayData.rr_gates && todayData.rr_gates.values)
+        ? todayData.rr_gates.values.rr_hi_rr : 5.0;
+      html += `<div style="display:flex; gap:12px; flex-wrap:wrap; align-items:stretch;">
         ${this.kpi('IN TRADE', inTradeCount, '', 'info')}
         ${this.kpi('IN ZONE', inZoneCount, '', 'info')}
         ${this.kpi('NEAR', nearCount, '≤1.5%', 'warn')}
         ${this.kpi('STALKING', stalking.length, '', 'neutral')}
-        ${this.kpi('LOCAL TRIAGED', inbox.length, '', 'good')}
+        ${this.kpi('NEEDS YOU', needsYou.length, `RR@mkt ≥ ${rrMin}`, 'warn')}
+        ${this.kpi('UNMEASURED', unmeasured.length, 'no lane · no R:R', 'neutral')}
+        ${this.kpi('INBOX MEASURED', inboxMeasured, `of ${inbox.length}`, inboxMeasured ? 'good' : 'neutral')}
+        ${this.kpi('INBOX UNMEASURED', inboxUnmeasured, 'never measured', inboxUnmeasured ? 'warn' : 'neutral')}
         ${this.kpi('ALL-TIME CLOSED R', recordSumR, '', recordData && recordData.sum_r >= 0 ? 'good' : 'bad')}
+        ${this.rrGateControl(todayData)}
       </div>`;
 
       // Act now (card grid, 3 per row)
@@ -477,13 +679,17 @@ window.AppDesk = {
       }
       html += `</div></div>`;
 
-      // Needs you
+      // Needs you. This is a work queue, not a backlog: every row here has a measured lane and
+        // RR@mkt >= 2. A PASS with nothing actionable in it belongs in UNMEASURED, below.
       html += `<div class="station-card">
-        <h3 style="margin-top:0; color:var(--amber);"><span style="margin-right:8px;">🏃</span>Needs You</h3>
+        <h3 style="margin-top:0; color:var(--amber);"><span style="margin-right:8px;">🏃</span>Needs You
+          <span style="font-size:11px; font-weight:600; color:var(--text-muted); margin-left:8px;">
+            measured lane · RR@mkt ≥ ${rrMin}</span></h3>
         <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px;">`;
 
       if (needsYou.length === 0) {
-        html += `<div style="grid-column:1/-1; text-align:center; padding:20px; color:var(--text-muted);">No deep research pending.</div>`;
+        html += `<div style="grid-column:1/-1; text-align:center; padding:20px; color:var(--text-muted);">
+                   No actionable rows. ${unmeasured.length} unmeasured row(s) are collapsed below.</div>`;
       } else {
         needsYou.forEach(r => {
           const ticker = r.ticker || '';
@@ -571,6 +777,12 @@ window.AppDesk = {
               <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
                 <th style="padding:8px; text-align:left;">Ticker</th>
                 <th style="padding:8px; text-align:left;">Lane</th>
+                <th style="padding:8px; text-align:right;"
+                    title="Reward-to-risk measured at the current print. This is the number the ENTRY gate uses.">RR@mkt</th>
+                <th style="padding:8px; text-align:right;"
+                    title="Stop distance in ATR. Corpus median is 0.69 ATR and 65% of stops are hit. Below 0.7 ATR the R:R is an artifact.">Stop ATR</th>
+                <th style="padding:8px; text-align:left;"
+                    title="Measured win rate and expectancy for this lane, so the row is read against its base rate.">Lane prior</th>
                 <th style="padding:8px; text-align:right;">Dist %</th>
                 <th style="padding:8px; text-align:right;">Zone</th>
                 <th style="padding:8px; text-align:right;">Stop</th>
@@ -580,7 +792,7 @@ window.AppDesk = {
             <tbody>`;
 
       if (stalking.length === 0) {
-        html += `<tr><td colspan="6" style="text-align:center; padding:12px; color:var(--text-muted);">No stalking suggestions.</td></tr>`;
+        html += `<tr><td colspan="9" style="text-align:center; padding:12px; color:var(--text-muted);">No stalking suggestions.</td></tr>`;
       } else {
         stalking.forEach(r => {
           const sym = (r.ticker || '').toUpperCase();
@@ -589,7 +801,10 @@ window.AppDesk = {
           const dist = r.dist !== null && r.dist !== undefined ? parseFloat(r.dist).toFixed(2) + '%' : '–';
           html += `<tr style="border-bottom:1px solid var(--border);">
             <td style="padding:8px; font-weight:700; cursor:pointer; color:var(--cyan);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</td>
-            <td style="padding:8px;">${this.fmt(r.lane)}</td>
+            <td style="padding:8px;">${this.fmt(r.lane)}${this.pbChip(r.pb_bucket)}</td>
+            <td style="padding:8px; text-align:right; font-family:var(--font-mono); font-weight:700;">${this.fmt(r.rr_at_market)}</td>
+            <td style="padding:8px; text-align:right;">${this.stopAtrCell(r)}</td>
+            <td style="padding:8px; font-size:11px; color:var(--text-muted);">${this.lanePriorCell(r)}</td>
             <td style="padding:8px; text-align:right;">${dist}</td>
             <td style="padding:8px; text-align:right; font-family:var(--font-mono);">${zone}</td>
             <td style="padding:8px; text-align:right; color:var(--rose-light); font-family:var(--font-mono);">${r.stop ? parseFloat(r.stop).toFixed(2) : '–'}</td>
@@ -598,6 +813,38 @@ window.AppDesk = {
         });
       }
       html += `</tbody></table></div></details>`;
+
+      // UNMEASURED (collapsed). Rows that cannot be acted on right now: either never measured, or
+      // measured and sitting under the R:R bar currently dialled in. 33 of the 34 rows that used
+      // to sit in "needs you" live here. The subtitle separates the two reasons, because a setup
+      // that simply missed the threshold is not the same as one nobody ever scored.
+      const belowBar = (todayData && todayData.below_bar_count) || 0;
+      const neverMeasured = unmeasured.length - belowBar;
+      const reasonBits = [
+        belowBar ? `${belowBar} below the ${rrMin} bar` : null,
+        neverMeasured ? `${neverMeasured} never measured` : null,
+      ].filter(Boolean).join(' · ');
+      html += `<details class="station-card" style="padding:10px 18px;">
+        <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none;">
+          <div style="font-size:12px; font-weight:800; color:var(--text-muted); display:flex; align-items:center; gap:8px;">
+            <span>∅</span>NOT ACTIONABLE (${unmeasured.length})
+          </div>
+          <span style="font-size:11px; color:var(--text-muted); font-weight:600;"
+                title="No measured lane and no measured R:R at market. Nothing here can be traded, so it is not in a working queue.">
+            ${reasonBits || 'nothing on these rows is actionable'} (click to view)</span>
+        </summary>
+        <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:6px;">
+          ${unmeasured.length === 0
+            ? `<span style="font-size:12px; color:var(--text-muted);">No unmeasured rows.</span>`
+            : unmeasured.map(r => {
+                const sym = (r.ticker || '').toUpperCase();
+                return `<span class="badge" style="border-color:var(--text-muted); color:var(--text-muted); cursor:pointer;"
+                             onclick="AppSwing.openReportModal('${(r.date || '').substring(0, 10)}', '${sym}', 'local')"
+                             title="${sym}: ${r.lane || 'no lane'} · RR@mkt ${this.fmt(r.rr_at_market)} · stop ${this.fmt(r.stop_width_atr)} ATR">
+                        ${sym}</span>`;
+              }).join('')}
+        </div>
+      </details>`;
 
       // CUT (Collapsible card)
       html += `<details class="station-card" style="padding:10px 18px;">

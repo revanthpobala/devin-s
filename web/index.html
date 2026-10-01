@@ -1053,6 +1053,19 @@
 
         <!-- Market Tape & 0DTE Regime Ribbon -->
         <div class="station-card">
+          <!-- Research-only notice. Grade A measures -0.097R on n=20 resolved (of the 200 the
+               go/no-go gate requires), so nothing on this pane is a measured edge. Without this
+               banner the live VIX tiles read as an endorsement of taking 0DTE trades. -->
+          <div id="zero-dte-research-banner"
+               style="background:rgba(248,113,113,0.10); border:1px solid rgba(248,113,113,0.45);
+                      border-radius:10px; padding:10px 14px; margin-bottom:14px;
+                      font-size:12.5px; line-height:1.5; color:#fca5a5;">
+            <strong>RESEARCH ONLY — NO MEASURED EDGE.</strong>
+            Grade-A intraday expectancy is <strong>−0.097R</strong> on <strong>n=20</strong> resolved
+            of the 200 the go/no-go gate requires, with a 31.6% hit rate. The go/no-go status reads
+            <code>INSUFFICIENT SAMPLE</code>: this desk has not earned the right to be traded from.
+            Treat everything below as tape observation, not a signal.
+          </div>
           <div class="card-head">
             <span class="card-title">⚡ INTRADAY DESK REGIME & 0DTE TAPE</span>
             <span class="pill green" id="intraday-regime-pill"><span class="dot pulse"></span><span id="intraday-regime-txt">Regime: Loading…</span></span>
@@ -2054,6 +2067,18 @@
             </button>
             <button class="tab-pill-btn" data-audit-tab="STALKING" onclick="AppWatchlist.setAuditTab('STALKING')">
               ⏳ Stalking <span class="pill" id="audit-tab-count-stalking">0</span>
+            </button>
+            <!-- INCOME rows exist in the ledger (covered calls / CSPs) and the backend already
+                 counts them; the button was missing, so the tab was unreachable. -->
+            <button class="tab-pill-btn" data-audit-tab="INCOME" onclick="AppWatchlist.setAuditTab('INCOME')"
+                    title="Covered calls and cash-secured puts raised by the INCOME alert tier. Not R-scored.">
+              💵 Income <span class="pill green" id="audit-tab-count-income">0</span>
+            </button>
+            <!-- Rows the creation-time geometry gate quarantined. Without this button the
+                 INVALID_GEOMETRY status the backend writes is unreachable from the UI. -->
+            <button class="tab-pill-btn" data-audit-tab="INVALID" onclick="AppWatchlist.setAuditTab('INVALID')"
+                    title="Quarantined by the options-geometry gate. Excluded from R statistics.">
+              ⛔ Quarantined <span class="pill red" id="audit-tab-count-invalid">0</span>
             </button>
           </div>
 

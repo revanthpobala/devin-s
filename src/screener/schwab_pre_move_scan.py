@@ -243,6 +243,7 @@ def check_market_tide(client) -> Dict[str, Any]:
                     "sma50": sma50,
                     "is_bullish": is_bullish,
                     "is_neutral": is_neutral,
+                    "available": True,
                     "trend_str": trend_str,
                     "spy_20d_return": spy_20d_return,
                     "candles": candles,
@@ -250,7 +251,21 @@ def check_market_tide(client) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"Failed to check SPY market tide: {e}")
 
-    return {"is_bullish": True, "is_neutral": True, "trend_str": "UNKNOWN", "spy_20d_return": 0.0, "candles": []}
+    # The failure path must keep the SAME key set as the success path: callers f-format last_px/ema20/
+    # sma50 unconditionally, so a partial dict raises TypeError instead of degrading to "UNKNOWN".
+    # Unknown is not bullish -- a blind bullish default is how a bearish tide gets reported as a
+    # confirmed uptrend (see check_market_tide consumers).
+    return {
+        "last_px": 0.0,
+        "ema20": 0.0,
+        "sma50": 0.0,
+        "is_bullish": False,
+        "is_neutral": False,
+        "available": False,
+        "trend_str": "UNKNOWN",
+        "spy_20d_return": 0.0,
+        "candles": [],
+    }
 
 
 def fetch_all_quotes_batch(client, tickers: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -1162,7 +1177,7 @@ def _register_slot(t_date: str, selected: List[Dict[str, Any]]) -> str:
     """
     job_id = f"auto_{t_date}_{'_'.join(p.get('symbol', p.get('Ticker', '')) for p in selected[:3])}"
     try:
-        db_path = config.BASE_DIR / "data" / "research_watch.db"
+        db_path = config.research_watch_db_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         import sqlite3
         with sqlite3.connect(str(db_path), timeout=5.0) as conn:
@@ -1526,7 +1541,7 @@ def run_autonomous_screener_pipeline(
     finally:
         if _slot_job_id:
             try:
-                db_path = config.BASE_DIR / "data" / "research_watch.db"
+                db_path = config.research_watch_db_path()
                 if db_path.exists():
                     import sqlite3
                     with sqlite3.connect(str(db_path), timeout=5.0) as conn:

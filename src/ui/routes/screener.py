@@ -33,6 +33,24 @@ class SchwabScanRequest(BaseModel):
     headless: bool = True
 
 
+def _pb_lane_prior(rr: float, pb) -> Optional[tuple]:
+    """(win %, R) prior for the row's R:R tier, split by the PB bit when it was measured.
+
+    The tier split follows the same HI-RR threshold the desk and the ENTRY gate use, so one
+    change moves all three consistently. A row whose PB state was never measured gets None rather
+    than a long-side prior it has no claim to.
+    """
+    from src.logic.data_window_filter import lane_prior
+    from src.tracking.rr_config import hi_rr
+
+    if rr is None or rr <= 0:
+        return None
+    if pb is None:
+        return None          # not measured -> no prior, rather than borrowing the long-side one
+    reason = "rr_at_market_lane_strong" if rr >= hi_rr() else "rr_at_market_lane"
+    return lane_prior(reason, bool(pb))
+
+
 @router.get("/schwab-scan-status")
 def get_schwab_scan_status():
     """Returns whether a Schwab scan is currently running in the background."""
@@ -163,25 +181,59 @@ def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str 
         except Exception as e:
             logger.error(f"Error reading {survivors_file}: {e}")
 
-    spy_bullish = True
+    enriched = []
+    for c in candidates:
+        c = dict(c)
+        # The priority tier is retired as a display signal: MEDIUM/HIGH measured flat-to-negative,
+        # and post-2020 non-PB onsets sit at +0.012R (noise). What separates the rows is the PB
+        # funnel plus the lane's measured prior, so the table shows those instead.
+        pb = c.get("pb_funnel")
+        # `atrs_up` is the manifest's name for the stop width in ATR.
+        rr = float(c.get("proxy_rr") or c.get("short_rr", c.get("long_rr")) or 0.0) or 0.0
+        prior = _pb_lane_prior(rr, pb)
+        c["display_prior_win"] = prior[0] if prior else None
+        c["display_prior_ev"] = prior[1] if prior else None
+        c["pb_bucket"] = "unmeasured" if pb is None else ("PB" if pb else "no PB")
+        # A non-PB long is a measured exclusion, so it is greyed rather than shown as equal.
+        c["eligible"] = bool(pb) if req_side != "short" else None
+        stop_width_atr = c.get("stop_width_atr") or c.get("atrs_up")
+        # The scan manifest writes this as `atrs_up`; accept that name too, or the column the
+        # table advertises renders blank for every row.
+        c["stop_width_atr"] = stop_width_atr
+        enriched.append(c)
+
+    spy_bullish = False
+    tide_available = False
     try:
         from src.screener.schwab_pre_move_scan import check_market_tide, get_schwab_client
         client = get_schwab_client()
         market_tide = check_market_tide(client)
-        spy_bullish = market_tide.get("bullish", True)
-        trend_str = market_tide.get("trend_str", "BULLISH")
+        # check_market_tide returns "is_bullish". Reading "bullish" always missed and fell back to
+        # True, so the API reported bullish:true next to a DEFENSIVE / BEARISH trend_str.
+        spy_bullish = bool(market_tide.get("is_bullish", False))
+        tide_available = bool(market_tide.get("available", False))
+        trend_str = market_tide.get("trend_str", "UNKNOWN")
     except Exception:
-        trend_str = "BULLISH (TIDE CONFIRMED)"
+        trend_str = "UNKNOWN"
 
     return {
         "date": target_date,
         "side": (side or "long").upper(),
-        "count": len(candidates),
-        "candidates": candidates,
+        "count": len(enriched),
+        "eligible_count": sum(1 for c in enriched if c.get("eligible")),
+        "candidates": enriched,
         "market_tide": {
             "bullish": spy_bullish,
+            "available": tide_available,
             "trend_str": trend_str
-        }
+        },
+        # Display guidance, so the frontend does not have to hardcode measured constants.
+        "columns": ["ticker", "price", "stop", "long_rr", "stage", "pb", "lane_prior",
+                    "stop_width_atr"],
+        "notes": (
+            "Priority tier retired as a display signal. PB funnel is the measured gate; "
+            "non-PB longs are a measured exclusion."
+        ),
     }
 
 

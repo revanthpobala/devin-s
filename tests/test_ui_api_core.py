@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import json
 import urllib.request
@@ -15,9 +17,24 @@ def _is_server_running() -> bool:
         return False
 
 
+# Explicit opt-in, never implicit.
+#
+# This used to be `skipif(not _is_server_running())`, which meant the suite woke itself up and
+# started firing requests at whatever cockpit happened to be listening -- including during market
+# hours, and including a POST to /api/copilot/execute-python, a code-execution endpoint on the
+# live trading server. "A server is up" is not consent to test against it.
+#
+#     RUN_LIVE_E2E=1 python -m pytest tests/test_ui_api_core.py
+LIVE_E2E = os.getenv("RUN_LIVE_E2E", "").lower() in ("1", "true", "yes")
+
+
 pytestmark = pytest.mark.skipif(
-    not _is_server_running(),
-    reason="Cockpit server not running on http://127.0.0.1:8050 (run run_ui.py to execute live E2E tests)",
+    not LIVE_E2E or not _is_server_running(),
+    reason=(
+        "Live E2E is opt-in: set RUN_LIVE_E2E=1 and have the cockpit on "
+        f"{BASE_URL}. It hits the real server, including a POST to the "
+        "sandboxed /api/copilot/execute-python endpoint."
+    ),
 )
 
 
