@@ -1452,7 +1452,15 @@
         <div style="display:flex; align-items:center; gap:6px;">
           <span style="font-family:'Outfit',sans-serif; font-size:15px; font-weight:800; color:var(--text-main); letter-spacing:0.3px;">⚡ REV CHAT</span>
           <span class="pill green" style="font-size:9px; padding:2px 6px;"><span class="dot pulse"></span>Qwen Local</span>
-          <span id="rev-chat-focus-badge" class="pill" style="font-size:9.5px; padding:2px 7px; cursor:pointer;" onclick="AppChat.clearSidebarFocus()" title="Current ticker focus. Click to switch to broad market.">🎯 Focus: Market</span>
+          <span id="rev-chat-focus-badge" class="pill" style="font-size:9.5px; padding:2px 7px; cursor:pointer;" onclick="AppChat.clearSidebarFocus()" title="Current ticker focus. Click to clear and return to broad market.">🎯 Focus: Market</span>
+          <!-- On-demand focus. Click the badge above, or type here and press Enter.
+               Blanking the box returns the chat to broad market mode. -->
+          <input type="text" id="rev-chat-focus-input" class="input-ticker" placeholder="FOCUS"
+                 maxlength="6" autocomplete="off" spellcheck="false"
+                 style="width:74px; height:20px; padding:1px 6px; font-size:10px; font-weight:800; text-transform:uppercase;"
+                 title="Type a ticker and press Enter to focus the chat on it. Clear it and press Enter for broad market."
+                 onkeydown="if(event.key==='Enter'){ event.preventDefault(); AppChat.applySidebarFocusInput(); }"
+                 onblur="AppChat.applySidebarFocusInput()">
         </div>
         <!-- Prior Chats, New, Size Presets & Clear Button -->
         <div style="display:flex; align-items:center; gap:4px;">
@@ -2176,6 +2184,7 @@
           <button class="btn" id="btn-modal-rerun-dr" onclick="AppSwing.rerunDeepResearchFromModal(event)" style="padding:3px 10px; font-size:11.5px; font-weight:700; background:linear-gradient(135deg, #7c3aed, #6d28d9); color:#fff; border:none; cursor:pointer; border-radius:4px;" title="Force a fresh Deep Research pass (Debate + Vision + PM Arbitration) for this ticker">⚡ Re-run Deep</button>
           <button class="btn secondary" id="btn-modal-sync-tt" onclick="AppSwing.syncTastytradeAlertsForCurrentDossier(event)" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#38bdf8; border-color:#0284c7; background:rgba(2, 132, 199, 0.12); cursor:pointer;" title="Register cloud quote alerts in Tastytrade for this reviewed setup">📲 Set TT Alerts</button>
           <button class="btn secondary" id="btn-toggle-positions-pane" onclick="AppSwing.togglePositionsPane()" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#059669; border-color:#059669; background:rgba(5, 150, 105, 0.08); cursor:pointer;" title="Toggle Suggested Positions side pane">🎯 Trade Plan</button>
+          <a class="btn secondary" id="btn-modal-direct-url" href="#" target="_blank" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:var(--cyan); background:rgba(6, 182, 212, 0.08); text-decoration:none; cursor:pointer; display:inline-flex; align-items:center; gap:4px;" title="Open dedicated standalone research URL: /research/{TICKER}">🔗 Direct URL</a>
           <button class="modal-action-btn primary" id="btn-modal-expand-full" onclick="AppSwing.restoreReportModal(event)" title="Maximize to full dossier modal" style="display:none; font-weight:700;">🗖 Maximize</button>
           <button class="modal-action-btn minimize" id="btn-modal-min-toggle" onclick="AppSwing.toggleMinimizeReportModal(event)" title="Float as bottom-right chat window">🗕 Float Chat</button>
           <button class="modal-action-btn close" onclick="AppSwing.closeReportModal(event)" title="Close dossier">✕ Close</button>

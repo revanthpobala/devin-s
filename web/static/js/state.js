@@ -2,7 +2,7 @@
  * Global Cockpit Application State
  */
 window.AppState = {
-  currentDesk: 'swing',
+  currentDesk: 'today',
   currentLogChannel: 'orchestrator',
   selectedJobId: '',
   allReportDates: [],

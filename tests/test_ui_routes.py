@@ -182,3 +182,36 @@ def test_sync_ticker_tastytrade_alerts_success(client, monkeypatch):
     assert data["tt_alerts_count"] == 3
     assert "Successfully synced 3 Tastytrade cloud quote alert(s)" in data["message"]
 
+
+def test_research_ticker_standalone_page(client):
+    """Verify /research/{ticker} serves the standalone research HTML page."""
+    response = client.get("/research/CAT")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "Deep Research Dossier" in response.text
+    assert "REV COPILOT" in response.text
+
+
+def test_research_ticker_with_date_page(client):
+    """Verify /research/{ticker}/{date} serves the standalone research page."""
+    response = client.get("/research/CAT/2026-10-01")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "Deep Research Dossier" in response.text
+
+
+def test_research_ticker_cockpit_view(client):
+    """Verify /research/{ticker}?view=cockpit serves index.html for auto-opening modal."""
+    response = client.get("/research/CAT?view=cockpit")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "Stock Trading Operations Cockpit" in response.text
+
+
+def test_research_hub_page(client):
+    """Verify /research serves the standalone research page."""
+    response = client.get("/research")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "Deep Research Dossier" in response.text
+

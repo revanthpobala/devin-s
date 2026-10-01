@@ -535,8 +535,6 @@ def get_today():
                 # missing_real: that list is inbox-derived, so it flags every core name absent
                 # from today's alerts. On live data all six core names were triaged (6-54 alerts
                 # and live watch_targets each) while this field claimed all six were gaps.
-                # A probe failure is reported rather than rendered as "no gaps": swallowing it
-                # would turn a broken check into a healthy-looking board.
                 core_probe_error = None
                 try:
                     core_gaps, core_covered = core_coverage_gaps()
@@ -544,7 +542,58 @@ def get_today():
                     core_gaps, core_covered = [], list(CORE_SYMBOLS)
                     core_probe_error = str(exc)[:200]
 
+                # Synthesize dynamic deep research opportunities and actionable streams
+                from src.ui.services.opportunity_service import (
+                    get_live_market_pulse,
+                    collect_active_deep_research_opportunities,
+                    get_actionable_alerts_stream,
+                )
+                from src.ui.services.feedback_service import get_feedback_loop_data
+
+                market_pulse = get_live_market_pulse()
+                top_opportunities = collect_active_deep_research_opportunities(lookback_days=3)
+                actionable_alerts = get_actionable_alerts_stream(limit=30)
+                feedback_data = get_feedback_loop_data()
+
+                # If legacy actionable list has 0 items, elevate top qualified in-zone opportunities
+                if not actionable and top_opportunities:
+                    for opp in top_opportunities:
+                        if opp.get("in_zone") or opp.get("priority_tier", 9) <= 2:
+                            actionable.append({
+                                "ticker": opp["ticker"],
+                                "date": opp.get("report_date") or today_str,
+                                "setup": opp.get("vehicle_label") or opp.get("verdict") or "Qualified Setup",
+                                "llm_decision": f"PASS - DEEP RESEARCH ({opp.get('conviction', 6)}/10)",
+                                "llm_playbook": " ".join(opp.get("pm_bullets", [])[:2]) or f"Tactical entry ${opp.get('entry_low', 0):.2f}-${opp.get('entry_high', 0):.2f}",
+                                "local_score": opp.get("score") or 80,
+                                "deep_status": "COMPLETED",
+                                "deep_stage": "DONE",
+                                "status": "IN_ZONE" if opp.get("in_zone") else "STALKING",
+                                "last_price": opp.get("spot_price"),
+                                "entry_low": opp.get("entry_low"),
+                                "entry_high": opp.get("entry_high"),
+                                "stop": opp.get("tactical_stop"),
+                                "target_1": opp.get("target_1"),
+                                "target_2": opp.get("target_2"),
+                                "dist": opp.get("dist_pct"),
+                                "live_rr": opp.get("live_rr"),
+                                "live_rr_flag": None,
+                                "stop_width_atr": None,
+                                "setup_lane": "RR_SETUP_STRONG" if (opp.get("live_rr") or 0) >= 3 else "RR_SETUP",
+                                "lane": "RR_SETUP_STRONG" if (opp.get("live_rr") or 0) >= 3 else "RR_SETUP",
+                                "vehicle_type": opp.get("vehicle_type"),
+                                "vehicle_label": opp.get("vehicle_label"),
+                                "options_plan": opp.get("options_plan"),
+                                "pm_bullets": opp.get("pm_bullets"),
+                                "conviction": opp.get("conviction"),
+                                "score": opp.get("score"),
+                            })
+
                 return {
+                    "market_pulse": market_pulse,
+                    "top_opportunities": top_opportunities,
+                    "actionable_alerts": actionable_alerts,
+                    "feedback_loop": feedback_data,
                     "found": found,
                     "inbox": inbox,
                     "inbox_measured_count": len(inbox_measured),
@@ -584,6 +633,7 @@ def get_today():
                         "core_symbols_covered": len(core_covered),
                     },
                 }
+
     except Exception as e:
         import traceback
         return {"error": traceback.format_exc()}
@@ -1276,3 +1326,101 @@ def get_coverage():
     except Exception as e:
         import traceback
         return {"error": traceback.format_exc()}
+
+
+class FeedbackNoteUpdate(BaseModel):
+    trade_id: str
+    ticker: str
+    grade: Optional[str] = None
+    notes: Optional[str] = None
+    lesson: Optional[str] = None
+
+
+class ActionablePositionCreate(BaseModel):
+    ticker: str
+    side: str = "LONG"
+    strategy: str = "Swing"
+    entry_price: Optional[float] = None
+    stop: Optional[float] = None
+    target: Optional[float] = None
+    quantity: float = 100.0
+    instrument_type: str = "EQUITY"
+    trade_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ManagePositionAction(BaseModel):
+    ticker: str
+    action: str  # SCALE_50, TRAIL_BE, CLOSE
+    price: Optional[float] = None
+    reason: Optional[str] = None
+
+
+@router.get("/feedback-loop")
+def get_feedback_loop_endpoint():
+    """Retrieve full position surveillance and trade post-mortem feedback loop."""
+    try:
+        from src.ui.services.feedback_service import get_feedback_loop_data
+        return {"status": "ok", **get_feedback_loop_data()}
+    except Exception as e:
+        logger.error(f"Error in feedback loop endpoint: {e}", exc_info=True)
+        return {"status": "error", "error": str(e), "open_positions": [], "closed_positions": [], "scorecard": {}}
+
+
+@router.post("/feedback-loop/notes")
+def save_feedback_note_endpoint(req: FeedbackNoteUpdate):
+    """Save trader post-mortem critique, execution grade, and lessons."""
+    try:
+        from src.ui.services.feedback_service import save_trade_feedback
+        saved = save_trade_feedback(
+            trade_id=req.trade_id,
+            ticker=req.ticker,
+            grade=req.grade,
+            notes=req.notes,
+            lesson=req.lesson,
+        )
+        return {"status": "ok", "saved": saved}
+    except Exception as e:
+        logger.error(f"Error saving feedback note: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/actionable-position")
+def open_actionable_position_endpoint(req: ActionablePositionCreate):
+    """1-Click open/log position directly from actionable opportunity or alert card."""
+    try:
+        from src.ui.services.feedback_service import execute_actionable_position_from_alert
+        res = execute_actionable_position_from_alert(
+            ticker=req.ticker,
+            side=req.side,
+            strategy=req.strategy,
+            entry_price=req.entry_price,
+            stop=req.stop,
+            target=req.target,
+            quantity=req.quantity,
+            instrument_type=req.instrument_type,
+            trade_id=req.trade_id,
+            notes=req.notes,
+        )
+        return res
+    except Exception as e:
+        logger.error(f"Error opening actionable position: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/manage-position")
+def manage_position_endpoint(req: ManagePositionAction):
+    """Execute live position management actions (Scale 50%, Trail BE, Close)."""
+    try:
+        from src.ui.services.feedback_service import manage_position_action
+        res = manage_position_action(
+            ticker=req.ticker,
+            action=req.action,
+            price=req.price,
+            reason=req.reason,
+        )
+        return res
+    except Exception as e:
+        logger.error(f"Error managing position: {e}")
+        return {"status": "error", "error": str(e)}
+

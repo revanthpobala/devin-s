@@ -2,6 +2,7 @@ import sqlite3
 import pytest
 from unittest.mock import MagicMock, patch
 
+from src.tracking.alert_db import get_eastern_date_str
 from src.tracking.auto_triage_daemon import (
     AutoTriageDaemon,
     get_auto_triage_status,
@@ -41,19 +42,26 @@ def temp_alerts_db(tmp_path):
             status TEXT DEFAULT 'INGESTED',
             llm_decision TEXT,
             llm_playbook TEXT,
+            routing_stage TEXT,
             created_at TEXT NOT NULL
         )
         """
     )
+    # Dated TODAY. The daemon only grades the current session: an unbounded pending query
+    # walked the whole table and re-graded history against the live tape.
+    today = get_eastern_date_str()
     # Insert 2 pending alerts and 1 evaluated alert
     cur.execute(
         """
         INSERT INTO alerts (message_id, date, timestamp, symbol, action, strategy, raw_payload, created_at, llm_decision)
-        VALUES 
-        ('m1', '2026-09-14', '2026-09-14 10:00:00', 'AAPL', 'CALLS', 'Intraday', '{}', '2026-09-14', NULL),
-        ('m2', '2026-09-14', '2026-09-14 10:05:00', 'MSFT', 'PUTS', 'Intraday', '{}', '2026-09-14', ''),
-        ('m3', '2026-09-14', '2026-09-14 10:10:00', 'NVDA', 'CALLS', 'Intraday', '{}', '2026-09-14', '🟢 GO (ENTER CALLS)')
-        """
+        VALUES
+        ('m1', ?, ?, 'AAPL', 'CALLS', 'Intraday', '{}', ?, NULL),
+        ('m2', ?, ?, 'MSFT', 'PUTS', 'Intraday', '{}', ?, ''),
+        ('m3', ?, ?, 'NVDA', 'CALLS', 'Intraday', '{}', ?, '🟢 GO (ENTER CALLS)')
+        """,
+        (today, f"{today} 10:00:00", today,
+         today, f"{today} 10:05:00", today,
+         today, f"{today} 10:10:00", today),
     )
     conn.commit()
     conn.close()
@@ -61,14 +69,15 @@ def temp_alerts_db(tmp_path):
 
 
 def test_get_pending_alerts_count(temp_alerts_db):
-    with patch("src.tracking.auto_triage_daemon.DB_PATH", temp_alerts_db):
+    with patch("src.tracking.alert_db.DB_PATH", temp_alerts_db):
+        today = get_eastern_date_str()
         assert get_pending_alerts_count() == 2
-        assert get_pending_alerts_count(date_str="2026-09-14") == 2
+        assert get_pending_alerts_count(date_str=today) == 2
         assert get_pending_alerts_count(date_str="2026-09-10") == 0
 
 
 def test_auto_triage_daemon_processes_batch(temp_alerts_db):
-    with patch("src.tracking.auto_triage_daemon.DB_PATH", temp_alerts_db), \
+    with patch("src.tracking.alert_db.DB_PATH", temp_alerts_db), \
          patch("src.tracking.auto_triage_daemon.is_llm_server_online", return_value=True), \
          patch("src.tracking.auto_triage_daemon.evaluate_alert_payload", return_value={"llm_decision": "🟢 GO"}) as mock_eval:
         
@@ -85,7 +94,7 @@ def test_auto_triage_daemon_processes_batch(temp_alerts_db):
 
 
 def test_auto_triage_daemon_lifecycle(temp_alerts_db):
-    with patch("src.tracking.auto_triage_daemon.DB_PATH", temp_alerts_db), \
+    with patch("src.tracking.alert_db.DB_PATH", temp_alerts_db), \
          patch("src.tracking.auto_triage_daemon.is_llm_server_online", return_value=False):
         
         daemon = AutoTriageDaemon(poll_interval=1, batch_size=2)

@@ -1497,7 +1497,7 @@ window.AppSwing = {
     // Set active chat and sync all focus state
     window.AppState.activeChatTicker = chat.ticker;
     window.AppState.currentReportData = chat.reportData;
-    window.AppState.revChatFocusTicker = chat.ticker;
+    if (window.AppChat) window.AppChat.setRevChatFocus(chat.ticker);
     const tickerInput = document.getElementById('ticker-input');
     if (tickerInput) tickerInput.value = chat.ticker;
     chat.lastAccessed = Date.now();
@@ -1515,6 +1515,13 @@ window.AppSwing = {
     const titleEl = document.getElementById('modal-ticker-title');
     if (titleEl) {
       titleEl.innerText = `${chat.ticker} RESEARCH REPORT (${actualDate || 'Active'})`;
+    }
+
+    // Update Direct URL button link
+    const directUrlBtn = document.getElementById('btn-modal-direct-url');
+    if (directUrlBtn) {
+      directUrlBtn.href = `/research/${chat.ticker}`;
+      directUrlBtn.title = `Open standalone http://127.0.0.1:8050/research/${chat.ticker} in a new tab`;
     }
 
     if (window.AppChat && typeof window.AppChat.updateSidebarFocusBadge === 'function') {

@@ -14,8 +14,26 @@ window.AppApi = {
     return await res.json();
   },
 
-  async getJobs() {
-    const res = await fetch('/api/jobs');
+  async getAlertsHistory(date, symbol, strategy) {
+    const p = new URLSearchParams();
+    if (date) p.append('date', date);
+    if (symbol) p.append('symbol', symbol);
+    if (strategy) p.append('strategy', strategy);
+    const q = p.toString() ? `?${p.toString()}` : '';
+    const res = await fetch(`/api/alerts/history${q}`);
+    if (!res.ok) throw new Error(`Failed to fetch alerts: ${res.status}`);
+    return await res.json();
+  },
+
+  async getSessions(limit = 30) {
+    const res = await fetch(`/api/research/sessions?limit=${encodeURIComponent(limit)}`);
+    if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.status}`);
+    return await res.json();
+  },
+
+  async getJobs(date) {
+    const q = date ? `?date=${encodeURIComponent(date)}` : '';
+    const res = await fetch(`/api/jobs${q}`);
     if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.status}`);
     return await res.json();
   },

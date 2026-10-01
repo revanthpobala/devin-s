@@ -179,12 +179,9 @@ window.AppIntraday = {
 
   queryPosition(sym, side, entry, spot, pnl) {
     if (window.AppChat) {
-      window.AppState.revChatFocusTicker = sym;
+      window.AppChat.setRevChatFocus(sym);
       const tickerInput = document.getElementById('ticker-input');
       if (tickerInput) tickerInput.value = sym;
-      if (typeof window.AppChat.updateSidebarFocusBadge === 'function') {
-        window.AppChat.updateSidebarFocusBadge(sym);
-      }
       const pnlNum = parseFloat(pnl) || 0.0;
       const pnlStr = (pnlNum >= 0 ? '+' : '') + pnlNum.toFixed(2) + '%';
       window.AppChat.askRevChat(`Evaluate my active intraday ${side} position in $${sym} (Entry: ${entry}, Current Spot: ${spot}, P&L: ${pnlStr}). What is the tactical management directive right now — should I trim, trail stop, or hold for target?`);
@@ -193,10 +190,7 @@ window.AppIntraday = {
 
   queryAllPositions() {
     if (window.AppChat) {
-      window.AppState.revChatFocusTicker = '';
-      if (typeof window.AppChat.updateSidebarFocusBadge === 'function') {
-        window.AppChat.updateSidebarFocusBadge('');
-      }
+      window.AppChat.clearRevChatFocus();
       window.AppChat.askRevChat("Review all of my active open intraday positions from data/positions.json. Give me an executive management breakdown for each: which ones are working and should be trimmed/trailed, and which ones are lagging or underwater?");
     }
   },

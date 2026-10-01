@@ -364,6 +364,63 @@ def purge_test_rows(dry_run: bool = True) -> Dict[str, Any]:
     return result
 
 
+def check_local_research_coverage(grace_minutes: int = 20) -> Tuple[bool, str]:
+    """True when a forward alert is sitting without a local research verdict.
+
+    The requirement is that every alert gets a local research pass. That was true by luck, not by
+    construction: the enrichment worker caught a failure, logged it and moved on, leaving the row
+    NULL with no retry and nothing to notice it. This is the check that makes the requirement
+    observable.
+
+    `grace_minutes` exists because an alert that arrived thirty seconds ago has not been graded
+    yet -- that is not a failure, it is the queue working. Only alerts older than the grace window
+    count as missed.
+    """
+    try:
+        from datetime import timedelta
+
+        from src.tracking.alert_db import _get_connection, get_eastern_date_str, get_eastern_now
+
+        today = get_eastern_date_str()
+        cutoff = (get_eastern_now() - timedelta(minutes=grace_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+
+        with _get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN llm_decision IS NULL OR TRIM(llm_decision) = ''
+                                THEN 1 ELSE 0 END) AS missing,
+                       SUM(CASE WHEN COALESCE(routing_stage, '') = 'ARCHIVED'
+                                THEN 1 ELSE 0 END) AS archived
+                FROM alerts
+                WHERE date = ?
+                  AND COALESCE(routing_stage, '') != 'ARCHIVED'
+                  AND (timestamp IS NULL OR timestamp <= ?)
+                """,
+                (today, cutoff),
+            ).fetchone()
+    except Exception as e:
+        logger.debug("ops: research-coverage probe failed (%s)", e)
+        return False, f"coverage unverified ({e})"
+
+    total = row["total"] or 0
+    missing = row["missing"] or 0
+    if missing:
+        pct = (total - missing) / total * 100 if total else 0.0
+        return True, (
+            f"{missing} of {total} alert(s) for {today} have NO local research "
+            f"({pct:.1f}% covered, older than a {grace_minutes}min grace window). "
+            f"The enrichment worker retries {_ENRICH_RETRY_ATTEMPTS}x; these exhausted it."
+        )
+    if total:
+        return False, f"all {total} forward alert(s) today have a local research verdict"
+    return False, "no forward alerts yet today"
+
+
+# Mirrors main.py; the message names the retry budget so the alert is self-explanatory.
+_ENRICH_RETRY_ATTEMPTS = 3
+
+
 def run_ops_checks(
     missing_symbols: Optional[List[str]] = None,
     notify: bool = True,
@@ -378,6 +435,7 @@ def run_ops_checks(
         ("daily_artifacts", check_daily_artifacts_fresh),
         ("ingester", check_ingester_running),
         ("core_coverage", lambda: check_core_symbol_coverage(missing_symbols)),
+        ("local_research_coverage", check_local_research_coverage),
     ]
 
     results: Dict[str, Any] = {}

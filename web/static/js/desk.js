@@ -371,579 +371,725 @@ window.AppDesk = {
     </div>`;
   },
 
-  async loadToday() {
+  _todaySubTab: 'opps',
+  _oppsFilter: 'ALL',
+  _lastTodayData: null,
+  _isPollingToday: false,
+
+  setTodaySubTab(tab) {
+    this._todaySubTab = tab || 'opps';
+    this.loadToday();
+  },
+
+  setOppsFilter(filter) {
+    this._oppsFilter = filter || 'ALL';
+    this.loadToday();
+  },
+
+  async openActionablePosition(ticker, side, entry, stop, target, vehicle, notes) {
+    const sym = (ticker || '').toUpperCase();
+    const entryPx = parseFloat(entry) || 0;
+    const stopPx = parseFloat(stop) || 0;
+    const targetPx = parseFloat(target) || 0;
+    if (!confirm(`🚀 Confirm OPENING ${side} Position on $${sym}?\n\n• Entry: $${entryPx.toFixed(2)}\n• Stop Loss: $${stopPx.toFixed(2)}\n• Target 1: $${targetPx.toFixed(2)}\n• Vehicle: ${vehicle || 'Equity'}\n\nThis will start live position surveillance and R-accounting.`)) return;
+
     try {
-      const [todayData, recordData, coverageData, briefingData] = await Promise.all([
+      const res = await fetch('/api/desk/actionable-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: sym,
+          side: side.toUpperCase(),
+          strategy: 'Swing',
+          entry_price: entryPx,
+          stop: stopPx,
+          target: targetPx,
+          quantity: 100,
+          instrument_type: vehicle && vehicle.toLowerCase().includes('spread') ? 'OPTION' : 'EQUITY',
+          notes: notes || `Opened from Actionable Opportunity Cockpit (${vehicle || 'Equity'})`
+        })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        alert(`✅ Position opened for $${sym}!\nSurveillance active in Position Monitor & Alert DB.`);
+        this._todaySubTab = 'positions';
+        this.loadToday();
+      } else {
+        alert(`⚠️ Could not open position: ${data.message || data.error}`);
+      }
+    } catch (err) {
+      alert(`Error opening position: ${err}`);
+    }
+  },
+
+  async managePosition(ticker, action, price = null, reason = null) {
+    const sym = (ticker || '').toUpperCase();
+    const actionLabels = {
+      'SCALE_50': '🎯 Scale 50% Profit at Target 1 and Ratchet Runner Stop to Breakeven',
+      'TRAIL_BE': '🛡️ Ratchet Stop to Break-Even (Lock Zero-Risk)',
+      'CLOSE': '🛑 Close and Flatten Position'
+    };
+    if (!confirm(`Execute action on $${sym}:\n${actionLabels[action] || action}?`)) return;
+
+    try {
+      const res = await fetch('/api/desk/manage-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: sym,
+          action: action,
+          price: price ? parseFloat(price) : null,
+          reason: reason || actionLabels[action]
+        })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        alert(`✅ ${data.message}`);
+        this.loadToday();
+      } else {
+        alert(`⚠️ Action failed: ${data.message || data.error}`);
+      }
+    } catch (err) {
+      alert(`Error executing action: ${err}`);
+    }
+  },
+
+  async saveFeedbackNotes(tradeId, ticker) {
+    const gradeEl = document.getElementById(`fb-grade-${tradeId}`);
+    const notesEl = document.getElementById(`fb-notes-${tradeId}`);
+    const lessonEl = document.getElementById(`fb-lesson-${tradeId}`);
+    const btn = document.getElementById(`fb-save-btn-${tradeId}`);
+
+    const grade = gradeEl ? gradeEl.value : null;
+    const notes = notesEl ? notesEl.value : '';
+    const lesson = lessonEl ? lessonEl.value : '';
+
+    if (btn) btn.innerText = '💾 Saving...';
+
+    try {
+      const res = await fetch('/api/desk/feedback-loop/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trade_id: String(tradeId),
+          ticker: ticker,
+          grade: grade,
+          notes: notes,
+          lesson: lesson
+        })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        if (btn) {
+          btn.innerText = '✅ Saved';
+          btn.style.color = 'var(--green)';
+          setTimeout(() => {
+            btn.innerText = 'Save Notes';
+            btn.style.color = '';
+          }, 2000);
+        }
+      } else {
+        alert(`Failed saving notes: ${data.error}`);
+        if (btn) btn.innerText = 'Save Notes';
+      }
+    } catch (err) {
+      alert(`Error saving feedback note: ${err}`);
+      if (btn) btn.innerText = 'Save Notes';
+    }
+  },
+
+  async loadToday(silent = false) {
+    if (silent && document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+      return;
+    }
+    try {
+      const [todayData, recordData, coverageData, briefingData, feedbackData] = await Promise.all([
         window.AppApi.request('/api/desk/today'),
-        window.AppApi.request('/api/desk/record?scope=all'),
-        window.AppApi.request('/api/desk/coverage'),
+        window.AppApi.request('/api/desk/record?scope=all').catch(() => null),
+        window.AppApi.request('/api/desk/coverage').catch(() => null),
         window.AppApi.request('/api/desk/morning-briefing').catch(() => null),
+        window.AppApi.request('/api/desk/feedback-loop').catch(() => null),
       ]);
 
-      const cov = coverageData || {};
-      const alerts = cov.alerts || 0;
-      const localDone = cov.local_done || 0;
-      const localPass = cov.local_pass || 0;
-      const deepDone = cov.deep_done || 0;
-      const deepQueued = cov.deep_queued || [];
-      const deepMissing = Array.isArray(cov.deep_missing) ? cov.deep_missing : [];
+      this._lastTodayData = todayData;
 
-      const covClass = deepDone < localPass ? 'color:var(--rose-light);' : 'color:var(--text-main);';
-      const covTxt = `Alerts ${alerts} · Local ${localDone}/${alerts} · PASS ${localPass} · Deep ${deepDone}/${localPass}${deepQueued.length ? ' · Queued ' + deepQueued.length : ''}`;
+      const pulse = (todayData && todayData.market_pulse) || {};
+      const topOpps = (todayData && todayData.top_opportunities) || (briefingData && briefingData.tier1_actionable) || [];
+      const actionableAlerts = (todayData && todayData.actionable_alerts) || [];
+      const feedback = feedbackData || (todayData && todayData.feedback_loop) || {};
+      const openPositions = feedback.open_positions || [];
+      const closedPositions = feedback.closed_positions || [];
+      const scorecard = feedback.scorecard || {};
 
-      const actionable = (todayData && todayData.actionable) ? todayData.actionable : [];
-      const stalking = (todayData && todayData.stalking) ? todayData.stalking : [];
-      const found = (todayData && todayData.found) ? todayData.found : [];
-      const inbox = (todayData && todayData.inbox) ? todayData.inbox : [];
-      const watchList = (todayData && todayData.watch) ? todayData.watch : [];
-      const cutList = (todayData && todayData.cut) ? todayData.cut : [];
-      const needsYou = (todayData && todayData.needs_you) ? todayData.needs_you : [];
-      const unmeasured = (todayData && todayData.unmeasured) ? todayData.unmeasured : [];
-      const inboxMeasured = (todayData && todayData.inbox_measured_count) || 0;
-      const inboxUnmeasured = (todayData && todayData.inbox_unmeasured_count) || 0;
+      const inZoneOpps = topOpps.filter(o => o.in_zone);
+      const coilingOpps = topOpps.filter(o => !o.in_zone && o.priority_tier <= 2);
+      const highConvOpps = topOpps.filter(o => o.conviction >= 7);
 
-      const inTradeCount = actionable.filter(a => a.status === 'IN_TRADE').length;
-      const inZoneCount = actionable.filter(a => a.status === 'IN_ZONE').length;
-      const nearCount = actionable.filter(a => a.status !== 'IN_ZONE' && a.status !== 'IN_TRADE' && a.dist !== null && a.dist !== undefined && Math.abs(parseFloat(a.dist)) <= 1.5).length;
-      const foundCount = found.reduce((acc, f) => acc + ((f.tickers || []).length), 0);
-      const recordSumR = (recordData && recordData.sum_r !== undefined) ? ((recordData.sum_r >= 0 ? '+' : '') + recordData.sum_r.toFixed(2) + ' R') : '0.00 R';
+      const activeTab = this._todaySubTab || 'opps';
+      const oppFilter = this._oppsFilter || 'ALL';
 
-      let html = `<div style="display:flex; flex-direction:column; gap:20px;">`;
+      let filteredOpps = [...topOpps];
+      if (oppFilter === 'IN_ZONE') filteredOpps = inZoneOpps;
+      else if (oppFilter === 'COILING') filteredOpps = coilingOpps;
+      else if (oppFilter === 'HIGH_CONVICTION') filteredOpps = highConvOpps;
 
-      // 🌅 MORNING EXECUTIVE INTELLIGENCE & ACTIONABLE OPPORTUNITIES
-      if (briefingData && briefingData.total_researched > 0) {
-        const t1 = briefingData.tier1_actionable || [];
-        const t2 = briefingData.tier2_stalking || [];
-        const genTime = briefingData.generated_at ? new Date(briefingData.generated_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '7:45 AM';
+      let html = `<div style="display:flex; flex-direction:column; gap:16px;">`;
 
-        html += `
-        <div class="station-card" style="border-left: 4px solid var(--cyan-glow); background: linear-gradient(180deg, rgba(6,182,212,0.04) 0%, var(--bg-surface) 100%); padding:18px 20px;">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+      // =========================================================================
+      // 1. LIVE MARKET DYNAMICS & SURVEILLANCE PULSE BAR
+      // =========================================================================
+      const marketText = pulse.market_status_text || '🟢 CONTINUOUS SURVEILLANCE ACTIVE';
+      const spyPx = pulse.spy ? `$${pulse.spy.toFixed(2)}` : '–';
+      const qqqPx = pulse.qqq ? `$${pulse.qqq.toFixed(2)}` : '–';
+      const vixPx = pulse.vix ? `${pulse.vix.toFixed(2)}` : '–';
+      const phaseBadgeTone = pulse.market_open ? 'green' : (pulse.market_phase === 'AFTER_HOURS' || pulse.market_phase === 'PRE_MARKET') ? 'amber' : 'red';
+
+      html += `
+      <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px;">
+          
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <div style="font-size:22px;">⚡</div>
             <div>
               <div style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:22px;">🌅</span>
-                <h3 style="margin:0; font-size:16px; font-weight:800; letter-spacing:0.5px; color:var(--text-main);">
-                  MORNING EXECUTIVE INTELLIGENCE &amp; ACTIONABLE OPPORTUNITIES
-                </h3>
-                <span class="badge" style="border-color:var(--cyan); color:var(--cyan); font-weight:800;">7:45 AM MT</span>
+                <span style="font-size:15px; font-weight:800; letter-spacing:0.5px; color:var(--text-main);">
+                  MARKET DYNAMICS &amp; EXECUTION COCKPIT
+                </span>
+                <span class="pill ${phaseBadgeTone}" style="font-weight:800; font-size:10px;">
+                  <span class="dot pulse"></span> ${marketText}
+                </span>
               </div>
-              <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
-                Synthesized from rolling deep research history (evening &amp; overnight) with updated real-time quotes · <b>${briefingData.total_researched}</b> Active Setups
+              <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">
+                Continuous Screening across Schwab 1000 &amp; TradingView · Live Quotes · Proximity &amp; R:R Updates
               </div>
-            </div>
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted);">Updated: ${genTime}</span>
-              <button class="btn secondary" style="font-size:11px; padding:4px 10px; font-weight:700;" onclick="AppDesk.refreshBriefing(this)">
-                🔄 Refresh Live Quotes
-              </button>
             </div>
           </div>
 
-          <!-- Tier 1 Actionable Cards -->
-          <div style="margin-bottom:14px;">
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
-              <span style="font-size:13px; font-weight:800; color:var(--green); letter-spacing:0.5px; text-transform:uppercase;">
-                🏆 TOP ACTIONABLE OPPORTUNITIES (${t1.length})
-              </span>
-              <span style="font-size:11px; color:var(--text-muted);">— Prime qualified setups with defined risk, zone proximity &amp; R:R</span>
+          <!-- Market Indices Strip -->
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+            <div style="display:flex; gap:10px; align-items:center; background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:6px 14px;">
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">SPY</span> <b style="color:var(--text-main);">${spyPx}</b></div>
+              <div style="color:var(--border);">|</div>
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">QQQ</span> <b style="color:var(--text-main);">${qqqPx}</b></div>
+              <div style="color:var(--border);">|</div>
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">VIX</span> <b style="color:${(pulse.vix || 0) > 20 ? 'var(--rose-light)' : 'var(--green)'};">${vixPx}</b></div>
             </div>
 
-            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); gap:14px;">
+            <button class="btn secondary" style="font-size:11px; padding:6px 12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;" onclick="AppDesk.loadToday()">
+              🔄 <span>Refresh Live</span>
+            </button>
+          </div>
+
+        </div>
+
+        <!-- Cockpit Primary Navigation Tabs -->
+        <div style="display:flex; gap:8px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); flex-wrap:wrap;">
+          <button id="subtab-today-opps" class="btn ${activeTab === 'opps' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('opps')">
+            🎯 Actionable Opportunities (${topOpps.length})
+          </button>
+          <button id="subtab-today-alerts" class="btn ${activeTab === 'alerts' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('alerts')">
+            🚨 Actionable Alerts (${actionableAlerts.length})
+          </button>
+          <button id="subtab-today-feedback" class="btn ${activeTab === 'positions' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('positions')">
+            📊 Positions &amp; Feedback Loop (${openPositions.length} Open · ${closedPositions.length} Evaluated)
+          </button>
+        </div>
+      </div>
+      `;
+
+      // =========================================================================
+      // 2. SUBTAB: ACTIONABLE OPPORTUNITIES (PROPER DEEP RESEARCH & SCREENING)
+      // =========================================================================
+      if (activeTab === 'opps') {
+        html += `
+        <div class="station-card" style="padding:16px 20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:18px;">🎯</span>
+                <span style="font-size:14px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
+                  TOP QUALIFIED ACTIONABLE OPPORTUNITIES
+                </span>
+                <span class="pill cyan" style="font-weight:800; font-size:10px;">${filteredOpps.length} Setups</span>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
+                Institutional Senior PM directives with defined risk floors, binding invalidations, and specific options spread blueprints.
+              </div>
+            </div>
+
+            <!-- Opportunity Filter Buttons -->
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn ${oppFilter === 'ALL' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('ALL')">All (${topOpps.length})</button>
+              <button class="btn ${oppFilter === 'IN_ZONE' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('IN_ZONE')">🎯 In Entry Zone (${inZoneOpps.length})</button>
+              <button class="btn ${oppFilter === 'COILING' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('COILING')">⚡ Coiling Triggers (${coilingOpps.length})</button>
+              <button class="btn ${oppFilter === 'HIGH_CONVICTION' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('HIGH_CONVICTION')">💎 High Conviction (${highConvOpps.length})</button>
+            </div>
+          </div>
+
+          <!-- Opportunities Grid -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
         `;
 
-        if (t1.length === 0) {
-          html += `<div style="grid-column:1/-1; padding:16px; text-align:center; color:var(--text-muted); font-size:12px; background:var(--bg-main); border-radius:8px;">No setups currently in immediate entry trigger. Check coiled stalking candidates below.</div>`;
+        if (filteredOpps.length === 0) {
+          html += `
+            <div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-muted); font-size:13px; background:var(--bg-main); border-radius:10px; border:1px dashed var(--border);">
+              No setups matching filter "${oppFilter}". Check all opportunities or launch deep research from Radar.
+            </div>
+          `;
         } else {
-          t1.forEach(s => {
-            const sym = s.ticker;
-            const repDate = s.report_date;
-            const spot = s.spot_price ? '$' + parseFloat(s.spot_price).toFixed(2) : '–';
-            const distTxt = s.in_zone ? '🎯 IN ZONE' : (s.dist_pct > 0 ? `+${s.dist_pct}%` : `${s.dist_pct}%`);
-            const distTone = s.in_zone ? 'good' : (Math.abs(s.dist_pct) <= 1.5 ? 'info' : 'warn');
-            const statePill = this.pill(s.state.replace('_', ' '), distTone);
-            const sidePill = this.pill(s.side, s.side === 'LONG' ? 'good' : 'bad');
-            const rrTxt = s.live_rr > 0 ? `R:R ${s.live_rr}:1` : '–';
+          filteredOpps.forEach(opp => {
+            const sym = opp.ticker;
+            const spot = opp.spot_price ? `$${parseFloat(opp.spot_price).toFixed(2)}` : '–';
+            const repDate = opp.report_date || 'latest';
+            const dist = opp.dist_pct !== null && opp.dist_pct !== undefined ? opp.dist_pct : 0.0;
+            const distTxt = opp.in_zone ? '🎯 IN ZONE' : (dist > 0 ? `+${dist.toFixed(2)}%` : `${dist.toFixed(2)}%`);
+            const distTone = opp.in_zone ? 'var(--green)' : (Math.abs(dist) <= 1.5 ? 'var(--cyan)' : 'var(--amber)');
 
-            const isOptions = s.vehicle_type === 'OPTIONS';
+            const sideTone = opp.side === 'LONG' ? 'var(--green)' : 'var(--rose-light)';
+            const rrTxt = opp.live_rr > 0 ? `R:R ${opp.live_rr.toFixed(2)}:1` : '–';
+
+            const isOptions = opp.vehicle_type === 'OPTIONS';
             const vehicleBg = isOptions ? 'rgba(168, 85, 247, 0.08)' : 'rgba(56, 189, 248, 0.08)';
             const vehicleBorder = isOptions ? 'rgba(168, 85, 247, 0.3)' : 'rgba(56, 189, 248, 0.3)';
             const vehicleIcon = isOptions ? '📦' : '📊';
 
+            const eLow = opp.entry_low ? `$${parseFloat(opp.entry_low).toFixed(2)}` : '–';
+            const eHigh = opp.entry_high ? `$${parseFloat(opp.entry_high).toFixed(2)}` : '–';
+            const stopVal = opp.tactical_stop ? `$${parseFloat(opp.tactical_stop).toFixed(2)}` : '–';
+            const t1Val = opp.target_1 ? `$${parseFloat(opp.target_1).toFixed(2)}` : '–';
+            const t2Val = opp.target_2 ? `$${parseFloat(opp.target_2).toFixed(2)}` : '–';
+
             html += `
-              <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; justify-content:space-between; gap:10px; box-shadow:0 2px 6px rgba(0,0,0,0.15);">
+              <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); transition:transform 0.15s ease, border-color 0.15s ease;">
                 <div>
+                  
+                  <!-- Card Header -->
                   <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                     <div>
                       <div style="display:flex; align-items:center; gap:8px;">
-                        <span style="font-size:18px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
+                        <span style="font-size:20px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
                           ${sym}
                         </span>
-                        ${sidePill}
-                        ${statePill}
+                        <span class="badge" style="border-color:${sideTone}; color:${sideTone}; font-weight:800; font-size:10px;">
+                          ${opp.side}
+                        </span>
+                        <span class="badge" style="border-color:${distTone}; color:${distTone}; font-weight:800; font-size:10px;">
+                          ${opp.in_zone ? '🎯 IN ZONE' : opp.state_label}
+                        </span>
                       </div>
-                      <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">
-                        ${s.vintage} · Score: <b>${s.score}</b>/100 · Conviction: ${s.conviction}/10
+                      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:10.5px; color:var(--text-muted); margin-top:3px;">
+                        <span class="pill ${String(opp.vintage || '').includes('TODAY') ? 'green' : 'cyan'}" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
+                          ${opp.vintage || repDate}
+                        </span>
+                        <span>Conviction: <b>${opp.conviction}/10</b></span>
+                        <span>·</span>
+                        <span>Score: <b>${opp.score}/100</b></span>
                       </div>
                     </div>
+
                     <div style="text-align:right;">
-                      <div style="font-size:16px; font-weight:800; font-family:var(--font-mono); color:var(--text-main);">${spot}</div>
-                      <div style="font-size:11px; font-family:var(--font-mono); font-weight:700; color:var(--${distTone === 'good' ? 'green' : distTone === 'info' ? 'cyan' : 'amber'});">${distTxt}</div>
+                      <div style="font-size:18px; font-weight:900; font-family:var(--font-mono); color:var(--text-main);">${spot}</div>
+                      <div style="font-size:11px; font-family:var(--font-mono); font-weight:800; color:${distTone};">${distTxt}</div>
                     </div>
                   </div>
 
-                  <div style="margin-top:10px; background:${vehicleBg}; border:1px solid ${vehicleBorder}; border-radius:6px; padding:8px 10px; font-size:11.5px; font-family:var(--font-mono); line-height:1.4;">
-                    <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:2px;">
-                      ${vehicleIcon} EXECUTION VEHICLE
+                  <!-- Tactical Geometry Grid -->
+                  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:10px; background:var(--bg-surface); padding:8px 10px; border-radius:8px; border:1px solid var(--border); font-family:var(--font-mono); font-size:11px;">
+                    <div>
+                      <div style="font-size:9.5px; color:var(--text-muted); text-transform:uppercase;">Entry Zone</div>
+                      <div style="font-weight:700; color:var(--text-main);">${eLow}–${eHigh}</div>
                     </div>
-                    <div style="font-weight:700; color:var(--text-main);">${s.vehicle_label}</div>
-                    <div style="display:flex; gap:12px; margin-top:4px; font-size:10.5px; color:var(--text-muted);">
-                      <span>Zone: $${s.entry_low.toFixed(2)}–$${s.entry_high.toFixed(2)}</span>
-                      <span>Stop: $${s.tactical_stop.toFixed(2)}</span>
-                      <span>T1: $${s.target_1.toFixed(2)}</span>
-                      <span style="color:var(--green); font-weight:700;">${rrTxt}</span>
+                    <div>
+                      <div style="font-size:9.5px; color:var(--rose-light); text-transform:uppercase;">Stop Loss</div>
+                      <div style="font-weight:700; color:var(--rose-light);">${stopVal}</div>
+                    </div>
+                    <div>
+                      <div style="font-size:9.5px; color:var(--green); text-transform:uppercase;">Target 1 (50%)</div>
+                      <div style="font-weight:700; color:var(--green);">${t1Val}</div>
                     </div>
                   </div>
 
-                  ${s.pm_bullets && s.pm_bullets.length > 0 ? `
-                  <div style="margin-top:8px; font-size:11px; color:var(--text-main); line-height:1.4; background:var(--bg-surface); border-radius:6px; padding:8px 10px; border:1px solid var(--border);">
-                    <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Senior PM Thesis:</div>
-                    ${s.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
+                  <!-- Execution Vehicle Blueprint -->
+                  <div style="margin-top:10px; background:${vehicleBg}; border:1px solid ${vehicleBorder}; border-radius:8px; padding:10px 12px; font-size:11.5px; line-height:1.4;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">
+                        ${vehicleIcon} EXECUTION BLUEPRINT
+                      </div>
+                      <span class="badge" style="border-color:var(--green); color:var(--green); font-size:9.5px; font-weight:800;">
+                        ${rrTxt}
+                      </span>
+                    </div>
+                    <div style="font-weight:700; color:var(--text-main);">${opp.vehicle_label}</div>
+                  </div>
+
+                  <!-- PM Thesis / Takeaways -->
+                  ${opp.pm_bullets && opp.pm_bullets.length > 0 ? `
+                  <div style="margin-top:10px; font-size:11px; color:var(--text-main); line-height:1.4; background:var(--bg-surface); border-radius:8px; padding:8px 10px; border:1px solid var(--border);">
+                    <div style="font-size:9.5px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Senior PM Directive:</div>
+                    ${opp.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
                   </div>` : ''}
 
-                  ${s.gate_warning ? `
-                  <div style="margin-top:4px; font-size:10.5px; color:var(--amber); font-family:var(--font-mono);">
-                    ⚠️ ${s.gate_warning}
+                  <!-- Invalidation Rule -->
+                  ${opp.invalidation && opp.invalidation.rationale ? `
+                  <div style="margin-top:8px; font-size:10px; color:var(--rose-light); font-family:var(--font-mono); background:rgba(244,63,94,0.05); padding:6px 8px; border-radius:6px; border:1px solid rgba(244,63,94,0.2);">
+                    🛑 <b>Invalidation:</b> ${opp.invalidation.rationale}
                   </div>` : ''}
+
                 </div>
 
-                <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
-                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:4px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
+                <!-- 1-Click Action Buttons -->
+                <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
+                  <button class="btn" style="flex:1; min-width:110px; font-size:11px; padding:6px 10px; font-weight:800; background:linear-gradient(135deg, #059669 0%, #10b981 100%); color:white;" onclick="AppDesk.openActionablePosition('${sym}', '${opp.side}', ${opp.entry_low || opp.spot_price || 0}, ${opp.tactical_stop || 0}, ${opp.target_1 || 0}, '${opp.vehicle_label ? opp.vehicle_label.replace(/'/g, '') : 'Equity'}')">
+                    🚀 Take Trade
+                  </button>
+                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:6px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
                     📑 Dossier
                   </button>
-                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:4px 8px;" onclick="AppDesk.setTastytradeAlert('${sym}', this)">
-                    📲 TT Alerts
+                  <button class="btn secondary" style="font-size:11px; padding:6px 10px;" onclick="AppDesk.triggerDeep('${sym}', this)" title="Re-run Multi-Pass Deep Research">
+                    🔬 Research
                   </button>
-                  <a href="https://www.tradingview.com/chart/?symbol=${sym}" target="_blank" class="btn secondary" style="font-size:11px; padding:4px 8px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;">
+                  <a href="https://www.tradingview.com/chart/?symbol=${sym}" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open TradingView Chart">
                     📈 TV
                   </a>
                 </div>
+
               </div>
             `;
           });
         }
 
         html += `</div></div>`;
+      }
 
-        // Tier 2 Coiled Stalking Accordion
-        if (t2.length > 0) {
-          html += `
-          <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="AppDesk.toggleBriefingTier2()">
-              <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:800; color:var(--amber);">
-                <span id="briefing-t2-toggle">▶</span> ⏳ COILED STALKING CANDIDATES (${t2.length})
-                <span style="font-size:11px; font-weight:400; color:var(--text-muted);">(Sitting 0.5%–3.0% from entry floor · Waiting for limit fill)</span>
+      // =========================================================================
+      // 3. SUBTAB: ACTIONABLE ALERTS STREAM (TRADINGVIEW & SCREENERS)
+      // =========================================================================
+      else if (activeTab === 'alerts') {
+        html += `
+        <div class="station-card" style="padding:16px 20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:18px;">🚨</span>
+                <span style="font-size:14px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
+                  REAL-TIME ACTIONABLE ALERTS COCKPIT
+                </span>
+                <span class="pill cyan" style="font-weight:800; font-size:10px;">${actionableAlerts.length} Active Triggers</span>
               </div>
-              <div style="font-size:11px; color:var(--cyan); font-weight:700;">Click to view list</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
+                Live-filtered alerts with proximity to entry, measured risk/reward, and 1-click execution.
+              </div>
             </div>
 
-            <div id="briefing-t2-container" style="display:none; margin-top:10px;">
-              <table class="data-table" style="width:100%; border-collapse:collapse; font-size:11.5px;">
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px;" onclick="AppAlerts.checkGmailNow()">
+                📥 Check Gmail (TV Alerts)
+              </button>
+              <button class="btn secondary" style="font-size:11px; padding:4px 10px;" onclick="App.switchDesk('alerts')">
+                View All Ingested ↗
+              </button>
+            </div>
+          </div>
+
+          <!-- Actionable Alerts Table -->
+          <div style="overflow-x:auto;">
+            <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px; min-width:850px;">
+              <thead>
+                <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                  <th style="padding:8px 10px; text-align:left;">Symbol</th>
+                  <th style="padding:8px 10px; text-align:left;">Signal / Action</th>
+                  <th style="padding:8px 10px; text-align:center;">State / Proximity</th>
+                  <th style="padding:8px 10px; text-align:right;">Trigger Px</th>
+                  <th style="padding:8px 10px; text-align:right;">Spot</th>
+                  <th style="padding:8px 10px; text-align:right;">Dist %</th>
+                  <th style="padding:8px 10px; text-align:right;">Stop</th>
+                  <th style="padding:8px 10px; text-align:right;">Target</th>
+                  <th style="padding:8px 10px; text-align:right;">R:R</th>
+                  <th style="padding:8px 10px; text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+
+        if (actionableAlerts.length === 0) {
+          html += `<tr><td colspan="10" style="text-align:center; padding:24px; color:var(--text-muted);">No fresh actionable alerts right now. System is polling Gmail &amp; market feeds.</td></tr>`;
+        } else {
+          actionableAlerts.forEach(a => {
+            const sym = a.symbol;
+            const side = a.side || 'LONG';
+            const sideTone = side === 'LONG' ? 'var(--green)' : 'var(--rose-light)';
+            const stateTone = a.in_zone ? 'var(--green)' : (Math.abs(a.dist_pct || 0) <= 1.5 ? 'var(--cyan)' : 'var(--amber)');
+            const rrTxt = (a.live_rr || 0) > 0 ? `${a.live_rr.toFixed(1)}:1` : '–';
+
+            html += `
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:8px 10px; font-weight:800; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('${(a.date || '').substring(0, 10)}', '${sym}', 'local')">
+                  ${sym}
+                </td>
+                <td style="padding:8px 10px;">
+                  <span class="badge" style="border-color:${sideTone}; color:${sideTone}; font-weight:800; font-size:10px;">
+                    ${a.action} (${a.strategy || 'Daily'})
+                  </span>
+                </td>
+                <td style="padding:8px 10px; text-align:center;">
+                  <span class="badge" style="border-color:${stateTone}; color:${stateTone}; font-weight:800; font-size:10px;">
+                    ${a.state_label}
+                  </span>
+                </td>
+                <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); font-weight:700;">$${(a.entry_price || 0).toFixed(2)}</td>
+                <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono);">$${(a.spot_price || 0).toFixed(2)}</td>
+                <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); color:${stateTone}; font-weight:800;">
+                  ${a.in_zone ? '🎯 IN ZONE' : (a.dist_pct > 0 ? `+${a.dist_pct}%` : `${a.dist_pct}%`)}
+                </td>
+                <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); color:var(--rose-light);">$${(a.stop_price || 0).toFixed(2)}</td>
+                <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); color:var(--green);">$${(a.target_price || 0).toFixed(2)}</td>
+                <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--green);">${rrTxt}</td>
+                <td style="padding:8px 10px; text-align:right;">
+                  <div style="display:inline-flex; gap:4px;">
+                    <button class="btn" style="font-size:10px; padding:3px 8px; font-weight:800;" onclick="AppDesk.openActionablePosition('${sym}', '${side}', ${a.entry_price || 0}, ${a.stop_price || 0}, ${a.target_price || 0}, 'Alert Execution', '${(a.setup || 'Alert Trigger').replace(/'/g, '')}')">
+                      🚀 Take
+                    </button>
+                    <button class="btn secondary" style="font-size:10px; padding:3px 8px;" onclick="AppDesk.triggerDeep('${sym}', this)">
+                      🔬 Deep
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          });
+        }
+
+        html += `</tbody></table></div></div>`;
+      }
+
+      // =========================================================================
+      // 4. SUBTAB: POSITION SURVEILLANCE & EVALUATION FEEDBACK LOOP
+      // =========================================================================
+      else if (activeTab === 'positions') {
+        html += `
+        <div style="display:flex; flex-direction:column; gap:16px;">
+
+          <!-- Scorecard KPI Banner -->
+          <div class="station-card" style="padding:14px 20px; display:flex; gap:20px; flex-wrap:wrap; align-items:center;">
+            <div>
+              <div style="font-size:13px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
+                🏆 PERFORMANCE SCORECARD &amp; FEEDBACK LOOP
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+                Audit of trade lifecycle outcomes, discipline grading, and continuous error elimination.
+              </div>
+            </div>
+
+            <div style="display:flex; gap:14px; flex-wrap:wrap; font-family:var(--font-mono); font-size:11px; margin-left:auto;">
+              <div><span style="color:var(--text-muted);">Total Trades:</span> <b>${scorecard.total_trades || 0}</b></div>
+              <div><span style="color:var(--text-muted);">Win Rate:</span> <b style="color:var(--green);">${scorecard.win_rate_pct || 0}%</b></div>
+              <div><span style="color:var(--text-muted);">Wins/Losses:</span> <b>${scorecard.wins || 0}W / ${scorecard.losses || 0}L</b></div>
+              <div><span style="color:var(--text-muted);">Total Realized R:</span> <b style="color:${(scorecard.total_realized_r || 0) >= 0 ? 'var(--green)' : 'var(--rose-light)'};">${(scorecard.total_realized_r || 0) >= 0 ? '+' : ''}${scorecard.total_realized_r || 0}R</b></div>
+              <div><span style="color:var(--text-muted);">Profit Factor:</span> <b>${scorecard.profit_factor || 1.0}</b></div>
+              <div><span style="color:var(--text-muted);">Expectancy:</span> <b>${scorecard.expectancy || 0.0}R/trade</b></div>
+            </div>
+          </div>
+
+          <!-- PART A: ACTIVE OPEN POSITIONS SURVEILLANCE -->
+          <div class="station-card" style="padding:16px 20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:16px;">💼</span>
+                <span style="font-size:13px; font-weight:800; color:var(--text-main); text-transform:uppercase;">
+                  ACTIVE OPEN POSITIONS (${openPositions.length})
+                </span>
+                <span class="pill green" style="font-size:9.5px;">Live R-Ratcheting Active</span>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted);">
+                Single Source of Truth: data/positions.json + trading_alerts.db
+              </div>
+            </div>
+
+            <div style="overflow-x:auto;">
+              <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px; min-width:850px;">
                 <thead>
-                  <tr style="background:var(--bg-surface); border-bottom:1px solid var(--border);">
-                    <th style="padding:6px; text-align:left;">Ticker</th>
-                    <th style="padding:6px; text-align:left;">Vintage</th>
-                    <th style="padding:6px; text-align:right;">Spot</th>
-                    <th style="padding:6px; text-align:right;">Dist %</th>
-                    <th style="padding:6px; text-align:left;">Vehicle &amp; Plan</th>
-                    <th style="padding:6px; text-align:center;">Score</th>
-                    <th style="padding:6px; text-align:right;">Action</th>
+                  <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                    <th style="padding:8px 10px; text-align:left;">Ticker</th>
+                    <th style="padding:8px 10px; text-align:left;">Side</th>
+                    <th style="padding:8px 10px; text-align:right;">Entry</th>
+                    <th style="padding:8px 10px; text-align:right;">Spot</th>
+                    <th style="padding:8px 10px; text-align:right;">Stop Loss</th>
+                    <th style="padding:8px 10px; text-align:right;">Target</th>
+                    <th style="padding:8px 10px; text-align:right;">Unrealized R</th>
+                    <th style="padding:8px 10px; text-align:right;">P&amp;L ($)</th>
+                    <th style="padding:8px 10px; text-align:center;">Scale / Trail State</th>
+                    <th style="padding:8px 10px; text-align:right;">Execution Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${t2.map(s => `
-                    <tr style="border-bottom:1px solid var(--border);">
-                      <td style="padding:6px; font-weight:800; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('${s.report_date}', '${s.ticker}', 'plan')">${s.ticker}</td>
-                      <td style="padding:6px; color:var(--text-muted); font-size:10.5px;">${s.vintage}</td>
-                      <td style="padding:6px; text-align:right; font-family:var(--font-mono); font-weight:700;">$${s.spot_price.toFixed(2)}</td>
-                      <td style="padding:6px; text-align:right; font-family:var(--font-mono); color:var(--amber); font-weight:700;">${s.dist_pct > 0 ? '+' : ''}${s.dist_pct}%</td>
-                      <td style="padding:6px; font-family:var(--font-mono); font-size:11px;">${s.vehicle_label}</td>
-                      <td style="padding:6px; text-align:center;">${this.pill(s.score, 'neutral')}</td>
-                      <td style="padding:6px; text-align:right;">
-                        <button class="btn secondary" style="font-size:10px; padding:2px 8px;" onclick="AppSwing.openReportModal('${s.report_date}', '${s.ticker}', 'plan')">📑 View</button>
-                      </td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>
           `;
+
+          if (openPositions.length === 0) {
+            html += `<tr><td colspan="10" style="text-align:center; padding:20px; color:var(--text-muted);">No open positions currently being tracked. Click "Take Trade" on any actionable opportunity to begin surveillance.</td></tr>`;
+          } else {
+            openPositions.forEach(p => {
+              const sym = p.ticker;
+              const side = p.side;
+              const sideTone = side === 'LONG' ? 'var(--green)' : 'var(--rose-light)';
+              const pnlColor = (p.unrealized_pnl || 0) >= 0 ? 'var(--green)' : 'var(--rose-light)';
+              const rColor = (p.unrealized_r || 0) >= 0 ? 'var(--green)' : 'var(--rose-light)';
+
+              html += `
+                <tr style="border-bottom:1px solid var(--border);">
+                  <td style="padding:8px 10px; font-weight:800; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal(null, '${sym}', 'plan')">
+                    ${sym}
+                  </td>
+                  <td style="padding:8px 10px;">
+                    <span class="badge" style="border-color:${sideTone}; color:${sideTone}; font-weight:800; font-size:10px;">
+                      ${side}
+                    </span>
+                  </td>
+                  <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); font-weight:700;">$${(p.entry_price || 0).toFixed(2)}</td>
+                  <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); font-weight:800;">$${(p.spot_price || 0).toFixed(2)}</td>
+                  <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); color:var(--rose-light);">$${(p.stop_loss || 0).toFixed(2)}</td>
+                  <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); color:var(--green);">$${(p.target || 0).toFixed(2)}</td>
+                  <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); font-weight:800; color:${rColor};">
+                    ${(p.unrealized_r || 0) >= 0 ? '+' : ''}${(p.unrealized_r || 0).toFixed(2)}R
+                  </td>
+                  <td style="padding:8px 10px; text-align:right; font-family:var(--font-mono); font-weight:800; color:${pnlColor};">
+                    ${(p.unrealized_pnl || 0) >= 0 ? '+' : ''}$${(p.unrealized_pnl || 0).toFixed(2)} (${p.pnl_pct || 0}%)
+                  </td>
+                  <td style="padding:8px 10px; text-align:center;">
+                    ${p.scaled_at_t1 
+                      ? `<span class="badge" style="border-color:var(--green); color:var(--green); font-size:9.5px; font-weight:800;">🎯 T1 Scaled (BE Locked)</span>`
+                      : (p.be_locked ? `<span class="badge" style="border-color:var(--cyan); color:var(--cyan); font-size:9.5px;">🛡️ BE Trailed</span>` : `<span class="badge" style="border-color:var(--border); color:var(--text-muted); font-size:9.5px;">Full Size</span>`)
+                    }
+                  </td>
+                  <td style="padding:8px 10px; text-align:right;">
+                    <div style="display:inline-flex; gap:4px;">
+                      ${!p.scaled_at_t1 ? `
+                        <button class="btn secondary" style="font-size:10px; padding:3px 8px; color:var(--green); font-weight:700;" onclick="AppDesk.managePosition('${sym}', 'SCALE_50', ${p.spot_price || 0})" title="Lock 50% Profit and Ratchet Stop to Breakeven">
+                          Scale 50%
+                        </button>
+                      ` : ''}
+                      ${!p.be_locked ? `
+                        <button class="btn secondary" style="font-size:10px; padding:3px 8px;" onclick="AppDesk.managePosition('${sym}', 'TRAIL_BE')" title="Ratchet Stop to Breakeven">
+                          Trail BE
+                        </button>
+                      ` : ''}
+                      <button class="btn secondary" style="font-size:10px; padding:3px 8px; color:var(--rose-light); font-weight:700;" onclick="AppDesk.managePosition('${sym}', 'CLOSE', ${p.spot_price || 0})" title="Flatten Position">
+                        Flatten
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            });
+          }
+
+          html += `</tbody></table></div></div>`;
+
+          // PART B: EVALUATED CLOSED POSITIONS & POST-MORTEM FEEDBACK LOOP
+          html += `
+          <div class="station-card" style="padding:16px 20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+              <div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size:16px;">🔍</span>
+                  <span style="font-size:13px; font-weight:900; color:var(--text-main); text-transform:uppercase;">
+                    POST-MORTEM EVALUATION FEEDBACK LOOP ("WHAT NEEDS IMPROVING")
+                  </span>
+                  <span class="pill cyan" style="font-size:9.5px;">${closedPositions.length} Evaluated Trades</span>
+                </div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+                  Automated execution diagnosis, grade auditing, and persistent lesson retention to eliminate recurring mistakes.
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:12px;">
+          `;
+
+          if (closedPositions.length === 0) {
+            html += `<div style="text-align:center; padding:24px; color:var(--text-muted); font-size:12.5px;">No closed trades evaluated yet. As trades exit, automated post-mortem diagnoses will appear here.</div>`;
+          } else {
+            closedPositions.forEach(c => {
+              const tradeId = c.trade_id;
+              const sym = c.ticker;
+              const outcome = c.outcome || 'SCRATCH';
+              const outcomeTone = outcome === 'WIN' ? 'var(--green)' : (outcome === 'LOSS' ? 'var(--rose-light)' : 'var(--amber)');
+              const rTone = (c.realized_r || 0) >= 0 ? 'var(--green)' : 'var(--rose-light)';
+              const grade = c.execution_grade || c.auto_grade || 'B';
+
+              html += `
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:10px; padding:14px 16px; display:flex; flex-direction:column; gap:10px;">
+                  
+                  <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                      <span style="font-size:16px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal(null, '${sym}', 'plan')">
+                        ${sym}
+                      </span>
+                      <span class="badge" style="border-color:${outcomeTone}; color:${outcomeTone}; font-weight:800; font-size:10px;">
+                        ${outcome}
+                      </span>
+                      <span class="badge" style="border-color:var(--text-main); color:var(--text-main); font-weight:900; font-size:10px;">
+                        Grade: ${grade}
+                      </span>
+                      <span style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted);">
+                        Entry: $${(c.entry_price || 0).toFixed(2)} ➔ Exit: $${(c.exit_price || 0).toFixed(2)}
+                      </span>
+                    </div>
+
+                    <div style="text-align:right; font-family:var(--font-mono);">
+                      <span style="font-size:15px; font-weight:900; color:${rTone};">
+                        ${(c.realized_r || 0) >= 0 ? '+' : ''}${(c.realized_r || 0).toFixed(2)}R
+                      </span>
+                      <span style="font-size:10.5px; color:var(--text-muted); margin-left:6px;">(${c.exit_reason})</span>
+                    </div>
+                  </div>
+
+                  <!-- Automated Diagnostic Box -->
+                  <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:8px 12px; font-size:11px; line-height:1.4; color:var(--text-main);">
+                    <b>⚡ Diagnostic:</b> ${c.diagnostic}
+                  </div>
+
+                  <!-- Interactive Lesson / Feedback Form -->
+                  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; background:rgba(0,0,0,0.15); padding:8px 10px; border-radius:6px; border:1px dashed var(--border);">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:10.5px; font-weight:700; color:var(--text-muted);">Grade:</span>
+                      <select id="fb-grade-${tradeId}" style="font-size:11px; padding:2px 6px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border); border-radius:4px;">
+                        <option value="A" ${grade === 'A' ? 'selected' : ''}>A (Disciplined)</option>
+                        <option value="B" ${grade === 'B' ? 'selected' : ''}>B (Good)</option>
+                        <option value="C" ${grade === 'C' ? 'selected' : ''}>C (Mistake / Chased)</option>
+                        <option value="D" ${grade === 'D' ? 'selected' : ''}>D (Rule Breached)</option>
+                      </select>
+                    </div>
+
+                    <input type="text" id="fb-lesson-${tradeId}" value="${(c.user_lesson || '').replace(/"/g, '&quot;')}" placeholder="What to improve on next trade? (e.g. stop too tight, chased entry...)" style="flex:2; min-width:200px; font-size:11px; padding:4px 8px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border); border-radius:4px;">
+
+                    <input type="text" id="fb-notes-${tradeId}" value="${(c.user_notes || '').replace(/"/g, '&quot;')}" placeholder="Trader notes..." style="flex:1; min-width:140px; font-size:11px; padding:4px 8px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border); border-radius:4px;">
+
+                    <button class="btn secondary" id="fb-save-btn-${tradeId}" style="font-size:10.5px; padding:4px 10px; font-weight:700;" onclick="AppDesk.saveFeedbackNotes('${tradeId}', '${sym}')">
+                      Save Notes
+                    </button>
+                  </div>
+
+                </div>
+              `;
+            });
+          }
+
+          html += `</div></div></div>`;
         }
 
         html += `</div>`;
-      }
+        const cont = document.getElementById('today-content-container');
+        if (cont) cont.innerHTML = html;
 
-      // Coverage bar
-      const localMissing = Array.isArray(cov.local_missing) ? cov.local_missing : [];
-      html += `<div class="station-card" style="padding:10px 16px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
-          <div style="font-size:11px; font-weight:800; letter-spacing:0.5px; text-transform:uppercase; color:var(--text-muted);">COVERAGE</div>
-          <div style="font-size:12px; font-weight:800; font-family:var(--font-mono); ${covClass}">${covTxt}</div>
-        </div>
-        ${deepMissing.length > 0 ? `<div style="margin-top:6px; font-size:11px; color:var(--rose-light); font-family:var(--font-mono);">⚠️ Missing Deep Research (${deepMissing.length}): ${deepMissing.slice(0, 10).join(', ')}${deepMissing.length > 10 ? ' ...' : ''}</div>` : ''}
-        ${localMissing.length > 0 ? `<div style="margin-top:4px; font-size:10.5px; color:var(--text-muted); font-family:var(--font-mono);">⏳ Awaiting Local Triage (${localMissing.length}): ${localMissing.slice(0, 8).join(', ')}${localMissing.length > 8 ? ' ...' : ''}</div>` : ''}
-      </div>`;
-
-      // KPI strip
-      const rrMin = (todayData && todayData.rr_gates && todayData.rr_gates.values)
-        ? todayData.rr_gates.values.rr_market_min : 2.0;
-      const rrHi = (todayData && todayData.rr_gates && todayData.rr_gates.values)
-        ? todayData.rr_gates.values.rr_hi_rr : 5.0;
-      html += `<div style="display:flex; gap:12px; flex-wrap:wrap; align-items:stretch;">
-        ${this.kpi('IN TRADE', inTradeCount, '', 'info')}
-        ${this.kpi('IN ZONE', inZoneCount, '', 'info')}
-        ${this.kpi('NEAR', nearCount, '≤1.5%', 'warn')}
-        ${this.kpi('STALKING', stalking.length, '', 'neutral')}
-        ${this.kpi('NEEDS YOU', needsYou.length, `RR@mkt ≥ ${rrMin}`, 'warn')}
-        ${this.kpi('UNMEASURED', unmeasured.length, 'no lane · no R:R', 'neutral')}
-        ${this.kpi('INBOX MEASURED', inboxMeasured, `of ${inbox.length}`, inboxMeasured ? 'good' : 'neutral')}
-        ${this.kpi('INBOX UNMEASURED', inboxUnmeasured, 'never measured', inboxUnmeasured ? 'warn' : 'neutral')}
-        ${this.kpi('ALL-TIME CLOSED R', recordSumR, '', recordData && recordData.sum_r >= 0 ? 'good' : 'bad')}
-        ${this.rrGateControl(todayData)}
-      </div>`;
-
-      // Act now (card grid, 3 per row)
-      html += `<div class="station-card">
-        <h3 style="margin-top:0; color:var(--green);"><span style="margin-right:8px;">🎯</span>Act Now</h3>
-        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px;">`;
-
-      if (actionable.length === 0) {
-        html += `<div style="grid-column:1/-1; text-align:center; padding:20px; color:var(--text-muted);">No actionable suggestions right now.</div>`;
-      } else {
-        actionable.forEach(r => {
-          const ticker = r.ticker || '';
-          const sym = ticker.toUpperCase();
-          const repDate = (r.date && r.date !== '–') ? r.date.substring(0, 10) : 'latest';
-          const status = r.status || 'STALKING';
-          const last = r.last_price !== null && r.last_price !== undefined ? parseFloat(r.last_price).toFixed(2) : '–';
-          const entryLow = r.entry_low !== null && r.entry_low !== undefined ? parseFloat(r.entry_low).toFixed(2) : '';
-          const entryHigh = r.entry_high !== null && r.entry_high !== undefined ? parseFloat(r.entry_high).toFixed(2) : '';
-          const stop = r.stop !== null && r.stop !== undefined ? parseFloat(r.stop).toFixed(2) : '–';
-          const t1 = r.target_1 !== null && r.target_1 !== undefined ? parseFloat(r.target_1).toFixed(2) : '–';
-          const dist = r.dist !== null && r.dist !== undefined ? parseFloat(r.dist).toFixed(2) : '–';
-          const distStr = dist !== '–' ? dist + '%' : '–';
-          const stopAtr = r.stop_width_atr ? `${r.stop_width_atr} ATR` : '–';
-
-          let statusBadge;
-          if (status === 'IN_TRADE') statusBadge = this.pill('IN_TRADE', 'info');
-          else if (status === 'IN_ZONE') statusBadge = this.pill('IN_ZONE', 'info');
-          else statusBadge = this.pill(status, 'warn');
-
-          let rrTxt;
-          let rrTone = 'neutral';
-          if (r.live_rr_flag === 'BELOW_STOP') {
-            rrTxt = 'AT STOP';
-            rrTone = 'bad';
-          } else if (r.live_rr_flag === 'AT_STOP') {
-            rrTxt = 'AT STOP';
-            rrTone = 'bad';
-          } else if (r.live_rr !== null && r.live_rr !== undefined) {
-            rrTxt = 'R:R ' + parseFloat(r.live_rr).toFixed(2);
-            rrTone = 'good';
-          } else {
-            rrTxt = '–';
-            rrTone = 'neutral';
-          }
-
-          html += `<div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <div style="font-size:18px; font-weight:800; cursor:pointer; color:var(--cyan);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</div>
-              ${statusBadge}
-            </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:11px; font-family:var(--font-mono);">
-              <div><b>Last</b> ${last}</div>
-              <div><b>Dist</b> ${distStr}</div>
-              <div><b>Zone</b> ${entryLow ? entryLow + ' - ' + entryHigh : '–'}</div>
-              <div><b>Stop</b> <span style="color:var(--rose-light);">${stop}</span></div>
-              <div><b>T1</b> <span style="color:var(--green);">${t1}</span></div>
-              <div><b>R:R</b> ${this.pill(rrTxt, rrTone)}</div>
-              <div><b>ATR Stop</b> ${stopAtr}</div>
-            </div>
-            <div style="display:flex; gap:6px; margin-top:4px;">
-              <button class="btn secondary" style="flex:1; font-size:10px; padding:4px 6px;" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">📑 Dossier</button>
-              <button class="btn secondary" style="flex:1; font-size:10px; padding:4px 6px;" onclick="AppDesk.triggerDeep('${sym}', this)">🔬 Research</button>
-            </div>
-            ${r.llm_playbook ? `<div style="font-size:10px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${r.llm_playbook.replace(/"/g, '&quot;')}">${r.llm_playbook}</div>` : ''}
-          </div>`;
-        });
-      }
-      html += `</div></div>`;
-
-      // Needs you. This is a work queue, not a backlog: every row here has a measured lane and
-        // RR@mkt >= 2. A PASS with nothing actionable in it belongs in UNMEASURED, below.
-      html += `<div class="station-card">
-        <h3 style="margin-top:0; color:var(--amber);"><span style="margin-right:8px;">🏃</span>Needs You
-          <span style="font-size:11px; font-weight:600; color:var(--text-muted); margin-left:8px;">
-            measured lane · RR@mkt ≥ ${rrMin}</span></h3>
-        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px;">`;
-
-      if (needsYou.length === 0) {
-        html += `<div style="grid-column:1/-1; text-align:center; padding:20px; color:var(--text-muted);">
-                   No actionable rows. ${unmeasured.length} unmeasured row(s) are collapsed below.</div>`;
-      } else {
-        needsYou.forEach(r => {
-          const ticker = r.ticker || '';
-          const sym = ticker.toUpperCase();
-          const repDate = (r.date && r.date !== '–') ? r.date.substring(0, 10) : 'latest';
-          const last = r.last_price !== null && r.last_price !== undefined ? parseFloat(r.last_price).toFixed(2) : '–';
-          const stop = r.stop !== null && r.stop !== undefined ? parseFloat(r.stop).toFixed(2) : '–';
-          const t1 = r.target_1 !== null && r.target_1 !== undefined ? parseFloat(r.target_1).toFixed(2) : '–';
-          const deepSt = r.deep_status || 'none';
-
-          const setupBadge = r.setup ? `<span class="badge" style="border-color:var(--blue); color:var(--blue); font-size:10px;">${r.setup}</span>` : '';
-          const playbookExcerpt = r.llm_playbook ? r.llm_playbook.replace(/\*\*/g, '').substring(0, 140) + '...' : '';
-
-          html += `<div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <div style="font-size:18px; font-weight:800; cursor:pointer; color:var(--cyan);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</div>
-              <div style="display:flex; align-items:center; gap:6px;">
-                ${setupBadge}
-                ${this.pill(deepSt.toUpperCase(), deepSt === 'COMPLETED' ? 'good' : deepSt === 'RUNNING' ? 'info' : 'warn')}
-              </div>
-            </div>
-            <div style="font-size:11px; color:var(--text-muted); font-family:var(--font-mono);">Last ${last}${stop !== '–' ? ' · Stop ' + stop : ''}${t1 !== '–' ? ' · T1 ' + t1 : ''}</div>
-            ${r.llm_decision ? `<div style="font-size:10.5px; font-weight:700; color:var(--green);">${r.llm_decision}</div>` : ''}
-            ${playbookExcerpt ? `<div style="font-size:11px; color:var(--text-main); background:var(--bg-main); padding:6px 8px; border-radius:6px; border:1px solid var(--border); line-height:1.4;" title="${(r.llm_playbook || '').replace(/"/g, '&quot;')}">${playbookExcerpt}</div>` : ''}
-            <div style="display:flex; gap:6px; margin-top:2px;">
-              <button class="btn secondary" style="flex:1; font-size:10.5px; padding:4px 8px;" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">📑 Local Dossier</button>
-              <button class="btn secondary" style="flex:1; font-size:10.5px; padding:4px 8px;" onclick="AppDesk.triggerDeep('${sym}', this)">🔬 Run deep</button>
-            </div>
-          </div>`;
-        });
-      }
-      html += `</div></div>`;
-
-      // Watch (Collapsible card)
-      html += `<details class="station-card" style="padding:12px 18px;" ${watchList.length > 0 && watchList.length <= 8 ? 'open' : ''}>
-        <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none;">
-          <div style="font-size:13px; font-weight:800; color:var(--cyan); display:flex; align-items:center; gap:8px;">
-            <span>👁</span>Watch (${watchList.length})
-          </div>
-          <span style="font-size:11px; color:var(--text-muted); font-weight:600;">Click to toggle</span>
-        </summary>
-        <div style="margin-top:12px;">
-          <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
-            <thead>
-              <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
-                <th style="padding:8px; text-align:left;">Ticker</th>
-                <th style="padding:8px; text-align:right;">Last</th>
-                <th style="padding:8px; text-align:right;">Zone</th>
-                <th style="padding:8px; text-align:right;">Stop</th>
-                <th style="padding:8px; text-align:right;">T1</th>
-              </tr>
-            </thead>
-            <tbody>`;
-
-      if (watchList.length === 0) {
-        html += `<tr><td colspan="5" style="text-align:center; padding:12px; color:var(--text-muted);">No watch suggestions.</td></tr>`;
-      } else {
-        watchList.forEach(r => {
-          const sym = (r.ticker || '').toUpperCase();
-          const repDate = (r.date && r.date !== '–') ? r.date.substring(0, 10) : 'latest';
-          const last = r.last_price !== null && r.last_price !== undefined ? parseFloat(r.last_price).toFixed(2) : '–';
-          const zone = r.entry_low && r.entry_high ? parseFloat(r.entry_low).toFixed(2) + ' - ' + parseFloat(r.entry_high).toFixed(2) : '–';
-          html += `<tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:8px; font-weight:700; cursor:pointer; color:var(--cyan);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</td>
-            <td style="padding:8px; text-align:right; font-family:var(--font-mono);">${last}</td>
-            <td style="padding:8px; text-align:right; font-family:var(--font-mono);">${zone}</td>
-            <td style="padding:8px; text-align:right; color:var(--rose-light); font-family:var(--font-mono);">${r.stop ? parseFloat(r.stop).toFixed(2) : '–'}</td>
-            <td style="padding:8px; text-align:right; color:var(--green); font-family:var(--font-mono);">${r.target_1 ? parseFloat(r.target_1).toFixed(2) : '–'}</td>
-          </tr>`;
-        });
-      }
-      html += `</tbody></table></div></details>`;
-
-      // Stalking (Collapsible card)
-      html += `<details class="station-card" style="padding:12px 18px;" ${stalking.length > 0 && stalking.length <= 8 ? 'open' : ''}>
-        <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none;">
-          <div style="font-size:13px; font-weight:800; color:var(--amber); display:flex; align-items:center; gap:8px;">
-            <span>⏳</span>Stalking (${stalking.length})
-          </div>
-          <span style="font-size:11px; color:var(--text-muted); font-weight:600;">Click to toggle</span>
-        </summary>
-        <div style="margin-top:12px;">
-          <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
-            <thead>
-              <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
-                <th style="padding:8px; text-align:left;">Ticker</th>
-                <th style="padding:8px; text-align:left;">Lane</th>
-                <th style="padding:8px; text-align:right;"
-                    title="Reward-to-risk measured at the current print. This is the number the ENTRY gate uses.">RR@mkt</th>
-                <th style="padding:8px; text-align:right;"
-                    title="Stop distance in ATR. Corpus median is 0.69 ATR and 65% of stops are hit. Below 0.7 ATR the R:R is an artifact.">Stop ATR</th>
-                <th style="padding:8px; text-align:left;"
-                    title="Measured win rate and expectancy for this lane, so the row is read against its base rate.">Lane prior</th>
-                <th style="padding:8px; text-align:right;">Dist %</th>
-                <th style="padding:8px; text-align:right;">Zone</th>
-                <th style="padding:8px; text-align:right;">Stop</th>
-                <th style="padding:8px; text-align:right;">T1</th>
-              </tr>
-            </thead>
-            <tbody>`;
-
-      if (stalking.length === 0) {
-        html += `<tr><td colspan="9" style="text-align:center; padding:12px; color:var(--text-muted);">No stalking suggestions.</td></tr>`;
-      } else {
-        stalking.forEach(r => {
-          const sym = (r.ticker || '').toUpperCase();
-          const repDate = (r.date && r.date !== '–') ? r.date.substring(0, 10) : 'latest';
-          const zone = r.entry_low && r.entry_high ? parseFloat(r.entry_low).toFixed(2) + ' - ' + parseFloat(r.entry_high).toFixed(2) : '–';
-          const dist = r.dist !== null && r.dist !== undefined ? parseFloat(r.dist).toFixed(2) + '%' : '–';
-          html += `<tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:8px; font-weight:700; cursor:pointer; color:var(--cyan);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</td>
-            <td style="padding:8px;">${this.fmt(r.lane)}${this.pbChip(r.pb_bucket)}</td>
-            <td style="padding:8px; text-align:right; font-family:var(--font-mono); font-weight:700;">${this.fmt(r.rr_at_market)}</td>
-            <td style="padding:8px; text-align:right;">${this.stopAtrCell(r)}</td>
-            <td style="padding:8px; font-size:11px; color:var(--text-muted);">${this.lanePriorCell(r)}</td>
-            <td style="padding:8px; text-align:right;">${dist}</td>
-            <td style="padding:8px; text-align:right; font-family:var(--font-mono);">${zone}</td>
-            <td style="padding:8px; text-align:right; color:var(--rose-light); font-family:var(--font-mono);">${r.stop ? parseFloat(r.stop).toFixed(2) : '–'}</td>
-            <td style="padding:8px; text-align:right; color:var(--green); font-family:var(--font-mono);">${r.target_1 ? parseFloat(r.target_1).toFixed(2) : '–'}</td>
-          </tr>`;
-        });
-      }
-      html += `</tbody></table></div></details>`;
-
-      // UNMEASURED (collapsed). Rows that cannot be acted on right now: either never measured, or
-      // measured and sitting under the R:R bar currently dialled in. 33 of the 34 rows that used
-      // to sit in "needs you" live here. The subtitle separates the two reasons, because a setup
-      // that simply missed the threshold is not the same as one nobody ever scored.
-      const belowBar = (todayData && todayData.below_bar_count) || 0;
-      const neverMeasured = unmeasured.length - belowBar;
-      const reasonBits = [
-        belowBar ? `${belowBar} below the ${rrMin} bar` : null,
-        neverMeasured ? `${neverMeasured} never measured` : null,
-      ].filter(Boolean).join(' · ');
-      html += `<details class="station-card" style="padding:10px 18px;">
-        <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none;">
-          <div style="font-size:12px; font-weight:800; color:var(--text-muted); display:flex; align-items:center; gap:8px;">
-            <span>∅</span>NOT ACTIONABLE (${unmeasured.length})
-          </div>
-          <span style="font-size:11px; color:var(--text-muted); font-weight:600;"
-                title="No measured lane and no measured R:R at market. Nothing here can be traded, so it is not in a working queue.">
-            ${reasonBits || 'nothing on these rows is actionable'} (click to view)</span>
-        </summary>
-        <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:6px;">
-          ${unmeasured.length === 0
-            ? `<span style="font-size:12px; color:var(--text-muted);">No unmeasured rows.</span>`
-            : unmeasured.map(r => {
-                const sym = (r.ticker || '').toUpperCase();
-                return `<span class="badge" style="border-color:var(--text-muted); color:var(--text-muted); cursor:pointer;"
-                             onclick="AppSwing.openReportModal('${(r.date || '').substring(0, 10)}', '${sym}', 'local')"
-                             title="${sym}: ${r.lane || 'no lane'} · RR@mkt ${this.fmt(r.rr_at_market)} · stop ${this.fmt(r.stop_width_atr)} ATR">
-                        ${sym}</span>`;
-              }).join('')}
-        </div>
-      </details>`;
-
-      // CUT (Collapsible card)
-      html += `<details class="station-card" style="padding:10px 18px;">
-        <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none;">
-          <div style="font-size:12px; font-weight:800; color:var(--rose-light); display:flex; align-items:center; gap:8px;">
-            <span>✂</span>CUT (${cutList.length})
-          </div>
-          <span style="font-size:11px; color:var(--text-muted); font-weight:600;">${cutList.length} symbols collapsed (click to view)</span>
-        </summary>
-        <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:6px;">
-          ${cutList.length === 0 ? `<div style="font-size:11px; color:var(--text-muted);">No cut symbols today.</div>` :
-            cutList.map(c => {
-              const sym = (c.ticker || '').toUpperCase();
-              const repDate = (c.date && c.date !== '–') ? c.date.substring(0, 10) : 'latest';
-              return `<span class="badge" style="cursor:pointer; border-color:var(--border); color:var(--text-muted);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</span>`;
-            }).join(' ')
-          }
-        </div>
-      </details>`;
-
-      // Section 0a: Today Inbox (Collapsible card with collapsible decision groups & rows)
-      if (inbox.length > 0) {
-        const passItems = inbox.filter(ib => (ib.llm_decision || '').toUpperCase().includes('PASS'));
-        const watchItems = inbox.filter(ib => (ib.llm_decision || '').toUpperCase().includes('WATCH'));
-        const cutItems = inbox.filter(ib => (ib.llm_decision || '').toUpperCase().includes('CUT'));
-        const otherItems = inbox.filter(ib => !passItems.includes(ib) && !watchItems.includes(ib) && !cutItems.includes(ib));
-
-        html += `<details class="station-card" open style="padding:14px 18px;">
-          <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none;">
-            <div style="font-size:14px; font-weight:800; color:var(--text-main); display:flex; align-items:center; gap:8px;">
-              <span>📥</span>Local Triaged Inbox (${inbox.length})
-            </div>
-            <div style="display:flex; align-items:center; gap:10px; font-size:11px; font-family:var(--font-mono);">
-              <span style="color:var(--green); font-weight:700;">PASS: ${passItems.length}</span>
-              <span style="color:var(--amber); font-weight:700;">WATCH: ${watchItems.length}</span>
-              <span style="color:var(--rose-light); font-weight:700;">CUT: ${cutItems.length}</span>
-            </div>
-          </summary>
-          
-          <div style="margin-top:14px; display:flex; flex-direction:column; gap:12px;">
-            <!-- PASS Group -->
-            <details open style="border:1px solid var(--border); border-radius:8px; padding:10px 14px; background:var(--bg-surface);">
-              <summary style="cursor:pointer; font-weight:700; font-size:12px; color:var(--green); display:flex; align-items:center; justify-content:space-between; user-select:none;">
-                <span>🟢 Local PASS Decisions (${passItems.length})</span>
-                <span style="font-size:10px; color:var(--text-muted); font-weight:400;">Click symbol for dossier · Click row to expand playbook</span>
-              </summary>
-              <div style="margin-top:8px;">
-                ${this.renderInboxTable(passItems, 'pass')}
-              </div>
-            </details>
-
-            <!-- WATCH Group -->
-            <details ${watchItems.length <= 15 ? 'open' : ''} style="border:1px solid var(--border); border-radius:8px; padding:10px 14px; background:var(--bg-surface);">
-              <summary style="cursor:pointer; font-weight:700; font-size:12px; color:var(--amber); display:flex; align-items:center; justify-content:space-between; user-select:none;">
-                <span>🟡 Local WATCH Decisions (${watchItems.length})</span>
-                <span style="font-size:10px; color:var(--text-muted); font-weight:400;">Click to toggle list</span>
-              </summary>
-              <div style="margin-top:8px;">
-                ${this.renderInboxTable(watchItems, 'watch')}
-              </div>
-            </details>
-
-            <!-- CUT Group -->
-            <details style="border:1px solid var(--border); border-radius:8px; padding:10px 14px; background:var(--bg-surface);">
-              <summary style="cursor:pointer; font-weight:700; font-size:12px; color:var(--rose-light); display:flex; align-items:center; justify-content:space-between; user-select:none;">
-                <span>🔴 Local CUT Decisions (${cutItems.length})</span>
-                <span style="font-size:10px; color:var(--text-muted); font-weight:400;">Click to toggle list</span>
-              </summary>
-              <div style="margin-top:8px;">
-                ${this.renderInboxTable(cutItems, 'cut')}
-              </div>
-            </details>
-
-            ${otherItems.length > 0 ? `
-            <!-- Other Group -->
-            <details style="border:1px solid var(--border); border-radius:8px; padding:10px 14px; background:var(--bg-surface);">
-              <summary style="cursor:pointer; font-weight:700; font-size:12px; color:var(--text-muted); display:flex; align-items:center; justify-content:space-between; user-select:none;">
-                <span>⚪ Other Decisions (${otherItems.length})</span>
-                <span style="font-size:10px; color:var(--text-muted); font-weight:400;">Click to toggle list</span>
-              </summary>
-              <div style="margin-top:8px;">
-                ${this.renderInboxTable(otherItems, 'other')}
-              </div>
-            </details>
-            ` : ''}
-          </div>
-        </details>`;
-      }
-
-      html += `</div>`;
+      } catch (err) {
+      console.error('Failed loading Today desk:', err);
       const cont = document.getElementById('today-content-container');
-      if (cont) cont.innerHTML = html;
-
-    } catch (err) {
-      console.error(err);
-      const cont = document.getElementById('today-content-container');
-      if (cont) cont.innerHTML = `<div style="color:var(--rose-light);">Failed to load Today desk: ${err}</div>`;
+      if (cont && !silent) {
+        cont.innerHTML = `<div style="color:var(--rose-light); padding:20px; text-align:center;">Failed to load Today desk: ${err}</div>`;
+      }
     }
   },
+
 
   async loadJournal(page = 1) {
     try {

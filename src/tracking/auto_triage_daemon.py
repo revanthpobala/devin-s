@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from src import config
-from src.tracking.alert_db import DB_PATH, update_research_status
+from src.tracking.alert_db import update_research_status
 from src.tracking.alert_evaluator import evaluate_alert_payload
 from src.ui.services.research_queue import dispatch_next_queued_job
 from src.tracking.watch_manager import _get_connection, _db_lock
@@ -28,7 +28,7 @@ def _ensure_queue_coverage(today_str: Optional[str] = None):
     """Coverage guarantee: ensure any research_queue symbol with no alert today gets a synthetic alert to evaluate."""
     today_str = today_str or datetime.now().strftime("%Y-%m-%d")
     try:
-        with sqlite3.connect(str(DB_PATH), timeout=10.0) as conn:
+        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
             cur = conn.cursor()
             cur.execute("""
                 SELECT symbol, setup FROM research_queue
@@ -101,10 +101,22 @@ def is_llm_server_online(timeout: float = 2.0) -> bool:
         return False
 
 
+def _alerts_db():
+    """Alerts DB path, resolved per call.
+
+    `from ... import DB_PATH` captured the value at import time, so this module kept
+    pointing at the original database even when DB_PATH was redirected -- which is how it
+    could read a different alerts table than the rest of the pipeline wrote to.
+    """
+    from src.tracking.alert_db import DB_PATH
+
+    return DB_PATH
+
+
 def get_pending_alerts_count(date_str: Optional[str] = None) -> int:
     """Return the total number of alerts in SQLite that have not been triaged."""
     try:
-        with sqlite3.connect(str(DB_PATH), timeout=10.0) as conn:
+        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
             cur = conn.cursor()
             query = """
                 SELECT count(*) FROM alerts
@@ -163,18 +175,34 @@ class AutoTriageDaemon(threading.Thread):
         logger.info("🤖 [AutoTriageDaemon] stopped.")
 
     def _process_batch(self):
-        """Fetch a batch of pending alerts and evaluate them."""
+        """Evaluate today's pending alerts. History is never regraded.
+
+        This query used to ORDER BY today's-first but not FILTER to today, so it walked the entire
+        table and graded every NULL-verdict alert it found -- and because this is an always-on
+        daemon rather than a click-triggered route, it was the engine steadily re-grading the
+        archived backlog against the live tape.
+
+        Strftime('now') is UTC, while alerts.date is Eastern; near midnight ET the two disagree by
+        a day, so the boundary comes from get_eastern_date_str().
+        """
         try:
-            with sqlite3.connect(str(DB_PATH), timeout=20.0) as conn:
+            from src.tracking.alert_db import get_eastern_date_str
+
+            today = get_eastern_date_str()
+            with sqlite3.connect(str(_alerts_db()), timeout=20.0) as conn:
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
                 query = """
                     SELECT * FROM alerts
-                    WHERE (llm_decision IS NULL OR llm_decision = '' OR llm_decision = '```' OR llm_decision = '...' OR llm_decision = 'AI EVALUATED')
-                    ORDER BY CASE WHEN date = strftime('%Y-%m-%d', 'now') THEN 0 ELSE 1 END, timestamp DESC
+                    WHERE date = ?
+                      AND (llm_decision IS NULL OR llm_decision = ''
+                           OR llm_decision = '```' OR llm_decision = '...'
+                           OR llm_decision = 'AI EVALUATED')
+                      AND COALESCE(routing_stage, 'RECORDED') != 'ARCHIVED'
+                    ORDER BY timestamp DESC
                     LIMIT ?
                 """
-                cur.execute(query, (self.batch_size,))
+                cur.execute(query, (today, self.batch_size))
                 rows = cur.fetchall()
 
             if not rows:

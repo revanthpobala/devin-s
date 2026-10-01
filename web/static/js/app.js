@@ -169,6 +169,9 @@ window.App = {
       if (window.AppSwing) {
         window.AppSwing.loadTastytradeAlerts();
       }
+      if (window.AppState.currentDesk === 'today' && window.AppDesk) {
+        window.AppDesk.loadToday(true);
+      }
     }, 6000);
 
     // 5. 1-Minute (60s) Auto-Refresh for Live Ticker Prices, Radar & Calibration Scoreboard
@@ -186,6 +189,49 @@ window.App = {
         window.AppSwing.loadCalibrationScoreboard();
       }
     }, 60000);
+
+    // 6. Deep Link Handler for Tickers & Research URLs
+    this.handleDeepLinks();
+  },
+
+  handleDeepLinks() {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const pathParts = window.location.pathname.split('/').filter(Boolean);
+      
+      let directTicker = urlParams.get('ticker') || urlParams.get('sym');
+      let directDate = urlParams.get('date');
+      let directTab = urlParams.get('tab');
+
+      // Check path /research/{ticker}
+      if (!directTicker && pathParts.length >= 2 && pathParts[0].toLowerCase() === 'research') {
+        directTicker = pathParts[1];
+        if (pathParts.length >= 3 && !directDate) {
+          directDate = pathParts[2];
+        }
+      }
+
+      // Check hash #research/{ticker} or #report/{ticker}
+      const hashMatch = window.location.hash.match(/#\/?(?:research|report|dossier)\/([A-Za-z0-9._-]+)(?:\/([0-9-]+))?/i);
+      if (!directTicker && hashMatch) {
+        directTicker = hashMatch[1];
+        if (hashMatch[2] && !directDate) {
+          directDate = hashMatch[2];
+        }
+      }
+
+      if (directTicker) {
+        directTicker = directTicker.toUpperCase().trim();
+        console.log(`[DeepLink] Auto-opening research dossier for $${directTicker}...`);
+        setTimeout(() => {
+          if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
+            window.AppSwing.openReportModal(directDate || null, directTicker, directTab || null);
+          }
+        }, 500);
+      }
+    } catch (e) {
+      console.warn('[DeepLink] Error parsing deep link:', e);
+    }
   }
 };
 

@@ -213,6 +213,12 @@ def _append_screener_candidate(symbol: str, setup: str, date_str: str):
 
 _enrichment_queue: queue.Queue = queue.Queue()
 
+# An alert must end up with a local research verdict. These govern the retry that turns that from
+# "usually true" into enforced: a transient LLM/network failure used to leave the row NULL forever,
+# with only an ERROR log to show for it.
+_ENRICH_RETRY_ATTEMPTS = 3
+_ENRICH_RETRY_BACKOFF_SECONDS = 4.0
+
 
 def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
     """Stage 1: FAST Ingestion (<15ms).
@@ -542,6 +548,62 @@ def start_enrichment_workers(
     """Start background worker threads to drain and process the enrichment queue."""
     stop = stop_event or threading.Event()
 
+    def _run_with_retry(alert: dict, worker_id: int) -> bool:
+        """Process an alert until it actually gets a verdict, or the retries run out.
+
+        Without this an LLM timeout or a malformed payload left the alert with a NULL
+        llm_decision permanently: the worker logged the exception and moved on, so "every alert
+        has a local research" was true only as long as nothing failed. Retries are what turn it
+        into a guarantee. The alert's own payload is the retry key -- date-frozen for anything
+        historical, which is the whole point of not re-resolving an old alert against live data.
+        """
+        from src.tracking.alert_db import get_eastern_date_str
+
+        day = str(alert.get("timestamp") or "")[:10] or get_eastern_date_str()
+        symbol = (alert.get("symbol") or alert.get("ticker") or "?").upper()
+
+        for attempt in range(1, _ENRICH_RETRY_ATTEMPTS + 1):
+            if stop.is_set():
+                return False
+            try:
+                process_alert_enrichment(alert)
+            except Exception as e:
+                logger.warning(
+                    f"[EnrichmentWorker-{worker_id}] {symbol} attempt {attempt}/{_ENRICH_RETRY_ATTEMPTS} failed: {e}"
+                )
+                if attempt >= _ENRICH_RETRY_ATTEMPTS:
+                    logger.error(
+                        "[EnrichmentWorker-%s] %s gave up after %d attempts -- it will have NO local "
+                        "research. The OPS coverage check will report it.",
+                        worker_id, symbol, _ENRICH_RETRY_ATTEMPTS,
+                    )
+                    return False
+                stop.wait(_ENRICH_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+
+            try:
+                from src.tracking.alert_db import _get_connection as _conn
+
+                with _conn() as c:
+                    got = c.execute(
+                        "SELECT llm_decision FROM alerts WHERE date = ? AND symbol = ? "
+                        "AND llm_decision IS NOT NULL AND TRIM(llm_decision) != '' LIMIT 1",
+                        (day, symbol),
+                    ).fetchone()
+                if got:
+                    return True
+            except Exception as e:
+                logger.debug(f"verdict check failed for {symbol}: {e}")
+                return True      # cannot confirm; do not loop on a DB error
+
+            if attempt < _ENRICH_RETRY_ATTEMPTS:
+                logger.warning(
+                    "[EnrichmentWorker-%s] %s produced no verdict, retrying (%d/%d)",
+                    worker_id, symbol, attempt, _ENRICH_RETRY_ATTEMPTS,
+                )
+                stop.wait(_ENRICH_RETRY_BACKOFF_SECONDS * attempt)
+        return False
+
     def _worker(worker_id: int):
         logger.info(f"[EnrichmentWorker-{worker_id}] started.")
         while not stop.is_set():
@@ -558,7 +620,7 @@ def start_enrichment_workers(
                 continue
 
             try:
-                process_alert_enrichment(alert)
+                _run_with_retry(alert, worker_id)
             except Exception as e:
                 logger.error(f"[EnrichmentWorker-{worker_id}] Error: {e}", exc_info=True)
             finally:

@@ -575,6 +575,7 @@ window.AppWatchlist = {
           <td>
             <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
               <span class="ticker-cell-sym" onclick="AppSwing.openReportModal(null, '${sym}')" style="cursor:pointer; color:var(--text-main); font-weight:800;" title="${compTitle} ($${sym}) - Click to start Deep Research" data-ticker="${sym}">${sym}</span>
+              <a href="/research/${sym}" target="_blank" onclick="event.stopPropagation()" style="text-decoration:none; font-size:11px; color:var(--text-muted); opacity:0.8; margin-left:-2px;" title="Open direct URL /research/${sym} in new tab">🔗</a>
               <span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.75;">Constituent</span>
               <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="padding:2px 6px; font-size:10px; font-family:var(--font-mono); font-weight:700; background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-main); cursor:pointer; border-radius:2px;" title="Open Real-Time Interactive TradingView Chart">
                 📈 Chart
@@ -758,10 +759,6 @@ window.AppWatchlist = {
           </div>
         `;
       }
-            </span>
-          </div>
-        `;
-      }
     } else if (statusUpper === 'MISSED_RUNAWAY') {
       pnlHtml = `
         <div style="display:flex; flex-direction:column; gap:2px;">
@@ -833,6 +830,7 @@ window.AppWatchlist = {
         <td>
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <span class="ticker-cell-sym" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="cursor:pointer; color:#38bdf8;" title="${compTitle} ($${t.ticker}) - Click to open Dossier" data-ticker="${t.ticker}">${t.ticker}</span>
+            <a href="/research/${t.ticker}" target="_blank" onclick="event.stopPropagation()" style="text-decoration:none; font-size:11px; color:var(--cyan); opacity:0.8; margin-left:-2px;" title="Open direct URL /research/${t.ticker} in new tab">🔗</a>
             ${(t.side === 'SHORT' || (stop > 0 && entryHigh > 0 && stop > entryHigh)) ? `<span class="pill red" style="font-size:9.5px; padding:1px 5px; font-weight:800;">🔴 SHORT</span>` : ''}
             ${isOpenPos ? `<span class="pill cyan" style="font-size:9.5px; padding:1px 5px; font-weight:800;" title="You hold an active position in ${t.ticker}">💼 ${posQty} SHS</span>` : ''}
             ${t.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${t.conviction}/10</span>` : ''}

@@ -749,26 +749,78 @@ window.AppChat = {
     thread.scrollTop = thread.scrollHeight;
   },
 
+  // --- REV CHAT focus -------------------------------------------------------------------
+  // Single source of truth: window.AppState.revChatFocusTicker.
+  //
+  // The badge used to re-derive its value from currentReportData and #ticker-input whenever it
+  // was handed an empty string, so "clear" was inexpressible: clearing set revChatFocusTicker to
+  // '' and the badge immediately re-derived the ticker from whatever report was open. Sending the
+  // next message did the same, which is why the focus appeared stuck once you had clicked around
+  // a few stocks. Nothing here re-derives any more; only setRevChatFocus/clearRevChatFocus write.
+
+  _focusTicker() {
+    return (window.AppState.revChatFocusTicker || '').trim().toUpperCase();
+  },
+
+  setRevChatFocus(ticker) {
+    const t = (ticker || '').trim().toUpperCase();
+    if (!t || ['GENERAL', 'AUTO', 'NONE', 'ALL', 'STOCK', 'MARKET'].includes(t)) {
+      return this.clearRevChatFocus();
+    }
+    window.AppState.revChatFocusTicker = t;
+    window.AppState.activeChatTicker = t;
+    window.AppState.revChatFocusCleared = false;
+    this.updateSidebarFocusBadge();
+    return t;
+  },
+
+  clearRevChatFocus() {
+    window.AppState.revChatFocusTicker = '';
+    window.AppState.activeChatTicker = '';
+    window.AppState.revChatFocusCleared = true;
+    const input = document.getElementById('ticker-input');
+    if (input) input.value = '';
+    this.updateSidebarFocusBadge();
+    this._syncSidebarFocusInput();
+  },
+
+  // Back-compat alias: the badge's onclick in index.html calls clearSidebarFocus().
+  clearSidebarFocus() {
+    this.clearRevChatFocus();
+  },
+
+  _syncSidebarFocusInput() {
+    const box = document.getElementById('rev-chat-focus-input');
+    if (box) box.value = this._focusTicker();
+  },
+
   updateSidebarFocusBadge(ticker) {
     const badge = document.getElementById('rev-chat-focus-badge');
     if (!badge) return;
-    const t = (ticker || (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '') || (document.getElementById('ticker-input')?.value) || '').trim().toUpperCase();
-    if (t && !['GENERAL', 'AUTO', 'NONE', 'ALL'].includes(t)) {
+    // An explicit argument wins; otherwise read the single source of truth. Never fall back to
+    // currentReportData or #ticker-input -- that fallback is what made clearing impossible.
+    const t = (ticker !== undefined && ticker !== null)
+      ? String(ticker).trim().toUpperCase()
+      : this._focusTicker();
+    if (t) {
       badge.innerText = `🎯 Focus: $${t}`;
       badge.className = 'pill blue';
-      badge.title = `Main chat is focused on $${t}. Click to switch to broad market.`;
+      badge.title = `Chat is focused on $${t}. Click to clear, or type a ticker to switch.`;
     } else {
       badge.innerText = `🎯 Focus: Market`;
       badge.className = 'pill';
-      badge.title = `Main chat is in broad market mode.`;
+      badge.title = `Chat is in broad market mode. Click to type a ticker and focus on one.`;
     }
+    this._syncSidebarFocusInput();
   },
 
-  clearSidebarFocus() {
-    const input = document.getElementById('ticker-input');
-    if (input) input.value = '';
-    window.AppState.revChatFocusTicker = '';
-    this.updateSidebarFocusBadge('');
+  // Enter in the sidebar focus box -> focus on that ticker (or clear if blank).
+  applySidebarFocusInput() {
+    const box = document.getElementById('rev-chat-focus-input');
+    const raw = box ? box.value : '';
+    const t = this.setRevChatFocus(raw);
+    if (box) box.value = window.AppState.revChatFocusTicker || '';
+    return t;
   },
 
   askActiveChat(prompt) {
@@ -795,8 +847,7 @@ window.AppChat = {
 
   openChatWithPrompt(prompt, sym = null) {
     if (sym) {
-      this.updateSidebarFocusBadge(sym);
-      window.AppState.revChatFocusTicker = sym;
+      this.setRevChatFocus(sym);
       const tickerInput = document.getElementById('ticker-input');
       if (tickerInput && !tickerInput.value) tickerInput.value = sym;
     }
@@ -955,18 +1006,24 @@ window.AppChat = {
         sendBtn.disabled = false;
       }
 
-      // Resolve active ticker for main sidebar chat
-      let activeTicker = (
-        (window.AppState.activeChatTicker) ||
-        (window.AppState.revChatFocusTicker) ||
-        (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '') ||
-        (document.getElementById('ticker-input') ? document.getElementById('ticker-input').value : '') ||
-        ''
-      ).trim().toUpperCase();
-      if (['GENERAL', 'AUTO', 'NONE', 'ALL', 'STOCK'].includes(activeTicker)) activeTicker = '';
+      // Resolve the ticker for the main sidebar chat.
+      //
+      // The old chain fell back through activeChatTicker / currentReportData / #ticker-input, so
+      // a message you sent after clearing the focus re-established it from whatever report
+      // happened to be open. An explicit clear now sticks until focus is set again deliberately.
+      let activeTicker = this._focusTicker();
+      if (!activeTicker && !window.AppState.revChatFocusCleared) {
+        activeTicker = (
+          (window.AppState.activeChatTicker) ||
+          (window.AppState.currentReportData ? window.AppState.currentReportData.ticker : '') ||
+          (document.getElementById('ticker-input') ? document.getElementById('ticker-input').value : '') ||
+          ''
+        ).trim().toUpperCase();
+        if (['GENERAL', 'AUTO', 'NONE', 'ALL', 'STOCK', 'MARKET'].includes(activeTicker)) activeTicker = '';
+      }
 
       if (activeTicker) {
-        window.AppState.revChatFocusTicker = activeTicker;
+        this.setRevChatFocus(activeTicker);
         if (!this._revSessionId || !this._revSessionId.includes(`_${activeTicker}_`)) {
           this._revSessionId = `sess_${activeTicker}_${Date.now()}`;
         }
@@ -1308,8 +1365,7 @@ window.AppChat = {
     const key = `${sym}_${date}`;
 
     // Ensure active ticker matches so chat UI displays this message & stream tokens
-    window.AppState.activeChatTicker = sym;
-    window.AppState.revChatFocusTicker = sym;
+    this.setRevChatFocus(sym);
     const tickerInput = document.getElementById('ticker-input');
     if (tickerInput) tickerInput.value = sym;
 

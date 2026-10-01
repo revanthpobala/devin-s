@@ -346,7 +346,9 @@ def get_research_queue(date: Optional[str] = None):
                     if sym and sym not in seen:
                         queue.append({
                             "ticker": sym,
-                            "date": now_date,
+                            # target_date, not now_date: asking for a past session must label its
+                            # candidates with that session, or the per-date view mixes in today.
+                            "date": target_date,
                             "status": "NEEDS_SCRAPE",
                             "action": "full",
                             "action_label": "📸 Scrape & Research",
@@ -1443,22 +1445,147 @@ def get_latest_chart_image(ticker: str, chart_type: str):
     return FileResponse(str(img_path), media_type="image/png")
 
 
+@router.get("/api/research/sessions")
+def get_session_history(limit: int = 30):
+    """Per-session summary: what arrived, what was triaged, what went to deep research.
+
+    The queue panels answer "what is running now". This answers "what happened on the 29th",
+    which is a different question and needs a different read: it joins the alerts ledger by date
+    rather than looking at job rows.
+    """
+    try:
+        # The two halves live in different files. `alerts` is in the alerts/intraday DB
+        # (trading_alerts.db); research jobs are in the cockpit watch DB (research_watch.db).
+        # get_db() is only the latter, so a single-connection join here fails with
+        # "no such table: alerts".
+        from src.tracking.alert_db import _get_connection as _alerts_conn
+
+        with _alerts_conn() as ac:
+            sessions = ac.execute("""
+                SELECT date AS session,
+                       COUNT(*) AS alerts,
+                       SUM(CASE WHEN strategy = 'Intraday' THEN 1 ELSE 0 END) AS intraday,
+                       SUM(CASE WHEN llm_decision IS NOT NULL AND TRIM(llm_decision) != ''
+                                THEN 1 ELSE 0 END) AS graded,
+                       SUM(CASE WHEN COALESCE(routing_stage, '') = 'ARCHIVED'
+                                THEN 1 ELSE 0 END) AS archived,
+                       SUM(CASE WHEN COALESCE(setup, '') != '' THEN 1 ELSE 0 END) AS with_setup
+                FROM alerts
+                WHERE date IS NOT NULL AND TRIM(date) != ''
+                  -- A session date in the future is a fixture, not a session. data/raw carries a
+                  -- 2029-01-01 test directory and it was sorting to the top of the picker.
+                  AND date <= ?
+                GROUP BY date
+                ORDER BY date DESC
+                LIMIT ?
+            """, (datetime.now().strftime("%Y-%m-%d"), int(limit))).fetchall()
+
+        with get_db() as conn:
+            c = conn.cursor()
+            jobs_by_date = {}
+            for r in c.execute("""
+                SELECT target_date AS session,
+                       mode,
+                       status,
+                       COUNT(*) AS n
+                FROM active_research_jobs
+                WHERE target_date IS NOT NULL AND TRIM(target_date) != ''
+                  AND target_date <= ?
+                GROUP BY target_date, mode, status
+            """, (datetime.now().strftime("%Y-%m-%d"),)).fetchall():
+                d = dict(r)
+                bucket = jobs_by_date.setdefault(d["session"], {
+                    "local_running": 0, "local_queued": 0, "local_other": 0,
+                    "deep_running": 0, "deep_queued": 0, "deep_done": 0, "deep_failed": 0,
+                })
+                is_local = d["mode"] == "local_only"
+                st = (d["status"] or "").upper()
+                if is_local:
+                    bucket["local_running" if st == "RUNNING"
+                           else "local_queued" if st == "QUEUED" else "local_other"] += d["n"]
+                else:
+                    if st == "RUNNING":
+                        bucket["deep_running"] += d["n"]
+                    elif st == "QUEUED":
+                        bucket["deep_queued"] += d["n"]
+                    elif st in ("COMPLETED", "DONE"):
+                        bucket["deep_done"] += d["n"]
+                    else:
+                        bucket["deep_failed"] += d["n"]
+
+            # Sessions that only have jobs (a run with no surviving alerts) still belong here.
+            known = {dict(r)["session"] for r in sessions}
+            extra = [d for d in jobs_by_date if d not in known]
+
+        rows = []
+        for r in sessions:
+            d = dict(r)
+            d.update(jobs_by_date.get(d["session"], {}))
+            rows.append(d)
+        for d in extra:
+            rows.append({
+                "session": d, "alerts": 0, "intraday": 0, "graded": 0, "archived": 0,
+                "with_setup": 0, **jobs_by_date[d],
+            })
+        rows.sort(key=lambda x: x["session"], reverse=True)
+
+        # Drop dates with neither alerts nor jobs. A weekend (or a day the poller was down) has no
+        # alerts and no jobs, and an empty row in this table reads as "we lost something".
+        def _is_empty(r):
+            job_total = sum(
+                v for k, v in r.items()
+                if k.startswith(("local_", "deep_")) and isinstance(v, int)
+            )
+            return not r.get("alerts") and not job_total
+
+        dropped = [r["session"] for r in rows if _is_empty(r)]
+        rows = [r for r in rows if not _is_empty(r)]
+
+        return {"sessions": rows, "limit": int(limit), "empty_dates_hidden": dropped}
+    except Exception as e:
+        logger.error(f"Error in get_session_history: {e}")
+        return {"sessions": [], "error": str(e)}
+
+
 @router.get("/api/jobs")
-def get_research_jobs():
-    """Fetch all research jobs from SQLite database with accurate master-thread liveness tracking."""
+def get_research_jobs(date: Optional[str] = None):
+    """Fetch research jobs from SQLite with accurate master-thread liveness tracking.
+
+    `date` filters to a single session via active_research_jobs.target_date. Without it the
+    panels mixed every date together, so a job that failed 21 hours ago sat in the same list as
+    one that had been running for 51 seconds. `available_dates` is always returned so the UI can
+    offer the picker.
+    """
     with get_db() as conn:
         c = conn.cursor()
-        jobs = c.execute("""
-            SELECT * FROM active_research_jobs 
-            ORDER BY 
-                CASE status 
-                    WHEN 'RUNNING' THEN 1 
-                    WHEN 'QUEUED' THEN 2 
-                    ELSE 3 
-                END, 
-                started_at DESC 
+        where = ""
+        params: tuple = ()
+        if date and date.strip():
+            where = "WHERE target_date = ?"
+            params = (date.strip(),)
+
+        available_dates = [
+            r[0] for r in c.execute(
+                "SELECT DISTINCT target_date FROM active_research_jobs "
+                "WHERE target_date IS NOT NULL AND TRIM(target_date) != '' "
+                "AND target_date <= ? "
+                "ORDER BY target_date DESC LIMIT 60",
+                (datetime.now().strftime("%Y-%m-%d"),),
+            ).fetchall()
+        ]
+
+        jobs = c.execute(f"""
+            SELECT * FROM active_research_jobs
+            {where}
+            ORDER BY
+                CASE status
+                    WHEN 'RUNNING' THEN 1
+                    WHEN 'QUEUED' THEN 2
+                    ELSE 3
+                END,
+                started_at DESC
             LIMIT 40
-        """).fetchall()
+        """, params).fetchall()
         jobs_list = []
         for r in jobs:
             item = dict(r)
@@ -1512,11 +1639,15 @@ def get_research_jobs():
             "jobs": jobs_list,
             "local_queue": local_queue,
             "deep_queue": deep_queue,
+            # Slot counts stay GLOBAL, not date-scoped: you cannot free a GPU slot by filtering
+            # to another day, so showing a per-date count would under-report real occupancy.
             "local_slots_used": active_local_count,
             "local_slots_max": MAX_CONCURRENT_LOCAL,
             "deep_slots_used": active_deep_count,
             "deep_slots_max": MAX_CONCURRENT_DEEP,
             "max_concurrent": MAX_CONCURRENT_RESEARCH,
+            "date": (date or "").strip(),
+            "available_dates": available_dates,
         }
 
 

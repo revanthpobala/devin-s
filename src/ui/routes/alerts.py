@@ -195,3 +195,21 @@ def get_auto_triage_daemon_status():
     from src.tracking.auto_triage_daemon import get_auto_triage_status
 
     return {"status": "ok", **get_auto_triage_status()}
+
+
+@router.get("/api/alerts/actionable")
+def get_actionable_alerts_endpoint(limit: int = 30):
+    """Retrieve filtered, evaluated, live-proximity actionable alerts."""
+    try:
+        from src.ui.services.opportunity_service import get_actionable_alerts_stream
+
+        alerts = get_actionable_alerts_stream(limit=limit)
+        return {
+            "status": "ok",
+            "count": len(alerts),
+            "alerts": alerts,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching actionable alerts: {e}", exc_info=True)
+        return {"status": "error", "error": str(e), "alerts": []}
+

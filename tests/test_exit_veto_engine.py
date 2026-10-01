@@ -155,39 +155,42 @@ def test_review_tv_exit_catastrophic_safeguard(tmp_path, monkeypatch):
 
 def test_review_tv_exit_catastrophic_wide_stop_within_risk_budget(tmp_path, monkeypatch):
     """Tier 2 must NOT fire on a wide-ATR setup when the drawdown is inside the
-    designed risk budget (stop distance). The trade keeps running to its real stop."""
-    fake_positions = tmp_path / "positions.json"
-    # Pin the ATR fallback: this test was the one that flipped run-to-run, because the breaker
-    # reaches a live Schwab intraday call whenever a record has no usable stored stop.
+    designed risk budget (stop distance). The trade keeps running to its real stop.
+
+    Pinned hermetically. This test flipped run-to-run three times before: review_tv_exit starts
+    with list_open() and returns CONFIRM_EXIT("No open position tracked") when the seeded record
+    is not visible, so any shared-state or file-visibility wobble masqueraded as a logic failure.
+    list_open is stubbed here rather than seeding a file, and the reason is asserted so a failure
+    says which branch produced it.
+    """
     _pin_atr(monkeypatch, 8.00)
-    with patch.object(position_state, "POSITIONS_FILE", fake_positions):
-        position_state.open_position(
-            "AAPL",
-            side="LONG",
-            strategy="Intraday",
-            entry_price=200.0,
-            stop=190.0,  # Wide $10.00 (5%) initial risk — wide-ATR setup
-        )
+    rec = {
+        "ticker": "AAPL", "side": "LONG", "strategy": "Intraday",
+        "entry_price": 200.0, "stop": 190.0, "initial_stop": 190.0,
+        "target": None, "opened_at": "2026-09-17T10:15:00",
+    }
+    monkeypatch.setattr("src.tracking.position_monitor.list_open", lambda: {"AAPL": rec})
 
-        # -3.0% drawdown: above the old flat 2.5% breaker, but well inside the
-        # $10.00 stop distance and price still holds above stop -> VETO_HOLD.
-        exit_alert = {
-            "symbol": "AAPL",
-            "action": "EXIT",
-            "alert_price": 194.0,
-            "strategy": "Intraday",
-        }
+    exit_alert = {
+        "symbol": "AAPL",
+        "action": "EXIT",
+        "alert_price": 194.0,
+        "strategy": "Intraday",
+    }
 
-        with patch("src.tracking.position_monitor.get_current_price", return_value=194.0):
-            decision = review_tv_exit("AAPL", exit_alert)
-            assert decision["action"] == "VETO_HOLD"
-            assert "Catastrophic" not in decision["reason"]
+    # -3.0% drawdown: above the old flat 2.5% breaker, but well inside the
+    # $10.00 stop distance and price still holds above stop -> VETO_HOLD.
+    with patch("src.tracking.position_monitor.get_current_price", return_value=194.0):
+        decision = review_tv_exit("AAPL", exit_alert)
+        assert decision["action"] == "VETO_HOLD", decision
+        assert "Catastrophic" not in decision["reason"]
+        assert "No open position" not in decision["reason"], "the stubbed record was not seen"
 
-        # Once price breaks the real stop, it exits via catastrophic breaker (ATR leg).
-        with patch("src.tracking.position_monitor.get_current_price", return_value=189.5):
-            decision = review_tv_exit("AAPL", exit_alert)
-            assert decision["action"] == "CONFIRM_EXIT"
-            assert "Catastrophic stop safeguard breached" in decision["reason"]
+    # Once price breaks the real stop, it exits via catastrophic breaker (ATR leg).
+    with patch("src.tracking.position_monitor.get_current_price", return_value=189.5):
+        decision = review_tv_exit("AAPL", exit_alert)
+        assert decision["action"] == "CONFIRM_EXIT", decision
+        assert "Catastrophic stop safeguard breached" in decision["reason"]
 
 
 def test_review_tv_exit_catastrophic_option_premium_leg(tmp_path, monkeypatch):
