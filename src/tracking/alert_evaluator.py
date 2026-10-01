@@ -865,36 +865,55 @@ Output strictly valid JSON matching the revanth-gem-local.md schema.
     }
 
 
-def evaluate_batch_pending(limit: int = 100, date_str: Optional[str] = None, force_all: bool = False) -> Dict[str, Any]:
-    """
-    Find alerts in SQLite trading_alerts.db that have not yet been evaluated or have corrupted decisions,
-    and run them through evaluate_alert_payload without any chart scraping.
+def evaluate_batch_pending(
+    limit: int = 100,
+    date_str: Optional[str] = None,
+    force_all: bool = False,
+) -> Dict[str, Any]:
+    """Evaluate pending alerts through evaluate_alert_payload, no chart scraping.
+
+    SCOPE: today's alerts only, unless a specific date is requested.
+
+    This evaluator fetches LIVE price and LIVE news, so grading an older alert here fabricates a
+    verdict -- a 2026-09-11 setup judged against the current tape and current headlines, then
+    written back as if it had been contemporaneous. That is not hypothetical: an unbounded batch run
+    graded an entire archived backlog and wrote llm_decision onto rows deliberately archived with a
+    NULL verdict, because the pending-filter had no date term at all.
+
+    `date_str` is the explicit opt-in to grade one specific day. `force_all` still means "every
+    date, verdict filter ignored" -- an operator recovery sweep, and deliberately the widest gun.
+    The ARCHIVED exclusion below holds under both.
     """
     import sqlite3
-    from src.tracking.alert_db import DB_PATH
+
+    from src.tracking.alert_db import DB_PATH, get_eastern_date_str
 
     conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
+    pending_clause = (
+        "(llm_decision IS NULL "
+        " OR llm_decision = '' "
+        " OR llm_decision LIKE '%\"ticker\"%' "
+        " OR llm_decision LIKE '%\"event_type\"%' "
+        " OR llm_decision LIKE 'I''ll %' "
+        " OR llm_decision = 'AI EVALUATED')"
+    )
+
+    params: list = []
     if force_all:
+        # Unchanged: force_all means "every date, verdict filter ignored" -- it is an operator
+        # recovery sweep for corrupted decisions, and repurposing it here would be a silent
+        # behaviour change. Safety comes from the ARCHIVED exclusion below, which applies either way.
         query = "SELECT * FROM alerts WHERE 1=1"
     else:
-        query = """
-            SELECT * FROM alerts
-            WHERE (
-                llm_decision IS NULL 
-                OR llm_decision = ''
-                OR llm_decision LIKE '%"ticker"%'
-                OR llm_decision LIKE '%"event_type"%'
-                OR llm_decision LIKE 'I''ll %'
-                OR llm_decision = 'AI EVALUATED'
-            )
-        """
-    params = []
-    if date_str:
-        query += " AND date = ?"
-        params.append(date_str)
+        target = date_str or get_eastern_date_str()
+        query = f"SELECT * FROM alerts WHERE date = ? AND {pending_clause}"
+        params.append(target)
+    # Defence in depth. ARCHIVED means deliberately archived with no verdict -- grading it would be
+    # the fabrication this whole scope guard exists to prevent, and it must hold under force_all.
+    query += " AND COALESCE(routing_stage, 'RECORDED') != 'ARCHIVED'"
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
 
@@ -902,8 +921,9 @@ def evaluate_batch_pending(limit: int = 100, date_str: Optional[str] = None, for
     rows = cur.fetchall()
     conn.close()
 
+    scope = "ALL dates (force_all)" if force_all else (date_str or get_eastern_date_str())
     if not rows:
-        return {"count": 0, "message": "No pending alerts to evaluate"}
+        return {"count": 0, "message": f"No pending alerts for {scope}", "scope": scope}
 
     evaluated_count = 0
     for r in rows:
@@ -916,7 +936,11 @@ def evaluate_batch_pending(limit: int = 100, date_str: Optional[str] = None, for
 
     return {
         "count": evaluated_count,
-        "message": f"Successfully evaluated {evaluated_count} alerts via local LLM.",
+        "scope": scope,
+        "message": (
+            f"Successfully evaluated {evaluated_count} alerts via local LLM "
+            f"({scope})."
+        ),
     }
 
 

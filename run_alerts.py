@@ -105,6 +105,28 @@ def run_close_pass(args) -> int:
     return 0
 
 
+def run_backfill_pass(args) -> int:
+    """Persist historical Gmail alerts that the old 60-message ceiling made unreachable.
+
+    Persist-only by design: no gem run, no PositionManager, no Gmail mutation, and never an alert
+    dated today (those belong to the live poller and must keep their 0DTE gem run).
+    See src/data/backfill_alerts.py for the full rationale.
+    """
+    from src.data.backfill_alerts import run_backfill
+
+    report = run_backfill(
+        limit=args.limit,
+        max_cycles=args.max_cycles,
+        before=args.before,
+        dry_run=args.dry_run,
+    )
+    _log_json(report)
+    if not args.dry_run and report.get("persisted"):
+        print(f"\nPersisted {report['persisted']} historical alert(s) with no LLM verdict. "
+              f"raw_payload preserved; grade/llm_decision left NULL.")
+    return 0
+
+
 def main(argv=None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -116,6 +138,16 @@ def main(argv=None) -> int:
     p.add_argument("--interval", type=int, default=300, help="Seconds between OPS passes in --loop.")
     p.add_argument("--ops-only", action="store_true", help="Run only the OPS health checks.")
     p.add_argument("--digest", action="store_true", help="Run only the digest + INCOME tier.")
+    p.add_argument("--backfill", action="store_true",
+                   help="Persist historical Gmail alerts stranded by the old 60-message ceiling. "
+                        "Persist-only: no gem run, no PositionManager, no Gmail mutation.")
+    p.add_argument("--before", metavar="YYYY-MM-DD",
+                   help="Backfill cutoff, exclusive. Defaults to today, so today's alerts are "
+                        "always left to the live poller and keep their 0DTE gem run.")
+    p.add_argument("--limit", type=int, default=250,
+                   help="Emails fetched per backfill cycle (default 250).")
+    p.add_argument("--max-cycles", type=int, default=0, metavar="N",
+                   help="Stop after N cycles. 0 = drain fully. Safe to re-run; it resumes.")
     p.add_argument("--dry-run", action="store_true", help="Compute and print; send nothing.")
     p.add_argument("--history", type=int, default=0, metavar="N",
                    help="Print the last N notifications and exit.")
@@ -138,6 +170,9 @@ def main(argv=None) -> int:
 
     if args.ops_only:
         return run_ops(args)
+
+    if args.backfill:
+        return run_backfill_pass(args)
 
     if args.digest:
         date = args.date or datetime.now().strftime("%Y-%m-%d")

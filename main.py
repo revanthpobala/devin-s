@@ -260,7 +260,35 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
         logger.error(f"Immediate SQLite record error for {symbol}: {e_rec}. Ingestion aborted to prevent unaudited routing.")
         return False
 
-    # 2. Durable ENQUEUED stage: alert is recorded and about to be handed to the
+    # 2. Historical alerts are ARCHIVED, never routed and never enriched.
+    #
+    # This guard must sit BEFORE PositionManager routing. Routing opens a real position, so a
+    # July alert routed today would put a three-month-old setup on the live book -- and the 0DTE gem
+    # would then grade it against the current tape and write the verdict as if contemporaneous.
+    # Those rows also feed intraday_signals, which the intraday scoreboard reads.
+    #
+    # Rule: strictly older than the current Eastern date. Anything from a previous session is
+    # archived too, because "yesterday's alert priced at today's quote" is the same fabrication in
+    # a smaller dose -- the position is gone and the session has rolled.
+    from src.tracking.alert_db import get_eastern_date_str as _eds
+
+    _today = _eds()
+    alert_day = str(alert.get("timestamp") or "")[:10] or _today
+    if alert_day < _today:
+        logger.info(
+            "📦 ARCHIVED (historical): %s dated %s is older than %s; not routed, not gem-evaluated.",
+            symbol, alert_day, _today,
+        )
+        if alert.get("message_id"):
+            _update_routing_stage_db(alert["message_id"], "ARCHIVED")
+        if email_id and gmail:
+            try:
+                gmail.mark_as_read(email_id)
+            except Exception:
+                pass
+        return True
+
+    # 3. Durable ENQUEUED stage: alert is recorded and about to be handed to the
     #    PositionManager. Crash between ENQUEUED and ROUTED is recoverable via
     #    replay_unrouted_alerts() (which picks up both RECORDED and ENQUEUED).
     if alert.get("message_id"):

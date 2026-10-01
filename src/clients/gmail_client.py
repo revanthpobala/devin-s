@@ -46,8 +46,21 @@ class GmailClient:
             logger.info("Disconnected from Gmail.")
 
     def fetch_new_alerts(self, limit: int = 500) -> List[Dict[str, Any]]:
-        """Fetch all unread TradingView alert emails and recent emails up to limit,
-        filtering out any alerts already recorded in SQLite (guaranteeing zero missed alerts)."""
+        """Fetch every TradingView alert email not yet recorded in SQLite.
+
+        There is no recency ceiling. A previous version kept only the newest 60 messages from the
+        sender plus UNSEEN, which made anything older than that permanently invisible: with 7,698
+        sender messages in the inbox and 0 UNSEEN, 7,638 of them could not be reached by the
+        poller at all. A single busy session was enough to push real 0DTE alerts into that blind
+        spot permanently -- 2026-09-10 produced 72 intraday alerts on its own, so a day-long
+        outage would have lost 12 of them with no error and no way to recover.
+
+        The ceiling was there to stop IMAP stalling, but stalling comes from fetching message
+        BODIES, not from listing ids. The SEARCH below is one cheap round trip that returns every
+        id, and the indexed pre-filter removes everything already in SQLite before a single body is
+        downloaded. `limit` now bounds bodies fetched per cycle (newest first, so live alerts keep
+        zero latency) and any remainder drains on the next cycle.
+        """
         if not self.mail:
             if not self.connect() or not self.mail:
                 return []
@@ -66,17 +79,18 @@ class GmailClient:
             unseen_ids = unseen_data[0].split() if status == "OK" and unseen_data[0] else []
 
             # 2. Also search recent emails from sender in case user opened them on phone/web
+            #    NO recency truncation. Every id from the sender is a candidate; the indexed
+            #    SQLite pre-filter below is what makes this cheap, because it removes everything
+            #    already ingested before any body is downloaded.
             all_query = f'(FROM "{self.sender}")'
             status_all, all_data = mail.search(None, all_query)
             all_ids = all_data[0].split() if status_all == "OK" and all_data[0] else []
-            recent_limit = min(limit, 60)  # Keep window to recent 60 to prevent IMAP stalls
-            recent_ids = all_ids[-recent_limit:] if len(all_ids) > recent_limit else all_ids
 
             # Combine and deduplicate, prioritizing NEWEST FIRST
             candidate_ids = []
             seen_set = set()
             # Process newest emails first so live intraday alerts are ingested with zero latency
-            for eid in reversed(list(unseen_ids) + list(recent_ids)):
+            for eid in reversed(list(unseen_ids) + list(all_ids)):
                 if eid not in seen_set:
                     seen_set.add(eid)
                     candidate_ids.append(eid)
@@ -89,9 +103,23 @@ class GmailClient:
             new_candidate_ids = [eid for eid, sid in zip(candidate_ids, str_candidate_ids) if sid not in already_seen]
 
             logger.info(
-                f"Found {len(unseen_ids)} unread, {len(candidate_ids)} candidates, "
-                f"{len(already_seen)} already in SQLite -> fetching {len(new_candidate_ids)} new email(s)."
+                f"Found {len(unseen_ids)} unread, {len(all_ids)} from sender, "
+                f"{len(candidate_ids)} candidates, {len(already_seen)} already in SQLite "
+                f"-> {len(new_candidate_ids)} new."
             )
+
+            # Per-cycle body-fetch budget. Newest-first keeps live alerts at zero latency; the
+            # remainder drains on the next cycle. Logged when non-zero so a backlog is visible
+            # rather than silently starving behind newer mail.
+            deferred = 0
+            if len(new_candidate_ids) > limit:
+                deferred = len(new_candidate_ids) - limit
+                new_candidate_ids = new_candidate_ids[:limit]
+                logger.warning(
+                    "Backlog: %d new alert email(s) exceed the per-cycle limit of %d; "
+                    "processing the %d newest and deferring %d to the next cycle.",
+                    deferred + limit, limit, limit, deferred,
+                )
 
             for e_id in new_candidate_ids:
                 alert_data = self.process_email(e_id)
