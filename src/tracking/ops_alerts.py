@@ -36,6 +36,10 @@ SCHWAB_TOKEN_WARN_HOURS = 24.0
 # queue with no triage decision, the pipeline skipped it and nobody noticed.
 CORE_SYMBOLS = ("SPY", "QQQ", "AMZN", "WMT", "HOOD", "CRM")
 
+# Window a suggestion has to fall inside to count as "queued". Matches the desk's own working
+# window, so the coverage check and the board agree on what is in play.
+CORE_COVERAGE_WINDOW_DAYS = 21
+
 # Synthetic tickers that exist only in tests and fixtures. They are not coverage gaps.
 _TEST_TICKER_MARKERS = ("GOODTICKER", "TEST", "ZZTEST", "FOO", "BAR", "DUMMY", "MOCK", "SAMPLE")
 
@@ -186,19 +190,64 @@ def check_daily_artifacts_fresh() -> Tuple[bool, str]:
     return False, f"newest artifact {newest}"
 
 
+def core_coverage_gaps() -> Tuple[List[str], List[str]]:
+    """(genuine gaps, core symbols that are actually covered).
+
+    A gap is a core name with a suggestion inside the working window that has NEVER received an
+    llm_decision. Deliberately not derived from the desk's `missing_symbols`: that list is
+    inbox-derived, so it flags every core name absent from TODAY's alerts. Measured on the live
+    data, all six core names had 6-54 triaged alerts and live watch_targets while the derived list
+    called all six gaps.
+    """
+    from src.tracking.alert_db import _get_connection as _alert_conn
+    import src.tracking.watch_manager as wm
+
+    cutoff = _now_minus_days(CORE_COVERAGE_WINDOW_DAYS).strftime("%Y-%m-%d")
+    with wm._get_connection() as sconn:
+        recent = {
+            (r[0] or "").upper()
+            for r in sconn.execute(
+                "SELECT DISTINCT ticker FROM suggestions WHERE date >= ?", (cutoff,)
+            ).fetchall()
+        }
+    triaged: set = set()
+    with _alert_conn() as aconn:
+        for r in aconn.execute(
+            "SELECT DISTINCT UPPER(symbol) FROM alerts "
+            "WHERE llm_decision IS NOT NULL AND llm_decision != ''"
+        ).fetchall():
+            if r[0]:
+                triaged.add(r[0])
+    gaps = [s for s in CORE_SYMBOLS if s in recent and s not in triaged]
+    covered = [s for s in CORE_SYMBOLS if s not in gaps]
+    return gaps, covered
+
+
 def check_core_symbol_coverage(missing_symbols: Optional[List[str]] = None) -> Tuple[bool, str]:
-    """True when a core name is queued but untriaged. Test tickers are not coverage gaps."""
-    if missing_symbols is None:
-        missing_symbols = _read_missing_symbols()
-    core_missing = [s for s in missing_symbols if (s or "").upper() in CORE_SYMBOLS]
-    if core_missing:
+    """True when a core name is queued but has never been triaged. Test tickers are not gaps.
+
+    An OPS tier that cries wolf on its first run gets ignored, and then it misses the real gap.
+    """
+    fixture_rows = sorted(s for s in (missing_symbols or []) if _is_test_ticker(s))
+    suffix = f" ({len(fixture_rows)} test row(s) ignored)" if fixture_rows else ""
+
+    try:
+        gaps, covered = core_coverage_gaps()
+    except Exception as e:
+        logger.debug("ops: coverage probe failed (%s)", e)
+        return False, f"coverage unverified ({e}){suffix}"
+
+    if gaps:
         return True, (
-            f"core symbol(s) queued but never triaged: {', '.join(sorted(core_missing))}. "
+            f"core symbol(s) queued but never triaged: {', '.join(gaps)}. "
             f"Alert coverage has a hole."
         )
-    noise = sorted({s for s in missing_symbols if _is_test_ticker(s)})
-    suffix = f" ({len(noise)} test row(s) ignored)" if noise else ""
-    return False, f"all core symbols triaged{suffix}"
+    return False, f"all {len(covered)} core symbols have a triage decision{suffix}"
+
+
+def _now_minus_days(days: int):
+    from datetime import timedelta
+    return datetime.now() - timedelta(days=days)
 
 
 # --- helpers ---------------------------------------------------------------------------------------
@@ -264,17 +313,20 @@ def _read_missing_symbols() -> List[str]:
 # --- runner -------------------------------------------------------------------------------------
 
 def purge_test_rows(dry_run: bool = True) -> Dict[str, Any]:
-    """Remove fixture tickers from the suggestions ledger and watch targets.
+    """Remove fixture tickers from the suggestions ledger, watch targets and rejected plans.
+
+    GOODTICKER sat in `suggestions` AND twice in `rejected_plans`, which is what put it in the
+    desk's missing_symbols list next to SPY and QQQ. The desk now excludes test tickers from its
+    counts, so this is housekeeping rather than a correctness fix.
 
     NOT called automatically. Row deletion is irreversible and AGENTS.md requires explicit
     permission, so this is a one-shot maintenance action the operator invokes:
 
+        python -c "from src.tracking.ops_alerts import purge_test_rows; print(purge_test_rows(dry_run=True))"
         python -c "from src.tracking.ops_alerts import purge_test_rows; print(purge_test_rows(dry_run=False))"
-
-    The desk already excludes these tickers from coverage counts, so the purge is cosmetic
-    housekeeping rather than a correctness fix.
     """
-    found: Dict[str, List[str]] = {"suggestions": [], "watch_targets": []}
+    found: Dict[str, List[str]] = {}
+    deleted: Dict[str, int] = {}
     try:
         from src.tracking.watch_manager import _get_connection, _db_lock
     except Exception as e:
@@ -283,24 +335,33 @@ def purge_test_rows(dry_run: bool = True) -> Dict[str, Any]:
     with _db_lock:
         with _get_connection() as conn:
             cur = conn.cursor()
-            for table, column in (("suggestions", "ticker"), ("watch_targets", "ticker")):
+            for table in ("suggestions", "watch_targets", "rejected_plans"):
                 try:
-                    rows = cur.execute(f"SELECT DISTINCT {column} FROM {table}").fetchall()
+                    rows = cur.execute(f"SELECT DISTINCT ticker FROM {table}").fetchall()
                 except Exception:
+                    found[table] = ["<table unavailable>"]
                     continue
-                names = [r[0] for r in rows if _is_test_ticker(r[0] or "")]
-                found[table] = sorted(n for n in names if n)
+                names = [r[0] for r in rows if r[0] and _is_test_ticker(r[0])]
+                found[table] = sorted(names)
                 if dry_run or not names:
                     continue
+                removed = 0
                 for n in names:
-                    if not n:
-                        continue
-                    cur.execute(f"DELETE FROM {table} WHERE UPPER({column}) = ?", (n.upper(),))
+                    cur.execute(f"DELETE FROM {table} WHERE UPPER(ticker) = ?", (n.upper(),))
+                    removed += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                deleted[table] = removed
             if not dry_run:
                 conn.commit()
 
-    found["deleted"] = not dry_run
-    return found
+    result: Dict[str, Any] = {
+        "found": found,
+        "dry_run": dry_run,
+        "deleted_rows": deleted,
+        "total_deleted": sum(deleted.values()),
+    }
+    if dry_run:
+        result["next_step"] = "re-run with dry_run=False to delete"
+    return result
 
 
 def run_ops_checks(

@@ -34,23 +34,34 @@ def _compute_hash(
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def ensure_rejected_plans_schema(conn) -> None:
+    """Create the rejected_plans audit table.
+
+    Extracted from log_rejected_plan so the test schema template and the writer agree. When this
+    DDL lived only inside the writer, the table appeared lazily on first rejection -- which meant a
+    fresh database had no `rejected_plans` at all, and anything that reads or cleans that table
+    (the fixture-row purge) failed on a table it assumed existed.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rejected_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            date TEXT NOT NULL,
+            side TEXT,
+            plan_json TEXT,
+            reasons TEXT,
+            logged_at TEXT
+        )
+    """)
+
+
 def log_rejected_plan(ticker: str, date_str: str, plan: Dict[str, Any], reasons: List[str]) -> None:
     """Log level validation failures to the rejected_plans audit table."""
     try:
         with _db_lock:
             with _get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS rejected_plans (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ticker TEXT NOT NULL,
-                        date TEXT NOT NULL,
-                        side TEXT,
-                        plan_json TEXT,
-                        reasons TEXT,
-                        logged_at TEXT
-                    )
-                """)
+                ensure_rejected_plans_schema(conn)
                 cursor.execute(
                     "INSERT INTO rejected_plans (ticker, date, side, plan_json, reasons, logged_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (

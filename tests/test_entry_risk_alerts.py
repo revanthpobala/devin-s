@@ -564,3 +564,76 @@ def test_fire_risk_pushes_each_event_once(monkeypatch, tmp_path):
     fire_risk(events)          # same session, same state
     assert len(sent) == 1
     assert sent[0][0] == "RISK"
+
+# =====================================================================================
+# Stop width in the RISK alert body
+# =====================================================================================
+
+def _risk_capture(monkeypatch, tmp_path):
+    """Capture the bodies a fire_risk() call would push."""
+    import src.tracking.notify as nm
+
+    sent = []
+    monkeypatch.setattr(nm, "_DEDUPE_DB", None)
+    monkeypatch.setattr(nm, "_dedupe_db_path", lambda: tmp_path / "d.db")
+    monkeypatch.setattr(nm, "_ntfy_configured", lambda: False)
+    monkeypatch.setattr(nm, "_smtp_configured", lambda: False)
+    monkeypatch.setattr(nm.config, "GMAIL_EMAIL", "")
+    monkeypatch.setattr(nm.config, "GMAIL_APP_PASSWORD", "")
+    monkeypatch.setattr(nm, "_mountain_now",
+                        lambda: __import__("datetime").datetime(2026, 9, 28, 9, 30))
+    monkeypatch.setattr(nm, "_dispatch",
+                        lambda tier, title, body: (sent.append(body) or ["x"]))
+    return sent
+
+
+def test_risk_event_carries_the_stop_width(monkeypatch, tmp_path):
+    """A stop-out alert that does not say how wide the stop was cannot be acted on.
+
+    A 0.2-ATR stop was always going to be hit; that is the difference between a real break and a
+    stop that sat inside the noise band all along.
+    """
+    sent = _risk_capture(monkeypatch, tmp_path)
+    # close 99.80, stop 100.00, atr 1.0 -> a 0.20 ATR stop, deep inside noise.
+    fire_risk(evaluate_risk("SWKS", 100.0, 99.80, prev_close=100.5, date="2026-09-28", atr=1.0))
+    body = sent[0]
+    assert "0.20 ATR" in body
+    assert "inside noise" in body
+    assert "65% of stops are hit" in body
+
+
+def test_risk_body_flags_a_wide_stop_as_unremarkable(monkeypatch, tmp_path):
+    sent = _risk_capture(monkeypatch, tmp_path)
+    # close 90.00 vs stop 95.00 on a 5.0 ATR name -> a 1.00 ATR stop, at the corpus median.
+    fire_risk(evaluate_risk("GLW", 95.0, 90.0, prev_close=99.0, date="2026-09-28", atr=5.0))
+    body = sent[0]
+    assert "1.00 ATR" in body
+    assert "inside noise" not in body, "a stop at the median is not an artifact"
+
+
+def test_risk_body_says_unknown_rather_than_guessing(monkeypatch, tmp_path):
+    sent = _risk_capture(monkeypatch, tmp_path)
+    fire_risk(evaluate_risk("GLW", 95.0, 94.0, prev_close=99.0, date="2026-09-28", atr=None))
+    assert "stop width: unknown" in sent[0]
+
+
+def test_risk_body_says_unknown_when_there_is_no_atr_column(monkeypatch, tmp_path):
+    sent = _risk_capture(monkeypatch, tmp_path)
+    fire_risk(evaluate_risk("GLW", 95.0, 94.0, prev_close=99.0, date="2026-09-28", atr=0.0))
+    assert "stop width: unknown" in sent[0]
+
+
+def test_stop_width_never_changes_the_decision():
+    """It is an explanation, not an input."""
+    tight = evaluate_risk("T", 100.0, 99.8, prev_close=100.5, date="d", atr=1.0)
+    wide = evaluate_risk("T", 100.0, 99.8, prev_close=100.5, date="d", atr=50.0)
+    assert [e.kind for e in tight] == [e.kind for e in wide] == ["STOP_CLOSE"]
+    assert tight[0].stop_width_atr != wide[0].stop_width_atr
+
+
+def test_trim_event_also_carries_stop_width(monkeypatch, tmp_path):
+    sent = _risk_capture(monkeypatch, tmp_path)
+    fire_risk(evaluate_risk("GLW", 95.0, 100.0, ext_z=2.5, date="2026-09-28", atr=1.0))
+    body = sent[0]
+    assert "5.00 ATR" in body
+    assert "See the INCOME tier" in body

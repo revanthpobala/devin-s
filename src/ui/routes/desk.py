@@ -26,7 +26,11 @@ router = APIRouter(prefix="/api/desk", tags=["desk"])
 STOP_ATR_NOISE_FLOOR = rr_config.STOP_ATR_MIN
 
 # Single definition of "is this a coverage gap", shared with the OPS tier.
-from src.tracking.ops_alerts import CORE_SYMBOLS, is_test_ticker  # noqa: E402,F401
+from src.tracking.ops_alerts import (  # noqa: E402,F401
+    CORE_SYMBOLS,
+    core_coverage_gaps,
+    is_test_ticker,
+)
 
 
 class JournalNotesUpdate(BaseModel):
@@ -527,7 +531,18 @@ def get_today():
                 missing_all = sorted(missing_symbols)
                 missing_test = sorted(s for s in missing_all if is_test_ticker(s))
                 missing_real = [s for s in missing_all if not is_test_ticker(s)]
-                missing_core = sorted(s for s in missing_real if s.upper() in CORE_SYMBOLS)
+                # Genuine coverage gaps come from the same probe the OPS tier uses, NOT from
+                # missing_real: that list is inbox-derived, so it flags every core name absent
+                # from today's alerts. On live data all six core names were triaged (6-54 alerts
+                # and live watch_targets each) while this field claimed all six were gaps.
+                # A probe failure is reported rather than rendered as "no gaps": swallowing it
+                # would turn a broken check into a healthy-looking board.
+                core_probe_error = None
+                try:
+                    core_gaps, core_covered = core_coverage_gaps()
+                except Exception as exc:
+                    core_gaps, core_covered = [], list(CORE_SYMBOLS)
+                    core_probe_error = str(exc)[:200]
 
                 return {
                     "found": found,
@@ -542,7 +557,9 @@ def get_today():
                     "unmeasured": unmeasured,
                     "missing_symbols": missing_real,
                     "missing_symbols_excluded_test_rows": missing_test,
-                    "missing_symbols_core_gaps": missing_core,
+                    "missing_symbols_core_gaps": core_gaps,
+                    "core_symbols_covered": core_covered,
+                    "core_coverage_error": core_probe_error,
                     # The card labels are generated server-side, so they always state the
                     # threshold actually in force rather than a hardcoded ">= 2".
                     "rr_gates": rr_config.as_ui_payload(),
@@ -563,7 +580,8 @@ def get_today():
                         "measured_count": len(actionable) + len(stalking) + len(needs_you),
                         "missing_symbols_count": len(missing_real),
                         "missing_symbols_test_rows_excluded": len(missing_test),
-                        "missing_symbols_core_gaps": len(missing_core),
+                        "missing_symbols_core_gaps": len(core_gaps),
+                        "core_symbols_covered": len(core_covered),
                     },
                 }
     except Exception as e:

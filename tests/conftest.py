@@ -64,7 +64,10 @@ def _build_schema(root: Path):
     IF NOT EXISTS for every table on every one of the ~870 tests."""
     import src.tracking.alert_db as alert_db
     import src.tracking.watch_manager as watch_manager
-    from src.tracking.suggestions_ledger import ensure_suggestions_schema
+    from src.tracking.suggestions_ledger import (
+        ensure_rejected_plans_schema,
+        ensure_suggestions_schema,
+    )
     from src.ui import state as ui_state
 
     # All three resolvers must land in the SAME directory. ui_state resolves STOCK_DB_PATH from the
@@ -83,6 +86,7 @@ def _build_schema(root: Path):
     conn = watch_manager._get_connection()
     try:
         ensure_suggestions_schema(conn)
+        ensure_rejected_plans_schema(conn)
         conn.commit()
         # Fold the WAL into the main file so a plain file copy is a complete, consistent database.
         # Without this the -wal stays locked by an open handle and the copy is missing committed

@@ -389,13 +389,95 @@ def test_non_date_directories_are_ignored(tmp_path, monkeypatch):
     assert ops_alerts.check_daily_artifacts_fresh()[0] is True
 
 
-def test_core_symbol_gap_is_reported():
+def _seed_coverage(suggested=(), triaged=()):
+    """Seed the isolated DBs the way the pipeline would for a given day."""
+    import sqlite3
+
+    import src.tracking.alert_db as alert_db
+    import src.tracking.watch_manager as wm
+    from datetime import datetime, timedelta
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    older = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+
+    with wm._get_connection() as conn:
+        for sym in suggested:
+            conn.execute(
+                "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane) "
+                "VALUES (?, ?, 'test', 'PASS', 'RR_SETUP')",
+                (sym, today if sym not in ("STALE",) else older),
+            )
+        conn.commit()
+    with alert_db._get_connection() as conn:
+        for sym in triaged:
+            conn.execute(
+                "INSERT INTO alerts (message_id, date, timestamp, symbol, action, strategy, "
+                "llm_decision, raw_payload, created_at) "
+                "VALUES (?, ?, ?, ?, 'LONG', 'swing', 'PASS', '{}', ?)",
+                (f"cov-{sym}", today, f"{today} 10:00:00", sym, f"{today}T10:00:00"),
+            )
+        conn.commit()
+
+
+def test_core_symbol_queued_but_never_triaged_is_reported():
+    """The real defect: a core name in the working window with no triage decision at all."""
     from src.tracking.ops_alerts import check_core_symbol_coverage
 
-    broken, detail = check_core_symbol_coverage(["SPY", "QQQ", "GLW"])
+    _seed_coverage(suggested=["SPY", "QQQ"], triaged=["QQQ"])
+    broken, detail = check_core_symbol_coverage([])
     assert broken is True
-    assert "QQQ, SPY" in detail
+    assert "SPY" in detail
+    assert "QQQ" not in detail, "QQQ was triaged"
     assert "coverage has a hole" in detail
+
+
+def test_triaged_core_symbol_is_never_a_gap():
+    """Regression for the false positive that fired on all six names on first run.
+
+    The check used to read the desk's `missing_symbols`, which compares a 21-day suggestion
+    window against TODAY's alerts only. Every core name absent from today's inbox therefore read
+    as untriaged, even with 6-54 triaged alerts and a live watch_target.
+    """
+    from src.tracking.ops_alerts import check_core_symbol_coverage
+
+    _seed_coverage(
+        suggested=["SPY", "QQQ", "AMZN", "WMT", "HOOD", "CRM"],
+        triaged=["SPY", "QQQ", "AMZN", "WMT", "HOOD", "CRM"],
+    )
+    broken, detail = check_core_symbol_coverage([])
+    assert broken is False, detail
+    assert "all 6 core symbols have a triage decision" in detail
+
+
+def test_a_core_symbol_triaged_on_an_older_day_still_counts_as_covered():
+    """Being absent from TODAY's inbox is not a coverage hole."""
+    from src.tracking.ops_alerts import check_core_symbol_coverage
+
+    _seed_coverage(suggested=["SPY"], triaged=[])
+    assert check_core_symbol_coverage([])[0] is True, "queued and never triaged -> a real gap"
+
+    import src.tracking.alert_db as alert_db
+    from datetime import datetime, timedelta
+    old = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    with alert_db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO alerts (message_id, date, timestamp, symbol, action, strategy, "
+            "llm_decision, raw_payload, created_at) "
+            "VALUES ('cov-old', ?, ?, 'SPY', 'LONG', 'swing', 'PASS', '{}', ?)",
+            (old, f"{old} 10:00:00", f"{old}T10:00:00"),
+        )
+        conn.commit()
+    broken, detail = check_core_symbol_coverage([])
+    assert broken is False, detail
+
+
+def test_a_stale_suggestion_outside_the_window_is_not_a_gap():
+    """Nothing in play means nothing to cover."""
+    from src.tracking.ops_alerts import CORE_COVERAGE_WINDOW_DAYS, check_core_symbol_coverage
+
+    _seed_coverage(suggested=["STALE"], triaged=[])
+    assert check_core_symbol_coverage([])[0] is False
+    assert CORE_COVERAGE_WINDOW_DAYS == 21
 
 
 def test_only_non_core_missing_is_healthy():
@@ -411,6 +493,133 @@ def test_test_tickers_are_not_coverage_gaps():
     broken, detail = check_core_symbol_coverage(["GOODTICKER"])
     assert broken is False
     assert "1 test row(s) ignored" in detail
+
+
+# =====================================================================================
+# The desk and the OPS tier must agree on what a coverage gap is
+# =====================================================================================
+
+def test_desk_reports_the_same_core_gaps_as_the_ops_check():
+    """One definition. When the desk derived this from `missing_symbols` it claimed six gaps on
+    live data where all six core names had 6-54 triaged alerts and live watch_targets."""
+    from src.tracking.ops_alerts import core_coverage_gaps
+    from src.ui.routes import desk
+
+    gaps, covered = core_coverage_gaps()
+    payload = desk.get_today()
+    assert payload["missing_symbols_core_gaps"] == gaps
+    assert payload["core_symbols_covered"] == covered
+    assert payload["coverage"]["missing_symbols_core_gaps"] == len(gaps)
+    assert payload["core_coverage_error"] is None
+
+
+def test_a_failing_coverage_probe_is_reported_not_rendered_as_healthy(monkeypatch):
+    """Swallowing a probe failure would turn a broken check into a board that looks fine."""
+    from src.ui.routes import desk
+
+    def _boom():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(desk, "core_coverage_gaps", _boom)
+    payload = desk.get_today()
+    assert payload["missing_symbols_core_gaps"] == []
+    assert payload["core_coverage_error"], "a failed probe must be visible to the caller"
+    assert "locked" in payload["core_coverage_error"]
+
+
+def test_a_core_name_absent_from_todays_inbox_is_still_covered():
+    """The specific false positive: not in today's alerts is not the same as never triaged."""
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    import src.tracking.alert_db as alert_db
+    import src.tracking.watch_manager as wm
+    from src.tracking.ops_alerts import core_coverage_gaps
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    old = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
+
+    with wm._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane) "
+            "VALUES ('SPY', ?, 'test', 'PASS', 'RR_SETUP')", (today,))
+        conn.commit()
+    with alert_db._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO alerts (message_id, date, timestamp, symbol, action, strategy, "
+            "llm_decision, raw_payload, created_at) "
+            "VALUES ('old-cov', ?, ?, 'SPY', 'LONG', 'swing', 'PASS', '{}', ?)",
+            (old, f"{old} 10:00:00", f"{old}T10:00:00"))
+        conn.commit()
+
+    gaps, _ = core_coverage_gaps()
+    assert "SPY" not in gaps, "triaged four days ago is still triaged"
+
+
+# =====================================================================================
+# Purge covers every table a fixture ticker can land in
+# =====================================================================================
+
+def test_purge_covers_every_table_a_fixture_ticker_lands_in():
+    """GOODTICKER was in `suggestions` AND twice in `rejected_plans`; the original purge only
+    touched two tables, so it would have left the rows that put it in the desk's list."""
+    import inspect
+
+    from src.tracking.ops_alerts import purge_test_rows
+
+    src = inspect.getsource(purge_test_rows)
+    for table in ("suggestions", "watch_targets", "rejected_plans"):
+        assert table in src, f"purge_test_rows does not cover {table}"
+
+
+def test_purge_dry_run_deletes_nothing():
+    from src.tracking.ops_alerts import purge_test_rows
+
+    import src.tracking.watch_manager as wm
+
+    with wm._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane) "
+            "VALUES ('GOODTICKER', date('now'), 'test', 'PASS', 'RR_SETUP')")
+        conn.commit()
+
+    out = purge_test_rows(dry_run=True)
+    assert out["dry_run"] is True
+    assert out["total_deleted"] == 0
+    assert "GOODTICKER" in out["found"]["suggestions"]
+
+    with wm._get_connection() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM suggestions WHERE UPPER(ticker)='GOODTICKER'").fetchone()[0]
+    assert n == 1, "a dry run must not delete"
+
+
+def test_purge_removes_fixture_rows_when_confirmed():
+    from src.tracking.ops_alerts import purge_test_rows
+    import src.tracking.watch_manager as wm
+
+    with wm._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane) "
+            "VALUES ('GOODTICKER', date('now'), 'test', 'PASS', 'RR_SETUP')")
+        conn.execute(
+            "INSERT INTO rejected_plans (ticker, date, side, reasons) "
+            "VALUES ('GOODTICKER', date('now'), 'LONG', 'fixture')")
+        conn.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane) "
+            "VALUES ('KEEPME', date('now'), 'test', 'PASS', 'RR_SETUP')")
+        conn.commit()
+
+    out = purge_test_rows(dry_run=False)
+    assert out["total_deleted"] >= 2
+    with wm._get_connection() as conn:
+        for tbl in ("suggestions", "rejected_plans"):
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM {tbl} WHERE UPPER(ticker)='GOODTICKER'").fetchone()[0]
+            assert n == 0, f"{tbl} still holds GOODTICKER"
+        kept = conn.execute(
+            "SELECT COUNT(*) FROM suggestions WHERE UPPER(ticker)='KEEPME'").fetchone()[0]
+    assert kept == 1, "the purge must not touch real tickers"
 
 
 def test_runner_pushes_one_alert_per_failure_set(clean_channel, monkeypatch):

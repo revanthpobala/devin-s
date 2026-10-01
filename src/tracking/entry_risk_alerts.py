@@ -376,6 +376,23 @@ class RiskEvent:
     message: str
     dedupe_key: str
     detail: Dict[str, Any] = field(default_factory=dict)
+    # Measured stop width, when known. A RISK alert that explains a stop-out without saying how
+    # wide the stop was leaves the reader unable to tell a real break from a stop that sat inside
+    # daily noise all along.
+    stop_width_atr: Optional[float] = None
+
+
+def _stop_width_line(ev: RiskEvent) -> str:
+    v = ev.stop_width_atr
+    if v is None:
+        return "- stop width: unknown (no ATR at signal — cannot judge the stop)"
+    if v < STOP_ATR_MIN:
+        return (
+            f"- stop width: **{v:.2f} ATR** ⚠️ inside noise (<{STOP_ATR_MIN} ATR). "
+            f"The corpus median is {STOP_ATR_MIN} ATR and 65% of stops are hit — this one was "
+            f"already inside the noise band, so the break was not a surprise to the tape."
+        )
+    return f"- stop width: **{v:.2f} ATR** (vs {STOP_ATR_MIN} ATR corpus median)"
 
 
 def evaluate_risk(
@@ -387,6 +404,7 @@ def evaluate_risk(
     ext_z: Optional[float] = None,
     date: str = "",
     held: bool = True,
+    atr: Optional[float] = None,
 ) -> List[RiskEvent]:
     """RISK checks for a held position.
 
@@ -394,11 +412,18 @@ def evaluate_risk(
     intraday touch does not: the plan is a closing decision, and firing on the touch turns every
     shakeout into an exit. A gap THROUGH the stop is a different event and is called out as such,
     because there is no decision left to make.
+
+    `atr` is the ATR at the signal bar, carried through so the alert can say how wide the stop
+    actually was. It never changes the decision -- only the explanation.
     """
     events: List[RiskEvent] = []
     ticker = (ticker or "").upper()
     if not ticker or not held:
         return events
+
+    width = None
+    if atr and atr > 0 and planned_stop and today_close:
+        width = round(abs(today_close - planned_stop) / atr, 2)
 
     stop = planned_stop
     close = today_close
@@ -413,6 +438,7 @@ def evaluate_risk(
             events.append(RiskEvent(
                 ticker, kind, msg, f"RISK:{kind}:{ticker}:{date}",
                 {"stop": stop, "close": close, "prev_close": prev_close},
+                stop_width_atr=width,
             ))
             return events  # stop breached: extension/trim advice is moot
 
@@ -429,6 +455,7 @@ def evaluate_risk(
             f"{ticker} is in the fade set — trim or sell a covered call",
             f"RISK:TRIM_EXTENSION:{ticker}:{date}",
             {"reasons": why, "ext_z": ext_z, "action_code": action_code, "link": "INCOME"},
+            stop_width_atr=width,
         ))
     return events
 
@@ -437,13 +464,13 @@ def fire_risk(events: List[RiskEvent]) -> List[str]:
     """Push each RISK event once per (tier, ticker, date)."""
     sent: List[str] = []
     for e in events:
-        body = "\n".join([e.message, "", f"- kind: `{e.kind}`",
-                          f"- logged: `{e.dedupe_key}`"])
+        lines = [e.message, "", f"- kind: `{e.kind}`", _stop_width_line(e)]
         if e.kind == "TRIM_EXTENSION":
             for r in e.detail.get("reasons", []):
-                body += f"\n- reason: {r}"
-            body += "\n\n_See the INCOME tier for covered-call strike guidance._"
-        if notify("RISK", e.message, body, dedupe_key=e.dedupe_key):
+                lines.append(f"- reason: {r}")
+            lines.append("")
+            lines.append("_See the INCOME tier for covered-call strike guidance._")
+        if notify("RISK", e.message, "\n".join(lines), dedupe_key=e.dedupe_key):
             sent.append(e.ticker)
     return sent
 
@@ -489,6 +516,7 @@ def run_daily_alert_sweep(
             action_code=o.action_code,
             ext_z=o.ext_z,
             date=date,
+            atr=o.atr,
         ))
     risk_sent = fire_risk(risk_events) if notify_enabled else []
 
