@@ -197,14 +197,16 @@ Row 8 tells you the state; these four tell you whether anything is *tradeable*. 
 | callout | gate | **[M]** | note |
 |---|---|---|---|
 | **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Long In Zone` + `Long RR At Market ≥ 2` + fade off + no 🛑 | **+0.08R**, post-COVID, win ~30% | Base R:R setup lane |
+| **⚖️ R:R … · PB** (suffix) | base gate + `Signal Pack` bit 5 = 1 | **+0.134R**, 4/4 eras, both halves, every year 2020-2026 positive | Preferred long; no `· PB` = +0.069R unstable, ~0R post-2020 |
 | same, **deep teal + LARGE** | as above but `Long RR At Market ≥ 3` | **+0.13R**, post-COVID, win ~25% | Strong tier (tier 3) |
 | **🔵 OVERSOLD** | `Ext Z Self Relative ≤ −2.0` + `Action Long Code != 18` | **+0.06R**, post-COVID, win ~51% | Measured Pine oversold geometry |
 | **🚫 DO NOT CHASE** | fade gate (`Signal Pack` bit 2 = 0) | **−0.038R** era-stable | a measured **avoid** |
 | **⚠️ CHASE · R:R `X`** | buy signal while `Long In Zone = 0` | **−0.023R** | chart label off by default; gate still in `Signal Pack` bit 0 |
 
-Suffixes on the slate/teal callout only (interaction-tested on the gate):
-eras, both disjoint ticker halves, n ≥ 2,000): **`⚡IV`** = `Energy IV Rank Pct` > 80 → +0.116 → **+0.176R** ·
-**`⚓AV`** = close < `AVWAP Support` → +0.116 → **+0.167R**. Neither has an edge standalone.
+Modifiers on the slate/teal setup only, computed from exports (the label does not print them; interaction-tested
+on the gate — lift ≥ +0.02R, all four eras, both disjoint ticker halves, n ≥ 2,000): **IV** = `Energy IV Rank Pct`
+> 80 → +0.116 → **+0.176R** · **AV** = close < `AVWAP Support` → +0.116 → **+0.167R**. Neither has an edge
+standalone. `· PB` is printed on the label (Signal Pack bit 5).
 
 ⚠️ **Slate/teal, never green, and never a checkmark.** The base rule **wins 34%** and stops out 65%; the teal
 tier wins **23%**. All of the edge is payoff, none is hit rate. The `stop Y ATR` figure is displayed because
@@ -704,7 +706,7 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 | 39 | Long Target T1 Waypoint | price/∅ | First wall above entry |
 | 40 | Short Target T1 Waypoint | price/∅ | First wall below entry |
 | 41 | Zone RR Flags Pack | bitmask | Four booleans packed: **1 Long In Zone · 2 Short In Zone · 4 Long RR Valid · 8 Short RR Valid.** (Pre-decoded for the agent in prompt sections 1b / 2d-i — do not hand-decode) |
-| 42 | Signal Pack | bitmask | **1 strongBuySignalFinal · 2 strongSellSignalFinal · 4 NOT fadeZoneLong · 8 isTopping · 16 isBottoming.** ⚠️ **Bit 2 is INVERTED** — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate **IS** active. (Pre-decoded in prompt section 2d-i) |
+| 42 | Signal Pack | bitmask | **1 strongBuySignalFinal · 2 strongSellSignalFinal · 4 NOT fadeZoneLong · 8 isTopping · 16 isBottoming · 32 pbFunnel** (`(60-bar high − close)/(close − 10-bar low) ≥ 3` and `extZ < 1.5`; quality tier of the R:R gate, not a standalone setup — true on ~36% of bars). ⚠️ **Bit 2 is INVERTED** — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate **IS** active. (Pre-decoded in prompt section 2d-i) |
 | 43 | Action Long Code | 0–21 | Row 8 left cell (§3.1) |
 | 44 | Action Short Code | 0–21 | Row 8 right cell (§3.1) |
 | 45 | Overextension Score | 0–100 | Composite stretch context: `50 + mean(Ext Z, Z Elasticity, Z Velocity) × 16.67`, clipped |
@@ -979,6 +981,7 @@ Fires inside downtrends. Pair with agent's catalyst analysis.
 
 ### When Entry Geometry is Valid (action-v2)
 ✅ Row 1 **`R:R SETUP`** — `Long In Zone` + `Long RR At Market >= 2` + fade off (`Signal Pack` bit 2 = 1) + `Action Long Code != 18`
+   Prefer it with `Signal Pack` bit 5 = 1 (PB, `· PB` on the callout): +0.134R stable vs +0.069R unstable without.
 ✅ **Code 20** reversal context + at-market R:R >= 2 for the loud callout
 ✅ Long Target populated — constructible geometry, not a forecast
 

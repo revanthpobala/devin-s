@@ -93,6 +93,8 @@ Read **`Action Long Code` / `Action Short Code`** as context enums — never ran
 
 **Entry gate (Row 1 / exports):** `Zone RR Flags Pack` bit 0 (in zone) + `Long RR At Market >= 2` + Signal Pack bit 2 = 1 (fade off) + `Action Long Code != 18`. Win rate ~34%; edge is payoff, not accuracy.
 
+**Quality tier:** `Signal Pack` bit 5 (`(v//32)%2 == 1`, **PB**) splits the gate. Gate + PB = the trade (**+0.134R**, stable in all four eras and both ticker halves, positive every year 2020-2026). Gate without PB = **+0.069R, era-unstable, ~0R post-2020** — state it as the weaker setup, size it smaller or wait. PB alone is not a setup (true on ~36% of bars).
+
 | Code | State | Role |
 |---|---|---|
 | **20** | REVERSAL BUY | Measured counter-trend capitulation lane (long-only) |
@@ -145,7 +147,7 @@ Read **`Action Long Code` / `Action Short Code`** as context enums — never ran
 | **RR To Target** | ratio | ⚠️ **The DOMINANT side's ZONE ratio** (`buyScore >= sellScore ? longRR : shortRR`, pine:6115) — not at-market and not always long. **`0` = INVALID (4.5% of bars)**, not "zero reward". p99 = 7.8 — clamp it in EV math. For buying at live spot, always quote `Long RR At Market`. |
 | **Long RR At Market** | ratio | **THE FIELD FOR "SHOULD I BUY NOW".** `(Long Target − close) / (close − Long Stop Loss)`. `RR To Target` is measured from the ZONE entry, so once price leaves the zone it quotes a ratio you cannot obtain — **[M]** it overstates the at-market one on **53.7% of bars, median +2.11 R** (AMZN 2026-08-13: zone 4.12 vs at-market **0.59**). `0` = invalid. **This is the field the ⚖️ R:R callout gates on — quote it, not `RR To Target`, whenever you discuss buying at the live price.** |
 | **Zone RR Flags Pack** | bitmask | Decode `(v//bit)%2`: **1** `Long In Zone` · **2** `Short In Zone` · **4** `Long RR Valid` · **8** `Short RR Valid`. Prefer **`Long RR At Market >= 2`** over `RR Valid` alone for entry — `RR Valid` is the legacy EV gate and can be 1 while at-market R:R is under 2. **`Long In Zone` required for Row 1 `R:R SETUP`.** |
-| **Signal Pack** | bitmask | **1** strongBuy · **2** strongSell · **4** NOT-fade · **8** isTopping · **16** isBottoming. ⚠️⚠️ **BIT 2 IS INVERTED — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate IS ACTIVE.** Reading this backwards inverts the most useful avoid-signal on the chart. |
+| **Signal Pack** | bitmask | **1** strongBuy · **2** strongSell · **4** NOT-fade · **8** isTopping · **16** isBottoming · **32** PB funnel (`(60-bar high − close) / (close − 10-bar low) ≥ 3` and `Ext Z Self Relative < 1.5`). ⚠️⚠️ **BIT 2 IS INVERTED — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate IS ACTIVE.** Reading this backwards inverts the most useful avoid-signal on the chart. |
 | **Premove Pack** | bitmask | **bits 0-2** `v%8` Darvas state (0 none · 1 in box · 2 breaking · 3 breakout · 4 above · 5 below) · **bits 3-5** `((v//8)%8)×20` box quality · **bits 6-7** `(v//64)%4 − 1` Squeeze Release Dir (−1/0/+1) · **256** RS Leader · **512** isAccelerating · **1024** marketBullish · **2048** isPowerBreakout · **4096** adLineBullish · **8192** bullFlag · **16384** impulseGreen · **32768** isNear52WHigh · **65536** breadthBull · **131072** breadthPackPresent · **262144** breadthFormulaVersion |
 | **Overextension Score** | 0–100 | Stretch composite from Ext Z, Z Elasticity and Z Velocity; <28 low, >67 high |
 | **MFI Z Score** | σ | Money Flow Index normalized against 252 bars; used with Overextension for Row-10 stretch context |
@@ -196,14 +198,15 @@ Use the following measurements only when the identified setup, supplied fields a
 | callout | exact gate | **[M]** measured | how to use it |
 |---|---|---|---|
 | **⚖️ R:R `X`@mkt · stop `Y`ATR** (dark slate) | `Zone RR Flags Pack` bit 0 **and** `Long RR At Market ≥ 2` **and** `Signal Pack` bit 2 = 1 **and** no 🛑 | **+0.08R**, post-COVID, win ~30% | The base long rule |
+| **⚖️ R:R … · PB** (suffix) | base gate **and** `Signal Pack` bit 5 = 1 | **+0.134R**, 4/4 eras, both halves; without PB **+0.069R** unstable, ~0R post-2020 | The preferred long. No `· PB` = weaker setup |
 | **⚖️ R:R `X`@mkt** in **deep teal (#00695C, size.normal)** | same, but `Long RR At Market ≥ 3` | **+0.13R**, post-COVID, win ~25% | The loud tier (tier 3) |
 | **🔵 OVERSOLD** | `Ext Z Self Relative ≤ −2.0` **and** `Action Long Code != 18` (not toxic) | **+0.06R**, post-COVID, win ~51% | Extreme oversold reversion; requires exact Pine levels |
 | **🚫 DO NOT CHASE** | the fade gate (`Signal Pack` bit 2 == 0: `extZ >= 1.5` or `STRETCHED (12)`, `EXTENDED (11)`, `BLOW-OFF (16)`, `VOL THRUST (16)`) | **−0.038R**, era-stable | A measured **AVOID**. Do not open a fresh long |
 | **⚠️ CHASE · R:R `X`** | buy signal fired while `Long In Zone == 0` | **−0.023R** | Missed it. The printed R:R is the **at-market** one |
 
-**Suffixes on the ⚖️ callout — the only two terms that survived an interaction test on top of the gate**
-(lift ≥ +0.02R, all four eras, both disjoint ticker halves, n ≥ 2,000):
-`⚡IV` = `Energy IV Rank Pct` > 80 → gate goes **+0.116 → +0.176R** · `⚓AV` = close < `AVWAP Support` →
+**Modifiers on the ⚖️ setup — compute them from the exports; the chart label does not print them.** The only
+two terms that survived an interaction test on top of the gate (lift ≥ +0.02R, all four eras, both disjoint
+ticker halves, n ≥ 2,000): **IV** = `Energy IV Rank Pct` > 80 → gate goes **+0.116 → +0.176R** · **AV** = close < `AVWAP Support` →
 **+0.116 → +0.167R**. **Neither works standalone** (IV-rank deciles are flat cross-sectionally; AVWAP-support
 alone is +0.015, no edge) — they only mean something ON a valid R:R setup.
 
@@ -383,6 +386,24 @@ expected move rises by more. **"IV is high, sell premium" is only valid if you s
 
 **⚠️ UPSIDE IS NOT SYMMETRIC. [M]** P(UP touch) exceeds P(DN touch) at every distance (38.2% vs 30.2% at
 1.0×). A call seller carries more assignment risk than a put seller at equal distance — price that in.
+
+**Which "top" reads actually cap the upside. [M]** P(high touches +1× ExpMove) vs the same-day universe,
+same sign in every era, both ticker halves:
+
+| read | 5 bars | 21 bars | stress / post-crash (21 bars) | use for calls |
+|---|---|---|---|---|
+| `Ext Z` ≥ 2.5 | −13pp | **−17pp** (17.3%) | −18pp / −12pp | **yes, best** |
+| `Ext Z` ≥ 2.0 | −10pp | −13pp (21.4%) | −13pp / −9pp | yes |
+| fade codes 11/12/16 | −3pp | −5pp | −7pp / −8pp | yes, weaker |
+| Regime 3 distribution | −3pp | −3pp | −8pp / −11pp | only in stress |
+| `isTopping` (Signal Pack bit 3), Stage 3, short zone | ~0 | ~0 to −1pp | noise | **no** |
+| Regime 2 climax | ~0 | ~0, and **+3% relative return** | thin | **never sell calls into it** |
+
+These reads **cap the move, they do not reverse it**: price still closes higher after 21 bars ~53% of the
+time even at `Ext Z` ≥ 2.5 (up to ~60% post-crash, the V-shape). So they support covered calls and call
+credit spreads, **not** puts, shorts or bearish directional trades. After a >15% index drawdown, prefer
+**5-10 bar expiries** (close-up rate ~46-50% there vs ~60% at 21 bars). **Never place the short call at
+`Short Stop Loss`** — the high reaches it within 21 bars 63-73% of the time even on the best reads.
 
 **⚠️ WHEN `ExpMove` IS INFLATED, USE THE LEVEL LADDER INSTEAD.** After an earnings gap `Exp Move Pct 21b`
 inherits the HV20 spike and can read 17%+, putting 1× ExpMove at an absurd strike. The structural
