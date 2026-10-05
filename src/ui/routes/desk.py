@@ -15,6 +15,7 @@ from src.tracking.alert_db import (
 )
 from src.tracking.suggestion_scorer import get_main_record_stats
 from src.tracking import rr_config
+from src.logic.actionable_gate import is_actionable
 from src.logic.setup_lane_map import inbox_row_mapping
 
 logger = logging.getLogger(__name__)
@@ -343,7 +344,32 @@ def get_today():
                     r["rr_at_market_at_signal"] = rr_at_signal
                     r["rr_at_market"] = rr_at_market
                     r["rr_at_market_source"] = rr_source
-                    r["measured"] = bool(r["setup_lane"] and rr_at_market is not None)
+
+                    status = r.get("status") or "STALKING"
+                    dist = r.get("dist")
+                    near = dist is not None and abs(float(dist)) <= 1.5
+
+                    # Single actionable gate
+                    min_rr_floor = rr_config.min_rr()
+                    in_zone_flag = 1 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0
+                    stop_w_atr = float(r["stop_width_atr"]) if r.get("stop_width_atr") is not None else 1.0
+                    atr_est = float(atr_at_signal) if (atr_at_signal and atr_at_signal > 0) else (abs(entry_h - stop) / max(0.01, stop_w_atr) if (entry_h and stop) else 5.0)
+                    dw_dict = {
+                        "long_in_zone": in_zone_flag,
+                        "long_rr_at_market": rr_at_market,
+                        "long_stop_loss": stop,
+                        "atr14": atr_est,
+                        "price": last_px or r.get("price") or 100.0,
+                        "signal_pack": float(r.get("signal_pack") or 36.0),
+                        "fade_long": 0.0 if not r.get("fade_gate") else 1.0,
+                        "action_long": float(r.get("action_code") or (20.0 if r.get("setup_lane") == "CODE20" else 1.0)),
+                        "ext_z_self": float(r.get("ext_z") or 0.0),
+                    }
+                    entry_px = r.get("entry_high") or last_px or r.get("entry_low")
+                    is_act, gate_fails = is_actionable(dw_dict, {"side": "long", "entry": entry_px})
+                    r["measured"] = is_act
+                    r["measured_actionable"] = is_act
+                    r["gate_reasons"] = gate_fails
 
                     # setup_lane is PERSISTED at triage time by the Pine's own thresholds, so it
                     # does not follow a UI change to the R:R floor. Re-tier the R:R lanes from the
@@ -376,10 +402,6 @@ def get_today():
                     r["live_rr"] = live_rr
                     r["live_rr_flag"] = flag
 
-                    status = r.get("status") or "STALKING"
-                    dist = r.get("dist")
-                    near = dist is not None and abs(float(dist)) <= 1.5
-
                     if not r.get("llm_decision"):
                         continue
 
@@ -390,26 +412,19 @@ def get_today():
 
                     if "PASS" in local_dec:
                         if not r["measured"]:
-                            # No lane and no measured R:R means nothing on this row can be acted
-                            # on. It goes to its own collapsed group rather than pretending.
+                            # Fails actionable gate -> unmeasured group
+                            r["unmeasured_reason"] = "; ".join(gate_fails) if gate_fails else "below_bar"
                             unmeasured.append(r)
                         elif has_real_deep and deep_status == "COMPLETED":
                             if status in ("IN_ZONE", "IN_TRADE") or near:
                                 actionable.append(r)
                             else:
                                 stalking.append(r)
-                        elif rr_at_market is not None and rr_at_market >= rr_config.min_rr():
-                            # Needs-you is a work queue, not a backlog. A PASS with nothing
-                            # actionable in it is noise on the one screen you read before the open.
+                        elif is_act:
+                            # Needs-you is a work queue, not a backlog. Only gate-passing rows qualify!
                             needs_you.append(r)
                         else:
-                            # Distinguish "never measured" from "measured, but under the bar you
-                            # have dialled in". Collapsing both under one label misrepresents a
-                            # setup that simply missed your threshold.
-                            r["unmeasured_reason"] = (
-                                "below_bar" if rr_at_market is not None else
-                                "no_rr" if not r.get("setup_lane") else "no_lane"
-                            )
+                            r["unmeasured_reason"] = "; ".join(gate_fails) if gate_fails else "below_bar"
                             unmeasured.append(r)
                     elif "WATCH" in local_dec:
                         watch_list.append(r)
@@ -462,6 +477,9 @@ def get_today():
                         "rr_at_market": None,
                         "rr_at_market_source": None,
                         "measured": False,
+                        "measured_actionable": False,
+                        "gate_reasons": ["No suggestion record or tactical levels"],
+                        "unmeasured_reason": "no_levels",
                         "stop_tight": False,
                         "sort_rr": -1.0,
                     }
@@ -555,40 +573,6 @@ def get_today():
                 actionable_alerts = get_actionable_alerts_stream(limit=30)
                 feedback_data = get_feedback_loop_data()
 
-                # If legacy actionable list has 0 items, elevate top qualified in-zone opportunities
-                if not actionable and top_opportunities:
-                    for opp in top_opportunities:
-                        if opp.get("in_zone") or opp.get("priority_tier", 9) <= 2:
-                            actionable.append({
-                                "ticker": opp["ticker"],
-                                "date": opp.get("report_date") or today_str,
-                                "setup": opp.get("vehicle_label") or opp.get("verdict") or "Qualified Setup",
-                                "llm_decision": f"PASS - DEEP RESEARCH ({opp.get('conviction', 6)}/10)",
-                                "llm_playbook": " ".join(opp.get("pm_bullets", [])[:2]) or f"Tactical entry ${opp.get('entry_low', 0):.2f}-${opp.get('entry_high', 0):.2f}",
-                                "local_score": opp.get("score") or 80,
-                                "deep_status": "COMPLETED",
-                                "deep_stage": "DONE",
-                                "status": "IN_ZONE" if opp.get("in_zone") else "STALKING",
-                                "last_price": opp.get("spot_price"),
-                                "entry_low": opp.get("entry_low"),
-                                "entry_high": opp.get("entry_high"),
-                                "stop": opp.get("tactical_stop"),
-                                "target_1": opp.get("target_1"),
-                                "target_2": opp.get("target_2"),
-                                "dist": opp.get("dist_pct"),
-                                "live_rr": opp.get("live_rr"),
-                                "live_rr_flag": None,
-                                "stop_width_atr": None,
-                                "setup_lane": "RR_SETUP_STRONG" if (opp.get("live_rr") or 0) >= 3 else "RR_SETUP",
-                                "lane": "RR_SETUP_STRONG" if (opp.get("live_rr") or 0) >= 3 else "RR_SETUP",
-                                "vehicle_type": opp.get("vehicle_type"),
-                                "vehicle_label": opp.get("vehicle_label"),
-                                "options_plan": opp.get("options_plan"),
-                                "pm_bullets": opp.get("pm_bullets"),
-                                "conviction": opp.get("conviction"),
-                                "score": opp.get("score"),
-                            })
-
                 return {
                     "market_pulse": market_pulse,
                     "top_opportunities": top_opportunities,
@@ -596,6 +580,7 @@ def get_today():
                     "feedback_loop": feedback_data,
                     "found": found,
                     "inbox": inbox,
+                    "measured_count": len(actionable) + len(stalking) + len(needs_you),
                     "inbox_measured_count": len(inbox_measured),
                     "inbox_unmeasured_count": len(inbox_unmeasured),
                     "actionable": actionable,
@@ -1422,5 +1407,16 @@ def manage_position_endpoint(req: ManagePositionAction):
         return res
     except Exception as e:
         logger.error(f"Error managing position: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/reconcile-positions")
+def reconcile_positions_endpoint():
+    """Explicit POST job to reconcile orphaned OPEN positions against positions.json."""
+    try:
+        from src.ui.services.feedback_service import reconcile_open_positions
+        return reconcile_open_positions()
+    except Exception as e:
+        logger.error(f"Error reconciling positions: {e}")
         return {"status": "error", "error": str(e)}
 

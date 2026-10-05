@@ -569,11 +569,23 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 # r_multiple from the UNDERLYING's point move while dollar_pnl came from the
                 # spread, so one row could report r=-1.00 next to $0.00. Derive both from the
                 # spread for options rows and say so in the notes.
-                if is_options and long_k > 0 and short_k > 0 and debit > 0:
-                    risk_per_contract = debit * 100
-                    if risk_per_contract > 0 and dollar_pnl is not None:
-                        r_mult = round(dollar_pnl / risk_per_contract, 4)
-                    notes += " | R from spread value, not the underlying"
+                if was_filled and r_mult is not None:
+                    from src.tracking.r_calculator import compute_r
+                    unit_tag = "option" if (is_options and debit > 0) else "share"
+                    r_calc = compute_r(
+                        unit=unit_tag,
+                        entry=fill_val,
+                        exit_px=exit_px,
+                        stop=stop,
+                        side=side,
+                        atr=None,
+                        debit=debit if is_options else None,
+                        dollar_pnl=dollar_pnl if is_options else None,
+                    )
+                    if r_calc is not None:
+                        r_mult = r_calc
+                    if is_options and debit > 0:
+                        notes += " | R from spread value, not the underlying"
 
                 # Update row in DB
                 cursor.execute(
@@ -649,24 +661,27 @@ def get_audit_summary(
             valid_statuses = {"TARGET_HIT", "COMPLETED", "STOP_BREACHED", "STOPPED", "GAP_STOP", "NOT_FILLED", "IN_TRADE", "IN_ZONE", "RECOVERY_EXIT", "TIME_EXIT", "STALKING", "MISSED_RUNAWAY", "INVALIDATED"}
             kpi_trades = [t for t in all_trades if t.get("status") in valid_statuses and t.get("trade_type") != "INCOME"]
 
-            won_trades = [t for t in kpi_trades if t["status"] in ("TARGET_HIT", "COMPLETED")]
-            lost_trades = [t for t in kpi_trades if t["status"] in ("STOP_BREACHED", "STOPPED") or (t["status"] in ("INVALIDATED", "GAP_STOP") and t.get("r_multiple") is not None and float(t.get("r_multiple") or 0.0) < 0)]
-            active_trades = [t for t in kpi_trades if t["status"] in ("IN_TRADE", "IN_ZONE")]
-            stalking_trades = [t for t in kpi_trades if t["status"] in ("STALKING", "MISSED_RUNAWAY", "NOT_FILLED") or (t["status"] == "INVALIDATED" and t.get("r_multiple") is None)]
+            won_trades = [t for t in kpi_trades if t.get("r_multiple") is not None and float(t["r_multiple"]) >= 0.1]
+            lost_trades = [t for t in kpi_trades if t.get("r_multiple") is not None and float(t["r_multiple"]) <= -0.1]
+            scratch_trades = [t for t in kpi_trades if t.get("r_multiple") is not None and abs(float(t["r_multiple"])) < 0.1]
+            active_trades = [t for t in kpi_trades if t["status"] in ("IN_TRADE", "IN_ZONE") and t not in won_trades and t not in lost_trades and t not in scratch_trades]
+            stalking_trades = [t for t in kpi_trades if t.get("r_multiple") is None and t["status"] in ("STALKING", "MISSED_RUNAWAY", "NOT_FILLED", "INVALIDATED")]
 
             invalid_trades = [t for t in all_trades if t.get("status") in ("INVALID_GEOMETRY", "NO_QUOTE")]
             invalid_count = len(invalid_trades)
 
             won_count = len(won_trades)
             lost_count = len(lost_trades)
+            scratch_count = len(scratch_trades)
             active_count = len(active_trades)
             stalking_count = len(stalking_trades)
-            resolved_count = won_count + lost_count
+            resolved_count = won_count + lost_count + scratch_count
 
             won_r = sum(float(t["r_multiple"] or 0.0) for t in won_trades)
             lost_r = sum(float(t["r_multiple"] or 0.0) for t in lost_trades)
-            floating_r = sum(float(t["r_multiple"] or 0.0) for t in active_trades)
-            net_r = round(won_r + lost_r + floating_r, 2)
+            scratch_r = sum(float(t["r_multiple"] or 0.0) for t in scratch_trades)
+            floating_r = sum(float(t["r_multiple"] or 0.0) for t in active_trades if t.get("r_multiple") is not None)
+            net_r = round(won_r + lost_r + scratch_r + floating_r, 2)
 
             net_dollar = round(sum(float(t.get("dollar_pnl") or 0.0) for t in kpi_trades), 2)
 
@@ -683,6 +698,7 @@ def get_audit_summary(
                 "total_trades": len(all_trades),
                 "won_count": won_count,
                 "lost_count": lost_count,
+                "scratch_count": scratch_count,
                 "resolved_count": resolved_count,
                 "active_count": active_count,
                 "actionable_count": active_count,
@@ -710,6 +726,7 @@ def get_audit_summary(
                 "invalid": invalid_count,
                 "won": won_count,
                 "stopped": lost_count,
+                "scratch": scratch_count,
                 "active": active_count,
                 "stalking": stalking_count,
             }

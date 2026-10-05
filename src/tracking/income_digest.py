@@ -177,9 +177,17 @@ def fire_income(signals: List[IncomeSignal], date: str, force: bool = False) -> 
     return pushed
 
 
-def collect_income(onsets: List[Onset], index_drawdown_pct: Optional[float] = None) -> List[IncomeSignal]:
-    return [s for s in (covered_call_candidate(o, index_drawdown_pct) for o in onsets)
-            if s is not None]
+def collect_income(
+    onsets: List[Onset],
+    index_drawdown_pct: Optional[float] = None,
+    holdings: Optional[List[str]] = None,
+) -> List[IncomeSignal]:
+    """Collect covered call candidates for held positions only."""
+    holdings_set = {h.upper() for h in (holdings or []) if h}
+    return [
+        s for s in (covered_call_candidate(o, index_drawdown_pct) for o in onsets if o.ticker in holdings_set)
+        if s is not None
+    ]
 
 
 # =====================================================================================
@@ -282,7 +290,21 @@ def run_digest(
         "pushed": [], "digest_candidates": [], "checked": len(onsets),
     }
 
-    income_signals = collect_income(onsets)
+    if holdings is None:
+        try:
+            from src.tracking.position_state import load_positions
+            pos_data = load_positions()
+            if isinstance(pos_data, dict):
+                open_pos = pos_data.get("open_positions", pos_data)
+                if isinstance(open_pos, dict):
+                    holdings = list(open_pos.keys())
+                elif isinstance(open_pos, list):
+                    holdings = [p.get("ticker", "") for p in open_pos if isinstance(p, dict)]
+        except Exception as e:
+            logger.warning(f"Could not load holdings for income digest: {e}")
+            holdings = []
+
+    income_signals = collect_income(onsets, holdings=holdings)
     # Only deliver out-of-window when the digest itself is actually due.
     after_close = is_digest_time()
     income_pushed = fire_income(income_signals, date, force=after_close) if notify_enabled else []

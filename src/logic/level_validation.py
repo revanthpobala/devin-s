@@ -62,6 +62,7 @@ def check_geometry(
     side = (side or "LONG").upper()
     entry_type = (entry_type or "LIMIT").upper()
     if entry_type in ("NO_ENTRY", "NONE", ""):
+        reasons.append("entry_type is NO_ENTRY")
         return reasons
 
     if side != "LONG":
@@ -284,6 +285,8 @@ def validate_levels(
     reasons.extend(geo_reasons)
 
     has_shares_entry = entry_type not in ("NO_ENTRY", "NONE", "")
+    if not has_shares_entry and "entry_type is NO_ENTRY" not in reasons:
+        reasons.append("entry_type is NO_ENTRY")
     missing_required = []
     if has_shares_entry and entry_type != "BREAKOUT" and (not entry_low or not entry_high):
         missing_required.append("entry_low/entry_high")
@@ -304,8 +307,8 @@ def validate_levels(
     # ── Lanes classification ──────────────────────────────────
     setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()
     is_judge = (str(plan.get("source") or "").lower() in ("judge", "arbitration") or bool(plan.get("is_judge", False)))
-    is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD") and not is_judge
-    is_rsi2 = (setup_lane == "RSI2") and not is_judge
+    is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD")
+    is_rsi2 = (setup_lane == "RSI2")
     is_measured_lane = is_measured_pine or is_rsi2
 
     spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
@@ -341,17 +344,20 @@ def validate_levels(
                     f"rsi2_geometry: stop ${stop:.2f} (exp ${exp_stop:.2f}) or target_1 ${target_1:.2f} (exp ${exp_t1:.2f}) deviates > 0.05 ATR (${tol:.2f}) from close +/- 2/4 ATR"
                 )
     elif has_shares_entry:
-        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): 1-ATR stop floor
-        if atr > 0 and entry_low > 0:
+        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): stop floor
+        fill = breakout_level if (entry_type == "BREAKOUT" and breakout_level > 0) else (entry_low if entry_low > 0 else entry_high)
+        if atr > 0 and fill > 0:
             pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
-            min_buffer = max(0.20 * atr, 0.05)
-            max_allowed_stop = entry_low - min_buffer
+            from src.tracking.rr_config import STOP_ATR_MIN
+            stop_mult = max(LEVEL_ATR_STOP_MIN, STOP_ATR_MIN)
+            min_buffer = stop_mult * atr
+            max_allowed_stop = fill - min_buffer
             if pine_stop > 0:
-                pass
+                max_allowed_stop = min(max_allowed_stop, pine_stop)
             if stop > max_allowed_stop:
                 reasons.append(
                     f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} "
-                    f"(must be <= min(entry_low - {LEVEL_ATR_STOP_MIN}*ATR, Pine stop))"
+                    f"(must be <= min(fill - {stop_mult:.2f}*ATR, Pine stop))"
                 )
 
     # ── 4. R:R floor & At-Market R:R ───────────────────────────
@@ -366,7 +372,7 @@ def validate_levels(
         mid_entry = _zone_midpoint(entry_low, entry_high) if (entry_low and entry_high) else entry_high
         rr = _planned_rr(entry_low, mid_entry, stop, target_1, side)
         rr_t2 = _planned_rr(entry_low, mid_entry, stop, target_2, side) if target_2 > 0 else rr
-        if (rr > 0 or rr_t2 > 0) and (rr < 1.20 and rr_t2 < LEVEL_RR_FLOOR):
+        if (rr < LEVEL_RR_FLOOR and rr_t2 < LEVEL_RR_FLOOR):
             reasons.append(
                 f"planned R:R {rr:.4f} to T1 and {rr_t2:.4f} to T2 below floor {LEVEL_RR_FLOOR}"
             )
@@ -376,7 +382,7 @@ def validate_levels(
         # the zone low to T1/T2) and stays pinned.
         from src.tracking.rr_config import min_rr as at_market_floor
 
-        if entry_type in ("MARKET", "AT_MARKET") and rr_at_market < at_market_floor():
+        if rr_at_market < at_market_floor():
             reasons.append(
                 f"at-market R:R {rr_at_market:.2f} below {at_market_floor():.2f} floor "
                 f"for lane {setup_lane or 'DEFAULT'}"
@@ -397,7 +403,7 @@ def validate_levels(
 
     # ── 6. Earnings inside 21 bars (reject NEW) ────────────────
     kind = str(plan.get("kind") or "NEW").upper()
-    if kind == "NEW" and not is_judge and ticker:
+    if kind == "NEW" and ticker:
         try:
             from datetime import date, datetime
             signal_d = None
@@ -422,7 +428,7 @@ def validate_levels(
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")
 
     # ── 7. Pine drift (skip for RSI2) ──────────────────────────
-    if not is_rsi2 and not is_judge:
+    if not is_rsi2:
         drifts = _pine_drift(plan, dw, side)
         for d in drifts:
             reasons.append(

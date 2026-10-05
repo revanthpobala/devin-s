@@ -347,8 +347,15 @@ def generate_morning_briefing(
         else:
             vehicle_label = f"EQUITY SHARES · Entry: ${entry_low:.2f}–${entry_high:.2f} · Stop: ${tactical_stop:.2f} · T1: ${target_1:.2f}"
 
+        measured_actionable = bool(
+            in_zone
+            and live_rr >= 2.0
+            and not level_gate_rejected
+            and state not in ("STOP_BREACHED", "TARGET_HIT", "INVALIDATED")
+        )
+
         # Assign Tier
-        if score >= 70 and state in ("IN_ZONE", "STALKING_NEAR") and state not in ("STOP_BREACHED", "TARGET_HIT"):
+        if measured_actionable:
             tier = "TIER_1_ACTIONABLE"
         elif score >= 45 and state != "STOP_BREACHED":
             tier = "TIER_2_STALKING"
@@ -357,6 +364,7 @@ def generate_morning_briefing(
 
         setup_entry = {
             "ticker": ticker,
+            "measured_actionable": measured_actionable,
             "report_date": rep_date,
             "vintage": info["vintage"],
             "side": side,

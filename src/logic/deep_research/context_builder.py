@@ -124,7 +124,7 @@ def format_unmasked_recency_block(dw_dict: dict) -> str:
         "Reversal Pattern Mask", "Reversal Pattern Age",
         "Bear Warning Mask", "Bear Warning Age",
         "Weak Level Mask", "Weak Level Age",
-        "Signal Pack", "PreMove Pack",
+        "Signal Pack", "PreMove Pack", "Pre-Move Pack", "Premove Pack", "premove_pack",
         "MTF Long Short Pack",
     }
     lines = ["--- 1b. UNMASKED PATTERN & RECENCY SIGNALS ---"]
@@ -166,7 +166,7 @@ def build_preloaded_block(pre_ctx: dict) -> str:
         [HISTORICAL REGIME & STATE ANALYTICS (60 BARS)]:
         {pre_ctx.get('historical_analytics')}
 
-        [PRIOR 14-DAY RESEARCH DOSSIER]:
+        [PRIOR 14-DAY RESEARCH DOSSIER (Macro / Catalyst Context Only — Do NOT Anchor to Prior Levels)]:
         {pre_ctx.get('prior_research')}
 
         ⚡ OPTIONS & QUANT DIRECTIVE: The 20,000-path Monte Carlo trajectory, IV/HV volatility risk premium, and core moving average extensions are ALREADY pre-computed above on the CPU. Formulate your directional thesis, options plan, and target expiration window directly from these deterministic probabilities. Emit tool calls (`fetch_options_chain` or `scrape_tradingview_options_finder`) to retrieve the exact strikes and expirations tailored to your trade plan.
@@ -229,6 +229,8 @@ def build_pine_benchmark_block(ticker: str, dw_dict: dict) -> str:
     pine_score = dw_dict.get("Long Setup Score", "N/A")
     pine_code = dw_dict.get("Action Long Code", "N/A")
     pine_rr = dw_dict.get("RR To Target", "N/A")
+    pine_rr_at_mkt = dw_dict.get("Long RR At Market") or dw_dict.get("long_rr_at_market") or dw_dict.get("rr_at_market")
+    mkt_rr_str = f"{float(pine_rr_at_mkt):.2f}:1" if pine_rr_at_mkt not in (None, "", "N/A") else "N/A"
 
     if pine_entry_bot > 0 and pine_entry_top > 0 and pine_stop > 0:
         return f"""--- 🎯 PINE SCRIPT TRADE BENCHMARK (GROUND TRUTH SETUP) ---
@@ -236,7 +238,7 @@ The TradingView Pine Script quantitative engine has mathematically computed the 
 - Pine Script Buy Zone: [${pine_entry_bot:.2f} – ${pine_entry_top:.2f}]
 - Pine Script Tactical Stop Loss: ${pine_stop:.2f}
 - Pine Script Profit Target 1 (T1): ${pine_target1:.2f}
-- Pine Script Setup Score: {pine_score} | Action Code: {pine_code} | Reward-to-Risk: {pine_rr}
+- Pine Script Setup Score: {pine_score} | Action Code: {pine_code} | Planned R:R: {pine_rr} | At-Market R:R: {mkt_rr_str}
 
 ⚠️ CRITICAL SUPERFORECASTING EVALUATION DIRECTIVE:
 You MUST anchor your `## 🔮 SUPERFORECASTING PREDICTIONS` directly to this Pine Script trade setup!
@@ -483,7 +485,7 @@ def build_user_prompt(
            - `Entry At Market 0No 1L 2S 3Both` (0=No market entry, 1=Long at market OK)
            - `Long Ignition Fresh Breakout` (Flag: 1 if fresh breakout ignition bar)
         5. Extension, Momentum & Z-Scores:
-           - `Ext Pct vs MA200` ((Close - MA200)/MA200 * 100; >25-60% = negative expectancy exclusion)
+           - `Ext Pct vs MA200` ((Close - MA200)/MA200 * 100)
            - `Exhaustion Gradient` (Slope of overextension), `Ext Z Self Relative` (Z-score vs distribution)
            - `Z Velocity` (>2.0 indicates blow-off velocity), `Z RSI`, `Z Elasticity`
            - `Trend Bars Up` (Consecutive bars closing higher)
@@ -516,9 +518,9 @@ def build_user_prompt(
 
         --- PRIOR RESEARCH & PATTERN SYNTHESIS WORKFLOW ---
         When `fetch_prior_research` is called alongside `detect_candlestick_patterns`:
-        1. **Stalk vs Trigger Audit:** Audit whether price tested or rejected the prior session's stalk limit, entry zone, or breakout trigger level.
-        2. **Fresh Rejection Wicks & Gap Retests:** Check if a fresh Pin Bar (rejection wick) or Gap Retest formed today at the key floor that confirms buyer defense and resolves the stalk into an actionable entry.
-        3. **Tactical Stop Refinement:** If buyer defense is confirmed by a lower rejection wick, anchor the updated tactical stop directly below the rejection wick low.
+        1. **Context & Thesis Tracking:** Audit whether the macro thesis or business catalyst has evolved.
+        2. **Fresh Price Structure:** Evaluate current price action and candlestick patterns directly on the latest daily chart.
+        3. **No Prior Level Anchoring:** Do NOT feed or anchor to prior LLM levels. All tactical levels must be derived strictly and independently from the current Pine Data Window and live market structure.
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Act as Senior Quantitative Portfolio Manager and EMIT a single-pass, high-conviction trade thesis:

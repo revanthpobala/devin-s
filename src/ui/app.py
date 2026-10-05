@@ -37,12 +37,17 @@ def create_app() -> FastAPI:
     """Create and configure the central FastAPI trading cockpit application."""
     app = FastAPI(title="Stock Trading Cockpit", version="1.0.0")
 
-    # 1. CORS Middleware
+    # 1. CORS Middleware (Explicit origins - no wildcard with credentials)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            "http://127.0.0.1:8050",
+            "http://localhost:8050",
+            "http://127.0.0.1:8000",
+            "http://localhost:8000",
+        ],
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -55,15 +60,11 @@ def create_app() -> FastAPI:
         response.headers["Expires"] = "0"
         return response
 
-    # 3. Static Files Mounts
+    # 3. Static Files Mounts (/data mount removed for security)
     web_dir = config.BASE_DIR / "web"
     static_dir = web_dir / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-    data_dir = config.BASE_DIR / "data"
-    if data_dir.exists():
-        app.mount("/data", StaticFiles(directory=str(data_dir)), name="data")
 
     # 4. Include Domain APIRouters
     app.include_router(views.router)

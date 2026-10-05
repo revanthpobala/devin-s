@@ -48,6 +48,7 @@ class ExecutePythonRequest(BaseModel):
     code: str
     ticker: Optional[str] = "AMD"
     date: Optional[str] = None
+    approved: bool = False
 
 
 def _save_chat_turn(session_id: str, ticker: str, date_str: str, role: str, content: str):
@@ -154,7 +155,15 @@ def save_copilot_chat_endpoint(req: SaveChatMessageRequest):
 
 @router.post("/api/copilot/execute-python")
 def copilot_execute_python_endpoint(req: ExecutePythonRequest):
-    """Executes sandboxed Python code with pre-loaded df (300 bars x 85 indicators), dw, numpy, pandas, scipy, and stats."""
+    """Executes sandboxed Python code with explicit user approval required."""
+    if not req.approved:
+        return {
+            "success": False,
+            "output": None,
+            "error": "Execution denied: explicit user approval required for Python code execution.",
+            "ticker": req.ticker,
+            "duration_ms": 0.0,
+        }
     from src.clients.llm_client import execute_python_code_tool
     t0 = time.time()
     res = execute_python_code_tool(code=req.code, ticker=req.ticker or "AMD", date_str=req.date)

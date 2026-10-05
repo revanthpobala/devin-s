@@ -163,6 +163,10 @@ class QuoteRouter:
         s = str(symbol or "").strip().upper()
         if s.startswith("^"):
             s = s[1:]
+        if s in ("BRK/B", "BRK.B", "BRK-B"):
+            return "BRK.B"
+        if s in ("BRK/A", "BRK.A", "BRK-A"):
+            return "BRK.A"
         return s.replace("/", ".").replace("-", ".")
 
     def _format_for_yahoo(self, symbol: str, is_index: bool = False) -> str:
@@ -171,7 +175,25 @@ class QuoteRouter:
             return f"^{clean}"
         return clean.replace(".", "-")
 
+    def _format_for_schwab(self, symbol: str) -> str:
+        s = str(symbol or "").strip().upper()
+        if s.startswith("^"):
+            s = s[1:]
+        if s in ("BRK.B", "BRK/B", "BRK-B"):
+            return "BRK/B"
+        if s in ("BRK.A", "BRK/A", "BRK-A"):
+            return "BRK/A"
+        return s.replace(".", "/")
+
+    def _format_for_dxlink(self, symbol: str) -> str:
+        return self._format_for_schwab(symbol)
+
     def _format_for_alpaca(self, symbol: str) -> str:
+        s = str(symbol or "").strip().upper()
+        if s.startswith("^"):
+            s = s[1:]
+        if s.endswith("-USD") or s.endswith("/USD") or s.startswith("BTC") or s.startswith("ETH"):
+            return s
         return self._clean_symbol(symbol)
 
     def _is_index(self, symbol: str) -> bool:
@@ -230,8 +252,8 @@ class QuoteRouter:
             if self.schwab_breaker.is_available():
                 try:
                     from src.clients.schwab_client import get_realtime_quote as schwab_get_rt
-
-                    sq = schwab_get_rt(clean_sym)
+                    schwab_sym = self._format_for_schwab(clean_sym)
+                    sq = schwab_get_rt(schwab_sym)
                     if sq and sq.get("last_price") and float(sq["last_price"]) > 0:
                         qd = QuoteData(
                             symbol=clean_sym,
@@ -307,12 +329,14 @@ class QuoteRouter:
             try:
                 from src.clients.schwab_client import get_realtime_quotes_batch as schwab_batch
 
-                sq_batch = schwab_batch(to_fetch)
+                schwab_sym_map = {self._format_for_schwab(s): s for s in to_fetch}
+                sq_batch = schwab_batch(list(schwab_sym_map.keys()))
                 with self._cache_lock:
-                    for s, sq in sq_batch.items():
+                    for schwab_sym, sq in sq_batch.items():
+                        orig_s = schwab_sym_map.get(schwab_sym, schwab_sym)
                         if sq and sq.get("last_price") and float(sq["last_price"]) > 0:
                             qd = QuoteData(
-                                symbol=s,
+                                symbol=orig_s,
                                 last_price=float(sq["last_price"]),
                                 bid=float(sq.get("bid") or 0.0),
                                 ask=float(sq.get("ask") or 0.0),
@@ -326,8 +350,11 @@ class QuoteRouter:
                                 source="SCHWAB",
                                 timestamp=now,
                             )
-                            self._cache_execution[s] = (now, qd)
-                            results[s] = qd
+                            self._cache_execution[orig_s] = (now, qd)
+                            results[orig_s] = qd
+                            if schwab_sym != orig_s:
+                                self._cache_execution[schwab_sym] = (now, qd)
+                                results[schwab_sym] = qd
                 self.schwab_breaker.record_success()
             except Exception as e:
                 logger.warning(f"[ExecutionChannel] Schwab batch failed: {e}")

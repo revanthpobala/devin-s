@@ -91,13 +91,31 @@ def evaluate_target_on_zone_arrival(
             "reasons": ["Price is unquoted (<= 0). Cannot evaluate without market price."],
         }
     
-    # Check if stop is valid
-    if stop <= 0:
-        # Fallback conservative stop (3% ATR or 3% distance)
-        stop = round(spot_price * 0.96 if side == "LONG" else spot_price * 1.04, 2)
-    
-    if target_1 <= 0:
-        target_1 = round(spot_price * 1.08 if side == "LONG" else spot_price * 0.92, 2)
+    # No levels means return UNMEASURED and write nothing
+    if stop <= 0 or target_1 <= 0:
+        return {
+            "ticker": sym,
+            "spot_price": spot_price,
+            "side": side,
+            "is_actionable_now": False,
+            "verdict": "UNMEASURED",
+            "verdict_label": "⏳ UNMEASURED",
+            "playbook": f"⏳ UNMEASURED — Missing tactical stop or target levels for {sym}.",
+            "live_rr": 0.0,
+            "risk_dollars": 0.0,
+            "risk_pct": 0.0,
+            "reward_dollars": 0.0,
+            "reward_pct": 0.0,
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "entry_mid": entry_mid,
+            "tactical_stop": stop,
+            "target_1": target_1,
+            "target_2": target_2,
+            "in_zone": False,
+            "evaluated_at": datetime.now(ZoneInfo("America/Denver")).isoformat(),
+            "reasons": ["Missing tactical stop or target levels."],
+        }
 
     # 1. Level defense check
     is_stop_breached = False
@@ -188,9 +206,9 @@ def evaluate_target_on_zone_arrival(
             f"Avoid establishing new equity swing positions ahead of overnight gap risk."
         )
     elif in_zone:
-        if live_rr >= 2.0:
-            verdict = "ACTIONABLE_BUY" if side == "LONG" else "ACTIONABLE_SHORT"
-            verdict_label = "🟢 BUY SHARES NOW" if side == "LONG" else "🔴 SHORT SHARES NOW"
+        if live_rr >= 2.0 and side == "LONG":
+            verdict = "ACTIONABLE_BUY"
+            verdict_label = "🟢 BUY SHARES NOW"
             is_actionable = True
             reasons.append(f"Price ${spot_price:.2f} is in buy box [${entry_low:.2f}–${entry_high:.2f}] holding above stop ${stop:.2f}.")
             reasons.append(f"Asymmetric risk/reward: {live_rr:.2f}:1 R:R (Target: ${target_1:.2f}, Risk: {risk_pct}%).")
@@ -255,36 +273,6 @@ def evaluate_target_on_zone_arrival(
         "reasons": reasons,
     }
 
-    # Save to SQLite database
-    try:
-        from src.tracking.watch_manager import _db_lock, _get_connection
-        with _db_lock:
-            with _get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    UPDATE watch_targets
-                    SET evaluation_verdict = ?,
-                        evaluation_playbook = ?,
-                        evaluation_time = ?,
-                        is_actionable_now = ?,
-                        last_price = ?,
-                        updated_at = ?
-                    WHERE ticker = ?
-                    """,
-                    (
-                        verdict,
-                        playbook,
-                        now_iso,
-                        1 if is_actionable else 0,
-                        spot_price,
-                        now_iso,
-                        sym,
-                    ),
-                )
-                conn.commit()
-    except Exception as e:
-        logger.warning(f"[{sym}] Failed saving zone arrival evaluation to SQLite: {e}")
 
     logger.info(
         f"🎯 [ZONE EVALUATION] [{sym}] Verdict: {verdict_label} | Spot: ${spot_price:.2f} | R:R: {live_rr:.2f}:1 | Actionable: {is_actionable}"

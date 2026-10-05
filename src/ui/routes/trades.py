@@ -133,20 +133,6 @@ def get_suggested_trades_endpoint():
                     """
                 ).fetchall()
 
-        # Batch fetch real-time quotes for all researched watch targets to reflect true live market prices
-        symbols_to_quote = list({
-            (dict(r).get("ticker") or "").upper().strip()
-            for r in rows
-            if (dict(r).get("ticker") and (dict(r).get("entry_zone_low") is not None or dict(r).get("status") not in ("UNRESEARCHED",)))
-        })
-        quotes_batch = {}
-        if symbols_to_quote:
-            try:
-                from src.clients.quote_router import quote_router
-                quotes_batch = quote_router.get_watchlist_quotes_batch(symbols_to_quote)
-            except Exception as e_quote:
-                logger.warning(f"Failed to batch fetch live quotes for suggested trades: {e_quote}")
-
         trades = []
         company_names = get_company_names_dict()
         for r in rows:
@@ -175,12 +161,7 @@ def get_suggested_trades_endpoint():
             target_2 = t.get("target_2")
             side = (t.get("side") or "LONG").upper()
 
-            # Refresh quote from live batch feed
-            qd = quotes_batch.get(sym)
-            if qd and qd.last_price > 0:
-                last_price = round(qd.last_price, 2)
-            else:
-                last_price = t.get("last_price")
+            last_price = t.get("last_price")
             t["last_price"] = last_price
 
             entry_mid = None
@@ -287,20 +268,21 @@ def get_suggested_trades_endpoint():
 
             # Dynamic state transition verification against live price
             status_str = (t.get("status") or "STALKING").upper()
+            is_filled = status_str == "IN_TRADE" or bool(t.get("fill_price")) or bool(t.get("user_taken"))
             hit_target = False
-            if target_1 and last_price:
+            if target_1 and last_price and is_filled:
                 if side == "LONG" and last_price >= target_1:
                     hit_target = True
                 elif side == "SHORT" and last_price <= target_1:
                     hit_target = True
-            if target_2 and last_price:
+            if target_2 and last_price and is_filled:
                 if side == "LONG" and last_price >= target_2:
                     hit_target = True
                 elif side == "SHORT" and last_price <= target_2:
                     hit_target = True
 
             hit_stop = False
-            if stop_loss and last_price:
+            if stop_loss and last_price and is_filled:
                 if side == "LONG" and last_price <= stop_loss:
                     hit_stop = True
                 elif side == "SHORT" and last_price >= stop_loss:
@@ -310,6 +292,8 @@ def get_suggested_trades_endpoint():
                 status_str = "TARGET_HIT"
             elif hit_stop:
                 status_str = "INVALIDATED"
+            elif not is_filled and target_1 and last_price and ((side == "LONG" and last_price >= target_1) or (side == "SHORT" and last_price <= target_1)):
+                status_str = "MISSED_RUNAWAY"
             elif entry_low and entry_high and entry_low > 0 and entry_high > 0 and last_price:
                 if entry_low <= last_price <= entry_high:
                     if status_str not in ("IN_TRADE",):
@@ -339,23 +323,14 @@ def get_suggested_trades_endpoint():
                 elif hit_stop or status_str in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
                     eval_verdict = "STAND_ASIDE"
             else:
-                # If strictly in zone, check / evaluate on arrival
-                if not eval_verdict and has_spot:
-                    try:
-                        from src.logic.zone_arrival_evaluator import evaluate_target_on_zone_arrival
-                        eval_res = evaluate_target_on_zone_arrival(sym, last_price, t)
-                        eval_verdict = eval_res.get("verdict")
-                        is_actionable_now = bool(eval_res.get("is_actionable_now"))
-                        eval_playbook = eval_res.get("playbook") or ""
-                        t["evaluation_time"] = eval_res.get("evaluated_at")
-                    except Exception as e_ev:
-                        logger.debug(f"[{sym}] On-the-fly evaluation skipped: {e_ev}")
-                elif eval_verdict and "ACTIONABLE" in eval_verdict:
+                if eval_verdict and "ACTIONABLE" in eval_verdict:
                     is_actionable_now = True
 
             t["evaluation_verdict"] = eval_verdict
             t["is_actionable_now"] = is_actionable_now
             t["evaluation_playbook"] = eval_playbook
+            t["measured_actionable"] = is_actionable_now
+            t["gate_reasons"] = t.get("gate_reasons") or ([] if is_actionable_now else ["Setup not in actionable entry zone or not qualified"])
 
             # Quantitative Priority Engine
             if is_terminated or status_str in ("TARGET_HIT", "COMPLETED"):
@@ -370,7 +345,7 @@ def get_suggested_trades_endpoint():
             elif is_actionable_now and is_strictly_in_zone:
                 priority_tier = 1
                 priority_score = 1200.0 - min(dist_abs, 50.0)
-                priority_label = "🟢 BUY SHARES NOW" if side == "LONG" else "🔴 SHORT SHARES NOW"
+                priority_label = "🟢 ACTIONABLE IN ZONE" if side == "LONG" else "🔴 ACTIONABLE IN ZONE"
             elif status_str in ("IN_ZONE", "ENTER"):
                 priority_tier = 2
                 priority_score = 1000.0 - min(dist_abs, 50.0)
@@ -426,7 +401,9 @@ def take_trade_endpoint(data: dict):
     try:
         ticker = (data.get("ticker") or "").upper().strip()
         fill_price = float(data.get("fill_price") or 0.0)
-        quantity = float(data.get("quantity") or 100)
+        from src import config
+        default_qty = getattr(config, "DEFAULT_QTY", getattr(config, "USER_DEFAULT_QUANTITY", 100))
+        quantity = float(data.get("quantity") or default_qty or 100)
         notes = data.get("notes") or "User personally entered position"
         row_id = data.get("id") or data.get("row_id")
 
@@ -441,7 +418,7 @@ def take_trade_endpoint(data: dict):
                     SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
                     WHERE rowid = ?
                 """, (fill_price if fill_price > 0 else None, quantity, row_id))
-            if ticker:
+            elif ticker:
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
@@ -459,7 +436,7 @@ def take_trade_endpoint(data: dict):
             _WATCH_TARGETS_CACHE.clear()
         except Exception:
             pass
-        return {"success": True, "message": f"Successfully recorded trade for {ticker} at ${fill_price:.2f}"}
+        return {"success": True, "message": f"Successfully recorded trade for {ticker or row_id} at ${fill_price:.2f}"}
     except Exception as e:
         logger.error(f"Error in take_trade_endpoint: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -476,13 +453,18 @@ def untake_trade_endpoint(data: dict):
             if row_id:
                 c.execute("""
                     UPDATE watch_targets 
-                    SET user_taken = 0, status = 'STALKING', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
+                    SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
                     WHERE rowid = ?
                 """, (row_id,))
-            if ticker:
+                c.execute("""
+                    UPDATE suggestions 
+                    SET taken = 0, your_fill = NULL
+                    WHERE id = ?
+                """, (row_id,))
+            elif ticker:
                 c.execute("""
                     UPDATE watch_targets 
-                    SET user_taken = 0, status = 'STALKING', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
+                    SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
                     WHERE ticker = ?
                 """, (ticker,))
                 c.execute("""

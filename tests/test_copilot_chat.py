@@ -103,22 +103,32 @@ def test_multi_ticker_prompt_detection():
 def test_copilot_python_math_execution():
     from run_ui import _build_single_ticker_context, copilot_execute_python_endpoint, ExecutePythonRequest
 
-    # Test that Python quantitative math baseline and custom math execute without error
+    # Test that chat prompt does NOT auto-execute arbitrary user code without explicit approval
     prompt = "Execute python: print(f'Spread Width Math: {500 - 480}, Max Profit: {4.50}, Max Loss: {20 - 4.50}')"
     parts = _build_single_ticker_context("AVGO", "2026-08-22", prompt)
     joined = "\n".join(parts)
-    
-    assert "USER PYTHON CODE EXECUTION RESULTS" in joined
-    assert "Spread Width Math: 20" in joined
-    assert "Max Loss: 15.5" in joined
+    assert "USER PYTHON CODE EXECUTION RESULTS" not in joined
 
-    # Test direct python execution endpoint
+    # Test direct python execution endpoint requires explicit approval
+    unapproved_req = ExecutePythonRequest(
+        code="print(f'Kelly Fraction: {(0.65 * 2.0 - (1 - 0.65)) / 2.0:.4f}')",
+        ticker="AVGO",
+        date="2026-08-22",
+        approved=False
+    )
+    unapproved_res = copilot_execute_python_endpoint(unapproved_req)
+    assert unapproved_res["success"] is False
+    assert "explicit user approval required" in unapproved_res["error"]
+
+    # Test direct python execution endpoint with explicit approval executes properly
     req = ExecutePythonRequest(
         code="print(f'Kelly Fraction: {(0.65 * 2.0 - (1 - 0.65)) / 2.0:.4f}')",
         ticker="AVGO",
-        date="2026-08-22"
+        date="2026-08-22",
+        approved=True
     )
     res = copilot_execute_python_endpoint(req)
+    assert res["success"] is True
     assert "Kelly Fraction: 0.4750" in res["output"]
     assert res["duration_ms"] >= 0
 

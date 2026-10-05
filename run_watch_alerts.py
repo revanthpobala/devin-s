@@ -194,6 +194,15 @@ def sync_reports_to_watchlist(
                             else:
                                 from src.tracking.suggestions_ledger import append_suggestion
                                 sp = data.get("shares_plan", {})
+                                dw_data = data.get("datawindow") or data.get("_datawindow") or {}
+                                atr_at_sig = data.get("atr_at_signal") or dw_data.get("atr14")
+                                rr_at_sig = data.get("rr_at_market_at_signal") or dw_data.get("long_rr_at_market")
+                                raw_sig = data.get("pb_funnel")
+                                if raw_sig is None and dw_data.get("signal_pack") is not None:
+                                    try:
+                                        raw_sig = int(bool(int(round(float(dw_data["signal_pack"]))) & 32))
+                                    except Exception:
+                                        raw_sig = None
                                 sid = append_suggestion({
                                     "ticker": t,
                                     "date": date_str,
@@ -208,9 +217,12 @@ def sync_reports_to_watchlist(
                                     "target_2": sp.get("target_2"),
                                     "planned_rr": sp.get("rr_ratio"),
                                     "verdict": data.get("verdict"),
-                                    "gate_status": "PASS",
+                                    "gate_status": data.get("gate_status", "PASS"),
                                     "setup_lane": data.get("setup_lane") or data.get("lane"),
                                     "kind": data.get("kind", "NEW"),
+                                    "atr_at_signal": atr_at_sig,
+                                    "rr_at_market_at_signal": rr_at_sig,
+                                    "pb_funnel": raw_sig,
                                     "notes": f"Judge directive: {data.get('verdict')}",
                                 })
                                 if sid and sid > 0:
@@ -472,30 +484,31 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         # D. Entry Zone Stalking Trigger Check (With Real-Time On-Arrival Local Evaluation)
         elif hit_in_zone:
             new_status = "IN_ZONE"
-            # Trigger On-Arrival Real-Time Local Evaluation & Tactical Triage
-            try:
-                from src.logic.zone_arrival_evaluator import evaluate_target_on_zone_arrival
-                eval_res = evaluate_target_on_zone_arrival(ticker, live_price, t)
-                if eval_res.get("is_actionable_now"):
-                    alert_fired = "ENTRY_ACTIONABLE_BUY" if side == "LONG" else "ENTRY_ACTIONABLE_SHORT"
-                    msg = (
-                        f"[{ticker}] 🟢 ACTIONABLE {side} ENTRY: Price ${live_price:.2f} confirmed in zone "
-                        f"[${entry_low:.2f}–${entry_high:.2f}]. Stop: ${eval_res['tactical_stop']:.2f}, "
-                        f"T1: ${eval_res['target_1']:.2f}, R:R: {eval_res['live_rr']:.2f}:1."
-                    )
-                else:
-                    alert_fired = "ENTRY_TRIGGERED"
-                    msg = f"[{ticker}] Price ${live_price:.2f} in zone [${entry_low:.2f}–${entry_high:.2f}] ({eval_res.get('verdict_label')})."
-                log_trigger_alert(ticker, alert_fired, msg, live_price)
-            except Exception as e_eval:
-                logger.warning(f"[{ticker}] On-arrival zone evaluation error: {e_eval}")
-                if old_status in ("STALKING", "INVALIDATED", "STOP_BREACHED"):
-                    alert_fired = "ENTRY_TRIGGERED"
-                    prox_tag = " [Floor Proximity Buffer]" if in_proximity_zone else ""
-                    opt_str = f" | Play: {t.get('options_summary')}" if t.get("options_summary") else ""
-                    reclaim_tag = " [Support Reclaimed]" if old_status in ("INVALIDATED", "STOP_BREACHED") else ""
-                    msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag}{reclaim_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
+            # Trigger On-Arrival Real-Time Local Evaluation & Tactical Triage only on status transition
+            if old_status != "IN_ZONE":
+                try:
+                    from src.logic.zone_arrival_evaluator import evaluate_target_on_zone_arrival
+                    eval_res = evaluate_target_on_zone_arrival(ticker, live_price, t)
+                    if eval_res.get("is_actionable_now"):
+                        alert_fired = "ENTRY_ACTIONABLE_BUY" if side == "LONG" else "ENTRY_ACTIONABLE_SHORT"
+                        msg = (
+                            f"[{ticker}] 🟢 ACTIONABLE {side} ENTRY: Price ${live_price:.2f} confirmed in zone "
+                            f"[${entry_low:.2f}–${entry_high:.2f}]. Stop: ${eval_res['tactical_stop']:.2f}, "
+                            f"T1: ${eval_res['target_1']:.2f}, R:R: {eval_res['live_rr']:.2f}:1."
+                        )
+                    else:
+                        alert_fired = "ENTRY_TRIGGERED"
+                        msg = f"[{ticker}] Price ${live_price:.2f} in zone [${entry_low:.2f}–${entry_high:.2f}] ({eval_res.get('verdict_label')})."
                     log_trigger_alert(ticker, alert_fired, msg, live_price)
+                except Exception as e_eval:
+                    logger.warning(f"[{ticker}] On-arrival zone evaluation error: {e_eval}")
+                    if old_status in ("STALKING", "WATCH", "INVALIDATED", "STOP_BREACHED"):
+                        alert_fired = "ENTRY_TRIGGERED"
+                        prox_tag = " [Floor Proximity Buffer]" if in_proximity_zone else ""
+                        opt_str = f" | Play: {t.get('options_summary')}" if t.get("options_summary") else ""
+                        reclaim_tag = " [Support Reclaimed]" if old_status in ("INVALIDATED", "STOP_BREACHED") else ""
+                        msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag}{reclaim_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
+                        log_trigger_alert(ticker, alert_fired, msg, live_price)
         else:
             if old_status in ("IN_TRADE", "IN_ZONE"):
                 # Maintain active trade holding above stop loss

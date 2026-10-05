@@ -84,7 +84,7 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100.0 - (100.0 / (1.0 + rs)).fillna(100.0)
+    return (100.0 - (100.0 / (1.0 + rs))).fillna(100.0)
 
 
 def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
@@ -566,16 +566,27 @@ def evaluate_pine_screener_model(
     range_hi = float(high.iloc[-min(60, n):].max())
     range_lo = float(low.iloc[-min(60, n):].min())
     is_short = side.upper() == "SHORT"
+    risk_floor = max(0.7 * atr14, 0.01)
     if is_short:
-        risk = max(swing_hi - curr_close, 0.01)
-        reward = max(curr_close - range_lo, 0.01)
-        proxy_rr = round(reward / risk, 2)
-        atrs_up = round((swing_hi - curr_close) / max(atr14, 0.01), 2)
+        if curr_close >= swing_hi:
+            proxy_rr = None
+            atrs_up = None
+        else:
+            raw_risk = swing_hi - curr_close
+            risk = max(raw_risk, risk_floor)
+            reward = max(curr_close - range_lo, 0.01)
+            proxy_rr = min(round(reward / risk, 2), 10.0)
+            atrs_up = round(raw_risk / max(atr14, 0.01), 2)
     else:
-        risk = max(curr_close - swing_lo, 0.01)
-        reward = max(range_hi - curr_close, 0.01)
-        proxy_rr = round(reward / risk, 2)
-        atrs_up = round((curr_close - swing_lo) / max(atr14, 0.01), 2)
+        if curr_close <= swing_lo:
+            proxy_rr = None
+            atrs_up = None
+        else:
+            raw_risk = curr_close - swing_lo
+            risk = max(raw_risk, risk_floor)
+            reward = max(range_hi - curr_close, 0.01)
+            proxy_rr = min(round(reward / risk, 2), 10.0)
+            atrs_up = round(raw_risk / max(atr14, 0.01), 2)
 
     # 5b. PB funnel -- long side only, and only with a full 252-bar self-referenced ext-Z window.
     # Bar depth is resolved upstream (schwab-py returns multi-year daily history and
@@ -591,7 +602,14 @@ def evaluate_pine_screener_model(
         prior_std = float(prior_dist.std(ddof=0)) if len(prior_dist) > 0 else 0.0
         curr_dist = float(dist_ema20.iloc[-1])
         extz_ema20 = float((curr_dist - prior_mean) / prior_std) if prior_std > 0 else 0.0
-        pb_funnel = bool(extz_ema20 < PB_EXT_Z_MAX and curr_close > swing_lo and proxy_rr >= PB_PROXY_RR_MIN)
+        pb_funnel = bool(
+            extz_ema20 < PB_EXT_Z_MAX
+            and curr_close > swing_lo
+            and atrs_up is not None
+            and atrs_up >= 0.7
+            and proxy_rr is not None
+            and proxy_rr >= PB_PROXY_RR_MIN
+        )
 
     # 6. Prime Signal
     is_blowoff = abs(z_vel) > 2.0
@@ -628,29 +646,22 @@ def evaluate_pine_screener_model(
     )
 
     # 8. Composite Conviction / Priority Score (0 to 100)
-    # Balanced weighting: R:R (30 pts), Stop Proximity (20 pts), Stage Trend (15 pts),
+    # Balanced weighting: R:R (30 pts), Stage Trend (15 pts),
     # Volatility Squeeze/Compression (15 pts), Reversal Zone (10 pts), Prime Signal (10 pts).
     score = 0.0
 
     # A. Proxy Risk:Reward (Up to 30 pts)
-    if proxy_rr >= 3.5:
-        score += 30.0
-    elif proxy_rr >= 3.0:
-        score += 25.0
-    elif proxy_rr >= 2.5:
-        score += 20.0
-    elif proxy_rr >= 2.0:
-        score += 15.0
-    elif proxy_rr >= 1.5:
-        score += 8.0
-
-    # B. Stop Proximity (ATRs Above Stop <= 1.0) (Up to 20 pts)
-    if atrs_up <= 0.5:
-        score += 20.0
-    elif atrs_up <= 1.0:
-        score += 15.0
-    elif atrs_up <= 1.5:
-        score += 8.0
+    if proxy_rr is not None:
+        if proxy_rr >= 3.5:
+            score += 30.0
+        elif proxy_rr >= 3.0:
+            score += 25.0
+        elif proxy_rr >= 2.5:
+            score += 20.0
+        elif proxy_rr >= 2.0:
+            score += 15.0
+        elif proxy_rr >= 1.5:
+            score += 8.0
 
     # C. Weinstein Market Stage Trend Alignment (Up to 15 pts)
     if is_short:

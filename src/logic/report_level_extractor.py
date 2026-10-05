@@ -17,6 +17,18 @@ from src import config
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    if val is None:
+        return default
+    try:
+        s = str(val).replace(",", "").strip()
+        if s.startswith("$"):
+            s = s[1:].strip()
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
 def _credit_strike_em_consistent(structure: str, short_strike: float, spot_price: float, exp_move_pct: float) -> bool:
     """Return True if a premium-sale (credit) structure's short strike is scaled to the
     Expected Move at >= 1.25x. Encodes revanth-original-gem.md:341 — high IV Rank alone
@@ -285,30 +297,30 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                 clean_txt = re.sub(r"[*_`]+", "", combined_txt)
                 if "breakout_level" not in shares_p:
                     m_bo = re.search(
-                        r"(?:Buy-Stop on daily close above|Buy-Stop above|Breakout Level:?|breakout above)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+                        r"(?:Buy-Stop on daily close above|Buy-Stop above|Breakout Level:?|breakout above)\s*\$?([0-9,]+(?:\.[0-9]+)?)",
                         clean_txt,
                         re.IGNORECASE,
                     )
                     if not m_bo:
                         m_bo = re.search(
-                            r"(?:Darvas Box Top[^\$]*\$)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+                            r"(?:Darvas Box Top[^\$]*\$)\s*\$?([0-9,]+(?:\.[0-9]+)?)",
                             clean_txt,
                             re.IGNORECASE,
                         )
                     if m_bo:
                         try:
-                            shares_p["breakout_level"] = float(m_bo.group(1))
+                            shares_p["breakout_level"] = _safe_float(m_bo.group(1))
                         except Exception:
                             pass
                 if "breakout_stop" not in shares_p:
                     m_bostop = re.search(
-                        r"(?:stop back to|breakout stop:?)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+                        r"(?:stop back to|breakout stop:?)\s*\$?([0-9,]+(?:\.[0-9]+)?)",
                         clean_txt,
                         re.IGNORECASE,
                     )
                     if m_bostop:
                         try:
-                            shares_p["breakout_stop"] = float(m_bostop.group(1))
+                            shares_p["breakout_stop"] = _safe_float(m_bostop.group(1))
                         except Exception:
                             pass
 
@@ -330,12 +342,12 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                 clean_txt = re.sub(r"[*_`]+", "", combined_txt)
                 if "leaps" not in options_menu:
                     m_leaps = re.search(
-                        r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_txt, re.IGNORECASE
+                        r"(?:LEAPS|Long Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_txt, re.IGNORECASE
                     )
                     if m_leaps:
                         options_menu["leaps"] = {
                             "structure": "LONG_CALL",
-                            "long_strike": float(m_leaps.group(1)),
+                            "long_strike": _safe_float(m_leaps.group(1)),
                             "summary": f"${m_leaps.group(1)} Deep ITM LEAPS Call",
                         }
                     else:
@@ -345,21 +357,21 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                         }
                 if "income_or_csp" not in options_menu:
                     m_csp = re.search(
-                        r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_txt, re.IGNORECASE
+                        r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9,.]+)\s*P?", clean_txt, re.IGNORECASE
                     )
                     m_cc = re.search(
-                        r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_txt, re.IGNORECASE
+                        r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_txt, re.IGNORECASE
                     )
                     if m_cc:
                         options_menu["income_or_csp"] = {
                             "structure": "COVERED_CALL",
-                            "short_strike": float(m_cc.group(1)),
+                            "short_strike": _safe_float(m_cc.group(1)),
                             "summary": f"${m_cc.group(1)} Covered Call on long shares/LEAPS",
                         }
                     elif m_csp:
                         options_menu["income_or_csp"] = {
                             "structure": "CASH_SECURED_PUT",
-                            "short_strike": float(m_csp.group(1)),
+                            "short_strike": _safe_float(m_csp.group(1)),
                             "summary": f"${m_csp.group(1)} Cash-Secured Put at support floor",
                         }
                     else:
@@ -371,10 +383,27 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                 # Apply options plan cleanup and negative-expectancy credit spread demotion
                 _apply_options_cleanup(data, dw_data, spot_price, safe_ticker)
 
-                # Persist to raw folder
+                from src.logic.level_validation import validate_levels
+                val_plan = {
+                    **(data.get("shares_plan") or {}),
+                    "options_plan": data.get("options_plan") or {},
+                    "ticker": safe_ticker,
+                    "date": date_str,
+                    "side": data.get("side", "LONG"),
+                    "setup_lane": data.get("setup_lane") or dw_data.get("setup_lane") or "WATCH_SHADOW",
+                    "spot": spot_price,
+                }
+                v_ok, v_reasons = validate_levels(val_plan, dw_data, data.get("side", "LONG"), ticker=safe_ticker, date_str=date_str)
+                data["level_gate_rejected"] = not v_ok
+                data["gate_reasons"] = v_reasons
+
+                # Persist to raw folder (never overwrite existing)
                 save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                save_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                if not save_path.exists():
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    save_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                else:
+                    logger.info(f"[{safe_ticker}] {save_path.name} already exists — preserving existing file without overwrite.")
                 return data
             except Exception as e:
                 logger.debug(f"[{safe_ticker}] Failed to parse embedded json block: {e}")
@@ -394,22 +423,26 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         side = "SHORT"
 
     # Verdict & Conviction
-    verdict = "STALK"
-    m_verdict = re.search(r"\*\*Verdict:\*\*\s*([A-Z /()_-]+)", arbitration_text) or re.search(
-        r"\*\*Verdict:\*\*\s*([A-Z /()_-]+)", summary_text
+    verdict = "NO_TRADE"
+    m_verdict = re.search(r"\*\*Verdict:\*\*\s*([A-Za-z /()_-]+)", arbitration_text) or re.search(
+        r"\*\*Verdict:\*\*\s*([A-Za-z /()_-]+)", summary_text
     )
     if m_verdict:
-        v_raw = m_verdict.group(1).upper()
-        if "ENTER" in v_raw or "BUY" in v_raw:
+        v_raw = m_verdict.group(1).strip().upper()
+        if any(neg in v_raw for neg in ("DO NOT", "DON'T", "NOT BUY", "NO BUY", "NO ENTRY", "NO_ENTRY", "NO TRADE", "NO_TRADE")):
+            verdict = "NO_TRADE"
+        elif re.search(r"\bENTER\b", v_raw) or re.search(r"\bBUY\b", v_raw):
             verdict = "ENTER"
-        elif "STALK" in v_raw:
+        elif re.search(r"\bSTALK\b", v_raw):
             verdict = "STALK"
-        elif "CASH" in v_raw or "SKIP" in v_raw:
+        elif re.search(r"\b(?:CASH|SKIP|AVOID)\b", v_raw):
             verdict = "CASH_SKIP"
-        elif "WATCH" in v_raw:
+        elif re.search(r"\bWATCH\b", v_raw):
             verdict = "WATCH"
-        elif "CUT" in v_raw:
+        elif re.search(r"\bCUT\b", v_raw):
             verdict = "CUT"
+        else:
+            verdict = "NO_TRADE"
 
     conviction = 5
     m_conv = re.search(r"Conviction:\s*([0-9.]+)/10", arbitration_text) or re.search(
@@ -425,70 +458,84 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     entry_low = 0.0
     entry_high = 0.0
     m_zone = re.search(
-        r"TACTICAL ENTRY ZONE:\s*\$([0-9.]+)\s*–\s*\$([0-9.]+)", summary_text
-    ) or re.search(r"Entry Zone:\s*\$([0-9.]+)\s*–\s*\$([0-9.]+)", summary_text)
+        r"TACTICAL ENTRY ZONE:\s*\$([0-9,.]+)\s*–\s*\$([0-9,.]+)", summary_text, re.IGNORECASE
+    ) or re.search(r"Entry Zone:\s*\$([0-9,.]+)\s*–\s*\$([0-9,.]+)", summary_text, re.IGNORECASE)
     if m_zone:
-        entry_low = float(m_zone.group(1))
-        entry_high = float(m_zone.group(2))
+        entry_low = _safe_float(m_zone.group(1))
+        entry_high = _safe_float(m_zone.group(2))
     elif "Long Entry Zone Bot" in dw_data and "Long Entry Zone Top" in dw_data:
-        entry_low = float(dw_data.get("Long Entry Zone Bot") or 0)
-        entry_high = float(dw_data.get("Long Entry Zone Top") or 0)
+        entry_low = _safe_float(dw_data.get("Long Entry Zone Bot"))
+        entry_high = _safe_float(dw_data.get("Long Entry Zone Top"))
 
     tactical_stop = 0.0
-    m_stop = (
-        re.search(r"stop to\s*\*\*?\$([0-9.]+)\*\*?", arbitration_text)
-        or re.search(r"TACTICAL STOP:\s*\$([0-9.]+)", summary_text)
-        or re.search(r"Long Stop Loss:\s*\$([0-9.]+)", summary_text)
-    )
+    # Stop-to-breakeven must NOT be captured as initial tactical stop
+    m_stop = None
+    for m in re.finditer(r"(?:TACTICAL\s+STOP|Stop\s+Loss|Hard\s+Stop|Initial\s+Stop):\s*\$?([0-9,.]+)", arbitration_text, re.IGNORECASE):
+        m_stop = m
+        break
+    if not m_stop:
+        for m in re.finditer(r"stop(?:\s+loss)?\s+(?:at|to)\s*\*\*?\$([0-9,.]+)\*\*?", arbitration_text, re.IGNORECASE):
+            start = max(0, m.start() - 40)
+            end = min(len(arbitration_text), m.end() + 40)
+            window = arbitration_text[start:end].lower()
+            if "breakeven" in window or "break-even" in window or "trail" in window or "ratchet" in window:
+                continue
+            m_stop = m
+            break
+    if not m_stop:
+        m_stop = (
+            re.search(r"TACTICAL STOP:\s*\$([0-9,.]+)", summary_text, re.IGNORECASE)
+            or re.search(r"Long Stop Loss:\s*\$([0-9,.]+)", summary_text, re.IGNORECASE)
+        )
     if m_stop:
-        tactical_stop = float(m_stop.group(1))
+        tactical_stop = _safe_float(m_stop.group(1))
     elif "Long Stop Loss" in dw_data:
-        tactical_stop = float(dw_data.get("Long Stop Loss") or 0)
+        tactical_stop = _safe_float(dw_data.get("Long Stop Loss"))
 
     target_1 = 0.0
     target_2 = 0.0
-    m_t1 = re.search(r"TARGET 1:\s*\$([0-9.]+)", summary_text) or re.search(
-        r"Target 1 \(Trim\)\s*\|\s*\$([0-9.]+)", summary_text
+    m_t1 = re.search(r"TARGET 1:\s*\$([0-9,.]+)", summary_text, re.IGNORECASE) or re.search(
+        r"Target 1 \(Trim\)\s*\|\s*\$([0-9,.]+)", summary_text, re.IGNORECASE
     )
     if m_t1:
-        target_1 = float(m_t1.group(1))
+        target_1 = _safe_float(m_t1.group(1))
     elif "Long Target" in dw_data:
-        target_1 = float(dw_data.get("Long Target") or 0)
+        target_1 = _safe_float(dw_data.get("Long Target"))
 
-    m_t2 = re.search(r"TARGET 2:\s*\$([0-9.]+)", summary_text) or re.search(
-        r"Target 2 \(Runner\)\s*\|\s*\$([0-9.]+)", summary_text
+    m_t2 = re.search(r"TARGET 2:\s*\$([0-9,.]+)", summary_text, re.IGNORECASE) or re.search(
+        r"Target 2 \(Runner\)\s*\|\s*\$([0-9,.]+)", summary_text, re.IGNORECASE
     )
     if m_t2:
-        target_2 = float(m_t2.group(1))
+        target_2 = _safe_float(m_t2.group(1))
 
     # Breakout levels
     breakout_level = None
     breakout_stop = None
     clean_combined = re.sub(r"[*_`]+", "", combined_text)
     m_bo = re.search(
-        r"(?:Buy-Stop on daily close above|Buy-Stop above|Breakout Level:?|breakout above)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+        r"(?:Buy-Stop on daily close above|Buy-Stop above|Breakout Level:?|breakout above)\s*\$?([0-9,]+(?:\.[0-9]+)?)",
         clean_combined,
         re.IGNORECASE,
     )
     if not m_bo:
         m_bo = re.search(
-            r"(?:Darvas Box Top[^\$]*\$)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+            r"(?:Darvas Box Top[^\$]*\$)\s*\$?([0-9,]+(?:\.[0-9]+)?)",
             clean_combined,
             re.IGNORECASE,
         )
     if m_bo:
         try:
-            breakout_level = float(m_bo.group(1))
+            breakout_level = _safe_float(m_bo.group(1))
         except Exception:
             breakout_level = None
     m_bostop = re.search(
-        r"(?:stop back to|breakout stop:?)\s*\$?([0-9]+(?:\.[0-9]+)?)",
+        r"(?:stop back to|breakout stop:?)\s*\$?([0-9,]+(?:\.[0-9]+)?)",
         clean_combined,
         re.IGNORECASE,
     )
     if m_bostop:
         try:
-            breakout_stop = float(m_bostop.group(1))
+            breakout_stop = _safe_float(m_bostop.group(1))
         except Exception:
             breakout_stop = None
 
@@ -509,21 +556,29 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     max_profit = 0.0
     opt_summary = "None"
 
-    # 1. Bull Call Spread regex
-    m_opt = re.search(
-        r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)C?\s*(?:Call)?\s*/\s*\$?([0-9.]+)C?\s*(?:Call)?\s*Bull Call Spread",
-        clean_combined,
-        re.IGNORECASE,
-    ) or re.search(
-        r"Buy\s+([A-Za-z]+ \d+, \d{4})\s+\$?([0-9.]+)\s+Call\s*/\s*Sell\s+[A-Za-z]+ \d+, \d{4}\s+\$?([0-9.]+)\s+Call",
-        clean_combined,
-        re.IGNORECASE,
+    # 1. Bull Call Spread regex (supports multi-line across slash or newline)
+    m_opt = (
+        re.search(
+            r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9,.]+)C?\s*(?:Call)?\s*(?:/|\n)\s*\$?([0-9,.]+)C?\s*(?:Call)?\s*Bull Call Spread",
+            clean_combined,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"Buy\s+([A-Za-z]+ \d+,\s+\d{4})\s+\$?([0-9,.]+)\s+Call\s*(?:/|\n)\s*Sell\s+[A-Za-z]+ \d+,\s+\d{4}\s+\$?([0-9,.]+)\s+Call",
+            clean_combined,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"Buy\s+([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9,.]+)\s+Call[\s\S]{1,80}?Sell\s+(?:[A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9,.]+)\s+Call",
+            clean_combined,
+            re.IGNORECASE,
+        )
     )
     if m_opt and m_opt.group(1):
         raw_exp = m_opt.group(1)
         options_struct = "BULL_CALL_SPREAD"
-        long_strike = float(m_opt.group(2))
-        short_strike = float(m_opt.group(3))
+        long_strike = _safe_float(m_opt.group(2))
+        short_strike = _safe_float(m_opt.group(3))
         try:
             from datetime import datetime
 
@@ -533,111 +588,99 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             exp_date = None
         opt_summary = f"{raw_exp} ${long_strike:.0f}/${short_strike:.0f} Bull Call Spread"
     else:
-        # 2. Bull Put Spread regex (credit)
+        # 2. Bull Put Spread regex (credit, supports multi-line)
         m_bps = re.search(
-            r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)P?\s*/\s*\$?([0-9.]+)P?\s*Bull Put Spread",
+            r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9,.]+)P?\s*(?:/|\n)\s*\$?([0-9,.]+)P?\s*Bull Put Spread",
             clean_combined,
             re.IGNORECASE,
         )
         if m_bps:
             options_struct = "BULL_PUT_SPREAD"
-            short_strike = float(m_bps.group(2))
-            long_strike = float(m_bps.group(3))
+            short_strike = _safe_float(m_bps.group(2))
+            long_strike = _safe_float(m_bps.group(3))
             opt_summary = f"${short_strike:.0f}P/${long_strike:.0f}P Bull Put Spread"
         else:
-            # 3. Bear Call Spread regex (credit)
+            # 3. Bear Call Spread regex (credit, supports multi-line)
             m_bcs = re.search(
-                r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)C?\s*/\s*\$?([0-9.]+)C?\s*Bear Call Spread",
+                r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9,.]+)C?\s*(?:/|\n)\s*\$?([0-9,.]+)C?\s*Bear Call Spread",
                 clean_combined,
                 re.IGNORECASE,
             )
             if m_bcs:
                 options_struct = "BEAR_CALL_SPREAD"
-                short_strike = float(m_bcs.group(2))
-                long_strike = float(m_bcs.group(3))
+                short_strike = _safe_float(m_bcs.group(2))
+                long_strike = _safe_float(m_bcs.group(3))
                 opt_summary = f"${short_strike:.0f}C/${long_strike:.0f}C Bear Call Spread"
             else:
-                # 4. Bear Put Spread regex (debit)
+                # 4. Bear Put Spread regex (debit, supports multi-line)
                 m_bds = re.search(
-                    r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9.]+)P?\s*/\s*\$?([0-9.]+)P?\s*Bear Put Spread",
+                    r"([A-Za-z]+\s+\d+,\s+\d{4})?\s*\$?([0-9,.]+)P?\s*(?:/|\n)\s*\$?([0-9,.]+)P?\s*Bear Put Spread",
                     clean_combined,
                     re.IGNORECASE,
                 )
                 if m_bds:
                     options_struct = "BEAR_PUT_SPREAD"
-                    long_strike = float(m_bds.group(2))
-                    short_strike = float(m_bds.group(3))
+                    long_strike = _safe_float(m_bds.group(2))
+                    short_strike = _safe_float(m_bds.group(3))
                     opt_summary = f"${long_strike:.0f}P/${short_strike:.0f}P Bear Put Spread"
                 else:
                     # 5. Outright Long Call / LEAPS
                     m_lc = re.search(
-                        r"(?:Long Call|LEAPS Call|Buy Call)[^\$]*\$?([0-9.]+)\s*Call",
+                        r"(?:Long Call|LEAPS Call|Buy Call)[^\$]*\$?([0-9,.]+)\s*Call",
                         clean_combined,
                         re.IGNORECASE,
                     )
                     if m_lc:
                         options_struct = "LONG_CALL"
-                        long_strike = float(m_lc.group(1))
+                        long_strike = _safe_float(m_lc.group(1))
                         opt_summary = f"${long_strike:.0f} Long Call"
                     else:
                         # 6. Outright Long Put
                         m_lp = re.search(
-                            r"(?:Long Put|Protective Put|Buy Put)[^\$]*\$?([0-9.]+)\s*Put",
+                            r"(?:Long Put|Protective Put|Buy Put)[^\$]*\$?([0-9,.]+)\s*Put",
                             clean_combined,
                             re.IGNORECASE,
                         )
                         if m_lp:
                             options_struct = "LONG_PUT"
-                            long_strike = float(m_lp.group(1))
+                            long_strike = _safe_float(m_lp.group(1))
                             opt_summary = f"${long_strike:.0f} Long Put"
                         else:
                             # 7. Cash-Secured Put
                             m_csp = re.search(
-                                r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?",
+                                r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9,.]+)\s*P?",
                                 clean_combined,
                                 re.IGNORECASE,
                             )
                             if m_csp:
                                 options_struct = "CASH_SECURED_PUT"
-                                short_strike = float(m_csp.group(1))
+                                short_strike = _safe_float(m_csp.group(1))
                                 opt_summary = f"${short_strike:.0f} Cash-Secured Put"
 
     m_debit = (
-        re.search(r"Net debit\s*[≈~]?\s*\$?([0-9.]+)", clean_combined, re.IGNORECASE)
-        or re.search(r"Target entry:\s*<\$?([0-9.]+)", clean_combined, re.IGNORECASE)
-        or re.search(r"Estimated Cost:\s*[≈~]?\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+        re.search(r"Net debit\s*[≈~]?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Target entry:\s*<\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Estimated Cost:\s*[≈~]?\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
     )
     if m_debit:
-        try:
-            target_debit = float(m_debit.group(1).rstrip("."))
-        except Exception:
-            target_debit = 0.0
+        target_debit = _safe_float(m_debit.group(1).rstrip("."))
 
     target_credit = 0.0
     m_credit = (
-        re.search(r"Net credit\s*[≈~]?\s*\$?([0-9.]+)", clean_combined, re.IGNORECASE)
-        or re.search(r"Target credit:\s*>?\$?([0-9.]+)", clean_combined, re.IGNORECASE)
-        or re.search(r"Estimated Credit:\s*[≈~]?\$?([0-9.]+)", clean_combined, re.IGNORECASE)
+        re.search(r"Net credit\s*[≈~]?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Target credit:\s*>?\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
+        or re.search(r"Estimated Credit:\s*[≈~]?\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
     )
     if m_credit:
-        try:
-            target_credit = float(m_credit.group(1).rstrip("."))
-        except Exception:
-            target_credit = 0.0
+        target_credit = _safe_float(m_credit.group(1).rstrip("."))
 
     m_loss = re.search(r"Max Loss:?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
     if m_loss:
-        try:
-            max_loss = float(m_loss.group(1).replace(",", "").rstrip("."))
-        except Exception:
-            pass
+        max_loss = _safe_float(m_loss.group(1).rstrip("."))
 
     m_profit = re.search(r"Max Profit:?\s*\$?([0-9,.]+)", clean_combined, re.IGNORECASE)
     if m_profit:
-        try:
-            max_profit = float(m_profit.group(1).replace(",", "").rstrip("."))
-        except Exception:
-            pass
+        max_profit = _safe_float(m_profit.group(1).rstrip("."))
 
     # EM-consistency backstop: a credit spread is only "actionable" (i.e. promotable to
     # primary) when its short strike sits beyond 1.25x the Expected Move. If the LLM emitted
@@ -661,22 +704,22 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     invalidation_cond = "DAILY_CLOSE_BELOW" if side == "LONG" else "DAILY_CLOSE_ABOVE"
     invalidation_rat = "Breaks key structural support" if side == "LONG" else "Breaks key structural resistance"
 
-    m_inv = re.search(r"Daily Close below\s*\*\*?\$([0-9.]+)\*\*?", arbitration_text)
+    m_inv = re.search(r"Daily Close below\s*\*\*?\$([0-9,.]+)\*\*?", arbitration_text)
     if m_inv:
-        invalidation_level = float(m_inv.group(1))
+        invalidation_level = _safe_float(m_inv.group(1))
 
     m_inv_rat = re.search(r"Logic:\*\s*([^.\n]+)", arbitration_text)
     if m_inv_rat:
         invalidation_rat = m_inv_rat.group(1).strip()
 
-    # Initial State
+    # Initial State: spot 0.0 no longer invalidates
     initial_status = "STALKING"
-    if invalidation_level:
+    if invalidation_level and spot_price > 0:
         if side == "LONG" and spot_price < invalidation_level:
             initial_status = "INVALIDATED"
         elif side == "SHORT" and spot_price > invalidation_level:
             initial_status = "INVALIDATED"
-    elif entry_low and entry_high and (entry_low <= spot_price <= entry_high):
+    elif entry_low and entry_high and spot_price > 0 and (entry_low <= spot_price <= entry_high):
         initial_status = "IN_ZONE"
 
     result = {
@@ -699,9 +742,9 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
             "tactical_stop": tactical_stop,
             "target_1": target_1,
             "target_2": target_2,
-                "rr_ratio": round(
-                    (target_1 - entry_high) / (entry_high - tactical_stop), 4
-                ) if (target_1 and entry_high and tactical_stop and entry_high > tactical_stop) else 0.0,
+            "rr_ratio": round(
+                (target_1 - entry_high) / (entry_high - tactical_stop), 4
+            ) if (target_1 and entry_high and tactical_stop and entry_high > tactical_stop) else 0.0,
             "allocation_pct": 25.0,
         },
         "options_plan": {
@@ -728,14 +771,14 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                 "summary": opt_summary,
             },
             "leaps": {
-                "structure": "LONG_CALL" if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else "NONE",
-                "long_strike": float(re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else 0.0,
-                "summary": "Deep ITM LEAPS Call" if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else "No LEAPS specified",
+                "structure": "LONG_CALL" if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE) else "NONE",
+                "long_strike": _safe_float(re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE) else 0.0,
+                "summary": "Deep ITM LEAPS Call" if re.search(r"(?:LEAPS|Long Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE) else "No LEAPS specified",
             },
             "income_or_csp": {
-                "structure": "COVERED_CALL" if re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else ("CASH_SECURED_PUT" if re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE) else "NONE"),
-                "short_strike": float(re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) else (float(re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE) else 0.0),
-                "summary": "Income / Put floor structure" if (re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9.]+)\s*Call", clean_combined, re.IGNORECASE) or re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9.]+)\s*P?", clean_combined, re.IGNORECASE)) else "No income / CSP structure specified",
+                "structure": "COVERED_CALL" if re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE) else ("CASH_SECURED_PUT" if re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9,.]+)\s*P?", clean_combined, re.IGNORECASE) else "NONE"),
+                "short_strike": _safe_float(re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE) else (_safe_float(re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9,.]+)\s*P?", clean_combined, re.IGNORECASE).group(1)) if re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9,.]+)\s*P?", clean_combined, re.IGNORECASE) else 0.0),
+                "summary": "Income / Put floor structure" if (re.search(r"(?:Covered Call|Sell Call)[^\$]*\$?([0-9,.]+)\s*Call", clean_combined, re.IGNORECASE) or re.search(r"(?:Cash[- ]Secured Put|CSP|Short Put)[^\$]*\$?([0-9,.]+)\s*P?", clean_combined, re.IGNORECASE)) else "No income / CSP structure specified",
             },
         },
         "invalidation": {
@@ -746,7 +789,24 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         "status": initial_status,
     }
 
+    from src.logic.level_validation import validate_levels
+    val_plan = {
+        **(result.get("shares_plan") or {}),
+        "options_plan": dict(result.get("options_plan") or {}),
+        "ticker": safe_ticker,
+        "date": date_str,
+        "side": side,
+        "setup_lane": result.get("setup_lane") or dw_data.get("setup_lane") or "WATCH_SHADOW",
+        "spot": spot_price,
+    }
+    v_ok, v_reasons = validate_levels(val_plan, dw_data, side, ticker=safe_ticker, date_str=date_str)
+    result["level_gate_rejected"] = not v_ok
+    result["gate_reasons"] = v_reasons
+
     save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if not save_path.exists():
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    else:
+        logger.info(f"[{safe_ticker}] {save_path.name} already exists — preserving existing file without overwrite.")
     return result

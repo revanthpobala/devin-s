@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # key -> (default, min, max)
 SPEC: Dict[str, tuple] = {
     "rr_market_min": (2.0, 1.0, 10.0),   # needs-you gate AND the ENTRY push gate
-    "rr_hi_rr": (5.0, 2.0, 25.0),        # the HI-RR / teal tag
+    "rr_hi_rr": (3.0, 2.0, 25.0),        # the HI-RR / teal tag
 }
 
 DEFAULTS: Dict[str, float] = {k: v[0] for k, v in SPEC.items()}
@@ -62,19 +62,19 @@ PRESETS: Dict[str, Dict[str, Any]] = {
     "1_2": {
         "label": "1:2",
         "rr_market_min": 2.0,
-        "rr_hi_rr": 5.0,
+        "rr_hi_rr": 3.0,
         "blurb": "measured default · PB 34% win / +0.07R",
     },
     "1_3": {
         "label": "1:3",
         "rr_market_min": 3.0,
-        "rr_hi_rr": 6.0,
+        "rr_hi_rr": 3.0,
         "blurb": "selective · PB 26% win / +0.15R",
     },
     "1_5": {
         "label": "1:5",
         "rr_market_min": 5.0,
-        "rr_hi_rr": 8.0,
+        "rr_hi_rr": 5.0,
         "blurb": "outliers only · PB rare, expect few rows",
     },
 }

@@ -168,7 +168,8 @@ def test_rr_is_not_computed_when_price_is_at_or_below_stop():
 # --- lane assignment and priors -------------------------------------------------------------------
 
 def test_lane_is_assigned_by_rr_tier():
-    assert _onset(target=115.0).lane == "rr_at_market_lane"          # RR 3.0
+    assert _onset(target=112.0).lane == "rr_at_market_lane"          # RR 2.4
+    assert _onset(target=115.0).lane == "rr_at_market_lane_strong"   # RR 3.0
     assert _onset(target=125.0).lane == "rr_at_market_lane_strong"   # RR 5.0
     assert _onset(target=108.0).lane is None                         # RR 1.6
 
@@ -207,13 +208,11 @@ def test_stop_inside_noise_is_flagged():
 
 
 def test_stop_tight_flag_does_not_silently_allow_the_push():
-    """The spec warns rather than blocks: the reader is told, and the push still carries the prior."""
+    """Under B1/B3 gate, stop width < 0.7 ATR strictly fails entry_gate."""
     o = _onset(close=100.0, stop=99.8, target=120.0, atr=1.0)
-    qualifies, _ = o.entry_gate()
-    assert qualifies is True
-    body = entry_body(o)
-    assert "0.20 ATR" in body
-    assert "artifact" in body
+    qualifies, reasons = o.entry_gate()
+    assert qualifies is False
+    assert any("stop width" in r for r in reasons)
 
 
 def test_missing_atr_leaves_stop_width_unknown_rather_than_guessing():

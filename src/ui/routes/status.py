@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger("status")
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -255,8 +259,11 @@ class KillProcessRequest(BaseModel):
 
 @router.post("/api/processes/kill")
 def kill_process(req: KillProcessRequest):
-    """Terminate an arbitrary child process by PID."""
+    """Terminate our background processes only by PID."""
     import psutil
+    allowed_pids = {p["pid"] for p in _get_active_processes()}
+    if req.pid not in allowed_pids:
+        raise HTTPException(status_code=403, detail=f"PID {req.pid} is not a valid trading background process")
     try:
         p = psutil.Process(req.pid)
         for child in p.children(recursive=True):
@@ -345,7 +352,12 @@ def get_company_names_endpoint():
 def get_logs(channel: str = "all", job_id: Optional[str] = None):
     """Fetch live log buffer by channel or specific research job log with reconciled job state."""
     if job_id:
-        log_file = LOGS_DIR / f"{job_id}.log"
+        safe_job_id = Path(job_id).name
+        if not re.match(r'^[a-zA-Z0-9_\-]+$', safe_job_id):
+            raise HTTPException(status_code=400, detail="Invalid job_id format")
+        log_file = (LOGS_DIR / f"{safe_job_id}.log").resolve()
+        if not str(log_file).startswith(str(LOGS_DIR.resolve())):
+            raise HTTPException(status_code=403, detail="Path traversal blocked")
         logs: list[str] = []
         if log_file.exists():
             try:
@@ -421,13 +433,13 @@ def get_logs(channel: str = "all", job_id: Optional[str] = None):
                                     conn.commit()
                 job_row["is_alive"] = is_alive
 
-        return {"logs": logs, "channel": f"job:{job_id}", "job": job_row}
+        return {"logs": logs, "lines": logs, "channel": f"job:{job_id}", "job": job_row}
 
     with get_db() as conn:
         c = conn.cursor()
         jobs = c.execute("SELECT * FROM active_research_jobs ORDER BY started_at DESC LIMIT 15").fetchall()
         jobs_list = [dict(j) for j in jobs]
-    return {"logs": list(LOG_BUFFER), "state": RESEARCH_STATE, "jobs": jobs_list, "channel": channel}
+    return {"logs": list(LOG_BUFFER), "lines": list(LOG_BUFFER), "state": RESEARCH_STATE, "jobs": jobs_list, "channel": channel}
 
 
 @router.get("/api/logs/raw/{job_id}")

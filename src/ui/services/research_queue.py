@@ -424,6 +424,13 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                 f"{phase_label} failed with exit code {current_subproc.returncode}\n--- last 20 lines ---\n{tail}"
             )
 
+    if not re.match(r'^[A-Z0-9.\-_/]{1,12}$', ticker_u):
+        _log_both(f"❌ Invalid ticker format: {ticker_u}")
+        return
+    if date and date.strip() and not re.match(r'^\d{4}-\d{2}-\d{2}$', date.strip()):
+        _log_both(f"❌ Invalid date format: {date}")
+        return
+
     _log_both(f"🚀 Starting Research Job {job_id} for {ticker_u} [Mode: {mode}, Date: {date or 'auto'}, Force: {force}]")
     current_subproc = None
 

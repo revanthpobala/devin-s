@@ -374,6 +374,9 @@ def replay_unrouted_alerts():
     """Recover unrouted events at startup (e.g. after crash-after-record window)."""
     try:
         from src.tracking.alert_db import get_unrouted_alerts, update_routing_stage
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        today_et = now_et.strftime("%Y-%m-%d")
+
         unrouted = get_unrouted_alerts()
         if unrouted:
             logger.info(f"[recovery] Found {len(unrouted)} unrouted alert(s) in SQLite. Replaying routing...")
@@ -381,7 +384,16 @@ def replay_unrouted_alerts():
                 sym = a.get("symbol")
                 strat = a.get("strategy", "Intraday")
                 msg_id = a.get("message_id")
+                alert_ts = str(a.get("timestamp") or "")
+                alert_date = alert_ts[:10] if len(alert_ts) >= 10 else ""
+
                 if strat == "Intraday":
+                    # ET guard: do not route intraday alerts from prior days into live positions
+                    if alert_date and alert_date != today_et:
+                        if msg_id:
+                            update_routing_stage(msg_id, "EXPIRED")
+                        logger.info(f"[recovery] Skipping expired intraday alert {sym} from {alert_date} (today ET is {today_et})")
+                        continue
                     try:
                         _position_manager.route_alert(a)
                         if msg_id:
@@ -455,29 +467,24 @@ def process_alert_enrichment(alert: dict, sheets=None):
             logger.info(f"AI decision written to SQLite for {symbol}: {llm_decision}")
         # Veto sync: if the AI vetoed this entry but routing already opened a position
         # (routing uses default grade/score before the real Pine payload was evaluated),
-        # close the phantom position so positions.json and the UI stay consistent.
+        # cancel the phantom position so positions.json and the UI stay consistent
+        # WITHOUT creating a phantom 0R closed trade.
         is_exit = any(k in str(alert.get("action") or "").upper() for k in ("EXIT", "CLOSE", "STOP", "FLATTEN", "CUT"))
         if strategy == "Intraday" and not is_exit:
             v_up = llm_decision.upper()
             if "STAND ASIDE" in v_up or "DAY PAUSE" in v_up:
                 try:
-                    from src.tracking.position_state import close_position, list_open
+                    from src.tracking.position_state import cancel_position, list_open
                     open_pos = list_open()
                     pos_rec = open_pos.get(symbol)
-                    # Only close positions opened today (avoid killing stale rehydrated state)
+                    # Only cancel positions opened today (avoid killing stale rehydrated state)
                     if pos_rec and str(pos_rec.get("opened_at", ""))[:10] == date_str:
-                        try:
-                            from src.clients.price_client import get_current_price
-                            close_px = get_current_price(symbol, context="execution")
-                        except Exception:
-                            close_px = None
-                        closed = close_position(
+                        cancelled = cancel_position(
                             symbol,
-                            exit_price=close_px,
-                            exit_reason=f"AI triage veto after routing ({llm_decision[:80]})",
+                            reason=f"AI triage veto after routing ({llm_decision[:80]})",
                         )
-                        if closed:
-                            logger.warning(f"[veto-sync] 🛡️ {symbol} position opened by routing but vetoed by AI triage — closed at ${closed.get('exit_price')}.")
+                        if cancelled:
+                            logger.warning(f"[veto-sync] 🛡️ {symbol} position opened by routing but vetoed by AI triage — cancelled phantom position.")
                 except Exception as e_vsync:
                     logger.debug(f"Veto sync check failed for {symbol}: {e_vsync}")
         # Record into intraday_signals shadow ledger table (Phase 0)
@@ -645,12 +652,15 @@ class GmailIngestionThread(threading.Thread):
     def __init__(self, poll_interval: int = 15, stop_event: Optional[threading.Event] = None):
         super().__init__(name="GmailIngestorThread", daemon=True)
         self.poll_interval = poll_interval
-        self._stop = stop_event or threading.Event()
+        self._stop_event = stop_event or threading.Event()
         self.gmail = GmailClient()
+
+    def stop(self):
+        self._stop_event.set()
 
     def run(self):
         logger.info(f"🚀 Gmail Ingestion Thread started (interval={self.poll_interval}s).")
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             if is_market_hours() or getattr(config, "DEBUG_FORCE_MARKET_OPEN", False):
                 try:
                     self._poll_cycle()
@@ -660,7 +670,7 @@ class GmailIngestionThread(threading.Thread):
                 now_mt = datetime.now(ZoneInfo("America/Denver"))
                 if now_mt.minute % 15 == 0 and now_mt.second < 20:
                     logger.info("Outside market control window. Ingestion idle.")
-            self._stop.wait(self.poll_interval)
+            self._stop_event.wait(self.poll_interval)
         logger.info("Gmail Ingestion Thread stopped.")
 
     def _poll_cycle(self):

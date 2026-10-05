@@ -677,10 +677,12 @@ class ContinuousScreenerDaemon(threading.Thread):
         if not self.auto_deep_research or not candidates:
             return []
 
-        # Reset daily set on date rollover
-        if self._today_date != target_date:
-            self._today_date = target_date
-            self.auto_deep_dispatched_today = set()
+        # Reset daily set on date rollover under lock
+        with self._lock:
+            if self._today_date != target_date:
+                self._today_date = target_date
+                self.auto_deep_dispatched_today = set()
+            dispatched_today_snap = set(self.auto_deep_dispatched_today)
 
         # Detect already-completed tickers from reports/ directory (today + trailing 5 sessions) to prevent duplicate research
         reports_root = config.BASE_DIR / "reports"
@@ -692,7 +694,7 @@ class ContinuousScreenerDaemon(threading.Thread):
                     t = f.name.replace("_summary.md", "").upper()
                     already_completed_recent.add(t)
 
-        slots_left = self.max_auto_deep_per_day - len(self.auto_deep_dispatched_today)
+        slots_left = self.max_auto_deep_per_day - len(dispatched_today_snap)
         if slots_left <= 0:
             logger.info(f"🤖 [ContinuousScreener] Auto Deep Research daily cap ({self.max_auto_deep_per_day}) reached for {target_date}.")
             return []
@@ -700,7 +702,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         eligible = []
         for c in candidates:
             sym = str(c.get("symbol") or c.get("Symbol") or c.get("Ticker") or "").upper().strip()
-            if not sym or sym in already_completed_recent or sym in self.auto_deep_dispatched_today:
+            if not sym or sym in already_completed_recent or sym in dispatched_today_snap:
                 continue
 
             price = float(c.get("price") or 0.0)
@@ -777,10 +779,12 @@ class ContinuousScreenerDaemon(threading.Thread):
             sym = str(p.get("symbol") or p.get("Symbol") or p.get("Ticker")).upper().strip()
             success = self.dispatch_candidate_research(sym, target_date, candidate_dict=p)
             if success:
-                self.auto_deep_dispatched_today.add(sym)
-                self.last_dispatched_ticker = sym
+                with self._lock:
+                    self.auto_deep_dispatched_today.add(sym)
+                    self.last_dispatched_ticker = sym
+                    dispatched_count = len(self.auto_deep_dispatched_today)
                 dispatched_syms.append(sym)
-                logger.info(f"🚀 [ContinuousScreener] Auto-dispatched {sym} for Autonomous Deep Research ({len(self.auto_deep_dispatched_today)}/{self.max_auto_deep_per_day} today).")
+                logger.info(f"🚀 [ContinuousScreener] Auto-dispatched {sym} for Autonomous Deep Research ({dispatched_count}/{self.max_auto_deep_per_day} today).")
 
         return dispatched_syms
 

@@ -825,15 +825,25 @@
       } catch (e) {}
     }
 
+    function esc(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     // Fetch and render report bundle
     async function loadReportBundle(ticker, date) {
       const contentEl = document.getElementById('dossier-content');
-      contentEl.innerHTML = `<div style="padding:40px; text-align:center; color:var(--text-muted);">⏳ Loading research dossier for <strong>${ticker}</strong>...</div>`;
+      contentEl.innerHTML = `<div style="padding:40px; text-align:center; color:var(--text-muted);">⏳ Loading research dossier for <strong>${esc(ticker)}</strong>...</div>`;
 
       document.getElementById('hdr-ticker-sym').innerText = `$${ticker}`;
       document.getElementById('copilot-ticker-badge').innerText = `$${ticker}`;
       document.getElementById('quick-ticker-input').value = ticker;
-      document.getElementById('btn-open-cockpit').href = `/?ticker=${ticker}&modal=research`;
+      document.getElementById('btn-open-cockpit').href = `/?ticker=${encodeURIComponent(ticker)}&modal=research`;
 
       loadCompanyName(ticker);
 
@@ -1111,11 +1121,11 @@
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:14px;">
               <div>
                 <div style="font-size:11px; font-weight:700; color:var(--text-muted);">EXECUTION TYPE</div>
-                <div style="font-size:14px; font-weight:800; font-family:var(--font-mono); color:var(--cyan);">${sp.entry_type || 'LIMIT PULLBACK'}</div>
+                <div style="font-size:14px; font-weight:800; font-family:var(--font-mono); color:var(--cyan);">${sp.entry_type || 'n/a'}</div>
               </div>
               <div>
                 <div style="font-size:11px; font-weight:700; color:var(--text-muted);">SETUP LANE</div>
-                <div style="font-size:14px; font-weight:800; font-family:var(--font-mono); color:var(--text-main);">${wl.setup_lane || 'HIGH_CONVICTION'}</div>
+                <div style="font-size:14px; font-weight:800; font-family:var(--font-mono); color:var(--text-main);">${wl.setup_lane || 'n/a'}</div>
               </div>
               <div>
                 <div style="font-size:11px; font-weight:700; color:var(--text-muted);">ENTRY ACCUMULATION ZONE</div>
@@ -1301,8 +1311,9 @@
             const lRes = await fetch('/api/logs');
             if (lRes.ok) {
               const lData = await lRes.json();
-              if (lData.lines) {
-                pBox.innerHTML = lData.lines.slice(-12).map(l => `<div>${l}</div>`).join('');
+              const logLines = lData.lines || lData.logs;
+              if (logLines && Array.isArray(logLines)) {
+                pBox.innerHTML = logLines.slice(-12).map(l => `<div>${l}</div>`).join('');
                 pBox.scrollTop = pBox.scrollHeight;
               }
             }

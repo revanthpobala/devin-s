@@ -293,13 +293,19 @@ def list_skills():
 
 @router.post("/api/skills/save")
 def save_skill(req: SaveSkillRequest):
-    """Save or update a skill markdown file."""
+    """Save or update a skill markdown file with path traversal validation."""
     from src import config
+    import re
     skills_dir = config.BASE_DIR / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     clean_name = req.skill_name.lower().strip().replace(".md", "")
-    target = skills_dir / f"{clean_name}.md"
+    safe_name = Path(clean_name).name
+    if not re.match(r'^[a-z0-9_\-]+$', safe_name):
+        raise HTTPException(status_code=400, detail="Invalid skill name format")
+    target = (skills_dir / f"{safe_name}.md").resolve()
+    if not str(target).startswith(str(skills_dir.resolve())):
+        raise HTTPException(status_code=403, detail="Path traversal attempt blocked")
     target.write_text(req.content, encoding="utf-8")
-    append_log(f"🧠 Updated Skill: {clean_name}.md ({len(req.content)} chars)")
-    return {"status": "ok", "skill_name": clean_name, "path": str(target)}
+    append_log(f"🧠 Updated Skill: {safe_name}.md ({len(req.content)} chars)")
+    return {"status": "ok", "skill_name": safe_name, "path": str(target)}
 

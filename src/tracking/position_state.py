@@ -115,6 +115,16 @@ def open_position(
     with _state_lock:
         state = load_state()
         rec = state.get(ticker, {})
+
+        # Validate side-correct stop
+        if stop is not None and entry_price is not None:
+            if "LONG" in side and float(stop) >= float(entry_price):
+                logger.warning(f"[state] Invalid stop {stop} >= entry {entry_price} for LONG {ticker}; ignoring invalid stop.")
+                stop = rec.get("stop")
+            elif "SHORT" in side and float(stop) <= float(entry_price):
+                logger.warning(f"[state] Invalid stop {stop} <= entry {entry_price} for SHORT {ticker}; ignoring invalid stop.")
+                stop = rec.get("stop")
+
         rec.update(
             {
                 "ticker": ticker,
@@ -123,8 +133,8 @@ def open_position(
                 "entry_price": entry_price if entry_price is not None else rec.get("entry_price"),
                 "stop": stop if stop is not None else rec.get("stop"),
                 "target": target if target is not None else rec.get("target"),
-                "initial_stop": stop if stop is not None else rec.get("initial_stop", stop),
-                "initial_target": target if target is not None else rec.get("initial_target", target),
+                "initial_stop": rec.get("initial_stop") if rec.get("initial_stop") is not None else stop,
+                "initial_target": rec.get("initial_target") if rec.get("initial_target") is not None else target,
                 "alert_price": alert_price if alert_price is not None else rec.get("alert_price"),
                 "opened_at": rec.get("opened_at", now),
                 "last_price": rec.get("last_price", entry_price),
@@ -282,10 +292,19 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
         realized_prior = rec.get("realized_pnl", 0.0) or 0.0
         total_pnl = round(realized_prior + runner_pnl - fees - slippage, 2)
         rec["remaining_quantity"] = 0.0
-        # Calculate exit_r on underlying
-        initial_stop = rec.get("initial_stop") or rec.get("stop") or 0.0
-        risk_dist = abs(entry - initial_stop) if entry and initial_stop else 0.0
-        exit_r = round(pts / risk_dist, 4) if risk_dist > 0 else 0.0
+        # Calculate exit_r on underlying using unified compute_r
+        initial_stop = rec.get("initial_stop")
+        from src.tracking.r_calculator import compute_r
+        exit_r = compute_r(
+            unit="option" if rec.get("instrument_type") == "OPTION" else "share",
+            entry=entry,
+            exit_px=px,
+            stop=float(initial_stop) if initial_stop is not None else None,
+            side=side,
+            atr=float(rec.get("atr")) if rec.get("atr") is not None else None,
+            debit=float(rec.get("debit")) if rec.get("debit") is not None else None,
+            dollar_pnl=total_pnl if rec.get("instrument_type") == "OPTION" else None,
+        )
         rec["exit_r"] = exit_r
 
         _save_state(state)
@@ -336,6 +355,36 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
     return rec
 
 
+def cancel_position(ticker: str, reason: str = "CANCELLED") -> dict | None:
+    """Remove `ticker` from open positions without booking a 0R closed trade.
+    Used when a position is discarded, cancelled, or closed due to invalidation before fill."""
+    ticker = ticker.strip().upper()
+    with _state_lock:
+        state = load_state()
+        rec = state.pop(ticker, None)
+        if rec is None:
+            return None
+        _save_state(state)
+
+    try:
+        from src.tracking.alert_db import sync_position, record_trade_event
+        rec["status"] = "CANCELLED"
+        rec["cancel_reason"] = reason
+        sync_position(ticker, rec)
+        record_trade_event({
+            "trade_id": rec.get("trade_id") or f"{ticker}_trade",
+            "setup_id": rec.get("setup_id", rec.get("trade_id")),
+            "strategy_id": rec.get("strategy", "Intraday"),
+            "mode": rec.get("mode", "MODEL"),
+            "event_type": "CANCELLED",
+            "symbol": ticker,
+            "details": {"reason": reason},
+        })
+    except Exception as e:
+        logger.debug(f"Failed syncing cancelled position: {e}")
+    return rec
+
+
 def update_position(ticker: str, **fields) -> dict | None:
     """Patch arbitrary fields (last_price, last_eval, last_eval_at, breached_stop)."""
     ticker = ticker.strip().upper()
@@ -344,6 +393,25 @@ def update_position(ticker: str, **fields) -> dict | None:
         rec = state.get(ticker)
         if rec is None:
             return None
+
+        # Never overwrite initial_stop once set
+        if "initial_stop" in fields and rec.get("initial_stop") is not None:
+            fields.pop("initial_stop", None)
+
+        # Validate side-correct stop
+        if "stop" in fields and fields["stop"] is not None:
+            s_val = float(fields["stop"])
+            entry_p = float(rec.get("entry_price") or 0.0)
+            side = str(rec.get("side", "LONG")).upper()
+            if entry_p > 0:
+                cur_px = float(fields.get("last_price") or rec.get("last_price") or entry_p)
+                if "LONG" in side and s_val > cur_px:
+                    logger.warning(f"[state] Invalid stop {s_val} > current price {cur_px} for LONG {ticker}; ignoring.")
+                    fields.pop("stop", None)
+                elif "SHORT" in side and s_val < cur_px:
+                    logger.warning(f"[state] Invalid stop {s_val} < current price {cur_px} for SHORT {ticker}; ignoring.")
+                    fields.pop("stop", None)
+
         rec.update(fields)
         state[ticker] = rec
         _save_state(state)

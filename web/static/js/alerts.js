@@ -1963,7 +1963,7 @@ window.AppAlerts = {
       list = list.filter(a => {
         const dec = (a.llm_decision || '').toUpperCase();
         if (this._aiFilter === 'ACTIONABLE') {
-          return dec.includes('PASS') || dec.includes('GO') || dec.includes('ENTER') || dec.includes('TAKE');
+          return Boolean(a.measured_actionable);
         }
         if (this._aiFilter === 'WATCH') {
           return dec.includes('WATCH') || dec.includes('STALK');
@@ -2583,7 +2583,7 @@ window.AppAlerts = {
       list = list.filter(a => {
         const dec = (a.llm_decision || '').toUpperCase();
         if (this._dailyAiFilter === 'ACTIONABLE') {
-          return dec.includes('PASS') || dec.includes('GO') || dec.includes('ENTER') || dec.includes('TAKE');
+          return Boolean(a.measured_actionable);
         }
         if (this._dailyAiFilter === 'WATCH') {
           return dec.includes('WATCH') || dec.includes('STALK');
@@ -2820,7 +2820,7 @@ window.AppAlerts = {
       if (proxyRr !== null || atrsUp !== null) {
         rrHtml = `
           <div style="display:flex; flex-direction:column; align-items:center; gap:2px; font-family:var(--font-mono);">
-            ${proxyRr !== null ? `<span class="badge in_zone" style="font-size:11px; padding:1px 6px; font-weight:800;">${proxyRr}:1 R:R</span>` : ''}
+            ${proxyRr !== null ? `<span class="badge" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px; padding:1px 6px; font-weight:700;">${proxyRr}:1 R:R</span>` : ''}
             ${atrsUp !== null ? `<span style="font-size:10px; color:var(--text-muted); font-weight:700;">${parseFloat(atrsUp) >= 0 ? '+' : ''}${atrsUp} ATRs</span>` : ''}
           </div>
         `;
@@ -3233,7 +3233,7 @@ window.AppAlerts = {
     if (catalystText === '--') catalystText = payload.why_now || a.setup || payload.setup || '--';
     if (ivRankText === '--') ivRankText = payload.iv_rank ? `${payload.iv_rank}%` : (payload.premium || '--');
     if (stopText === '--' && (a.wrong_if || payload.wrong_if)) stopText = `$${a.wrong_if || payload.wrong_if}`;
-    if (vehicleText === '--') vehicleText = payload.option || 'SHARES';
+    if (vehicleText === '--') vehicleText = payload.option || 'n/a';
 
     // ⚡ Local Research Card
     const lrVerdictEl = document.getElementById('alert-modal-lr-verdict');
@@ -3286,7 +3286,7 @@ window.AppAlerts = {
     const wrongIfEl = document.getElementById('alert-modal-wrong-if');
     const optionEl = document.getElementById('alert-modal-option');
 
-    const planText = a.plan || payload.plan || payload.act_now || (payload.proxy_rr ? `Proxy R:R ${payload.proxy_rr} · ATRs Up ${payload.atrs_up || '--'}` : (a.setup || 'Tactical trade plan ready for execution.'));
+    const planText = a.plan || payload.plan || payload.act_now || (payload.proxy_rr ? `Proxy R:R ${payload.proxy_rr} · ATRs Up ${payload.atrs_up || '--'}` : (a.setup || 'n/a'));
     if (planEl) planEl.innerText = planText;
 
     const grade = a.grade || payload.grade || '';
@@ -3300,7 +3300,7 @@ window.AppAlerts = {
       }
     }
     if (wrongIfEl) wrongIfEl.innerText = stopText !== '--' ? stopText : (a.wrong_if || payload.wrong_if || '--');
-    if (optionEl) optionEl.innerText = vehicleText !== '--' ? vehicleText : (payload.option || 'SHARES');
+    if (optionEl) optionEl.innerText = vehicleText !== '--' ? vehicleText : (payload.option || 'n/a');
 
     // Card 2: Tastytrade Volatility & Options
     const ivBox = document.getElementById('alert-modal-iv-rank-box');
@@ -3312,7 +3312,7 @@ window.AppAlerts = {
     if (ivBox) ivBox.innerText = ivPctText !== '--' ? `${ivRankText} / ${ivPctText}` : ivRankText;
     if (hvBox) hvBox.innerText = hv30Text;
     if (spreadBox) spreadBox.innerText = spreadText;
-    if (liqBox) liqBox.innerText = payload.liquidity ? `${payload.liquidity} ★` : '3 ★ (Liquid)';
+    if (liqBox) liqBox.innerText = payload.liquidity ? `${payload.liquidity} ★` : 'n/a';
 
     if (regPill) {
       const numIv = parseFloat(ivRankText.replace('%', ''));
@@ -3942,6 +3942,9 @@ window.AppAlerts = {
   startAutoTriagePolling() {
     if (this._autoTriagePollTimer) return;
     this._autoTriagePollTimer = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
       try {
         const resp = await fetch('/api/alerts/auto-triage-status');
         const data = await resp.json();
@@ -3965,7 +3968,7 @@ window.AppAlerts = {
       } catch (e) {
         // silent background poll error
       }
-    }, 4000);
+    }, 60000);
   },
 
   stopAutoTriagePolling() {
@@ -6386,9 +6389,6 @@ window.AppAlerts = {
             </div>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn primary" onclick="AppAlerts.savePostMortemToSkill()" style="font-size:11px; font-weight:800; padding:4px 12px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); border-color:#059669; color:#fff;" title="Save findings to skills/postmortem_learnings.md for the invoke_skill tool">
-              ⚡ Save to Active Skills
-            </button>
             <button class="btn secondary" onclick="AppAlerts.copyPostMortemMarkdown()" style="font-size:11px; font-weight:700;">
               📋 Copy Rules Markdown
             </button>
@@ -6558,29 +6558,7 @@ ${d.falseNeg.map(t => `- ${t.symbol} ${t.side} (${(t.entryTime||'').substring(11
     dlAnchorElem.click();
   },
 
-  async savePostMortemToSkill() {
-    const d = this._currentPostMortemData;
-    if (!d) return;
-    const md = this.generatePostMortemMarkdown(d);
-    try {
-      const res = await fetch('/api/skills/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          skill_name: 'postmortem_learnings',
-          content: md
-        })
-      });
-      if (res.ok) {
-        alert('✅ Successfully saved session findings to skills/postmortem_learnings.md! Now available on-demand to LLM via invoke_skill.');
-      } else {
-        alert('⚠️ Failed to save skill to server.');
-      }
-    } catch (e) {
-      console.error('Save skill error:', e);
-      alert('Error saving skill: ' + e.message);
-    }
-  },
+
 
 
   openChartFromTickerModal() {

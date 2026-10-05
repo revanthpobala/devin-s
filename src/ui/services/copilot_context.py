@@ -1320,23 +1320,6 @@ if not df.empty:
     except Exception as pe:
         logger.debug(f"Python quantitative baseline error for {ticker_u}: {pe}")
 
-    # Check for user-supplied Python code in question
-    code_matches = re.findall(r'```(?:python)?\s*(.*?)\s*```', question, re.DOTALL)
-    if not code_matches:
-        if any(kw in question.lower() for kw in ["execute python", "run python", "python:", "eval python", "calculate:", "compute:"]):
-            py_match = re.search(r'(?:python|calculate|compute):\s*(.+)', question, re.IGNORECASE | re.DOTALL)
-            if py_match:
-                code_matches = [py_match.group(1)]
-
-    if code_matches:
-        for user_code in code_matches:
-            try:
-                from src.clients.llm_client import execute_python_code_tool
-                exec_out = execute_python_code_tool(user_code, ticker=ticker_u, date_str=date_str)
-                parts.append(f"### 🐍 USER PYTHON CODE EXECUTION RESULTS (Deterministic Sandbox):\n```python\n{user_code}\n```\n**STDOUT Output:**\n```\n{exec_out}\n```")
-            except Exception as upe:
-                parts.append(f"### 🐍 USER PYTHON EXECUTION ERROR:\n{upe}")
-
     # 4. SEC EDGAR Audit & Financial Facts (On-Demand or when fundamentals asked)
     is_fundamental_req = bool(re.search(r'\b(sec|edgar|10-k|10-q|filing|balance sheet|debt|revenue|fundamental|cash flow)\b', question, re.I))
     if is_fundamental_req:

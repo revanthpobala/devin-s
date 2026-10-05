@@ -233,8 +233,15 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             except (ValueError, TypeError):
                 old_tgt = 0.0
 
+            # Key on gate state and Pine zone/stop within 0.25 ATR (not recomputed RR)
+            try:
+                atr_val = float(dw.get("ATR 14") or dw.get("ATR") or dw.get("atr") or 1.0)
+            except Exception:
+                atr_val = 1.0
+            tol = 0.25 * (atr_val if atr_val > 0 else 1.0)
+
             if cur_ac == old_ac and cur_iz == old_iz:
-                if abs(cur_rr_mkt - old_rr_mkt) < 0.05 and abs(cur_stop - old_stop) < 0.05 and abs(cur_tgt - old_tgt) < 0.05:
+                if abs(cur_stop - old_stop) <= tol and abs(cur_tgt - old_tgt) <= tol:
                     return True
         except Exception as e:
             logger.debug(f"Error checking last_researched for {sym}: {e}")
@@ -403,11 +410,6 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         is_held = _is_held_in_portfolio(ticker)
         kind = "MANAGE" if is_held else "NEW"
 
-        # Skip if researched within 3 trading days and key levels unchanged
-        if _has_recent_unchanged_research(ticker, date_str, dw_dict):
-            logger.info(f"[{ticker}] Already researched within 3 trading days with unchanged key levels. Skipping deep research.")
-            continue
-
         # 2. Resolve triage record
         triage_record, verdict_record = resolve_triage(ticker, dw_dict, raw_dir, deep_dir, tdir)
         if not (isinstance(triage_record, dict) and triage_record.get("setup_lane")) and dw_dict:
@@ -423,7 +425,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             except Exception as e_dwf:
                 logger.debug(f"[{ticker}] DataWindowFilter triage lane derivation failed: {e_dwf}")
 
-        # Explicit --ticker: read triage record; non-held CUT stops, WATCH runs as WATCH_SHADOW, held runs as MANAGE
+        # Explicit ticker / held checks come FIRST
         if target_ticker:
             triage_val = str(
                 (triage_record.get("triage") if isinstance(triage_record, dict) else "")
@@ -439,6 +441,10 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             elif triage_val == "WATCH":
                 if isinstance(triage_record, dict):
                     triage_record["setup_lane"] = "WATCH_SHADOW"
+        elif not is_held and _has_recent_unchanged_research(ticker, date_str, dw_dict):
+            # For non-held batch candidates, skip if researched within 3 trading days and key levels unchanged
+            logger.info(f"[{ticker}] Already researched within 3 trading days with unchanged key levels. Skipping deep research.")
+            continue
 
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
 

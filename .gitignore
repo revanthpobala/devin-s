@@ -38,6 +38,7 @@ dist/
 
 # --- Logs ---
 *.log
+test_output.txt
 
 # --- Editor / OS ---
 .idea/

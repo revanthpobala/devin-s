@@ -143,14 +143,14 @@ def test_collect_income_filters_to_candidates():
         _extended(ticker="A", ext_z=2.5),
         _extended(ticker="B", ext_z=0.5),
         _extended(ticker="C", ext_z=2.1),
-    ])
+    ], holdings=["A", "B", "C"])
     assert [s.ticker for s in sigs] == ["A", "C"]
 
 
 def test_income_pushes_once_per_ticker_per_day(quiet_channel, monkeypatch):
     sent = _capture(monkeypatch)
     monkeypatch.setattr(notify_mod, "_mountain_now", lambda: datetime(2026, 9, 28, 9, 30))
-    sigs = collect_income([_extended(ticker="HELD", ext_z=2.5)])
+    sigs = collect_income([_extended(ticker="HELD", ext_z=2.5)], holdings=["HELD"])
     fire_income(sigs, "2026-09-28")
     fire_income(sigs, "2026-09-28")
     fire_income(sigs, "2026-09-29")

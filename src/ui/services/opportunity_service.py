@@ -274,11 +274,11 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                     seen_tickers.add(sym)
 
                     px = float(c.get("price") or 0.0)
-                    sup = float(c.get("support_level") or px or 0.0)
-                    stop_lvl = float(c.get("stop_level") or (sup * 0.985 if sup > 0 else 0.0))
-                    t1_lvl = float(c.get("target_level") or c.get("ceiling_level") or (px * 1.08 if px > 0 else 0.0))
-                    t2_lvl = float(c.get("ceiling_level") or (px * 1.15 if px > 0 else 0.0))
-                    stg = c.get("weinstein_stage", 2)
+                    sup = float(c.get("support_level") or 0.0)
+                    stop_lvl = float(c.get("stop_level") or 0.0)
+                    t1_lvl = float(c.get("target_level") or 0.0)
+                    t2_lvl = float(c.get("ceiling_level") or 0.0)
+                    stg = c.get("weinstein_stage")
                     setup_name = c.get("screener_setup") or "Trend Continuation (20 EMA Pullback)"
                     tt = c.get("tastytrade") or {}
                     ivr = tt.get("iv_rank")
@@ -519,18 +519,18 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
 
         # Extract tactical levels from playbook or alert price
         playbook = a.get("llm_playbook") or ""
-        stop_match = re.search(r"Stop\s*[\$:]?\s*(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
-        target_match = re.search(r"Target\s*[\$:]?\s*(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
+        stop_match = re.search(r"Stop(?:\s*Loss)?\s*[:=\s]\s*\$?(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
+        target_match = re.search(r"Target(?:\s*[12])?\s*[:=\s]\s*\$?(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
 
         try:
-            stop_val = float(stop_match.group(1)) if stop_match else (spot * 0.97 if side == "LONG" else spot * 1.03)
+            stop_val = float(stop_match.group(1)) if stop_match else 0.0
         except Exception:
-            stop_val = spot * 0.97 if side == "LONG" else spot * 1.03
+            stop_val = 0.0
 
         try:
-            target_val = float(target_match.group(1)) if target_match else (spot * 1.06 if side == "LONG" else spot * 0.94)
+            target_val = float(target_match.group(1)) if target_match else 0.0
         except Exception:
-            target_val = spot * 1.06 if side == "LONG" else spot * 0.94
+            target_val = 0.0
         entry_val = float(a.get("alert_price") or spot)
 
         a["entry_price"] = round(entry_val, 2)
@@ -555,6 +555,17 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
         # In Zone Check
         in_zone = abs(dist) <= 0.6
         a["in_zone"] = in_zone
+
+        is_act = bool(in_zone and rr >= 2.0 and stop_val > 0 and target_val > 0)
+        a["measured_actionable"] = is_act
+        a["gate_reasons"] = [] if is_act else [
+            msg for msg, ok in [
+                ("not in trigger zone", in_zone),
+                (f"R:R {rr:.2f} < 2.0 floor", rr >= 2.0),
+                ("missing stop level", stop_val > 0),
+                ("missing target level", target_val > 0),
+            ] if not ok
+        ]
 
         if in_zone:
             a["alert_state"] = "IN_ZONE"

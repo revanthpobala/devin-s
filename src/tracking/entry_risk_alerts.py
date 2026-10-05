@@ -168,7 +168,10 @@ class Onset:
         min_rr = rr_config.min_rr()
         hi_rr = rr_config.hi_rr()
         if self.close and self.target and self.stop and self.close > self.stop:
-            self.rr_at_market = round((self.target - self.close) / (self.close - self.stop), 2)
+            self._rr_raw = (self.target - self.close) / (self.close - self.stop)
+            self.rr_at_market = round(self._rr_raw, 2)
+        else:
+            self._rr_raw = None
         # Keep the RAW width for the flag and round only for display. Rounding first turns a
         # 0.6965-ATR stop into 0.70 and lets it past a < 0.7 test -- i.e. the exact
         # artifact-R:R stop this flag exists to suppress walks through unflagged.
@@ -180,11 +183,11 @@ class Onset:
             self.stop_width_atr = None
         if self.close and self.stop and self.close > self.stop:
             self.risk_pct = round((self.close - self.stop) / self.close * 100.0, 2)
-        if self.rr_at_market is None:
+        if self._rr_raw is None:
             self.lane = None
-        elif self.rr_at_market >= hi_rr:
+        elif self._rr_raw >= hi_rr:
             self.lane = "rr_at_market_lane_strong"
-        elif self.rr_at_market >= min_rr:
+        elif self._rr_raw >= min_rr:
             self.lane = "rr_at_market_lane"
         else:
             self.lane = None
@@ -199,7 +202,8 @@ class Onset:
 
     @property
     def rr_ok(self) -> bool:
-        return self.rr_at_market is not None and self.rr_at_market >= rr_config.min_rr()
+        raw = getattr(self, "_rr_raw", self.rr_at_market)
+        return raw is not None and raw >= rr_config.min_rr()
 
     @property
     def fade_off(self) -> bool:
@@ -237,10 +241,16 @@ class Onset:
             fails.append("long R:R not marked valid")
         if not self.rr_ok:
             fails.append(f"RR@mkt {self.rr_at_market} < {min_rr}")
+        if self.stop_tight:
+            fails.append(f"stop width {self.stop_width_atr} ATR < {STOP_ATR_MIN} floor")
         if not self.fade_off:
             fails.append("fade gate active (do not chase)")
         if not self.is_pb:
             fails.append("not PB funnel (measured exclusion -> digest only)")
+        if self.action_code in (17, 18):
+            fails.append(f"action code {self.action_code} (PARABOLIC/TOXIC)")
+        if self.ext_z is not None and self.ext_z >= 2.5:
+            fails.append(f"ext_z {self.ext_z} >= 2.5")
         return (not fails), fails
 
     def next_open_verdict(self, open_px: Optional[float]) -> Tuple[bool, str]:
@@ -338,8 +348,13 @@ def fire_entry(onsets: List[Onset], date: str, open_px: Optional[Dict[str, float
     """
     pushed: List[str] = []
     digest_only: List[Dict[str, Any]] = []
+    seen_tickers = set()
 
     for o in onsets:
+        if o.ticker in seen_tickers:
+            continue
+        seen_tickers.add(o.ticker)
+
         qualifies, fails = o.entry_gate()
         if qualifies:
             key = f"ENTRY:{o.ticker}:{date}"
@@ -348,6 +363,14 @@ def fire_entry(onsets: List[Onset], date: str, open_px: Optional[Dict[str, float
             body = entry_body(o, (open_px or {}).get(o.ticker))
             if notify("ENTRY", title, body, dedupe_key=key):
                 pushed.append(o.ticker)
+            else:
+                digest_only.append({
+                    "ticker": o.ticker,
+                    "rr_at_market": o.rr_at_market,
+                    "pb": bool(o.pb_funnel),
+                    "stop_width_atr": o.stop_width_atr,
+                    "reasons": ["Suppressed by quiet hours / dedupe"],
+                })
             continue
 
         # Not a push, but a real onsets worth recording for the digest when the RR clears the bar.
@@ -363,7 +386,7 @@ def fire_entry(onsets: List[Onset], date: str, open_px: Optional[Dict[str, float
     return {
         "pushed": pushed,
         "digest_candidates": digest_only,
-        "checked": len(onsets),
+        "checked": len(seen_tickers),
     }
 
 
@@ -507,8 +530,24 @@ def run_daily_alert_sweep(
         "pushed": [], "digest_candidates": [], "checked": len(onsets),
     }
 
+    # Load held positions from positions.json
+    held_tickers = set()
+    try:
+        from src.tracking.position_state import load_positions
+        pos_data = load_positions()
+        if isinstance(pos_data, dict):
+            open_pos = pos_data.get("open_positions", pos_data)
+            if isinstance(open_pos, dict):
+                held_tickers = {t.upper() for t in open_pos.keys()}
+            elif isinstance(open_pos, list):
+                held_tickers = {p.get("ticker", "").upper() for p in open_pos if isinstance(p, dict)}
+    except Exception as e:
+        logger.warning(f"Failed to load positions for alert sweep: {e}")
+
     risk_events: List[RiskEvent] = []
     for o in onsets:
+        if o.ticker not in held_tickers:
+            continue
         risk_events.extend(evaluate_risk(
             ticker=o.ticker,
             planned_stop=o.stop,
@@ -516,6 +555,7 @@ def run_daily_alert_sweep(
             action_code=o.action_code,
             ext_z=o.ext_z,
             date=date,
+            held=True,
             atr=o.atr,
         ))
     risk_sent = fire_risk(risk_events) if notify_enabled else []

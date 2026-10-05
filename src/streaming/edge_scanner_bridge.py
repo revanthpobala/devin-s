@@ -216,7 +216,8 @@ class EdgeScannerBridge:
         self._max_pending: int = 20
 
     def _get_today_str(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
     def is_slot_available(self) -> bool:
         """Query the RUNNING ContinuousScreenerDaemon singleton for slot availability.
@@ -251,6 +252,11 @@ class EdgeScannerBridge:
         if not sym:
             return False
 
+        direction = str(alert.get("direction", "LONG")).upper()
+        if direction != "LONG":
+            logger.info(f"🚫 {sym} is SHORT setup; auto-dispatch is LONG only.")
+            return False
+
         today_str = self._get_today_str()
         with self._lock:
             # Rollover to a new trading day clears both dispatched and pending state.
@@ -282,14 +288,16 @@ class EdgeScannerBridge:
                 )
                 return True
 
-            self._mark_dispatched(sym)
-            _set_candidate_status(sym, "DISPATCHED")
+            _set_candidate_status(sym, "RESEARCHING")
             logger.info(
-                f"🚀 [EdgeScannerBridge] Dispatched {sym} ({str(alert.get('direction', 'LONG')).upper()}, "
+                f"🚀 [EdgeScannerBridge] Dispatched {sym} ({direction}, "
                 f"Score: {float(alert.get('score', 0.0)):.1f}, Trigger: {alert.get('trigger')}) to Deep Research."
             )
 
-        self._spawn_research_worker(sym, alert, today_str)
+        threading.Thread(
+            target=self._spawn_research_worker, args=(sym, alert, today_str),
+            name=f"EdgeDeep_{sym}", daemon=True,
+        ).start()
         return True
 
     def manual_dispatch(self, sym: str, alert: Optional[Dict[str, Any]] = None) -> bool:
@@ -427,9 +435,12 @@ class EdgeScannerBridge:
                 return
             logger.info(f"✅ Autonomous deep research pipeline finished for {sym}.")
 
+            with self._lock:
+                self._mark_dispatched(sym)
+            _set_candidate_status(sym, "COMPLETED")
+
             # Verify research verdict and sync watch alerts only if approved
             self._post_research_sync(sym, today_str)
-            _set_candidate_status(sym, "COMPLETED")
 
         except Exception as exc:
             logger.error(f"❌ Error in Deep Research worker for {sym}: {exc}", exc_info=True)

@@ -86,7 +86,7 @@ def test_unknown_preset_is_rejected():
 
 def test_preset_endpoint_applies_and_reports():
     out = desk_mod.apply_rr_preset_endpoint("1_3")
-    assert out["updated"] == {"rr_market_min": 3.0, "rr_hi_rr": 6.0}
+    assert out["updated"] == {"rr_market_min": 3.0, "rr_hi_rr": 3.0}
     assert out["active_preset"] == "1_3"
     assert rc.min_rr() == 3.0
 

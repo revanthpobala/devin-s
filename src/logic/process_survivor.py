@@ -486,41 +486,9 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             t1_lvl = float(long_p.get("target")) if long_p.get("target") else None
             t2_lvl = float(long_p.get("target_2")) if long_p.get("target_2") else None
 
-            if not stop_lvl and data_window:
-                for k in ("stop_loss", "Long Stop Loss", "conformal_certified_stop_14d", "stop", "tactical_stop"):
-                    if data_window.get(k) is not None:
-                        try:
-                            val = float(data_window[k])
-                            if val > 0:
-                                stop_lvl = val
-                                break
-                        except Exception:
-                            pass
-
-            if not t1_lvl and data_window:
-                for k in ("Long Target T1 Waypoint", "target_1", "Long Target", "target"):
-                    if data_window.get(k) is not None:
-                        try:
-                            val = float(data_window[k])
-                            if val > 0:
-                                t1_lvl = val
-                                break
-                        except Exception:
-                            pass
-
             # Guard against invalid stop geometry (stop >= entry_low for LONG)
             if stop_lvl is not None and e_low is not None and float(stop_lvl) >= float(e_low):
-                atr_ref = None
-                if data_window:
-                    for k in ("RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR"):
-                        if data_window.get(k) is not None:
-                            try:
-                                atr_ref = float(data_window[k])
-                                break
-                            except Exception:
-                                pass
-                atr_buf = atr_ref if (atr_ref and atr_ref > 0) else (float(e_low) * 0.03)
-                stop_lvl = round(float(e_low) - max(0.20 * atr_buf, 0.05), 2)
+                stop_lvl = None
 
             s_lane = "WATCH_SHADOW" if triage.get("triage") == "WATCH" else (triage.get("setup_lane") or "RR_SETUP")
             dw_bar_date = (data_window.get("date") or data_window.get("time") or data_window.get("Date") or today_str) if data_window else today_str
@@ -585,7 +553,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "kind": "NEW",
                 "atr_at_signal": atr_val,
                 "spot_at_signal": spot_val,
-                "rr_at_market_at_signal": float(triage.get("rr_at_market") or triage.get("rr") or 0.0) if (triage.get("rr_at_market") or triage.get("rr")) else None,
+                "rr_at_market_at_signal": float(triage["rr_at_market"]) if triage.get("rr_at_market") is not None else None,
                 "lane_prior_win": triage.get("lane_prior_win"),
                 "lane_prior_ev": triage.get("lane_prior_ev"),
                 "pb_funnel": triage.get("pb_funnel"),
@@ -1238,23 +1206,23 @@ Input:
 Output:
 {"ticker": "MSFT", "dominant_side": "long", "entry_mode": "INCOME_CSP", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "none", "news_sentiment": "neutral", "key_flags": [], "reasoning": "INCOME_CSP fires on Put-Sell Timing setup. Structure supports CSP/put credit at support with IV rank 65. Target 1.25x/1.50x put strikes at 385/380. PASS triage.", "triage": "PASS", "conviction": 6, "send_for_deep_research": false}
 
-Example 3 (Base Compression / Breakout / Floor Defense):
+Example 3 (Base Compression / Reversal / Floor Defense):
 Input:
 {
-  "ticker": "AVTR", "price": 15.59,
+  "ticker": "SYNTH", "price": 50.0,
   "weinstein_stage": 1, "darvas_base_status": "Mature Base (300 bars) - High Breakout Compression",
   "active_candlestick_patterns": ["🟢 Bullish Daily Closingmarubozu", "🟢 Bullish Daily Longline"],
   "mtf_alignment": "M ✓ W ✓ D ✓",
   "institutional_flow_bias": "Institutional Accumulation",
   "is_active_bb_kc_squeeze": true,
-  "dist_52w_high_pct": -2.87,
+  "dist_52w_high_pct": -2.5,
   "monte_carlo_p_target_first": 77.0,
-  "long_zone": [15.28, 15.40], "long_target": 15.79, "long_stop": 14.34,
-  "dominant_side": "long", "zone_state": "above_zone", "rr_from_current": 2.2,
+  "long_zone": [49.50, 50.20], "long_target": 55.0, "long_stop": 48.0,
+  "dominant_side": "long", "zone_state": "in_zone", "rr_from_current": 2.5,
   "today": "2026-10-05"
 }
 Output:
-{"ticker": "AVTR", "dominant_side": "long", "entry_mode": "BREAKOUT_LONG", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "300-bar Stage 1 base compression breakout", "news_sentiment": "neutral", "key_flags": ["base_compression", "mtf_aligned", "squeeze", "bullish_candlesticks"], "reasoning": "Stage 1 Mature Base (300 bars) in active BB-KC squeeze near 52w high (-2.8%). M✓W✓D✓ MTF long aligned with Bullish Daily Closingmarubozu and institutional accumulation. 77% Monte Carlo target touch probability. PASS triage.", "triage": "PASS", "conviction": 8, "send_for_deep_research": true}
+{"ticker": "SYNTH", "dominant_side": "long", "entry_mode": "BREAKOUT_LONG", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "300-bar Stage 1 base compression breakout", "news_sentiment": "neutral", "key_flags": ["base_compression", "mtf_aligned", "squeeze", "bullish_candlesticks"], "reasoning": "Stage 1 Mature Base (300 bars) in active BB-KC squeeze near 52w high (-2.5%). M✓W✓D✓ MTF long aligned with Bullish Daily Closingmarubozu and institutional accumulation. In zone at 50.0 with 2.5:1 R:R (Target: 55.0, Stop: 48.0). 77% Monte Carlo target touch probability. PASS triage.", "triage": "PASS", "conviction": 8, "send_for_deep_research": true}
 """
 
     # Build user prompt with few-shot example for better JSON consistency
@@ -1577,19 +1545,19 @@ def _update_research_ledger(out_dir: Path, record: dict):
     ledger_dir = out_dir / "consolidate"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     ledger_path = ledger_dir / "consolidated_results.json"
-    ledger = {}
-    if ledger_path.exists():
-        try:
-            with open(ledger_path, "r", encoding="utf-8") as f:
-                ledger = json.load(f)
-        except Exception:
-            ledger = {}
     ticker = record.get("ticker")
     if not ticker:
         return
-    ledger[ticker] = record
     try:
         with _ledger_lock:
+            ledger = {}
+            if ledger_path.exists():
+                try:
+                    with open(ledger_path, "r", encoding="utf-8") as f:
+                        ledger = json.load(f)
+                except Exception:
+                    ledger = {}
+            ledger[ticker] = record
             with open(ledger_path, "w", encoding="utf-8") as f:
                 json.dump(ledger, f, indent=2)
     except Exception as e:

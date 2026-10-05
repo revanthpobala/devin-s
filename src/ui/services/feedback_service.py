@@ -100,22 +100,6 @@ def get_feedback_loop_data() -> Dict[str, Any]:
     active_state = load_state()
     active_tickers = list(active_state.keys())
 
-    # Auto-reconcile any orphaned OPEN rows in SQLite so test fixtures don't linger as open
-    if DB_PATH.exists():
-        try:
-            with sqlite3.connect(str(DB_PATH), timeout=15.0) as conn:
-                cur = conn.cursor()
-                if not active_tickers:
-                    cur.execute("UPDATE positions SET status = 'CLOSED', exit_reason = 'RECONCILED_CLOSED', closed_at = datetime('now') WHERE status = 'OPEN'")
-                else:
-                    placeholders = ",".join("?" for _ in active_tickers)
-                    cur.execute(
-                        f"UPDATE positions SET status = 'CLOSED', exit_reason = 'RECONCILED_CLOSED', closed_at = datetime('now') WHERE status = 'OPEN' AND symbol NOT IN ({placeholders})",
-                        active_tickers,
-                    )
-                conn.commit()
-        except Exception as e:
-            logger.debug(f"Error reconciling db open positions: {e}")
 
     # Open positions come EXCLUSIVELY from active_state (data/positions.json)
     open_positions: List[Dict[str, Any]] = []
@@ -196,11 +180,7 @@ def get_feedback_loop_data() -> Dict[str, Any]:
                            exit_reason, realized_broker_pnl, raw_alert
                     FROM positions
                     WHERE status = 'CLOSED'
-                      AND raw_alert IS NOT NULL
-                      AND raw_alert != ''
-                      AND raw_alert != '{}'
-                      AND exit_reason != 'TEST_FIXTURE_RECONCILED'
-                      AND exit_reason != 'RECONCILED_CLOSED'
+                      AND (exit_reason IS NULL OR (exit_reason != 'TEST_FIXTURE_RECONCILED' AND exit_reason != 'RECONCILED_CLOSED'))
                     ORDER BY closed_at DESC
                     LIMIT 50
                 """)
@@ -242,62 +222,72 @@ def get_feedback_loop_data() -> Dict[str, Any]:
     win_r_sum = 0.0
     loss_r_sum = 0.0
 
+    from src.tracking.r_calculator import compute_r
+
     for c in closed_positions:
         trade_id = str(c.get("trade_id") or c.get("ticker", "trade"))
         ticker = str(c.get("ticker", "")).upper()
         side = str(c.get("side", "LONG")).upper()
         entry_px = float(c.get("entry_price") or 0.0)
         exit_px = float(c.get("exit_price") or entry_px)
-        stop_px = float(c.get("stop") or c.get("initial_stop") or 0.0)
+        stop_px = float(c.get("initial_stop") or c.get("stop") or 0.0)
         t1_px = float(c.get("target") or c.get("target_1") or 0.0)
-        exit_why = str(c.get("exit_reason") or "Manual close")
+        exit_why = c.get("exit_reason")  # Keep NULL exit_reason as None
 
-        # Determine realized R
-        r_val = c.get("r_net") or c.get("gross_r")
-        if r_val is not None:
-            realized_r = round(float(r_val), 2)
+        # Determine realized R via unified compute_r
+        unit = "option" if c.get("instrument_type") == "OPTION" or "option" in str(c.get("strategy", "")).lower() else "share"
+        r_val = c.get("r_net") if c.get("r_net") is not None else c.get("gross_r")
+        if r_val is not None and abs(float(r_val)) <= 20.0:
+            realized_r = round(float(r_val), 4)
         else:
-            risk = abs(entry_px - stop_px) if (entry_px and stop_px) else 0.0
-            if risk > 0:
-                gain = (exit_px - entry_px) if "LONG" in side else (entry_px - exit_px)
-                realized_r = round(gain / risk, 2)
+            realized_r = compute_r(
+                unit=unit,
+                entry=entry_px,
+                exit_px=exit_px,
+                stop=stop_px if stop_px > 0 else None,
+                side=side,
+                atr=c.get("atr"),
+                debit=c.get("debit"),
+                dollar_pnl=c.get("realized_broker_pnl"),
+            )
+
+        # Outcome bucketing: scratch (|R| < 0.1) is its own bucket
+        if realized_r is not None:
+            total_r += realized_r
+            if abs(realized_r) < 0.1:
+                outcome = "SCRATCH"
+                scratches += 1
+                auto_grade = "B"
+            elif realized_r >= 0.1:
+                outcome = "WIN"
+                wins += 1
+                win_r_sum += realized_r
+                auto_grade = "A" if realized_r >= 1.5 else "B"
             else:
-                realized_r = 0.0
-
-        total_r += realized_r
-
-        # Outcome
-        if realized_r >= 0.5:
-            outcome = "WIN"
-            wins += 1
-            win_r_sum += realized_r
-            auto_grade = "A" if realized_r >= 1.5 else "B"
-        elif realized_r <= -0.3:
-            outcome = "LOSS"
-            losses += 1
-            loss_r_sum += abs(realized_r)
-            auto_grade = "C" if realized_r >= -1.1 else "D"
+                outcome = "LOSS"
+                losses += 1
+                loss_r_sum += abs(realized_r)
+                auto_grade = "C" if realized_r >= -1.1 else "D"
         else:
-            outcome = "SCRATCH"
-            scratches += 1
-            auto_grade = "B"
+            outcome = "UNMEASURED"
+            auto_grade = "N/A"
 
         # Automated Diagnostic ("What Needs Improving")
         improvements: List[str] = []
         if outcome == "LOSS":
-            if realized_r < -1.15:
+            if realized_r is not None and realized_r < -1.15:
                 improvements.append("⚠️ Stop Slippage: Loss exceeded 1.0R (-{:.2f}R). Exit was delayed or stop was widened past initial invalidation.".format(abs(realized_r)))
-            else:
+            elif realized_r is not None:
                 improvements.append("🛡️ Clean Invalidation: Hard stop honored at planned risk level ({:.2f}R). Standard trade variance.".format(realized_r))
-            if "EOD" in exit_why:
+            if exit_why and "EOD" in str(exit_why):
                 improvements.append("⏳ Time Invalidation: Trade closed due to EOD Flatten rule to eliminate overnight binary risk.")
         elif outcome == "WIN":
-            if realized_r >= 1.5:
+            if realized_r is not None and realized_r >= 1.5:
                 improvements.append("🏆 High Expectancy: Reached Target 1 with favorable R:R. Captured +{:.2f}R profit.".format(realized_r))
-            else:
+            elif realized_r is not None:
                 improvements.append("✅ Profit Secured: Partial scale or early tactical exit (+{:.2f}R).".format(realized_r))
-        else:
-            improvements.append("⚖️ Breakeven Defense: Position scratched ({:.2f}R) to prevent turning a winning trigger into a loss.".format(realized_r))
+        elif outcome == "SCRATCH":
+            improvements.append("⚖️ Breakeven Defense: Position scratched ({:.2f}R) to prevent turning a winning trigger into a loss.".format(realized_r if realized_r is not None else 0.0))
 
         saved_notes = notes_store.get(trade_id) or notes_store.get(ticker) or {}
         user_grade = saved_notes.get("grade") or auto_grade
@@ -436,3 +426,32 @@ def manage_position_action(
         return {"status": "ok", "message": f"Closed position on {sym}", "closed_record": closed}
 
     return {"status": "error", "message": f"Unknown action: {act}"}
+
+
+def reconcile_open_positions() -> Dict[str, Any]:
+    """Reconcile orphaned OPEN rows in SQLite against data/positions.json.
+    Refuses when positions.json is empty or unreadable, and keys by row id.
+    """
+    active_state = load_state()
+    if not active_state or not isinstance(active_state, dict):
+        return {"status": "refused", "reason": "positions.json is empty or unreadable", "reconciled": 0}
+
+    active_tickers = set(k.upper() for k in active_state.keys())
+    if not active_tickers:
+        return {"status": "refused", "reason": "No active positions found in positions.json", "reconciled": 0}
+
+    reconciled_count = 0
+    if DB_PATH.exists():
+        with sqlite3.connect(str(DB_PATH), timeout=15.0) as conn:
+            cur = conn.cursor()
+            rows = cur.execute("SELECT rowid, symbol FROM positions WHERE status = 'OPEN'").fetchall()
+            for rowid, sym in rows:
+                if (sym or "").upper() not in active_tickers:
+                    cur.execute(
+                        "UPDATE positions SET status = 'CLOSED', exit_reason = 'RECONCILED_CLOSED', closed_at = datetime('now') WHERE rowid = ?",
+                        (rowid,),
+                    )
+                    reconciled_count += 1
+            conn.commit()
+
+    return {"status": "success", "reconciled": reconciled_count}

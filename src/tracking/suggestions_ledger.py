@@ -337,8 +337,7 @@ def append_suggestion(data: Dict[str, Any]) -> int:
         if val is None or val == "" or val == "N/A":
             return None
         try:
-            v = float(val)
-            return v if v > 0 else None
+            return float(val)
         except (ValueError, TypeError):
             return None
 
@@ -408,12 +407,12 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     gate_status=excluded.gate_status,
                     gate_reasons=excluded.gate_reasons,
                     verdict=excluded.verdict,
-                    setup_lane=excluded.setup_lane,
+                    setup_lane=COALESCE(excluded.setup_lane, suggestions.setup_lane),
                     kind=excluded.kind,
-                    rr_at_market_at_signal=excluded.rr_at_market_at_signal,
-                    spot_at_signal=excluded.spot_at_signal,
-                    lane_prior_win=excluded.lane_prior_win,
-                    lane_prior_ev=excluded.lane_prior_ev,
+                    rr_at_market_at_signal=COALESCE(excluded.rr_at_market_at_signal, suggestions.rr_at_market_at_signal),
+                    spot_at_signal=COALESCE(excluded.spot_at_signal, suggestions.spot_at_signal),
+                    lane_prior_win=COALESCE(excluded.lane_prior_win, suggestions.lane_prior_win),
+                    lane_prior_ev=COALESCE(excluded.lane_prior_ev, suggestions.lane_prior_ev),
                     pb_funnel=COALESCE(excluded.pb_funnel, suggestions.pb_funnel),
                     fill_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_date END,
                     fill_price=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_price END,

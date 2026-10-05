@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import subprocess
 import sys
@@ -133,10 +134,15 @@ def scrape_normal_chart_endpoint(payload: dict = Body(...)):
         from src.data.tv_scraper import TVScraper
 
         symbol = (payload.get("symbol") or "SPY").strip().upper()
+        if not re.match(r'^[A-Z0-9.\-_/]{1,12}$', symbol):
+            return {"status": "error", "error": "Invalid symbol format"}
         date_str = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', str(date_str).strip()):
+            return {"status": "error", "error": "Invalid date format"}
+        date_str = str(date_str).strip()
         scraper = TVScraper(target_date=date_str)
         res = scraper.capture_normal_chart(symbol)
-        rel_path = f"/data/raw/{date_str}/{symbol}/{symbol}_chart.png"
+        rel_path = f"/api/chart/{date_str}/{symbol}"
         return {"status": "ok", "image_url": rel_path, **res}
     except Exception as e:
         logger.error(f"Normal chart scrape error for {payload.get('symbol')}: {e}")

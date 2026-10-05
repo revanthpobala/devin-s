@@ -454,10 +454,11 @@ def run_ops_checks(
 
     if broken and notify:
         body = "\n".join(f"- **{n}**: {d}" for n, d in broken)
+        today = datetime.now().strftime("%Y-%m-%d")
         notify_ops(
             f"{len(broken)} OPS check(s) failing",
             body,
-            dedupe_key="OPS:" + ",".join(sorted(n for n, _ in broken)),
+            dedupe_key=f"OPS:{today}:" + ",".join(sorted(n for n, _ in broken)),
         )
 
     return results

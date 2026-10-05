@@ -334,9 +334,9 @@ def stage1_fast_filter(
             or val.get("regular", {}).get("regularMarketLastPrice")
             or 0.0
         )
-        if last_px < 15.0:
+        if last_px < 20.0:
             if funnel_tracker:
-                funnel_tracker["rejections"]["price_under_15"] = funnel_tracker["rejections"].get("price_under_15", 0) + 1
+                funnel_tracker["rejections"]["price_under_20"] = funnel_tracker["rejections"].get("price_under_20", 0) + 1
             continue
 
         high_52 = quote.get("52WeekHigh") or 0.0
@@ -692,18 +692,24 @@ def evaluate_technical_coiling(
     return res
 
 
-def check_earnings_blackout(ticker: str) -> bool:
-    """Gate 4: Returns True if earnings are safely > 14 days away or unknown. False if within 14 days."""
+def check_earnings_blackout(ticker: str, window_days: int = 30) -> bool:
+    """Gate 4: Returns True if earnings are safely > window_days away (default 30).
+    Fail-closed: Returns False if within window_days, if earnings date is unknown/unavailable,
+    or on any error."""
     try:
         from src.clients.earnings_client import get_next_earnings_days
 
         days = get_next_earnings_days(ticker)
-        if days is not None and days <= 14:
-            logger.info(f"[{ticker}] Earnings blackout triggered: reports in {days} days. Disqualified.")
+        if days is None:
+            logger.info(f"[{ticker}] Earnings date unknown: fail-closed blackout triggered. Disqualified.")
             return False
-    except Exception:
-        pass
-    return True
+        if days <= window_days:
+            logger.info(f"[{ticker}] Earnings blackout triggered: reports in {days} days (<= {window_days}). Disqualified.")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"[{ticker}] Earnings lookup failed ({e}): fail-closed blackout triggered. Disqualified.")
+        return False
 
 
 def run_stage2_technical_scan(
@@ -1309,6 +1315,7 @@ def run_autonomous_screener_pipeline(
     fresh_picks = [
         p for p in sorted_picks
         if (p.get("symbol") or p.get("Ticker") or "").upper().strip() not in already_researched
+        and (p.get("side") or "LONG").upper() != "SHORT"
     ]
     if not fresh_picks:
         logger.info(f"🤖 [AUTONOMOUS ENGINE] All {len(sorted_picks)} candidates already have recent deep research reports in the last 5 sessions.")
@@ -1436,26 +1443,35 @@ def run_autonomous_screener_pipeline(
             rec = {}
             if thesis_path.exists():
                 try:
+                    from src.logic.process_survivor import _deep_research_gate
+
                     rec = json.loads(thesis_path.read_text(encoding="utf-8"))
-                    llm_d = rec.get("llm_data") or {}
                     triage_d = rec.get("triage") or {}
                     if isinstance(triage_d, dict):
                         triage_verdict = str(triage_d.get("triage", "WATCH"))
                     else:
                         triage_verdict = str(triage_d)
-                    
-                    llm_send = bool(llm_d.get("send_for_deep_research", rec.get("send_for_deep_research", False)))
-                    is_pass = (triage_verdict == "PASS")
-                    is_strong_watch = (triage_verdict == "WATCH") and (
-                        tier == "HIGH_PRIORITY" or score >= 60.0 or llm_send or float(rec.get("conviction") or 0.0) >= 50.0
+                        triage_d = {"triage": triage_verdict}
+
+                    llm_d = rec.get("llm_data") or {}
+                    raw_send = (
+                        rec.get("send_for_deep_research")
+                        if rec.get("send_for_deep_research") is not None
+                        else (triage_d.get("send_for_deep_research")
+                              if isinstance(triage_d, dict) and triage_d.get("send_for_deep_research") is not None
+                              else (llm_d.get("send_for_deep_research") if isinstance(llm_d, dict) else None))
                     )
-                    send_to_deep = is_pass or is_strong_watch or llm_send
-                except Exception:
-                    pass
+                    if raw_send is not None:
+                        send_to_deep = bool(raw_send) and triage_verdict != "CUT"
+                    else:
+                        earn_gate = rec.get("earnings_gate", "PASS" if check_earnings_blackout(sym) else "FAIL")
+                        quality_pass, send, rank_score, has_plan = _deep_research_gate(triage_d, earn_gate)
+                        send_to_deep = bool(send)
+                except Exception as e_gate:
+                    logger.warning(f"[{sym}] Error checking deep research eligibility: {e_gate}")
+                    send_to_deep = False
             else:
-                # If local research completed without thesis file, preserve high priority screener candidate
-                if tier == "HIGH_PRIORITY" or score >= 65.0:
-                    send_to_deep = True
+                send_to_deep = False
 
             logger.info(f"[{sym}] Local triage verdict: {triage_verdict} (send_for_deep_research={send_to_deep})")
 
@@ -1657,8 +1673,15 @@ def run_schwab_pre_move_scan(
             s for s in final_survivors
             if float(s.get("priority_score", 0.0)) >= 50.0 and s.get("weinstein_stage") not in (3, 4)
         ]
-        long_top_picks = qualified_longs[:top_n]
-        filtered_out = len(final_survivors) - len(qualified_longs)
+        seen_syms = set()
+        deduped_longs = []
+        for s in qualified_longs:
+            sym = s.get("symbol")
+            if sym and sym not in seen_syms:
+                seen_syms.add(sym)
+                deduped_longs.append(s)
+        long_top_picks = deduped_longs[:top_n]
+        filtered_out = len(final_survivors) - len(long_top_picks)
 
         print("\n" + "=" * 135)
         print(f">> 🎯 TOP {len(long_top_picks)} PRE-MOVE SWING SETUPS (Schwab 1000 Index / SCHK)")
@@ -1746,13 +1769,17 @@ def run_schwab_pre_move_scan(
 
     # Autonomous Execution Pathway
     if autonomous:
-        picks_to_route = short_top_picks if scan_mode == "short" else long_top_picks
-        run_autonomous_screener_pipeline(picks_to_route, auto_max=auto_max, run_deep=True, date_str=date_str, headless=headless)
+        if scan_mode == "short":
+            logger.info("Autonomous pipeline: Shorts are never auto-dispatched into deep research.")
+        else:
+            run_autonomous_screener_pipeline(long_top_picks, auto_max=auto_max, run_deep=True, date_str=date_str, headless=headless)
 
     # Legacy Auto-scrape flag (if passed explicitly)
     elif auto_scrape:
-        picks_to_scrape = short_top_picks if scan_mode == "short" else long_top_picks
-        run_autonomous_screener_pipeline(picks_to_scrape, auto_max=top_n, run_deep=True, date_str=date_str, headless=headless)
+        if scan_mode == "short":
+            logger.info("Auto-scrape pipeline: Shorts are never auto-dispatched into deep research.")
+        else:
+            run_autonomous_screener_pipeline(long_top_picks, auto_max=top_n, run_deep=True, date_str=date_str, headless=headless)
 
     if scan_mode == "short":
         return short_top_picks

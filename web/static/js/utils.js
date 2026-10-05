@@ -16,7 +16,7 @@ window.AppUtils = {
   },
 
   /**
-   * Safely render markdown with marked.js
+   * Safely render markdown with marked.js and DOMPurify
    */
   renderMarkdown(text) {
     if (!text) return '';
@@ -64,19 +64,25 @@ window.AppUtils = {
             </details>
           `;
         }
+
+        // DOMPurify sanitization
+        if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+          html = window.DOMPurify.sanitize(html, {
+            ADD_TAGS: ['button', 'span', 'details', 'summary', 'pre', 'code'],
+            ADD_ATTR: ['target', 'onclick', 'data-action', 'data-prompt', 'data-query', 'class', 'style', 'open']
+          });
+        } else {
+          // Fallback: neutralize <img onerror> or <script> tags
+          html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+                     .replace(/<img\b[^>]*\bonerror\s*=[^>]*>/gi, '')
+                     .replace(/<[a-z0-9_-]+\b[^>]*\bon[a-z]+\s*=[^>]*>/gi, '');
+        }
         return html;
       }
     } catch (e) {
       console.warn('Error parsing markdown', e);
     }
-    return String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\n/g, '<br/>');
+    return this.escapeHtml(text);
   },
 
   /**
@@ -272,6 +278,18 @@ if (typeof window !== 'undefined') {
     if (window.AppUtils && window.AppUtils.showToast) {
       window.AppUtils.showToast(msg, type);
     }
+  };
+
+  window.AppToast = window.AppToast || {
+    show: function(msg, type = 'info') {
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(msg, type);
+      }
+    }
+  };
+
+  window.esc = function(s) {
+    return window.AppUtils ? window.AppUtils.escapeHtml(s) : String(s ?? '');
   };
 
   window.addEventListener('DOMContentLoaded', () => {

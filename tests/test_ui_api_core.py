@@ -105,13 +105,30 @@ def test_api_copilot_chat_sessions():
 
 
 def test_api_copilot_python_execute():
-    """Verify /api/copilot/execute-python executes quantitative math in sandbox."""
+    """Verify /api/copilot/execute-python denies unapproved execution and executes when approved."""
+    # 1. Unapproved must be denied
     status, body = _fetch(
         "/api/copilot/execute-python",
         method="POST",
         data={
             "code": "r = 100 - 45; print(f'DIFF={r}')",
-            "ticker": "WMT"
+            "ticker": "WMT",
+            "approved": False,
+        }
+    )
+    assert status == 200
+    data = json.loads(body)
+    assert data["success"] is False
+    assert "explicit user approval required" in data["error"]
+
+    # 2. Approved executes in sandbox
+    status, body = _fetch(
+        "/api/copilot/execute-python",
+        method="POST",
+        data={
+            "code": "r = 100 - 45; print(f'DIFF={r}')",
+            "ticker": "WMT",
+            "approved": True,
         }
     )
     assert status == 200

@@ -470,12 +470,12 @@ window.AppWatchlist = {
 
     const totalResolved = wonCount + lostCount;
     const winRate = totalResolved > 0 ? ((wonCount / totalResolved) * 100).toFixed(1) : '0.0';
-    const avgWin$ = wonCount > 0 ? (wonDollars / wonCount).toFixed(2) : '0.00';
-    const avgLoss$ = lostCount > 0 ? (lostDollars / lostCount).toFixed(2) : '0.00';
+    const avgWin$ = wonCount > 0 ? (wonDollars / wonCount).toFixed(2) : 'n/a';
+    const avgLoss$ = lostCount > 0 ? (lostDollars / lostCount).toFixed(2) : 'n/a';
     const netDollars = (wonDollars + lostDollars + activeDollars).toFixed(2);
     const netSign = Number(netDollars) >= 0 ? '+' : '';
     const netColor = Number(netDollars) >= 0 ? 'var(--emerald-light, #10b981)' : 'var(--rose-light, #f43f5e)';
-    const profitFactor = Math.abs(lostDollars) > 0 ? (Math.abs(wonDollars) / Math.abs(lostDollars)).toFixed(2) : '99.9';
+    const profitFactor = Math.abs(lostDollars) > 0 ? (Math.abs(wonDollars) / Math.abs(lostDollars)).toFixed(2) : 'n/a';
 
     strip.innerHTML = `
       <div class="perf-kpi-card win-rate" style="cursor:pointer;" onclick="AppWatchlist.setFilterTab('TARGET_HIT')" title="Click to view all winning trades">
@@ -1320,10 +1320,21 @@ window.AppWatchlist = {
         const optionsText = t.options_summary || 'No options structure defined';
 
         const spot = Number(t.last_price || 0);
-        const stop = Number(t.tactical_stop || (spot * 0.95));
-        const entry = Number(t.entry_zone_high || spot);
-        const t1 = Number(t.target_1 || (spot * 1.05));
-        const t2 = Number(t.target_2 || (spot * 1.10));
+        const stop = (t.tactical_stop !== null && t.tactical_stop !== undefined) ? Number(t.tactical_stop) : null;
+        const entry = (t.entry_zone_high !== null && t.entry_zone_high !== undefined) ? Number(t.entry_zone_high) : (spot > 0 ? spot : null);
+        const t1 = (t.target_1 !== null && t.target_1 !== undefined) ? Number(t.target_1) : null;
+        const t2 = (t.target_2 !== null && t.target_2 !== undefined) ? Number(t.target_2) : null;
+
+        const stopStr = stop !== null ? `$${stop.toFixed(2)}` : 'n/a';
+        const entryStr = entry !== null ? `$${entry.toFixed(2)}` : 'n/a';
+        const spotStr = spot > 0 ? `$${spot.toFixed(2)}` : 'n/a';
+        const t1Str = t1 !== null ? `$${t1.toFixed(2)}` : 'n/a';
+        const t2Str = t2 !== null ? `$${t2.toFixed(2)}` : 'n/a';
+        const zLow = t.entry_zone_low ?? t.entry_low;
+        const zHigh = t.entry_zone_high ?? t.entry_high;
+        const zoneStr = (zLow !== null && zLow !== undefined && zHigh !== null && zHigh !== undefined)
+          ? `$${Number(zLow).toFixed(2)} - $${Number(zHigh).toFixed(2)}`
+          : 'n/a';
 
         const compR = window.AppUtils ? AppUtils.getCompanyName(t.ticker) : t.ticker;
         const compTitle = (compR || t.ticker).replace(/"/g, '&quot;');
@@ -1333,7 +1344,7 @@ window.AppWatchlist = {
             <div class="target-header">
               <div class="target-sym">
                 <span class="radar-ticker-sym" title="${compTitle} ($${t.ticker})" data-ticker="${t.ticker}" style="cursor:help;">${t.ticker}</span>
-                <span class="spot-badge">$${spot.toFixed(2)}</span>
+                <span class="spot-badge">${spotStr}</span>
                 <span class="badge ${statusClass}">${t.status} (${distDisplay})</span>
               </div>
               <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="padding:5px 12px; font-size:12px;">📑 Read Dossier</button>
@@ -1341,11 +1352,11 @@ window.AppWatchlist = {
             
             <div class="price-ladder-box">
               <div class="price-ladder-labels">
-                <span style="color:var(--rose-light);">Stop $${stop.toFixed(2)}</span>
-                <span style="color:var(--amber-light);">Entry $${entry.toFixed(2)}</span>
-                <span style="color:var(--cyan-glow); font-weight:700;">Spot $${spot.toFixed(2)}</span>
-                <span style="color:var(--emerald-light);">T1 $${t1.toFixed(2)}</span>
-                <span style="color:var(--violet-light);">T2 $${t2.toFixed(2)}</span>
+                <span style="color:var(--rose-light);">Stop ${stopStr}</span>
+                <span style="color:var(--amber-light);">Entry ${entryStr}</span>
+                <span style="color:var(--cyan-glow); font-weight:700;">Spot ${spotStr}</span>
+                <span style="color:var(--emerald-light);">T1 ${t1Str}</span>
+                <span style="color:var(--violet-light);">T2 ${t2Str}</span>
               </div>
               <div class="price-ladder-track">
                 <div class="price-ladder-progress" style="width: 100%;"></div>
@@ -1353,10 +1364,10 @@ window.AppWatchlist = {
             </div>
 
             <div class="levels-row">
-              <div class="level-col"><label>Entry Zone</label><span>$${Number(t.entry_zone_low || 0).toFixed(2)} - $${Number(t.entry_zone_high || 0).toFixed(2)}</span></div>
-              <div class="level-col"><label>Tactical Stop</label><span style="color:var(--rose-light);">$${stop.toFixed(2)}</span></div>
-              <div class="level-col"><label>Target 1</label><span style="color:var(--emerald-light);">$${t1.toFixed(2)}</span></div>
-              <div class="level-col"><label>Target 2</label><span style="color:var(--cyan-glow);">$${t2.toFixed(2)}</span></div>
+              <div class="level-col"><label>Entry Zone</label><span>${zoneStr}</span></div>
+              <div class="level-col"><label>Tactical Stop</label><span style="color:var(--rose-light);">${stopStr}</span></div>
+              <div class="level-col"><label>Target 1</label><span style="color:var(--emerald-light);">${t1Str}</span></div>
+              <div class="level-col"><label>Target 2</label><span style="color:var(--cyan-glow);">${t2Str}</span></div>
             </div>
             <div class="options-snippet">
               <strong>Options Plan:</strong> ${optionsText}
@@ -1603,7 +1614,11 @@ window.AppWatchlist = {
                 const dist = t.distance_to_entry_pct;
                 const distStr = (dist !== null && dist !== undefined) ? `${dist >= 0 ? '+' : ''}${Number(dist).toFixed(2)}%` : '--';
                 const distColor = (dist !== null && Math.abs(dist) <= 1.0) ? 'var(--emerald)' : 'var(--text-muted)';
-                const zoneStr = (t.entry_low && t.entry_high) ? `$${Number(t.entry_low).toFixed(2)} – $${Number(t.entry_high).toFixed(2)}` : '--';
+                const zLow = t.entry_zone_low ?? t.entry_low;
+                const zHigh = t.entry_zone_high ?? t.entry_high;
+                const zoneStr = (zLow !== null && zLow !== undefined && zHigh !== null && zHigh !== undefined)
+                  ? `$${Number(zLow).toFixed(2)} – $${Number(zHigh).toFixed(2)}`
+                  : '--';
                 const stopStr = t.tactical_stop ? `$${Number(t.tactical_stop).toFixed(2)}` : '--';
                 const targetsStr = (t.target_1 || t.target_2) ? `T1: $${t.target_1 || '--'}${t.target_2 ? ` · T2: $${t.target_2}` : ''}` : '--';
                 return `

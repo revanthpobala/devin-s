@@ -121,6 +121,8 @@ def get_pending_alerts_count(date_str: Optional[str] = None) -> int:
             query = """
                 SELECT count(*) FROM alerts
                 WHERE (llm_decision IS NULL OR llm_decision = '' OR llm_decision = '```' OR llm_decision = '...' OR llm_decision = 'AI EVALUATED')
+                  AND COALESCE(status, '') != 'FAILED'
+                  AND COALESCE(routing_stage, 'RECORDED') != 'ARCHIVED'
             """
             params = []
             if date_str:
@@ -175,16 +177,7 @@ class AutoTriageDaemon(threading.Thread):
         logger.info("🤖 [AutoTriageDaemon] stopped.")
 
     def _process_batch(self):
-        """Evaluate today's pending alerts. History is never regraded.
-
-        This query used to ORDER BY today's-first but not FILTER to today, so it walked the entire
-        table and graded every NULL-verdict alert it found -- and because this is an always-on
-        daemon rather than a click-triggered route, it was the engine steadily re-grading the
-        archived backlog against the live tape.
-
-        Strftime('now') is UTC, while alerts.date is Eastern; near midnight ET the two disagree by
-        a day, so the boundary comes from get_eastern_date_str().
-        """
+        """Evaluate pending alerts with attempt cap. Clears backlog and sets FAILED status on exhausted alerts."""
         try:
             from src.tracking.alert_db import get_eastern_date_str
 
@@ -198,6 +191,7 @@ class AutoTriageDaemon(threading.Thread):
                       AND (llm_decision IS NULL OR llm_decision = ''
                            OR llm_decision = '```' OR llm_decision = '...'
                            OR llm_decision = 'AI EVALUATED')
+                      AND COALESCE(status, '') != 'FAILED'
                       AND COALESCE(routing_stage, 'RECORDED') != 'ARCHIVED'
                     ORDER BY timestamp DESC
                     LIMIT ?
@@ -213,15 +207,36 @@ class AutoTriageDaemon(threading.Thread):
             for row in rows:
                 if self._stop_event.is_set():
                     break
+                alert_dict = dict(row)
+                msg_id = alert_dict.get("message_id")
+                raw_attempts = alert_dict.get("triage_attempts") or 0
                 try:
-                    alert_dict = dict(row)
+                    attempts = int(raw_attempts)
+                except (ValueError, TypeError):
+                    attempts = 0
+
+                # Attempt cap (3 attempts max)
+                if attempts >= 3:
+                    try:
+                        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+                            conn.execute(
+                                "UPDATE alerts SET status = 'FAILED', llm_decision = 'FAILED', routing_stage = 'ARCHIVED' WHERE message_id = ?",
+                                (msg_id,)
+                            )
+                            conn.commit()
+                        logger.info(f"[AutoTriageDaemon] Alert {msg_id} exceeded attempt cap ({attempts} >= 3) -> marked FAILED")
+                    except Exception as e_up:
+                        logger.warning(f"[AutoTriageDaemon] Failed marking {msg_id} as FAILED: {e_up}")
+                    continue
+
+                try:
                     res = evaluate_alert_payload(alert_dict, use_tools=False)
                     batch_count += 1
                     self.total_triaged += 1
-                    logger.info(f"🤖 [AutoTriageDaemon] Triaged {alert_dict.get('symbol')}: {res.get('llm_decision')}")
                     decision = (res.get('llm_decision') or '').upper()
                     sym = (alert_dict.get('symbol') or '').strip().upper()
-                    d_str = alert_dict.get('date') or datetime.now().strftime('%Y-%m-%d')
+                    d_str = alert_dict.get('date') or today
+                    logger.info(f"🤖 [AutoTriageDaemon] Triaged {sym} ({d_str}): {decision}")
                     if 'PASS' in decision:
                         update_research_status(sym, d_str, 'LOCAL_PASS')
                         _dispatch_deep_research_if_needed(sym, d_str)
@@ -230,7 +245,42 @@ class AutoTriageDaemon(threading.Thread):
                     elif 'CUT' in decision:
                         update_research_status(sym, d_str, 'LOCAL_CUT')
                 except Exception as e:
-                    logger.warning(f"[AutoTriageDaemon] Failed evaluating {row['symbol']}: {e}")
+                    logger.warning(f"[AutoTriageDaemon] Failed evaluating {alert_dict.get('symbol')}: {e}")
+                    new_attempts = attempts + 1
+                    status_val = 'FAILED' if new_attempts >= 3 else 'PENDING'
+                    decision_val = 'FAILED' if new_attempts >= 3 else None
+                    stage_val = 'ARCHIVED' if new_attempts >= 3 else None
+                    try:
+                        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+                            try:
+                                conn.execute(
+                                    """UPDATE alerts SET triage_attempts = ?, status = ?,
+                                       llm_decision = COALESCE(?, llm_decision),
+                                       routing_stage = COALESCE(?, routing_stage)
+                                       WHERE message_id = ?""",
+                                    (new_attempts, status_val, decision_val, stage_val, msg_id)
+                                )
+                            except sqlite3.OperationalError:
+                                try:
+                                    conn.execute("ALTER TABLE alerts ADD COLUMN triage_attempts INTEGER DEFAULT 0")
+                                    conn.execute(
+                                        """UPDATE alerts SET triage_attempts = ?, status = ?,
+                                           llm_decision = COALESCE(?, llm_decision),
+                                           routing_stage = COALESCE(?, routing_stage)
+                                           WHERE message_id = ?""",
+                                        (new_attempts, status_val, decision_val, stage_val, msg_id)
+                                    )
+                                except Exception:
+                                    conn.execute(
+                                        """UPDATE alerts SET status = ?,
+                                           llm_decision = COALESCE(?, llm_decision),
+                                           routing_stage = COALESCE(?, routing_stage)
+                                           WHERE message_id = ?""",
+                                        (status_val, decision_val, stage_val, msg_id)
+                                    )
+                            conn.commit()
+                    except Exception as e_db:
+                        logger.warning(f"[AutoTriageDaemon] Error updating attempt count for {msg_id}: {e_db}")
 
             self.last_run_time = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
             logger.info(f"✅ [AutoTriageDaemon] Batch complete: {batch_count} alert(s) triaged.")

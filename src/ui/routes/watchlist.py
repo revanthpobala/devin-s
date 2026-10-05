@@ -571,6 +571,13 @@ def sync_ticker_tastytrade_alerts(req: SyncTickerAlertsRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/watchlist/sync-tt")
+def sync_tt_alerts_endpoint(ticker: str, date: Optional[str] = None):
+    """Sync a researched ticker's structured watch levels directly into Tastytrade cloud quote alerts."""
+    req = SyncTickerAlertsRequest(ticker=ticker, date=date)
+    return sync_ticker_tastytrade_alerts(req)
+
+
 @router.post("/api/tastytrade-alerts/create")
 def create_tastytrade_alert(req: CreateAlertRequest):
     """Create a new cloud price alert on Tastytrade."""

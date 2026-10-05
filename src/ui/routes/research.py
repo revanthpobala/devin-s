@@ -1607,7 +1607,6 @@ def get_research_jobs(date: Optional[str] = None):
                         if live_pid:
                             is_alive = True
                             item["pid"] = live_pid
-                            c.execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (live_pid, job_id))
 
                     if not is_alive and item.get("stage") not in ("SCRAPING", "STARTING"):
                         t_date = item.get("target_date") or datetime.now().strftime("%Y-%m-%d")
@@ -1621,16 +1620,11 @@ def get_research_jobs(date: Optional[str] = None):
                             item["status"] = "FAILED"
                             item["stage"] = "ERROR"
                             item["error_message"] = "Process terminated before generating report"
-                        c.execute(
-                            "UPDATE active_research_jobs SET status = ?, stage = ?, error_message = ? WHERE job_id = ?",
-                            (item["status"], item["stage"], item.get("error_message"), job_id),
-                        )
                 else:
                     is_alive = False
 
             item["is_alive"] = is_alive
             jobs_list.append(item)
-        conn.commit()
         local_queue = [j for j in jobs_list if j.get("mode") == "local_only"]
         deep_queue = [j for j in jobs_list if j.get("mode") != "local_only"]
         active_local_count = get_active_local_research_count()
@@ -1673,6 +1667,12 @@ def trigger_research(req: ResearchRequest):
     tickers = [t.strip().upper() for t in re.split(r"[,;\s]+", ticker_raw) if t.strip()]
     if not tickers:
         raise HTTPException(status_code=400, detail="Ticker is required")
+    for t in tickers:
+        if not re.match(r'^[A-Z0-9.\-_/]{1,12}$', t):
+            raise HTTPException(status_code=400, detail=f"Invalid ticker format: {t}")
+    if req.date and req.date.strip():
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', req.date.strip()):
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {req.date}")
 
     if len(tickers) > 1:
         results = []
@@ -1702,9 +1702,10 @@ def trigger_research(req: ResearchRequest):
             jid = existing["job_id"]
             thread = ACTIVE_RESEARCH_WORKERS.get(jid)
             is_alive = thread.is_alive() if thread else False
-            if not is_alive and existing.get("pid"):
+            existing_pid = existing["pid"] if "pid" in existing.keys() else None
+            if not is_alive and existing_pid:
                 try:
-                    is_alive = psutil.pid_exists(existing["pid"])
+                    is_alive = psutil.pid_exists(existing_pid)
                 except Exception:
                     is_alive = False
 

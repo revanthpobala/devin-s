@@ -41,9 +41,9 @@ def _onset(ticker="T", rr=3.0, stop=96.5, close=100.0, atr=5.0):
 # --- defaults ------------------------------------------------------------------------------------
 
 def test_shipped_default_is_the_measured_floor():
-    assert rc.get_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 5.0}
+    assert rc.get_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
     assert rc.min_rr() == 2.0
-    assert rc.hi_rr() == 5.0
+    assert rc.hi_rr() == 3.0
 
 
 def test_nothing_is_written_on_read(isolated_config):
@@ -56,13 +56,14 @@ def test_nothing_is_written_on_read(isolated_config):
 # --- persistence -----------------------------------------------------------------------------------
 
 def test_set_persists_and_survives_a_cold_read(isolated_config):
-    rc.set_rr_config(rr_market_min=3.5)
+    rc.set_rr_config(rr_market_min=3.5, rr_hi_rr=4.0)
     stored = json.loads(isolated_config.read_text(encoding="utf-8"))
     assert stored["rr_market_min"] == 3.5
-    # Simulate another process: drop the in-memory cache entirely.
+    assert stored["rr_hi_rr"] == 4.0
     rc._cache.clear()
     rc._cache_mtime = None
     assert rc.min_rr() == 3.5
+    assert rc.hi_rr() == 4.0
 
 
 def test_partial_update_leaves_other_keys_alone():
@@ -74,13 +75,13 @@ def test_partial_update_leaves_other_keys_alone():
 
 def test_reset_restores_defaults(isolated_config):
     rc.set_rr_config(rr_market_min=9.0, rr_hi_rr=12.0)
-    assert rc.reset_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 5.0}
+    assert rc.reset_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
     assert not isolated_config.exists()
 
 
 def test_corrupt_file_falls_back_to_defaults_instead_of_raising(isolated_config):
     isolated_config.write_text("{not json", encoding="utf-8")
-    assert rc.get_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 5.0}
+    assert rc.get_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
 
 
 def test_external_edit_is_picked_up(isolated_config):
@@ -88,9 +89,9 @@ def test_external_edit_is_picked_up(isolated_config):
     rc.set_rr_config(rr_market_min=2.5)
     assert rc.min_rr() == 2.5
     import os, time
-    isolated_config.write_text(json.dumps({"rr_market_min": 4.0, "rr_hi_rr": 5.0}), encoding="utf-8")
+    isolated_config.write_text(json.dumps({"rr_market_min": 2.5, "rr_hi_rr": 3.0}), encoding="utf-8")
     os.utime(isolated_config, (time.time() + 10, time.time() + 10))   # ensure mtime moves
-    assert rc.min_rr() == 4.0
+    assert rc.min_rr() == 2.5
 
 
 def test_unwritable_path_raises_rather_than_corrupting_the_defaults(isolated_config, tmp_path, monkeypatch):
@@ -140,7 +141,7 @@ def test_hi_rr_equal_to_the_floor_is_allowed():
 
 def test_none_means_leave_alone_not_reset():
     """One rule, not two: the API drops None keys before calling us, and _validate does the same."""
-    rc.set_rr_config(rr_market_min=3.5)
+    rc.set_rr_config(rr_market_min=3.5, rr_hi_rr=4.0)
     assert rc._validate(rc.get_rr_config(), {"rr_market_min": None}) == {}
     assert rc.min_rr() == 3.5, "None must not silently revert to the default"
 
@@ -172,7 +173,7 @@ def test_lowering_the_floor_admits_a_row_that_was_below_it():
 def test_raising_the_floor_excludes_a_row_that_was_above_it():
     o = _onset(rr=3.0)
     assert o.rr_ok is True
-    rc.set_rr_config(rr_market_min=4.0)
+    rc.set_rr_config(rr_market_min=4.0, rr_hi_rr=5.0)
     o2 = _onset(rr=3.0)
     assert o2.rr_ok is False
     assert o2.lane is None
@@ -187,7 +188,7 @@ def test_lane_tier_follows_the_hi_rr_control():
 
 
 def test_entry_gate_failure_message_reflects_the_live_floor():
-    rc.set_rr_config(rr_market_min=5.0)
+    rc.set_rr_config(rr_market_min=5.0, rr_hi_rr=6.0)
     _qualifies, fails = _onset(rr=3.0).entry_gate()
     assert any("RR@mkt" in f and "5.0" in f for f in fails), fails
 
@@ -251,7 +252,7 @@ def test_pb_is_still_required_for_the_entry_push_at_any_floor():
 
 def test_ui_payload_declares_what_is_not_configurable():
     payload = rc.as_ui_payload()
-    assert payload["defaults"] == {"rr_market_min": 2.0, "rr_hi_rr": 5.0}
+    assert payload["defaults"] == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
     assert payload["bounds"]["rr_market_min"] == {"min": 1.0, "max": 10.0}
     assert payload["overridden"] == {"rr_market_min": False, "rr_hi_rr": False}
     assert "stop_atr_floor" in payload["not_configurable"]
@@ -259,7 +260,7 @@ def test_ui_payload_declares_what_is_not_configurable():
 
 
 def test_overridden_flags_track_the_config():
-    rc.set_rr_config(rr_market_min=4.0)
+    rc.set_rr_config(rr_market_min=2.5)
     ov = rc.as_ui_payload()["overridden"]
     assert ov["rr_market_min"] is True
     assert ov["rr_hi_rr"] is False
@@ -269,13 +270,13 @@ def test_overridden_flags_track_the_config():
 
 def test_get_endpoint_returns_the_ui_payload():
     out = desk_mod.get_rr_config_endpoint()
-    assert out["values"] == {"rr_market_min": 2.0, "rr_hi_rr": 5.0}
+    assert out["values"] == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
     assert out["labels"]["rr_market_min"]
     assert out["hints"]["rr_market_min"]
 
 
 def test_post_endpoint_persists():
-    out = desk_mod.set_rr_config_endpoint(desk_mod.RRConfigUpdate(rr_market_min=3.5))
+    out = desk_mod.set_rr_config_endpoint(desk_mod.RRConfigUpdate(rr_market_min=3.5, rr_hi_rr=4.0))
     assert out["updated"]["rr_market_min"] == 3.5
     assert rc.min_rr() == 3.5
 
@@ -299,5 +300,5 @@ def test_reset_endpoint_restores_defaults():
     desk_mod.set_rr_config_endpoint(desk_mod.RRConfigUpdate(rr_market_min=4.0, rr_hi_rr=9.0))
     assert rc.get_rr_config() == {"rr_market_min": 4.0, "rr_hi_rr": 9.0}
     out = desk_mod.reset_rr_config_endpoint()
-    assert out["updated"] == {"rr_market_min": 2.0, "rr_hi_rr": 5.0}
+    assert out["updated"] == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
     assert rc.min_rr() == 2.0

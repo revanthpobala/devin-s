@@ -132,7 +132,7 @@ def test_pb_lane_prior_splits_on_the_pb_bit():
 
 def test_pb_lane_prior_tiers_at_rr_five():
     strong = _pb_lane_prior(5.0, True)
-    regular = _pb_lane_prior(4.9, True)
+    regular = _pb_lane_prior(2.9, True)
     assert strong[1] > regular[1]
 
 

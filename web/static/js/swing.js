@@ -272,8 +272,8 @@ window.AppSwing = {
           const sup = c.support_level ? `$${Number(c.support_level).toFixed(2)}` : '-';
           const stop = c.stop_level ? `$${Number(c.stop_level).toFixed(2)}` : sup;
           const ceil = c.ceiling_level ? `$${Number(c.ceiling_level).toFixed(2)}` : '-';
-          const longRR = c.long_rr !== undefined ? `${Number(c.long_rr).toFixed(1)}:1` : '2.0:1';
-          const longRRBadge = `<span class="badge" style="background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; font-weight:800; font-size:11.5px;">${longRR}</span>`;
+          const longRR = (c.long_rr !== undefined && c.long_rr !== null) ? `${Number(c.long_rr).toFixed(1)}:1` : 'n/a';
+          const longRRBadge = longRR !== 'n/a' ? `<span class="badge" style="background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; font-weight:800; font-size:11.5px;">${longRR}</span>` : `<span style="color:var(--text-muted); font-size:11px;">n/a</span>`;
           const setup = c.screener_setup || '20 EMA';
           const sqzBadge = c.squeeze_on ? `<span class="badge" style="background:#ecfdf5; color:#059669; border:1px solid #a7f3d0; font-weight:700;">🔥 SQUEEZE</span>` : `<span style="color:var(--text-muted);">No</span>`;
           const nr7Badge = c.nr7 ? `<span class="badge" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:700;">NR7</span>` : `<span style="color:var(--text-muted);">-</span>`;
@@ -450,10 +450,10 @@ window.AppSwing = {
           const ceilDist = c.headroom_pct !== undefined ? `+${Number(c.headroom_pct).toFixed(1)}%` : '-';
           const ext200 = c.ext_200_pct !== undefined ? `+${Number(c.ext_200_pct).toFixed(1)}%` : '-';
           const tgt = c.target_level ? `$${Number(c.target_level).toFixed(2)}` : '-';
-          const downPct = c.downside_to_50sma !== undefined ? Number(c.downside_to_50sma).toFixed(1) : '15.0';
-          const rr = c.short_rr !== undefined ? `${Number(c.short_rr).toFixed(1)}:1` : '1.5:1';
-          const rrBadge = `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800; font-size:11.5px;">${rr}</span>`;
-          const runwayBadge = `<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-weight:700;">+${downPct}%</span>`;
+          const downPct = (c.downside_to_50sma !== undefined && c.downside_to_50sma !== null) ? Number(c.downside_to_50sma).toFixed(1) : null;
+          const rr = (c.short_rr !== undefined && c.short_rr !== null) ? `${Number(c.short_rr).toFixed(1)}:1` : 'n/a';
+          const rrBadge = rr !== 'n/a' ? `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800; font-size:11.5px;">${rr}</span>` : `<span style="color:var(--text-muted); font-size:11px;">n/a</span>`;
+          const runwayBadge = downPct !== null ? `<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-weight:700;">+${downPct}%</span>` : `<span style="color:var(--text-muted);">-</span>`;
           const sqzBadge = c.squeeze_on ? `<span class="badge" style="background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:700;">🔥 SQUEEZE</span>` : `<span style="color:var(--text-muted);">No</span>`;
           const nr7Badge = c.nr7 ? `<span class="badge" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:700;">NR7</span>` : `<span style="color:var(--text-muted);">-</span>`;
 
@@ -494,10 +494,10 @@ window.AppSwing = {
             revBadge = `<span class="badge" style="background:rgba(249,115,22,0.15); color:#fb923c; font-weight:700;">Z2 (${revShort.toFixed(1)})</span>`;
           }
 
-          const prioScore = c.priority_score !== undefined ? Number(c.priority_score) : 50.0;
+          const prioScore = (c.priority_score !== undefined && c.priority_score !== null) ? Number(c.priority_score) : null;
           // Shorts: the PB gate is LONG-side only and the short scan is unchanged here, so the
           // legacy score still labels this table. Display only.
-          const prioBadge = `<span class="badge" title="Legacy composite score — display only, no longer a dispatch gate" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">${prioScore.toFixed(0)}</span>`;
+          const prioBadge = prioScore !== null ? `<span class="badge" title="Legacy composite score — display only, no longer a dispatch gate" style="color:var(--text-muted); border:1px solid var(--border); font-size:11px;">${prioScore.toFixed(0)}</span>` : `<span style="color:var(--text-muted); font-size:11px;">n/a</span>`;
 
           const pat = c.pattern || 'Ceiling Stall';
           let patBadge = `<span class="badge" style="background:rgba(245,158,11,0.15); color:#fbbf24; border:1px solid rgba(245,158,11,0.3); font-weight:700;">🧱 ${pat}</span>`;
@@ -3448,7 +3448,7 @@ window.AppSwing = {
         // Reached only while resolved < BRIER_MIN_RESOLVED, so the message is unconditional here.
         return `<span class="pill amber" style="font-weight:700;"
           title="A Brier score of 0.25 is what an honest coin flip scores. ${resolved} of the ${BRIER_MIN_RESOLVED} resolved forecasts needed to call this skill are in; until they beat 0.25 there is no measurable calibration here."
-          >🎲 No skill yet (${resolved}/${BRIEF_MIN_RESOLVED}) · 0.25 = coin flip</span>`;
+          >🎲 No skill yet (${resolved}/${BRIER_MIN_RESOLVED}) · 0.25 = coin flip</span>`;
       }
       if (score < BRIER_COINFLIP) {
         return `<span class="pill green" style="font-weight:700;"

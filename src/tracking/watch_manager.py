@@ -9,7 +9,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -99,6 +99,12 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN evaluation_time TEXT")
             if "is_actionable_now" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN is_actionable_now INTEGER DEFAULT 0")
+            if "thesis_id" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN thesis_id TEXT")
+            if "created_date" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN created_date TEXT")
+            if "expires_on" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN expires_on TEXT")
 
             cursor.execute(
                 """
@@ -285,11 +291,47 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
             logger.debug(f"[WATCH_GATE] Failed to log rejected plan for {ticker}: {e_log}")
         return
 
+    date_str = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+    created_date = str(data.get("created_date") or date_str)
+    
+    # 5 trading days expiry calculation
+    try:
+        cur_dt = datetime.strptime(created_date[:10], "%Y-%m-%d").date()
+    except Exception:
+        cur_dt = datetime.now().date()
+    added_td = 0
+    exp_cur = cur_dt
+    while added_td < 5:
+        exp_cur += timedelta(days=1)
+        if exp_cur.weekday() < 5:
+            added_td += 1
+    expires_on = str(data.get("expires_on") or exp_cur.strftime("%Y-%m-%d"))
+    thesis_id = str(data.get("thesis_id") or f"{ticker}_{created_date}")
+
     now = _now_iso()
 
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
+
+            # Check if active unexpired thesis already exists: do not overwrite for the same open thesis
+            existing = cursor.execute(
+                "SELECT date, thesis_id, expires_on, status, tactical_stop, entry_zone_low, entry_zone_high FROM watch_targets WHERE ticker = ?",
+                (ticker,)
+            ).fetchone()
+            if existing:
+                ex_dict = dict(existing)
+                ex_thesis_id = ex_dict.get("thesis_id") or f"{ticker}_{ex_dict.get('date')}"
+                ex_expires = ex_dict.get("expires_on") or ""
+                ex_status = str(ex_dict.get("status") or "").upper()
+                if ex_status in ("IN_TRADE", "IN_ZONE", "STALKING", "WATCH"):
+                    # If same thesis_id or active and within expiry with matching key stop level, preserve thesis
+                    stop_val = float(shares_plan.get("tactical_stop") or 0.0)
+                    ex_stop_val = float(ex_dict.get("tactical_stop") or 0.0)
+                    if ex_thesis_id == thesis_id or (ex_expires and date_str <= ex_expires and abs(stop_val - ex_stop_val) < 0.05):
+                        logger.info(f"[watch_manager] Open thesis {ex_thesis_id} for {ticker} still active (expires {ex_expires}). Skipping overwrite.")
+                        return
+
             cursor.execute(
                 """
                 INSERT INTO watch_targets (
@@ -298,8 +340,9 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     tactical_stop, target_1, target_2, options_structure, options_summary,
                     options_actionable, options_entry_trigger,
                     invalidation_price, invalidation_condition, invalidation_rationale,
-                    status, updated_at, raw_json, is_active, user_taken, suggestion_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+                    status, updated_at, raw_json, is_active, user_taken, suggestion_id,
+                    thesis_id, created_date, expires_on
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
                 ON CONFLICT(ticker) DO UPDATE SET
                     date=excluded.date,
                     verdict=excluded.verdict,
@@ -322,7 +365,7 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     invalidation_condition=excluded.invalidation_condition,
                     invalidation_rationale=excluded.invalidation_rationale,
                     status=CASE 
-                        WHEN watch_targets.status IN ('IN_TRADE', 'IN_ZONE') THEN watch_targets.status 
+                        WHEN watch_targets.status = 'IN_TRADE' THEN watch_targets.status 
                         ELSE excluded.status 
                     END,
                     is_active=CASE
@@ -334,15 +377,18 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                         ELSE watch_targets.user_taken
                     END,
                     suggestion_id=COALESCE(excluded.suggestion_id, watch_targets.suggestion_id),
+                    thesis_id=excluded.thesis_id,
+                    created_date=excluded.created_date,
+                    expires_on=excluded.expires_on,
                     updated_at=excluded.updated_at,
                     raw_json=excluded.raw_json
                 """,
                 (
                     ticker,
-                    data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    date_str,
                     data.get("verdict", "STALK"),
                     data.get("conviction", 5),
-                    1 if data.get("actionable", True) else 0,
+                    1 if data.get("actionable", False) else 0,
                     side,
                     shares_plan.get("entry_type", "LIMIT"),
                     shares_plan.get("entry_zone_low"),
@@ -359,10 +405,13 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     invalidation.get("price_level"),
                     invalidation.get("condition", "DAILY_CLOSE_BELOW"),
                     invalidation.get("rationale", ""),
-                    data.get("status", "STALKING"),
+                    data.get("status", "WATCH"),
                     now,
                     json.dumps(data, default=str),
                     data.get("suggestion_id"),
+                    thesis_id,
+                    created_date,
+                    expires_on,
                 ),
             )
             # Append to history table for immutable audit tracking

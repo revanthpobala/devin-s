@@ -166,6 +166,8 @@ class TestCSVAdapter(unittest.TestCase):
             "rsi2 entry or opening ceiling": "251.50",
             "rsi2 fixed stop": "233.702913",
             "rsi2 fixed target": "282.594174",
+            "signal pack": "36",  # bit 2 (fade off) + bit 5 (PB)
+            "rsi2 atr14": "10.0",
         }
 
         verdict = run_data_window_filter("AMZN", raw)

@@ -145,6 +145,8 @@ LANE_TO_SETUP_LANE = {
     "reversal_buy_lane": "CODE20",
     "oversold_lane": "OVERSOLD",
     "rsi2_setup_lane": "RSI2",
+    "rr_lane_no_pb": "RR_NO_PB",
+    "rr_lane_tight_stop": "RR_TIGHT_STOP",
 }
 
 
@@ -169,16 +171,16 @@ _FIELD_LABELS = {
     "stage_age_bars": ("context stage age pack", "stage age bars", "stage age",),
     "long_zbot": ("long entry zone bot",),
     "long_ztop": ("long entry zone top",),
-    "long_stop_loss": ("long stop loss", "stop loss", "stop_loss", "conformal certified stop 14d",),
-    "long_target": ("long target", "long target t1 waypoint", "target 1", "target_1",),
+    "long_stop_loss": ("long stop loss", "conformal certified stop 14d",),
+    "long_target": ("long target", "long target t1 waypoint",),
     "long_target_t1": ("long target t1 waypoint", "long target t1",),
     "long_entry": ("long entry",),
     "long_in_zone": ("long in zone",),
     "long_rr_valid": ("long rr valid", "long r:r valid",),
     "short_zbot": ("short entry zone bot",),
     "short_ztop": ("short entry zone top",),
-    "short_stop_loss": ("short stop loss", "stop loss", "stop_loss",),
-    "short_target": ("short target", "short target t1 waypoint", "target 1", "target_1",),
+    "short_stop_loss": ("short stop loss",),
+    "short_target": ("short target", "short target t1 waypoint",),
     "short_target_t1": ("short target t1 waypoint", "short target t1",),
     "short_entry": ("short entry",),
     "short_in_zone": ("short in zone",),
@@ -621,8 +623,8 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
     # Do not recompute rr when the injected RR@mkt was deliberately absent.
     if side == "long":
         exported_rr_mkt = f.get("long_rr_at_market")
-        if exported_rr_mkt is not None and exported_rr_mkt > 0:
-            rr = exported_rr_mkt
+        if exported_rr_mkt is not None:
+            rr = exported_rr_mkt if exported_rr_mkt > 0 else None
         elif stop is not None and tgt is not None and price is not None and price > stop and tgt > price:
             rr = (reward / risk) if (risk is not None and risk > 0) else None
         else:
@@ -717,7 +719,8 @@ def _choose_winner(L: dict, S: dict, f: Dict[str, Optional[float]]) -> dict:
             or (f.get("mtf_long") or 0.0) >= 1.0
             or (f.get("ext_pct") or 0.0) >= -10.0
         )
-        if is_structurally_bullish or buy >= sell:
+        has_long_plan = bool(L.get("stop") is not None and L.get("target") is not None)
+        if has_long_plan or is_structurally_bullish or buy >= sell:
             W = L
         else:
             W = S
@@ -870,8 +873,8 @@ def run_data_window_filter(
     ext_z_self = f.get("ext_z_self") or 0.0
     rr_mkt = W["rr"]
     fade_long = f.get("fade_long")
-    # No fresh LONG entry, but the name stays alive for a structure read.
-    no_fresh_long = (fade_long == 1.0) or (ext_z_self >= EXT_Z_SELF_MAX) or (act_code == 17)
+    # No fresh LONG entry, but the name stays alive for a structure read. Missing Signal Pack fails closed.
+    no_fresh_long = (fade_long == 1.0) or (fade_long is None) or (ext_z_self >= EXT_Z_SELF_MAX) or (act_code == 17)
     is_rsi2_setup = bool(
         W.get("mode") == "RSI2_LONG"
         or f.get("rsi2_setup_event")
@@ -890,7 +893,7 @@ def run_data_window_filter(
         triage = "PASS"
         reason = "reversal_buy_lane"
     # THE BREADTH-VERIFIED LANE. Mirrors the chart's slate/teal callout exactly: in long zone AND
-    # at-market R:R >= 2 AND fade off.
+    # at-market R:R >= 2 AND fade off. PASS lanes require B1 (PB funnel bit and stop width >= 0.7 ATR).
     elif (
         RR_LANE_ENABLED
         and W["side"] == "long"
@@ -900,8 +903,19 @@ def run_data_window_filter(
         and rr_mkt >= rr_pass_floor()
         and act_code not in _ACTION_SOFT_CAUTION_CODES
     ):
-        triage = "PASS"
-        reason = "rr_at_market_lane_strong" if rr_mkt >= rr_strong_floor() else "rr_at_market_lane"
+        atr14 = f.get("atr14") or 0.0
+        stop = W.get("stop")
+        entry = W.get("entry") or price
+        stop_width = ((entry - stop) / atr14) if (atr14 > 0 and stop is not None and entry is not None) else 0.0
+        is_pb = (f.get("pb_funnel") == 1.0)
+        stop_width_ok = (stop_width >= STOP_ATR_MIN)
+
+        if is_pb and stop_width_ok:
+            triage = "PASS"
+            reason = "rr_at_market_lane_strong" if rr_mkt >= rr_strong_floor() else "rr_at_market_lane"
+        else:
+            triage = "WATCH"
+            reason = "rr_lane_no_pb" if not is_pb else "rr_lane_tight_stop"
     # RSI2 branch ranked below at-market R:R lane; requires not no_fresh_long per Phase 6
     elif is_rsi2_setup and not no_fresh_long:
         triage = "PASS"

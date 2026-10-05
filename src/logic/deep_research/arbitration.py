@@ -11,6 +11,52 @@ from src.clients.llm_client import query_local_llm
 logger = logging.getLogger(__name__)
 
 
+def _record_research_completed(ticker: str, date_str: str, dw_dict: Dict[str, Any], sp: Dict[str, Any]) -> None:
+    try:
+        from src.tracking.watch_manager import record_last_researched
+        try:
+            ac_raw = dw_dict.get("Action Long Code")
+            if ac_raw is None and dw_dict.get("Context Action Pack") is not None:
+                ac = int(round(float(dw_dict.get("Context Action Pack")))) % 32
+            elif ac_raw is not None:
+                ac = int(round(float(ac_raw)))
+            else:
+                ac = 0
+        except (ValueError, TypeError):
+            ac = 0
+        try:
+            raw_z = dw_dict.get("Zone RR Flags Pack") or dw_dict.get("zone_rr_flags_pack")
+            if raw_z is not None:
+                iz = int(round(float(raw_z))) & 1
+            else:
+                iz = 1 if (dw_dict.get("Long In Zone") or dw_dict.get("in_zone")) else 0
+        except (ValueError, TypeError):
+            iz = 0
+        try:
+            rr_mkt = float(dw_dict.get("Long RR At Market") or dw_dict.get("rr_at_market") or 0.0)
+        except (ValueError, TypeError):
+            rr_mkt = 0.0
+        try:
+            st_val = float(dw_dict.get("Long Stop Loss") or sp.get("tactical_stop") or sp.get("stop") or 0.0)
+        except (ValueError, TypeError):
+            st_val = 0.0
+        try:
+            tgt_val = float(dw_dict.get("Long Target") or sp.get("target_1") or 0.0)
+        except (ValueError, TypeError):
+            tgt_val = 0.0
+        record_last_researched(
+            ticker=ticker,
+            date_str=date_str,
+            action_code=ac,
+            in_zone=iz,
+            rr_at_market=rr_mkt,
+            stop=st_val,
+            target=tgt_val,
+        )
+    except Exception as e_rec:
+        logger.debug(f"[{ticker}] Failed recording last_researched: {e_rec}")
+
+
 def _build_judge_sys_prompt(ticker: str) -> str:
     return (
         "You are the Chief Investment Officer & Senior Portfolio Manager operating under Ponytail Finance rules "
@@ -20,9 +66,10 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
         "CONVICTION & VERDICT CALIBRATION RUBRIC:\n"
-        "- 8 to 10 / 10 (HIGH CONVICTION IMMEDIATE ENTRY): Structural support / 20 EMA confluence, measured R:R >= 2.5:1, Stage 1 base or Stage 2 trend, volume confirmation. Output VERDICT = 'ENTER (Limit @ Floor)' or 'ENTER (Breakout)'. Do NOT artificially downgrade to STALK if the trade has defined risk and edge.\n"
+        "- 8 to 10 / 10 (HIGH CONVICTION IMMEDIATE ENTRY): Structural support / 20 EMA confluence, measured R:R >= 3.0:1, Stage 1 base or Stage 2 trend, volume confirmation. Output VERDICT = 'ENTER (Limit @ Floor)' or 'ENTER (Breakout)'. Do NOT artificially downgrade to STALK if the trade has defined risk and edge.\n"
         "- 6 to 7 / 10 (ACTIONABLE STALKING): High quality setup awaiting minor price pullback or trigger level. Output VERDICT = 'STALK' with realistic actionable limit price.\n"
-        "- 1 to 5 / 10 (AVOID / CASH SKIP): Unfavorable R:R (< 2:1), distribution / Stage 4 knife, or binary friction. Output VERDICT = 'CASH_SKIP'.\n\n"
+        "- 1 to 5 / 10 (AVOID / CASH SKIP): Unfavorable R:R (< 3.0:1), distribution / Stage 4 knife, or binary friction. Output VERDICT = 'CASH_SKIP'.\n"
+        "CRITICAL CONSTRAINT: You CANNOT output ENTER if engine triage is 'no_setup' or the actionable gate fails. Output CASH_SKIP or STALK instead.\n\n"
         "Output in this exact markdown format (JSON BLOCK MUST COME FIRST):\n\n"
         "```json:watch_levels\n"
         "{\n"
@@ -228,7 +275,8 @@ def run_arbitration(
         f"Long RR At Market={dw_dict.get('Long RR At Market', 'N/A')}\n"
         f"- EMPIRICAL PRIORS & EVIDENCE DISCIPLINE:\n"
         f"  * You must NOT cite or rely on Directional Probability or Buy Score (they are empirical noise).\n"
-        f"  * Evaluate solely based on measured structural zones, R:R tier (>= 3.0), and empirical priors."
+        f"  * Evaluate solely based on measured structural zones, R:R tier (>= 3.0), and empirical priors.\n"
+        f"  * HARD CONSTRAINT: If engine triage is 'no_setup' or actionable gate fails, you CANNOT output ENTER."
     )
 
     judge_user_prompt = f"""
@@ -292,9 +340,6 @@ def run_arbitration(
         watch_data.setdefault("ticker", ticker)
         watch_data.setdefault("date", date_str)
         triage_lane = setup_lane
-        model_lane = watch_data.get("setup_lane")
-        if (not triage_lane or triage_lane in ("WATCH_SHADOW", "UNKNOWN", "DEFAULT", "STANDARD")) and model_lane and model_lane not in ("WATCH_SHADOW", "UNKNOWN"):
-            triage_lane = model_lane
         if not triage_lane or triage_lane in ("WATCH_SHADOW", "UNKNOWN", "DEFAULT", "STANDARD"):
             triage_lane = "RR_SETUP"
         watch_data["setup_lane"] = triage_lane
@@ -323,6 +368,23 @@ def run_arbitration(
             "is_judge": True,
             "spot": spot_num or watch_data.get("spot"),
         }
+
+        # Code caps the verdict if triage is no_setup or actionable gate fails
+        from src.logic.actionable_gate import is_actionable
+        gate_ok, gate_reasons = is_actionable(dw_dict, plan)
+        is_no_setup = str(setup_lane or "").strip().lower() in ("no_setup", "none", "")
+
+        verdict = str(watch_data.get("verdict", "")).strip()
+        if "ENTER" in verdict.upper():
+            if is_no_setup or not gate_ok:
+                capped_verdict = "CASH_SKIP" if is_no_setup else "STALK"
+                logger.warning(
+                    f"[{ticker}] Capping judge verdict '{verdict}' to '{capped_verdict}' "
+                    f"(no_setup={is_no_setup}, gate_ok={gate_ok}, reasons={gate_reasons})"
+                )
+                watch_data["verdict"] = capped_verdict
+                verdict = capped_verdict
+
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
         if not _ok:
             logger.warning(
@@ -346,6 +408,7 @@ def run_arbitration(
             raw_gate_watch_path.write_text(json.dumps(watch_data, indent=2), encoding="utf-8")
             logger.info(f"[{ticker}] watch_levels.json written (gate-rejected, display-only) → {gate_watch_path}")
             arbitration_path.write_text(clean_judge, encoding="utf-8")
+            _record_research_completed(ticker, date_str, dw_dict, watch_data.get("shares_plan") or plan)
             return clean_judge
 
         watch_path = tdir / f"{safe}_watch_levels.json"
@@ -380,6 +443,21 @@ def run_arbitration(
         except (ValueError, TypeError):
             pb_funnel = None
 
+        try:
+            el = float(sp.get("entry_zone_low") or 0.0)
+            eh = float(sp.get("entry_zone_high") or 0.0)
+            st = float(sp.get("tactical_stop") or 0.0)
+            t1 = float(sp.get("target_1") or 0.0)
+            mid = (el + eh) / 2.0 if (el and eh) else (eh or el)
+            if mid > st and t1 > mid:
+                computed_rr = round((t1 - mid) / (mid - st), 4)
+            else:
+                computed_rr = None
+        except Exception:
+            computed_rr = None
+        planned_rr = computed_rr if computed_rr is not None else sp.get("rr_ratio")
+        real_gate_status = "PASS" if (gate_ok and _ok) else "REJECTED_BY_GATE"
+
         sugg_id = append_suggestion({
             "ticker": ticker,
             "date": date_str,
@@ -392,9 +470,9 @@ def run_arbitration(
             "stop": sp.get("tactical_stop"),
             "target_1": sp.get("target_1"),
             "target_2": sp.get("target_2"),
-            "planned_rr": sp.get("rr_ratio"),
+            "planned_rr": planned_rr,
             "verdict": watch_data.get("verdict"),
-            "gate_status": "PASS",
+            "gate_status": real_gate_status,
             "setup_lane": triage_lane,
             "kind": kind,
             "atr_at_signal": atr_at_signal,
@@ -420,49 +498,7 @@ def run_arbitration(
             logger.debug(f"[{ticker}] Note syncing suggested_trades_audit: {e_sync}")
 
         # Record into last_researched table
-        try:
-            from src.tracking.watch_manager import record_last_researched
-            try:
-                ac_raw = dw_dict.get("Action Long Code")
-                if ac_raw is None and dw_dict.get("Context Action Pack") is not None:
-                    ac = int(round(float(dw_dict.get("Context Action Pack")))) % 32
-                elif ac_raw is not None:
-                    ac = int(round(float(ac_raw)))
-                else:
-                    ac = 0
-            except (ValueError, TypeError):
-                ac = 0
-            try:
-                raw_z = dw_dict.get("Zone RR Flags Pack") or dw_dict.get("zone_rr_flags_pack")
-                if raw_z is not None:
-                    iz = int(round(float(raw_z))) & 1
-                else:
-                    iz = 1 if (dw_dict.get("Long In Zone") or dw_dict.get("in_zone")) else 0
-            except (ValueError, TypeError):
-                iz = 0
-            try:
-                rr_mkt = float(dw_dict.get("Long RR At Market") or dw_dict.get("rr_at_market") or 0.0)
-            except (ValueError, TypeError):
-                rr_mkt = 0.0
-            try:
-                st_val = float(dw_dict.get("Long Stop Loss") or sp.get("tactical_stop") or 0.0)
-            except (ValueError, TypeError):
-                st_val = 0.0
-            try:
-                tgt_val = float(dw_dict.get("Long Target") or sp.get("target_1") or 0.0)
-            except (ValueError, TypeError):
-                tgt_val = 0.0
-            record_last_researched(
-                ticker=ticker,
-                date_str=date_str,
-                action_code=ac,
-                in_zone=iz,
-                rr_at_market=rr_mkt,
-                stop=st_val,
-                target=tgt_val,
-            )
-        except Exception as e_rec:
-            logger.debug(f"[{ticker}] Failed recording last_researched: {e_rec}")
+        _record_research_completed(ticker, date_str, dw_dict, sp)
 
     except Exception as e:
         logger.warning(f"[{ticker}] Failed to process watch levels JSON: {e}")

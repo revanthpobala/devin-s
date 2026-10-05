@@ -639,7 +639,7 @@ window.AppTrades = {
             <span style="font-weight:700; color:var(--amber-light, #f59e0b);">$${entryLow.toFixed(2)} - $${entryHigh.toFixed(2)}</span>
             <div style="font-size:10px; color:var(--text-muted);">Mid: $${entryMid.toFixed(2)}</div>
             <div style="font-size:10px; color:var(--cyan-glow, #06b6d4); font-weight:700; margin-top:2px;">
-              R:R: ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : (t.planned_rr ? Number(t.planned_rr).toFixed(2) : (t.rr_ratio ? Number(t.rr_ratio).toFixed(2) : '2.00'))}
+              R:R: ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : (t.planned_rr ? Number(t.planned_rr).toFixed(2) : (t.rr_ratio ? Number(t.rr_ratio).toFixed(2) : 'n/a'))}
             </div>
           </td>
 
