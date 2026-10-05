@@ -276,13 +276,18 @@ window.AppWatchlist = {
     } else if (this._activeFilter === 'ACTIONABLE') {
       list = list.filter(t => {
         const st = (t.status || '').toUpperCase();
-        // Exclude resolved, stopped, runaway, or unresearched setups from Actionable/Near Zone
-        if (['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'UNRESEARCHED'].includes(st)) {
+        // Exclude resolved, stopped, runaway, expired, or unresearched setups from Actionable/Near Zone
+        if (['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'EXPIRED', 'REJECTED_BY_GATE', 'UNRESEARCHED'].includes(st)) {
           return false;
         }
+        const evalVerdict = (t.evaluation_verdict || '').toUpperCase();
+        if (['STAND_ASIDE', 'TARGET_HIT', 'STOP_BREACHED'].includes(evalVerdict)) {
+          return false;
+        }
+        const spot = Number(t.last_price || t.spot_price || 0);
         const dist = t.distance_to_entry_pct;
-        const isNear = dist !== null && dist !== undefined && Math.abs(dist) <= 1.5;
-        return st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable);
+        const isNear = spot > 0 && dist !== null && dist !== undefined && Math.abs(dist) <= 1.5;
+        return st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable) || Boolean(t.is_actionable_now);
       });
     } else if (this._activeFilter === 'RESEARCHED') {
       list = list.filter(t => (t.status || '').toUpperCase() !== 'UNRESEARCHED');
@@ -432,9 +437,13 @@ window.AppWatchlist = {
 
     all.forEach(t => {
       const st = (t.status || 'STALKING').toUpperCase();
+      const isTerminated = ['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'EXPIRED', 'REJECTED_BY_GATE', 'UNRESEARCHED'].includes(st);
+      const evalVerdict = (t.evaluation_verdict || '').toUpperCase();
+      const isVetoed = ['STAND_ASIDE', 'TARGET_HIT', 'STOP_BREACHED'].includes(evalVerdict);
+      const spot = Number(t.last_price || t.spot_price || 0);
       const dist = t.distance_to_entry_pct;
-      const isNear = dist !== null && dist !== undefined && Math.abs(dist) <= 1.0;
-      if (t.is_actionable || st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || t.options_actionable) {
+      const isNear = spot > 0 && dist !== null && dist !== undefined && Math.abs(dist) <= 1.0;
+      if (!isTerminated && !isVetoed && (Boolean(t.is_actionable_now || t.is_actionable) || st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable))) {
         actCount++;
       }
 

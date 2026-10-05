@@ -1297,9 +1297,27 @@ def run_autonomous_screener_pipeline(
         reverse=True,
     )
 
-    selected = sorted_picks[:auto_max]
+    # Deduplication: Exclude candidates that already have deep research reports in trailing 5 sessions
+    reports_root = config.BASE_DIR / "reports"
+    already_researched = set()
+    if reports_root.exists():
+        date_dirs = sorted([d for d in reports_root.glob("202*") if d.is_dir()], reverse=True)[:5]
+        for d in date_dirs:
+            for f in d.glob("*_summary.md"):
+                already_researched.add(f.name.replace("_summary.md", "").upper())
+
+    fresh_picks = [
+        p for p in sorted_picks
+        if (p.get("symbol") or p.get("Ticker") or "").upper().strip() not in already_researched
+    ]
+    if not fresh_picks:
+        logger.info(f"🤖 [AUTONOMOUS ENGINE] All {len(sorted_picks)} candidates already have recent deep research reports in the last 5 sessions.")
+        logger.info("🛡️ Preserving system resources & GPU bandwidth — 0 duplicate runs dispatched.")
+        return {"count": 0, "researched": []}
+
+    selected = fresh_picks[:auto_max]
     if not selected:
-        logger.info("🤖 [AUTONOMOUS ENGINE] No candidates available for autonomous pipeline.")
+        logger.info("🤖 [AUTONOMOUS ENGINE] No fresh candidates available for autonomous pipeline.")
         return {"count": 0, "researched": []}
 
     # Register slot occupancy immediately so is_slot_available() reports
@@ -1309,7 +1327,7 @@ def run_autonomous_screener_pipeline(
 
     try:
         print("\n" + "=" * 115)
-        print(f">> 🤖 AUTONOMOUS SCREENER DISPATCH: Selected Top {len(selected)} High-Priority Setups (Max: {auto_max} | Headless: {headless})")
+        print(f">> 🤖 AUTONOMOUS SCREENER DISPATCH: Selected Top {len(selected)} Fresh High-Priority Setups (Max: {auto_max} | Headless: {headless})")
         print("=" * 115)
         for idx, p in enumerate(selected, 1):
             sym = p.get("symbol") or p.get("Ticker")
@@ -1327,7 +1345,7 @@ def run_autonomous_screener_pipeline(
                 continue
             sym = sym.strip().upper()
 
-            # Deduplication: Check if ticker already has completed deep research today
+            # Extra safety check against today's reports
             rep_file = config.BASE_DIR / "reports" / t_date / f"{sym}_summary.md"
             arb_file = config.BASE_DIR / "reports" / t_date / f"{sym}_arbitration.md"
             if rep_file.exists() or arb_file.exists():

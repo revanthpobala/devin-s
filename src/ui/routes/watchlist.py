@@ -48,6 +48,20 @@ class SyncTickerAlertsRequest(BaseModel):
     date: Optional[str] = None
 
 
+class CreateWatchTargetRequest(BaseModel):
+    ticker: str
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
+    tactical_stop: Optional[float] = None
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    side: str = "LONG"
+    verdict: str = "PASS"
+    conviction: int = 5
+    notes: Optional[str] = None
+    create_cloud_alert: bool = True
+
+
 @router.get("/api/watch-targets")
 def get_watch_targets():
     """Fetch active stalking targets and enrich with tactical trade ideas and real-time Schwab quotes."""
@@ -617,4 +631,72 @@ def delete_tastytrade_alert(alert_id: str):
         ok = client.delete_quote_alert(alert_id)
         return {"success": ok}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/watch-targets/create")
+def create_watch_target_endpoint(req: CreateWatchTargetRequest):
+    """Create or upsert a tactical watch target into SQLite research_watch.db, and optionally register cloud quote alerts."""
+    try:
+        from src.tracking.watch_manager import upsert_watch_target
+        sym = req.ticker.strip().upper()
+        if not sym:
+            raise HTTPException(status_code=400, detail="Ticker is required")
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        ez_high = req.entry_zone_high
+        ez_low = req.entry_zone_low if req.entry_zone_low is not None else (round(ez_high * 0.99, 2) if ez_high else None)
+        stop = req.tactical_stop
+        t1 = req.target_1
+        t2 = req.target_2 if req.target_2 is not None else (round(t1 * 1.05, 2) if t1 else None)
+
+        payload = {
+            "ticker": sym,
+            "date": today_str,
+            "verdict": req.verdict,
+            "conviction": req.conviction,
+            "actionable": 1,
+            "side": req.side.upper(),
+            "shares_plan": {
+                "side": req.side.upper(),
+                "entry_type": "LIMIT",
+                "entry_zone_low": ez_low,
+                "entry_zone_high": ez_high,
+                "tactical_stop": stop,
+                "target_1": t1,
+                "target_2": t2,
+            },
+            "status": "STALKING",
+        }
+        upsert_watch_target(payload)
+
+        # Clear watch targets cache so dashboard updates immediately
+        _WATCH_TARGETS_CACHE.clear()
+
+        # If requested, also register Tastytrade cloud alert for entry
+        cloud_alert = None
+        if req.create_cloud_alert and ez_high:
+            try:
+                from src.clients.tastytrade_client import TastytradeClient
+                tt = TastytradeClient()
+                cloud_alert = tt.create_quote_alert(
+                    symbol=sym,
+                    threshold=ez_high,
+                    operator="<=" if req.side.upper() == "LONG" else ">="
+                )
+            except Exception as te:
+                logger.debug(f"Optional cloud alert creation note for {sym}: {te}")
+
+        return {
+            "success": True,
+            "ticker": sym,
+            "entry_zone_high": ez_high,
+            "entry_zone_low": ez_low,
+            "tactical_stop": stop,
+            "target_1": t1,
+            "cloud_alert_created": bool(cloud_alert),
+            "message": f"Successfully registered watch target for {sym}"
+        }
+    except Exception as e:
+        logger.error(f"Error creating watch target: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

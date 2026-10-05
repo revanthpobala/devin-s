@@ -1160,6 +1160,34 @@ def generate_thesis_task(
         "structure_strikes": triage.get("structure_strikes"),
         "iv_rank": triage.get("iv_rank"),
         "triggers": triage.get("triggers"),
+        # --- Full Technical Analysis & Tape Context ---
+        "weinstein_stage": data_window.get("_weinstein_stage"),
+        "stage_age_bars": data_window.get("_stage_age_bars"),
+        "weinstein_ma150": safe_float(data_window.get("Weinstein MA 150")),
+        "darvas_box_top": safe_float(data_window.get("Darvas Box Top")),
+        "darvas_base_status": data_window.get("_darvas_base_status"),
+        "darvas_box_duration_bars": data_window.get("_darvas_box_duration_bars"),
+        "premove_darvas_state": data_window.get("_premove_darvas_state"),
+        "active_candlestick_patterns": data_window.get("active_candlestick_patterns") or [],
+        "candlestick_summary": data_window.get("candlestick_summary"),
+        "mtf_alignment": data_window.get("_mtf_alignment_string"),
+        "institutional_flow_bias": data_window.get("_institutional_flow_bias"),
+        "volume_accumulation_ratio_60d": data_window.get("_volume_accumulation_ratio_60d"),
+        "cmf_20d": data_window.get("_chaikin_money_flow_20d"),
+        "is_active_bb_kc_squeeze": data_window.get("_is_active_bb_kc_squeeze"),
+        "active_squeeze_bars": data_window.get("_active_squeeze_bars"),
+        "squeeze_expansion_profile": data_window.get("_squeeze_expansion_profile"),
+        "ma20_fast": safe_float(data_window.get("MA 20 Fast") or data_window.get("sma20")),
+        "ma50_mid": safe_float(data_window.get("MA 50 Mid") or data_window.get("sma50")),
+        "ma200_slow": safe_float(data_window.get("MA 200 Slow") or data_window.get("sma200")),
+        "dist_52w_high_pct": safe_float(data_window.get("dist_52w_high_pct")),
+        "high_52w": safe_float(data_window.get("high_52w") or data_window.get("_52w_high")),
+        "tastytrade_iv_rank": safe_float(data_window.get("tastytrade_iv_rank")),
+        "tastytrade_volatility_regime": data_window.get("tastytrade_volatility_regime"),
+        "monte_carlo_p_target_first": safe_float(
+            (data_window.get("monte_carlo_horizons") or {}).get("21", {}).get("p_target_first_pct")
+            or (data_window.get("monte_carlo_horizons") or {}).get("45", {}).get("p_target_first_pct")
+        ),
     }
 
 
@@ -1209,6 +1237,24 @@ Input:
 }
 Output:
 {"ticker": "MSFT", "dominant_side": "long", "entry_mode": "INCOME_CSP", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "none", "news_sentiment": "neutral", "key_flags": [], "reasoning": "INCOME_CSP fires on Put-Sell Timing setup. Structure supports CSP/put credit at support with IV rank 65. Target 1.25x/1.50x put strikes at 385/380. PASS triage.", "triage": "PASS", "conviction": 6, "send_for_deep_research": false}
+
+Example 3 (Base Compression / Breakout / Floor Defense):
+Input:
+{
+  "ticker": "AVTR", "price": 15.59,
+  "weinstein_stage": 1, "darvas_base_status": "Mature Base (300 bars) - High Breakout Compression",
+  "active_candlestick_patterns": ["🟢 Bullish Daily Closingmarubozu", "🟢 Bullish Daily Longline"],
+  "mtf_alignment": "M ✓ W ✓ D ✓",
+  "institutional_flow_bias": "Institutional Accumulation",
+  "is_active_bb_kc_squeeze": true,
+  "dist_52w_high_pct": -2.87,
+  "monte_carlo_p_target_first": 77.0,
+  "long_zone": [15.28, 15.40], "long_target": 15.79, "long_stop": 14.34,
+  "dominant_side": "long", "zone_state": "above_zone", "rr_from_current": 2.2,
+  "today": "2026-10-05"
+}
+Output:
+{"ticker": "AVTR", "dominant_side": "long", "entry_mode": "BREAKOUT_LONG", "rev_zone": "-", "confirm_contradict": "NEUTRAL", "catalyst": "300-bar Stage 1 base compression breakout", "news_sentiment": "neutral", "key_flags": ["base_compression", "mtf_aligned", "squeeze", "bullish_candlesticks"], "reasoning": "Stage 1 Mature Base (300 bars) in active BB-KC squeeze near 52w high (-2.8%). M✓W✓D✓ MTF long aligned with Bullish Daily Closingmarubozu and institutional accumulation. 77% Monte Carlo target touch probability. PASS triage.", "triage": "PASS", "conviction": 8, "send_for_deep_research": true}
 """
 
     # Build user prompt with few-shot example for better JSON consistency

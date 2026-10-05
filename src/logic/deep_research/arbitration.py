@@ -412,6 +412,13 @@ def run_arbitration(
         upsert_watch_target(watch_data)
         logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB (suggestion_id={watch_data.get('suggestion_id')}).")
 
+        # Immediately sync into suggested_trades_audit so the trade vehicles (Shares & Options) are tracked
+        try:
+            from src.tracking.suggested_trades_auditor import sync_suggested_trades_from_watch_targets
+            sync_suggested_trades_from_watch_targets()
+        except Exception as e_sync:
+            logger.debug(f"[{ticker}] Note syncing suggested_trades_audit: {e_sync}")
+
         # Record into last_researched table
         try:
             from src.tracking.watch_manager import record_last_researched

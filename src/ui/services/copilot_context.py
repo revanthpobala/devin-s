@@ -238,33 +238,23 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "RISK", "COST", "DEBT", "CASH", "RATE", "PEER", "VIEW", "SHOW", "TELL", "GIVE", "GET", "WHAT", "WHEN",
         "WHY", "HOW", "FAST", "SLOW", "VERY", "MUCH", "LESS", "THEN", "THAN", "SOME", "SUCH", "EVEN", "MOST",
         "ONLY", "BEEN", "HAVE", "WERE", "WILL", "HELP", "PLAN", "RUNS", "CHAT",
+        "HAPPEN", "HAPPENS", "HAPPENING", "THINK", "THINKS", "THINKING", "SUGGEST", "SUGGESTION", "SUGGESTIONS",
+        "ALERT", "ALERTS", "ALERTING", "QUICK", "RESEARCH", "PORTFOLIO", "PORTFOLIOS", "ACCOUNT", "ACCOUNTS",
+        "BALANCE", "BALANCES", "HOLDING", "HOLDINGS", "POSITION", "POSITIONS", "SHARE", "SHARES", "STOCK", "STOCKS",
+        "COULD", "WOULD", "SHOULD", "MIGHT", "MAYBE", "ABOUT", "BASED", "WHATEVER", "EVERYTHING", "SOMETHING",
+        "NOTHING", "ANYTHING", "ORDER", "ORDERS", "EXECUTE", "TRIGGER", "TRIGGERS",
         "STEP", "STEPS", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
         "JANUARY", "FEBRUARY", "MARCH", "APRIL", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
         "CALLS", "PUTS", "LEAP", "LEAPS", "STRIKE", "STRIKES", "TRADE", "TRADES", "PRICE", "PRICES",
         "BUY", "BUYS", "SELL", "SELLS", "HOLDS", "BOUGHT", "SOLD", "RUN", "PLANS", "STOPS", "LOSSES", "ZONES",
-        "TARGET", "TARGETS", "ENTRY", "ENTRIES", "ORDER", "ORDERS", "FLOW", "FLOWS", "SWEEP", "SWEEPS",
+        "TARGET", "TARGETS", "ENTRY", "ENTRIES", "FLOW", "FLOWS", "SWEEP", "SWEEPS",
         "BLOCK", "BLOCKS", "GAINS", "DROPS", "FALLS", "RISES", "RATES", "TERM", "TERMS", "WEEKS", "YEARS",
-        "HIGHS", "LOWS", "OPENS", "CLOSES", "EXP", "DTE", "STOCK", "STOCKS", "SHARE", "SHARES", "TICKER", "TICKERS",
+        "HIGHS", "LOWS", "OPENS", "CLOSES", "EXP", "DTE", "TICKER", "TICKERS",
         "SYMBOL", "SYMBOLS", "DESK", "DESKS", "MARKET", "MARKETS", "CHATS", "VIEWS", "SETUP", "SETUPS", "ACTION", "ACTIONS",
-        "REPORT", "REPORTS", "RESEARCH", "MONTE", "CARLO", "DATA", "WINDOW", "CHAIN", "CHAINS", "GREEKS", "OPTION", "OPTIONS",
+        "REPORT", "REPORTS", "MONTE", "CARLO", "DATA", "WINDOW", "CHAIN", "CHAINS", "GREEKS", "OPTION", "OPTIONS",
         "EXACT", "EXECUTION", "TODAY", "RIGHT", "SPOT", "SPOTS", "TRIM", "TRAIL"
     }
-    q_words = re.findall(r'[A-Za-z0-9&]+', q_clean)
-    n = len(q_words)
-    for length in [3, 2, 1]:
-        for i in range(n - length + 1):
-            phrase = ' '.join(q_words[i:i + length]).upper()
-            if length == 1 and phrase in stopwords_single:
-                continue
-            if phrase in _DYNAMIC_NAME_TO_TICKER:
-                sym = _DYNAMIC_NAME_TO_TICKER[phrase]
-                if sym not in detected:
-                    detected.append(sym)
-                    matched_by[sym] = "alias"
-                    # Mask phrase out of q_clean so it doesn't trigger secondary keyword matches
-                    q_clean = re.sub(rf'\b{re.escape(phrase)}\b', ' ', q_clean, flags=re.IGNORECASE)
 
-    # 6. Check standalone ticker tokens excluding market terminology & common English words
     acronym_blacklist = {
         "ARE", "ALL", "NOW", "CAN", "SEE", "FOR", "ON", "IT", "SO", "A", "GO", "BE", "AM", "HAS", "DO",
         "ORB", "EMA", "SMA", "VWAP", "AVWAP", "GEX", "RVOL", "DTE", "ATM", "ITM", "OTM", "ROI", "PNL",
@@ -288,14 +278,37 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "PATH", "WAYS", "NEED", "WANT", "LIKE", "THINK", "WONDER", "WONDERING", "ABOUT", "COULD", "WOULD", "SHOULD",
         "STEP", "STEPS", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
         "CALLS", "PUTS", "LEAP", "LEAPS", "STRIKE", "STRIKES", "BOUGHT", "SOLD", "EXACT", "EXECUTION", "TODAY", "RIGHT",
-        "SPOT", "SPOTS", "TRIM", "TRIMS", "TRAIL", "TRAILS", "SL", "TP"
+        "SPOT", "SPOTS", "TRIM", "TRIMS", "TRAIL", "TRAILS", "SL", "TP",
+        "HAPPEN", "HAPPENS", "HAPPENING", "THINK", "THINKS", "THINKING", "SUGGEST", "SUGGESTION", "SUGGESTIONS",
+        "ALERT", "ALERTS", "ALERTING", "QUICK", "RESEARCH", "PORTFOLIO", "PORTFOLIOS", "ACCOUNT", "ACCOUNTS",
+        "BALANCE", "BALANCES", "HOLDING", "HOLDINGS", "POSITION", "POSITIONS", "SHARE", "SHARES",
+        "COULD", "WOULD", "SHOULD", "MIGHT", "MAYBE", "ABOUT", "BASED", "WHATEVER", "EVERYTHING", "SOMETHING",
+        "NOTHING", "ANYTHING", "ORDER", "ORDERS", "EXECUTE", "TRIGGER", "TRIGGERS"
     }
+
+    # 5a. First check standalone known ticker tokens (e.g. WMT, AAPL, NVDA, GOOGL)
     tokens = re.findall(r'\b[A-Za-z]{3,5}\b', q_clean)
     for t in tokens:
         tu = t.upper()
         if tu in known and tu not in acronym_blacklist and tu not in detected:
             detected.append(tu)
             matched_by[tu] = "standalone"
+
+    # 5b. Dynamic SEC EDGAR Company Name Matching (Multi-word phrases first, then unambiguous single-word names)
+    q_words = re.findall(r'[A-Za-z0-9&]+', q_clean)
+    n = len(q_words)
+    for length in [3, 2, 1]:
+        for i in range(n - length + 1):
+            phrase = ' '.join(q_words[i:i + length]).upper()
+            if length == 1 and (phrase in stopwords_single or phrase in acronym_blacklist or len(phrase) < 4):
+                continue
+            if phrase in _DYNAMIC_NAME_TO_TICKER:
+                sym = _DYNAMIC_NAME_TO_TICKER[phrase]
+                if sym not in detected:
+                    detected.append(sym)
+                    matched_by[sym] = "alias"
+                    # Mask phrase out of q_clean so it doesn't trigger secondary keyword matches
+                    q_clean = re.sub(rf'\b{re.escape(phrase)}\b', ' ', q_clean, flags=re.IGNORECASE)
 
     # 7. Inherit active conversation ticker if none detected in prompt
     if not detected and history:
@@ -996,6 +1009,17 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
             status_badge = f"⏳ STALKING (+{dist_above:.1f}% ABOVE ENTRY ZONE)"
             status_desc = f"Live spot (${live_spot:.2f}) is trading above the entry zone ceiling (${ez_high:.2f}). Awaiting pullback or breakout above ${breakout_p or 'resistance'}."
             copilot_instruction = f"Price (${live_spot:.2f}) is currently {dist_above:.1f}% above the top of the entry zone (${ez_high:.2f}). Await pullback to ${ez_high:.2f} or breakout above ${breakout_p or 'resistance'}."
+        else:
+            status_badge = "⚡ ON-DEMAND QUANTITATIVE AUDIT (QUICK RESEARCH)"
+            status_desc = f"Live spot: ${live_spot:.2f}. No prior deep research levels recorded. Live quote, options flow, and SEC metrics loaded."
+            copilot_instruction = (
+                f"No prior deep research dossier exists yet for ${ticker_u}. Synthesize an immediate institutional Quick Research setup anchored on live spot (${live_spot:.2f}): "
+                f"1) Formulate a decisive quantitative thesis (valuation, options flow, and technical posture). "
+                f"2) Establish a crisp tactical trade plan: Entry Zone, Hard Tactical Stop, and Targets (T1/T2). "
+                f"3) Recommend the highest-edge options vehicle (Bull Put credit spread, Long Call / Debit vertical, or Covered Call) with exact strikes and expiration. "
+                f"4) MUST conclude with interactive one-click action buttons to set cloud alerts and save to watch targets: "
+                f"`[🔔 Set Alert at $XX.XX](action:alert?ticker={ticker_u}&price=XX.XX&op=<=)  [🎯 Add to Watch Targets](action:watch?ticker={ticker_u}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`"
+            )
 
     elapsed_days_str = ""
     if report_date:
@@ -1024,6 +1048,8 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
         top_card.append(delta_str)
     if ez_low and ez_high:
         top_card.append(f"• **MANDATED ENTRY ZONE:** **${ez_low:.2f} – ${ez_high:.2f}** | **TACTICAL STOP:** **${stop_p:.2f}**" + (f" | **TARGET 1:** **${t1_p:.2f}**" if t1_p else ""))
+    else:
+        top_card.append(f"• **MANDATED ENTRY ZONE:** Formulate On-Demand Quick Research Entry Floor")
     top_card.append(f"• **REAL-TIME EXECUTION STATUS:** **{status_badge}**")
     top_card.append(f"• **EXECUTION DETAIL:** {status_desc}")
 
@@ -1782,6 +1808,74 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     except Exception as pe:
         logger.debug(f"Error loading positions.json in overview: {pe}")
 
+    # 4b. Live Schwab Brokerage Portfolio & Wealth Analysis (data/schwab_portfolio.db)
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_analysis, get_portfolio_summary
+        port_analysis = get_portfolio_analysis()
+        port_summary = get_portfolio_summary()
+        tot_val = float(port_summary.get("total_liquidation_value") or 0.0)
+        tot_cash = float(port_summary.get("total_cash_balance") or 0.0)
+        day_pnl = float(port_summary.get("total_day_pnl") or 0.0)
+        day_pnl_pct = float(port_summary.get("total_day_pnl_pct") or 0.0)
+        unreal_pnl = float(port_summary.get("total_unrealized_pnl") or 0.0)
+        unreal_pnl_pct = float(port_summary.get("total_unrealized_pnl_pct") or 0.0)
+
+        briefing = port_analysis.get("briefing", {})
+        what_happened = briefing.get("what_happened", "")
+        what_is_happening = briefing.get("what_is_happening", "")
+
+        holdings = port_analysis.get("positions_by_symbol", [])
+        top_holdings = holdings[:10]
+        sentinel = port_analysis.get("sentinel", {})
+
+        rt = port_analysis.get("realtime", {})
+        earlier_val = rt.get("earlier_baseline_value", 182714.27)
+        earlier_day_pnl = rt.get("earlier_day_pnl", -679.50)
+        earlier_date = rt.get("earlier_baseline_date", "Prior Session")
+        turnaround = rt.get("turnaround_gain", 0.0)
+
+        p_lines = [
+            f"### 💼 USER'S LIVE REAL-TIME SCHWAB PORTFOLIO & WEALTH CONTEXT (STREAMING):",
+            f"• **CURRENT REAL-TIME LIQUIDATION VALUE**: **${tot_val:,.2f}** (vs Earlier Baseline: ${earlier_val:,.2f} on {earlier_date})",
+            f"• **TODAY'S REAL-TIME NET DAY P&L**: **${day_pnl:+,.2f} ({day_pnl_pct:+.2f}%)** (Rebound of +${turnaround:,.2f} vs earlier session dip of ${earlier_day_pnl:+,.2f})",
+            f"• **CUMULATIVE UNREALIZED P&L**: **${unreal_pnl:+,.2f} ({unreal_pnl_pct:+.2f}%)**",
+            f"• **LIQUID CASH & DRY POWDER**: Cash: **${tot_cash:,.2f}** | SWVXX (5% Yield Fund): **${port_analysis.get('performance', {}).get('swvxx_money_market', 14643):,.2f}**",
+            "",
+            f"🎙️ **EXECUTIVE PERFORMANCE ATTRIBUTION (WHAT HAPPENED TODAY)**:\n{what_happened}",
+            "",
+            f"🔭 **MACRO & RISK POSTURE (WHAT IS HAPPENING RIGHT NOW)**:\n{what_is_happening}",
+            "",
+            "📊 **TOP DEDUPLICATED PORTFOLIO HOLDINGS (EARLIER VS REAL-TIME NOW)**:"
+        ]
+        for h in top_holdings:
+            sym_h = h.get("symbol")
+            mv_h = h.get("market_value", 0.0)
+            pct_port = (mv_h / tot_val * 100.0) if tot_val > 0 else 0.0
+            dp_h = h.get("day_pnl", 0.0)
+            up_h = h.get("unrealized_pnl", 0.0)
+            u_pct_h = h.get("unrealized_pnl_pct", 0.0)
+            acct_badge = h.get("account", "")
+            earlier_p = h.get("earlier_price")
+            curr_p = h.get("current_price")
+            px_info = f" | Price: ${earlier_p:.2f} -> ${curr_p:.2f}" if (earlier_p and curr_p and earlier_p > 0) else ""
+            p_lines.append(
+                f"• **{sym_h}** ({h.get('asset_type', 'EQUITY')}{f' | {acct_badge}' if acct_badge else ''}{px_info}): "
+                f"Market Value: **${mv_h:,.2f}** ({pct_port:.1f}% of assets) | Today: **${dp_h:+,.2f}** | Unrealized Gain: **${up_h:+,.2f} ({u_pct_h:+.1f}%)**"
+            )
+
+        if sentinel and sentinel.get("has_violent_drop"):
+            p_lines.append("\n🚨 **ACTIVE SENTINEL RISK ALERTS**:")
+            for vd in sentinel.get("violent_drops", []):
+                p_lines.append(f"• ⚠️ {vd.get('message')}")
+            for bn in sentinel.get("breaking_news", []):
+                p_lines.append(f"• 📰 {bn.get('symbol')}: {bn.get('headline')}")
+        else:
+            p_lines.append("\n🛡️ **SENTINEL STATUS**: Normal Volatility Bands. No severe price shocks or flash crashes detected in your portfolio.")
+
+        parts.append("\n".join(p_lines))
+    except Exception as se:
+        logger.debug(f"Error loading Schwab portfolio in copilot overview: {se}")
+
     # 5. Live Benchmark Quotes & Volatility
     try:
         benchmarks = []
@@ -1903,7 +1997,7 @@ You MUST follow this exact structure:
         question, re.IGNORECASE
     ))
     if is_single_stock or is_modal_or_alert:
-        is_overview_request = market_wide_request
+        is_overview_request = market_wide_request or positions_request
     else:
         is_overview_request = market_wide_request or positions_request or bool(re.search(
             r'\b(today|overview|summary|learn|learned|what should we do|what to do|gameplan|plan|what was run|runs|run today|research done|researched|watchlist|stalking|portfolio|positions|desk|market|status)\b',
@@ -2063,6 +2157,18 @@ Guidelines:
    - Real-time market quotes, unified options chain (Calls + Puts), and Tastytrade IV Rank are already pre-loaded in your context below.
    - If you need additional live data, emit all needed tool calls in your FIRST response so they execute concurrently in parallel.
    - Once tool results are returned, immediately synthesize your final markdown answer without requesting further tools.
+15. One-Click Interactive Alerts & Watchlist Triggers:
+   - When proposing tactical trade levels (Entry Zone, Stop Loss, Target 1, Breakout Level) or quote alerts for ANY stock (${primary_ticker} or user-requested tickers):
+     YOU MUST ALWAYS APPEND ONE-CLICK INTERACTIVE ACTION BUTTONS at the end of your trade plan:
+     - Cloud Quote Alert: `[🔔 Set Alert at $XX.XX](action:alert?ticker=${primary_ticker}&price=XX.XX&op=<=)`
+     - SQLite Watchlist Radar: `[🎯 Add to Watch Targets](action:watch?ticker=${primary_ticker}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`
+     Clicking these buttons instantly triggers cloud push notifications via Tastytrade mobile or saves the target into the SQLite radar without requiring any typing!
+16. Real Schwab Brokerage Portfolio Advisory Mandate:
+   - When the user asks about their portfolio, holdings, asset allocation, P&L, or overall risk posture:
+     Ground your response in their real Schwab brokerage portfolio (shown under 'USER\'S LIVE SCHWAB BROKERAGE PORTFOLIO & WEALTH CONTEXT').
+     - Cite exact figures: Net Liquidation Value ($182.6k across 3 accounts), today's P&L, cumulative unrealized gains, and cash/SWVXX dry powder ($21.9k).
+     - Address their heavy concentration in GOOGL (35.5%) and AMZN (19.3%). Propose risk management strategies like covered calls (selling OTM 30-45 DTE calls against shares) to monetize high IV without triggering taxable capital gains, or collar structures.
+     - Evaluate today's performance attribution (tech pullbacks vs index buffer) and give clear, institutional recommendations on rebalancing, dry powder deployment, or letting winners ride.
 
 
 

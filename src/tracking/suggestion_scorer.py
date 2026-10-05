@@ -446,13 +446,17 @@ def get_main_record_stats(min_date: str = "2026-09-23") -> Dict[str, Any]:
             }
 
         return {
+            "total": len(r_vals),
             "total_trades": len(r_vals),
             "wins": wins,
             "losses": losses,
-            "mean_r": round(_stats.mean(r_vals), 4) if r_vals else None,
-            "median_r": round(_stats.median(r_vals), 4) if r_vals else None,
+            "mean_r": round(_stats.mean(r_vals), 4) if r_vals else 0.0,
+            "median_r": round(_stats.median(r_vals), 4) if r_vals else 0.0,
             "win_rate": round(wins / len(r_vals) * 100, 1) if r_vals else 0.0,
+            "win_rate_pct": round(wins / len(r_vals) * 100, 1) if r_vals else 0.0,
+            "stop_out_pct": round(losses / len(r_vals) * 100, 1) if r_vals else 0.0,
             "sum_r": round(sum(r_vals), 4),
+            "flag_n30": len(r_vals) >= 30,
             "by_lane": lanes_stats,
         }
 

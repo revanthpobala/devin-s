@@ -96,34 +96,32 @@ def get_feedback_loop_data() -> Dict[str, Any]:
     """
     notes_store = _load_feedback_notes()
 
-    # 1. Active Open Positions from data/positions.json and DB
+    # 1. Active Open Positions STRICTLY from data/positions.json (Single Source of Truth)
     active_state = load_state()
     active_tickers = list(active_state.keys())
 
-    # Also check trading_alerts.db for open positions
-    db_open_positions: List[Dict[str, Any]] = []
+    # Auto-reconcile any orphaned OPEN rows in SQLite so test fixtures don't linger as open
     if DB_PATH.exists():
         try:
             with sqlite3.connect(str(DB_PATH), timeout=15.0) as conn:
-                conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
-                cur.execute("""
-                    SELECT * FROM positions
-                    WHERE status = 'OPEN'
-                    ORDER BY opened_at DESC
-                """)
-                for r in cur.fetchall():
-                    db_open_positions.append(dict(r))
+                if not active_tickers:
+                    cur.execute("UPDATE positions SET status = 'CLOSED', exit_reason = 'RECONCILED_CLOSED', closed_at = datetime('now') WHERE status = 'OPEN'")
+                else:
+                    placeholders = ",".join("?" for _ in active_tickers)
+                    cur.execute(
+                        f"UPDATE positions SET status = 'CLOSED', exit_reason = 'RECONCILED_CLOSED', closed_at = datetime('now') WHERE status = 'OPEN' AND symbol NOT IN ({placeholders})",
+                        active_tickers,
+                    )
+                conn.commit()
         except Exception as e:
-            logger.debug(f"Error querying db open positions: {e}")
+            logger.debug(f"Error reconciling db open positions: {e}")
 
-    # Merge open positions
+    # Open positions come EXCLUSIVELY from active_state (data/positions.json)
     open_positions: List[Dict[str, Any]] = []
     all_open_syms = set(active_tickers)
-    for p in db_open_positions:
-        all_open_syms.add(p.get("symbol", "").upper())
 
-    # Batch quotes for all open positions
+    # Batch quotes for genuine open positions
     live_quotes: Dict[str, float] = {}
     if all_open_syms:
         try:
@@ -133,12 +131,6 @@ def get_feedback_loop_data() -> Dict[str, Any]:
 
     for sym in sorted(list(all_open_syms)):
         rec = active_state.get(sym, {})
-        if not rec:
-            # Fallback to DB record
-            matching = [p for p in db_open_positions if p.get("symbol", "").upper() == sym]
-            if matching:
-                rec = matching[0]
-
         spot = live_quotes.get(sym) or float(rec.get("last_price") or rec.get("entry_price") or 0.0)
         entry = float(rec.get("entry_price") or rec.get("alert_price") or 0.0)
         stop = float(rec.get("stop") or 0.0)
@@ -204,6 +196,11 @@ def get_feedback_loop_data() -> Dict[str, Any]:
                            exit_reason, realized_broker_pnl, raw_alert
                     FROM positions
                     WHERE status = 'CLOSED'
+                      AND raw_alert IS NOT NULL
+                      AND raw_alert != ''
+                      AND raw_alert != '{}'
+                      AND exit_reason != 'TEST_FIXTURE_RECONCILED'
+                      AND exit_reason != 'RECONCILED_CLOSED'
                     ORDER BY closed_at DESC
                     LIMIT 50
                 """)
@@ -213,7 +210,7 @@ def get_feedback_loop_data() -> Dict[str, Any]:
             logger.debug(f"Error querying closed positions: {e}")
 
     # Also pull evaluated suggestions from research_watch.db
-    rw_db = config.BASE_DIR / "data" / "research_watch.db"
+    rw_db = config.research_watch_db_path()
     if rw_db.exists():
         try:
             with sqlite3.connect(str(rw_db), timeout=15.0) as conn:

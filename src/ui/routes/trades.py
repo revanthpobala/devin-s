@@ -115,14 +115,37 @@ def get_suggested_trades_endpoint():
                            s.pb_funnel
                     FROM watch_targets wt
                     LEFT JOIN suggestions s ON s.id = wt.suggestion_id
-                    WHERE wt.is_active IS NULL OR wt.is_active = 1
+                    WHERE (wt.is_active IS NULL OR wt.is_active = 1)
+                      AND wt.status != 'UNRESEARCHED'
+                      AND (wt.entry_zone_low IS NOT NULL OR wt.entry_zone_high IS NOT NULL)
                     ORDER BY wt.date DESC, wt.updated_at DESC
                     """
                 ).fetchall()
             except Exception:
                 rows = c.execute(
-                    "SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1 ORDER BY date DESC, updated_at DESC"
+                    """
+                    SELECT rowid as id, * 
+                    FROM watch_targets 
+                    WHERE (is_active IS NULL OR is_active = 1)
+                      AND status != 'UNRESEARCHED'
+                      AND (entry_zone_low IS NOT NULL OR entry_zone_high IS NOT NULL)
+                    ORDER BY date DESC, updated_at DESC
+                    """
                 ).fetchall()
+
+        # Batch fetch real-time quotes for all researched watch targets to reflect true live market prices
+        symbols_to_quote = list({
+            (dict(r).get("ticker") or "").upper().strip()
+            for r in rows
+            if (dict(r).get("ticker") and (dict(r).get("entry_zone_low") is not None or dict(r).get("status") not in ("UNRESEARCHED",)))
+        })
+        quotes_batch = {}
+        if symbols_to_quote:
+            try:
+                from src.clients.quote_router import quote_router
+                quotes_batch = quote_router.get_watchlist_quotes_batch(symbols_to_quote)
+            except Exception as e_quote:
+                logger.warning(f"Failed to batch fetch live quotes for suggested trades: {e_quote}")
 
         trades = []
         company_names = get_company_names_dict()
@@ -150,8 +173,15 @@ def get_suggested_trades_endpoint():
             stop_loss = t.get("tactical_stop")
             target_1 = t.get("target_1")
             target_2 = t.get("target_2")
-            last_price = t.get("last_price")
             side = (t.get("side") or "LONG").upper()
+
+            # Refresh quote from live batch feed
+            qd = quotes_batch.get(sym)
+            if qd and qd.last_price > 0:
+                last_price = round(qd.last_price, 2)
+            else:
+                last_price = t.get("last_price")
+            t["last_price"] = last_price
 
             entry_mid = None
             if entry_low is not None and entry_high is not None and (entry_low > 0 or entry_high > 0):
@@ -229,7 +259,150 @@ def get_suggested_trades_endpoint():
             else:
                 t["stop_in_atr"] = None
             t["rr_at_market"] = t.get("rr_at_market_at_signal")
+
+            # Dynamic live distance to entry zone
+            dist_val = t.get("distance_to_entry_pct")
+            if entry_low is not None and entry_high is not None and entry_low > 0 and entry_high > 0 and last_price:
+                if side == "LONG":
+                    if last_price > entry_high:
+                        dist_val = round(((last_price - entry_high) / entry_high) * 100.0, 2)
+                    elif last_price < entry_low:
+                        dist_val = round(((last_price - entry_low) / entry_low) * 100.0, 2)
+                    else:
+                        dist_val = 0.0
+                else:  # SHORT
+                    if last_price < entry_low:
+                        dist_val = round(((entry_low - last_price) / entry_low) * 100.0, 2)
+                    elif last_price > entry_high:
+                        dist_val = round(((last_price - entry_high) / entry_high) * 100.0, 2)
+                    else:
+                        dist_val = 0.0
+                t["distance_to_entry_pct"] = dist_val
+
+            try:
+                dist_abs = abs(float(dist_val)) if dist_val is not None else 999.0
+            except (ValueError, TypeError):
+                dist_abs = 999.0
+            has_spot = bool(last_price and float(last_price) > 0)
+
+            # Dynamic state transition verification against live price
+            status_str = (t.get("status") or "STALKING").upper()
+            hit_target = False
+            if target_1 and last_price:
+                if side == "LONG" and last_price >= target_1:
+                    hit_target = True
+                elif side == "SHORT" and last_price <= target_1:
+                    hit_target = True
+            if target_2 and last_price:
+                if side == "LONG" and last_price >= target_2:
+                    hit_target = True
+                elif side == "SHORT" and last_price <= target_2:
+                    hit_target = True
+
+            hit_stop = False
+            if stop_loss and last_price:
+                if side == "LONG" and last_price <= stop_loss:
+                    hit_stop = True
+                elif side == "SHORT" and last_price >= stop_loss:
+                    hit_stop = True
+
+            if hit_target:
+                status_str = "TARGET_HIT"
+            elif hit_stop:
+                status_str = "INVALIDATED"
+            elif entry_low and entry_high and entry_low > 0 and entry_high > 0 and last_price:
+                if entry_low <= last_price <= entry_high:
+                    if status_str not in ("IN_TRADE",):
+                        status_str = "IN_ZONE"
+                elif status_str == "IN_ZONE":
+                    status_str = "STALKING"
+            t["status"] = status_str
+
+            is_terminated = status_str in (
+                "TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED",
+                "STOPPED", "MISSED_RUNAWAY", "EXPIRED", "REJECTED_BY_GATE"
+            )
+            is_strictly_in_zone = bool(
+                entry_low and entry_high and entry_low > 0 and entry_high > 0
+                and last_price and entry_low <= last_price <= entry_high
+            )
+
+            eval_verdict = t.get("evaluation_verdict")
+            is_actionable_now = bool(t.get("is_actionable_now"))
+            eval_playbook = t.get("evaluation_playbook") or ""
+
+            # Rigorous Actionability Gate: Terminated, stopped, target hit, or out-of-zone trades are NEVER actionable to buy now!
+            if is_terminated or hit_target or hit_stop or not is_strictly_in_zone:
+                is_actionable_now = False
+                if hit_target or status_str in ("TARGET_HIT", "COMPLETED"):
+                    eval_verdict = "TARGET_HIT"
+                elif hit_stop or status_str in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
+                    eval_verdict = "STAND_ASIDE"
+            else:
+                # If strictly in zone, check / evaluate on arrival
+                if not eval_verdict and has_spot:
+                    try:
+                        from src.logic.zone_arrival_evaluator import evaluate_target_on_zone_arrival
+                        eval_res = evaluate_target_on_zone_arrival(sym, last_price, t)
+                        eval_verdict = eval_res.get("verdict")
+                        is_actionable_now = bool(eval_res.get("is_actionable_now"))
+                        eval_playbook = eval_res.get("playbook") or ""
+                        t["evaluation_time"] = eval_res.get("evaluated_at")
+                    except Exception as e_ev:
+                        logger.debug(f"[{sym}] On-the-fly evaluation skipped: {e_ev}")
+                elif eval_verdict and "ACTIONABLE" in eval_verdict:
+                    is_actionable_now = True
+
+            t["evaluation_verdict"] = eval_verdict
+            t["is_actionable_now"] = is_actionable_now
+            t["evaluation_playbook"] = eval_playbook
+
+            # Quantitative Priority Engine
+            if is_terminated or status_str in ("TARGET_HIT", "COMPLETED"):
+                if status_str in ("TARGET_HIT", "COMPLETED"):
+                    priority_tier = 7
+                    priority_score = 100.0
+                    priority_label = "🏁 TARGET HIT"
+                else:
+                    priority_tier = 8
+                    priority_score = 50.0
+                    priority_label = "🛑 STOPPED"
+            elif is_actionable_now and is_strictly_in_zone:
+                priority_tier = 1
+                priority_score = 1200.0 - min(dist_abs, 50.0)
+                priority_label = "🟢 BUY SHARES NOW" if side == "LONG" else "🔴 SHORT SHARES NOW"
+            elif status_str in ("IN_ZONE", "ENTER"):
+                priority_tier = 2
+                priority_score = 1000.0 - min(dist_abs, 50.0)
+                priority_label = "⚡ IN ZONE"
+            elif is_taken or status_str == "IN_TRADE":
+                priority_tier = 3
+                priority_score = 800.0 - min(dist_abs, 50.0)
+                priority_label = "💼 IN TRADE"
+            elif status_str == "STALKING" and has_spot and dist_abs <= 3.0:
+                priority_tier = 4
+                priority_score = 600.0 - (dist_abs * 10.0)
+                priority_label = f"⚡ HOT STALK ({dist_abs:.1f}%)"
+            elif status_str == "STALKING" and has_spot:
+                priority_tier = 5
+                priority_score = 400.0 - min(dist_abs, 100.0)
+                priority_label = "⏳ STALKING"
+            elif status_str == "STALKING":
+                priority_tier = 6
+                priority_score = 250.0
+                priority_label = "⏳ UNQUOTED"
+            else:
+                priority_tier = 8
+                priority_score = 50.0
+                priority_label = "🛑 STOPPED"
+
+            t["priority_tier"] = priority_tier
+            t["priority_score"] = round(priority_score, 2)
+            t["priority_label"] = priority_label
             trades.append(t)
+
+        # Prioritize plays: In Zone > In Trade > Hot Stalk (<3%) > Stalking > Completed > Stopped
+        trades.sort(key=lambda tr: (tr.get("priority_score", 0), tr.get("date", ""), tr.get("updated_at", "")), reverse=True)
 
         summary = {
             "total": len(trades),

@@ -72,7 +72,7 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
             with _get_connection() as conn:
                 c = conn.cursor()
                 c.execute(
-                    "SELECT job_id FROM active_research_jobs WHERE LOWER(ticker) = ? AND target_date = ? AND status IN ('QUEUED', 'RUNNING')",
+                    "SELECT job_id FROM active_research_jobs WHERE LOWER(ticker) = ? AND target_date = ? AND status IN ('QUEUED', 'RUNNING', 'COMPLETED')",
                     (ticker.lower(), date_str),
                 )
                 if c.fetchone():

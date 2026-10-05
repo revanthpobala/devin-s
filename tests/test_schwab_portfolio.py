@@ -147,3 +147,81 @@ def test_sync_schwab_positions_with_mock():
     search_nvda = get_portfolio_positions(search="NVDA")
     assert len(search_nvda) == 1
     assert search_nvda[0]["symbol"].startswith("NVDA")
+
+
+def test_sync_schwab_positions_with_initial_balances_and_mutual_funds():
+    """Verify that Schwab account day P/L matches initialBalances.liquidationValue delta and mutual fund day P/L is zeroed."""
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = [
+        {
+            "securitiesAccount": {
+                "accountNumber": "96806929",
+                "type": "MARGIN",
+                "initialBalances": {
+                    "liquidationValue": 122443.84,
+                },
+                "currentBalances": {
+                    "liquidationValue": 122765.31,
+                    "cashBalance": 1527.14,
+                    "availableFunds": 70692.0,
+                    "buyingPower": 141384.0,
+                    "longMarketValue": 103493.05,
+                    "mutualFundValue": 17738.12,
+                    "longOptionMarketValue": 7.0,
+                    "shortOptionMarketValue": 0.0,
+                },
+                "positions": [
+                    {
+                        "longQuantity": 50.0,
+                        "shortQuantity": 0.0,
+                        "averagePrice": 100.0,
+                        "marketValue": 6000.0,
+                        "currentDayProfitLoss": 120.0,
+                        "currentDayProfitLossPercentage": 2.0,
+                        "longOpenProfitLoss": 1000.0,
+                        "instrument": {
+                            "symbol": "GOOGL",
+                            "underlyingSymbol": "GOOGL",
+                            "assetType": "EQUITY",
+                            "description": "ALPHABET INC CL A",
+                        },
+                    },
+                    {
+                        "longQuantity": 200.0,
+                        "shortQuantity": 0.0,
+                        "averagePrice": 50.0,
+                        "marketValue": 17738.12,
+                        "currentDayProfitLoss": 342.05,  # Stale prior-day NAV change
+                        "currentDayProfitLossPercentage": 1.96,
+                        "longOpenProfitLoss": 7738.12,
+                        "instrument": {
+                            "symbol": "SWPPX",
+                            "underlyingSymbol": "SWPPX",
+                            "assetType": "MUTUAL_FUND",
+                            "description": "SCHWAB S&P 500 INDEX FUND",
+                        },
+                    },
+                ],
+            }
+        }
+    ]
+    mock_client.get_accounts.return_value = mock_resp
+
+    res = sync_schwab_positions(client=mock_client)
+    assert res["success"] is True
+    # 122765.31 - 122443.84 = +321.47 (matches Schwab account day P/L)
+    assert res["total_day_pnl"] == 321.47
+    assert res["total_day_pnl_pct"] == 0.26
+
+    # Verify positions: mutual fund day P/L must be 0.0 intraday
+    positions = get_portfolio_positions()
+    swppx = next(p for p in positions if p["symbol"] == "SWPPX")
+    assert swppx["asset_type"] == "MUTUAL_FUND"
+    assert swppx["day_profit_loss"] == 0.0
+    assert swppx["day_profit_loss_pct"] == 0.0
+
+    # Equity position preserves day P/L
+    googl = next(p for p in positions if p["symbol"] == "GOOGL")
+    assert googl["day_profit_loss"] == 120.0

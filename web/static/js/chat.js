@@ -845,6 +845,98 @@ window.AppChat = {
     }
   },
 
+  async handleSetAlertAction(queryString) {
+    try {
+      const params = new URLSearchParams(queryString);
+      const ticker = (params.get('ticker') || params.get('symbol') || '').toUpperCase().replace(/^\$/, '');
+      const price = parseFloat(params.get('price') || params.get('threshold') || 0);
+      const op = params.get('op') || '<=';
+      if (!ticker || !price) {
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast('Invalid alert parameters', 'error');
+        }
+        return;
+      }
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`⏳ Registering Tastytrade cloud alert for ${ticker} at ${op} $${price.toFixed(2)}...`, 'info');
+      }
+      const resp = await fetch('/api/tastytrade-alerts/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: ticker,
+          threshold: price,
+          operator: op.includes('<') ? '<' : '>',
+        })
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`🔔 Cloud Quote Alert Set for ${ticker} at ${op} $${price.toFixed(2)}! (Tastytrade push active)`, 'success');
+        }
+      } else {
+        const errMsg = data.detail || data.error || 'Failed to set alert';
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`Alert Note: ${errMsg}`, 'warning');
+        }
+      }
+    } catch (e) {
+      console.error('Error setting alert:', e);
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`Error setting alert: ${e.message}`, 'error');
+      }
+    }
+  },
+
+  async handleAddWatchAction(queryString) {
+    try {
+      const params = new URLSearchParams(queryString);
+      const ticker = (params.get('ticker') || params.get('symbol') || '').toUpperCase().replace(/^\$/, '');
+      const entry = parseFloat(params.get('entry') || params.get('entry_zone_high') || 0);
+      const stop = parseFloat(params.get('stop') || params.get('tactical_stop') || 0);
+      const target = parseFloat(params.get('target') || params.get('target_1') || 0);
+      if (!ticker) return;
+
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`⏳ Adding ${ticker} to Active Watchlist Radar...`, 'info');
+      }
+      const resp = await fetch('/api/watch-targets/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: ticker,
+          entry_zone_high: entry || null,
+          entry_zone_low: entry ? parseFloat((entry * 0.99).toFixed(2)) : null,
+          tactical_stop: stop || null,
+          target_1: target || null,
+          verdict: 'PASS',
+          side: 'LONG',
+          create_cloud_alert: true
+        })
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        const extra = data.cloud_alert_created ? ' + Cloud Push Alert' : '';
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`🎯 Added ${ticker} to Active Watchlist Radar${extra}!`, 'success');
+        }
+        if (window.AppWatchlist && typeof window.AppWatchlist.refreshWatchTargets === 'function') {
+          window.AppWatchlist.refreshWatchTargets();
+        }
+      } else {
+        const errMsg = data.detail || data.error || 'Failed to add watch target';
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`Watch Target Note: ${errMsg}`, 'warning');
+        }
+      }
+    } catch (e) {
+      console.error('Error adding watch target:', e);
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`Error adding watch target: ${e.message}`, 'error');
+      }
+    }
+  },
+
   openChatWithPrompt(prompt, sym = null) {
     if (sym) {
       this.setRevChatFocus(sym);

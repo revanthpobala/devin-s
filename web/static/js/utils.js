@@ -45,6 +45,16 @@ window.AppUtils = {
           return `<button class="ticker-pill-btn" onclick="AppChat.askActiveChat('${prompt.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:var(--cyan-glow); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12); cursor:pointer;">${label}</button>`;
         });
 
+        // Transform action:alert into one-click Tastytrade cloud alert trigger
+        html = html.replace(/<a\s+href=["']action:alert\?([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+          return `<button class="ticker-pill-btn alert-pill-btn" onclick="AppChat.handleSetAlertAction('${query.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#f59e0b; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🔔</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
+        });
+
+        // Transform action:watch into one-click Watchlist target trigger
+        html = html.replace(/<a\s+href=["']action:watch\?([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+          return `<button class="ticker-pill-btn watch-pill-btn" onclick="AppChat.handleAddWatchAction('${query.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🎯</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
+        });
+
         // If structured watch levels were extracted, append as a subtle collapsible drawer at the very bottom
         if (rawLevelsJson) {
           html += `

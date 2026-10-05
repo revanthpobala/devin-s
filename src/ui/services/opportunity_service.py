@@ -250,7 +250,76 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                 "invalidation": invalidation,
                 "summary_path": str(sum_file) if sum_file.exists() else None,
                 "arbitration_path": str(arb_file),
+                "stage": "DEEP_RESEARCH",
+                "needs_deep_research": False,
             })
+
+    # Also incorporate today's qualified Schwab 1000 screener coils that are coiling in zones
+    today_mt_str = now_mt.strftime("%Y-%m-%d")
+    yesterday_mt_str = (now_mt - timedelta(days=1)).strftime("%Y-%m-%d")
+    for check_d in [today_mt_str, yesterday_mt_str]:
+        raw_day_dir = config.BASE_DIR / "data" / "raw" / check_d
+        screener_files = [raw_day_dir / "schwab_survivors.json", raw_day_dir / "survivors.json"]
+        for sf in screener_files:
+            if not sf.exists():
+                continue
+            try:
+                candidates_data = json.loads(sf.read_text(encoding="utf-8"))
+                if not isinstance(candidates_data, list):
+                    continue
+                for c in candidates_data:
+                    sym = (c.get("Ticker") or c.get("Symbol") or c.get("symbol") or "").upper()
+                    if not sym or sym in seen_tickers:
+                        continue
+                    seen_tickers.add(sym)
+
+                    px = float(c.get("price") or 0.0)
+                    sup = float(c.get("support_level") or px or 0.0)
+                    stop_lvl = float(c.get("stop_level") or (sup * 0.985 if sup > 0 else 0.0))
+                    t1_lvl = float(c.get("target_level") or c.get("ceiling_level") or (px * 1.08 if px > 0 else 0.0))
+                    t2_lvl = float(c.get("ceiling_level") or (px * 1.15 if px > 0 else 0.0))
+                    stg = c.get("weinstein_stage", 2)
+                    setup_name = c.get("screener_setup") or "Trend Continuation (20 EMA Pullback)"
+                    tt = c.get("tastytrade") or {}
+                    ivr = tt.get("iv_rank")
+                    ivr_str = f"{int(round(float(ivr)))}%" if ivr is not None else "N/A"
+                    diff = tt.get("iv_hv_diff")
+                    diff_str = f"{int(round(float(diff)))}%" if diff is not None else "N/A"
+
+                    vintage_str = "⚡ TODAY (Screener)" if check_d == today_mt_str else "📅 Yesterday (Screener)"
+
+                    raw_setups.append({
+                        "ticker": sym,
+                        "report_date": check_d,
+                        "vintage": vintage_str,
+                        "side": "LONG",
+                        "verdict": "COILED_BASE",
+                        "conviction": 7,
+                        "score": int(c.get("priority_score") or 75),
+                        "entry_low": round(sup * 0.995, 2) if sup > 0 else round(px * 0.995, 2),
+                        "entry_high": round(sup * 1.005, 2) if sup > 0 else round(px * 1.005, 2),
+                        "tactical_stop": round(stop_lvl, 2),
+                        "target_1": round(t1_lvl, 2),
+                        "target_2": round(t2_lvl, 2) if t2_lvl > 0 else None,
+                        "breakout_level": round(float(c.get("ceiling_level") or 0.0), 2),
+                        "vehicle_type": "SHARES",
+                        "vehicle_label": f"EQUITY · Weinstein Stage {stg} · {setup_name} · IVR {ivr_str}",
+                        "options_plan": {},
+                        "pm_bullets": [
+                            f"Screener: {setup_name} (Stage {stg} Advancing) · Support floor anchored at ${sup:.2f}",
+                            f"Tastytrade: IV Rank {ivr_str} | IV-HV Spread: {diff_str} · Coiled base pullback",
+                        ],
+                        "invalidation": {
+                            "level": round(stop_lvl, 2),
+                            "rationale": f"Candle close below defended support ${stop_lvl:.2f}",
+                        },
+                        "summary_path": None,
+                        "arbitration_path": None,
+                        "stage": "SCREENER_COIL",
+                        "needs_deep_research": True,
+                    })
+            except Exception as e:
+                logger.debug(f"Error reading screener file {sf}: {e}")
 
     if not raw_setups:
         return []
@@ -302,17 +371,37 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                     else:
                         dist_pct = round(((spot - e_high) / e_high) * 100.0, 2)
 
+        # Check terminal conditions
+        is_target_hit = False
+        is_stop_breached = False
+        if spot > 0:
+            if side == "LONG":
+                if t1 > 0 and spot >= t1:
+                    is_target_hit = True
+                elif stop > 0 and spot <= stop:
+                    is_stop_breached = True
+            else:  # SHORT
+                if t1 > 0 and spot <= t1:
+                    is_target_hit = True
+                elif stop > 0 and spot >= stop:
+                    is_stop_breached = True
+
+        if is_target_hit or is_stop_breached:
+            in_zone = False
+
         s["in_zone"] = in_zone
         s["dist_pct"] = dist_pct
 
         # Dynamic Live R:R
         live_rr = 0.0
-        if spot > 0 and stop > 0 and t1 > 0:
+        if is_target_hit or is_stop_breached:
+            live_rr = 0.0
+        elif spot > 0 and stop > 0 and t1 > 0:
             if side == "LONG" and spot > stop and t1 > spot:
                 live_rr = round((t1 - spot) / (spot - stop), 2)
             elif side == "SHORT" and stop > spot and spot > t1:
                 live_rr = round((spot - t1) / (stop - spot), 2)
-        elif e_high > 0 and stop > 0 and t1 > 0:
+        elif spot <= 0 and e_high > 0 and stop > 0 and t1 > 0:
             if side == "LONG" and e_high > stop:
                 live_rr = round((t1 - e_high) / (e_high - stop), 2)
             elif side == "SHORT" and stop > e_low:
@@ -320,11 +409,19 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         s["live_rr"] = live_rr
 
         # Opportunity State classification
-        if in_zone:
+        if is_target_hit:
+            s["opportunity_state"] = "TARGET_HIT"
+            s["state_label"] = "🏁 TARGET HIT"
+            s["priority_tier"] = 7
+        elif is_stop_breached:
+            s["opportunity_state"] = "STOP_BREACHED"
+            s["state_label"] = "🛑 STOP BREACHED"
+            s["priority_tier"] = 8
+        elif in_zone:
             s["opportunity_state"] = "IN_ZONE"
             s["state_label"] = "🎯 IN ENTRY ZONE"
             s["priority_tier"] = 1
-        elif abs(dist_pct) <= 1.5:
+        elif abs(dist_pct) <= 1.5 and spot > 0:
             s["opportunity_state"] = "COILED_TRIGGER"
             s["state_label"] = f"⚡ COILED TRIGGER ({'+' if dist_pct > 0 else ''}{dist_pct}%)"
             s["priority_tier"] = 2
@@ -343,8 +440,8 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
     yesterday_mt_str = (now_mt - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Sort opportunities:
-    # 1. Date Freshness: TODAY's research (2026-10-01) ALWAYS first, then yesterday, etc.
-    # 2. Priority tier: In-Zone (Tier 1) first, then Coiled (Tier 2)
+    # 1. Date Freshness: TODAY's research ALWAYS first, then yesterday, etc.
+    # 2. Priority tier: In-Zone (Tier 1) first, then Coiled (Tier 2), terminal states last
     # 3. Distance to entry
     # 4. Score
     # 5. Live R:R
@@ -353,7 +450,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         x["priority_tier"],
         abs(x["dist_pct"]),
         -x["score"],
-        -x["live_rr"],
+        -(x.get("live_rr") or 0.0),
     ))
 
     _OPPS_CACHE = processed
@@ -422,11 +519,18 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
 
         # Extract tactical levels from playbook or alert price
         playbook = a.get("llm_playbook") or ""
-        stop_match = re.search(r"Stop\s*[\$:]?\s*([\d\.]+)", playbook, re.IGNORECASE)
-        target_match = re.search(r"Target\s*[\$:]?\s*([\d\.]+)", playbook, re.IGNORECASE)
+        stop_match = re.search(r"Stop\s*[\$:]?\s*(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
+        target_match = re.search(r"Target\s*[\$:]?\s*(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
 
-        stop_val = float(stop_match.group(1)) if stop_match else (spot * 0.97 if side == "LONG" else spot * 1.03)
-        target_val = float(target_match.group(1)) if target_match else (spot * 1.06 if side == "LONG" else spot * 0.94)
+        try:
+            stop_val = float(stop_match.group(1)) if stop_match else (spot * 0.97 if side == "LONG" else spot * 1.03)
+        except Exception:
+            stop_val = spot * 0.97 if side == "LONG" else spot * 1.03
+
+        try:
+            target_val = float(target_match.group(1)) if target_match else (spot * 1.06 if side == "LONG" else spot * 0.94)
+        except Exception:
+            target_val = spot * 1.06 if side == "LONG" else spot * 0.94
         entry_val = float(a.get("alert_price") or spot)
 
         a["entry_price"] = round(entry_val, 2)

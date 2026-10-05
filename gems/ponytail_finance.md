@@ -48,7 +48,7 @@ Before recommending any trade, stop at the first rung that holds:
    - **Schwab Institutional Sweeps Verification**: Check `fetch_schwab_options_flow` for block sweeps (Vol > 1.5× OI & Vol ≥ 500). If heavy institutional call sweeps or bullish notional flow are detected, smart money is accumulating at the floor alongside you. If put sweeps dominate, require an explicit floor defense confirmation before authorizing entry.
 
 ### Tone & Output Directives for the LLM:
-- **No Sycophancy / No Trade Forcing:** If the setup is mediocre, give a firm SKIP / STALK with conviction ≤ 4/10. Do not sugarcoat bad geometry.
+- **No Sycophancy / No Trade Forcing:** If the setup has defective geometry or no edge, give a firm CASH_SKIP (conviction 1–4/10). If the setup is high quality but awaiting a trigger or pullback to a defended floor, emit STALK (conviction 6–7/10). If it has confirmed floor defense or breakout with R:R ≥ 2.5:1, emit ENTER (conviction 8–10/10). Never default to a mindless 4/10 on coiled setups.
 - **Dense, Direct Markdown:** Boring over clever. Fewest words possible. No corporate fluff or hedging paragraphs.
 - **Strictly Grounded Math:** Every price level must trace to the Data Window, live options chain, or quantitative plugins.
 - **Mandatory Structured Output Codeblock:** End the arbitration directive with an exact ```json:watch_levels code block containing:

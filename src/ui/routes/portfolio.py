@@ -24,6 +24,17 @@ def get_schwab_portfolio_summary_endpoint():
         return {"error": str(e), "total_liquidation_value": 0.0, "accounts": []}
 
 
+@router.get("/analysis")
+def get_schwab_portfolio_analysis_endpoint(refresh: bool = Query(False)):
+    """Retrieve executive performance synthesis, asset allocation, concentration, and evaluated trade audits."""
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_analysis
+        return get_portfolio_analysis(force_refresh=refresh)
+    except Exception as e:
+        logger.error(f"Error generating Schwab portfolio analysis: {e}")
+        return {"error": str(e)}
+
+
 @router.get("/positions")
 def get_schwab_portfolio_positions_endpoint(
     account: Optional[str] = Query(None),

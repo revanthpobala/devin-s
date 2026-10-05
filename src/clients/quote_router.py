@@ -163,7 +163,16 @@ class QuoteRouter:
         s = str(symbol or "").strip().upper()
         if s.startswith("^"):
             s = s[1:]
-        return s.replace(".", "/")
+        return s.replace("/", ".").replace("-", ".")
+
+    def _format_for_yahoo(self, symbol: str, is_index: bool = False) -> str:
+        clean = self._clean_symbol(symbol)
+        if is_index or self._is_index(clean):
+            return f"^{clean}"
+        return clean.replace(".", "-")
+
+    def _format_for_alpaca(self, symbol: str) -> str:
+        return self._clean_symbol(symbol)
 
     def _is_index(self, symbol: str) -> bool:
         s = self._clean_symbol(symbol)
@@ -492,6 +501,12 @@ class QuoteRouter:
                 except Exception:
                     pass
 
+        # Map back to whatever symbol representation the caller provided (e.g. BRK.B or BRK/B)
+        for s in symbols:
+            clean = self._clean_symbol(s)
+            if clean in results and s not in results:
+                results[s] = results[clean]
+
         return results
 
     # =========================================================================
@@ -583,7 +598,7 @@ class QuoteRouter:
     def _fetch_yahoo_direct(self, symbol: str, is_index: bool = False) -> Optional[QuoteData]:
         """Direct query to Yahoo Finance v8 chart REST endpoint (~180–220ms, no API keys)."""
         clean = self._clean_symbol(symbol)
-        yahoo_sym = f"^{clean}" if (is_index or self._is_index(clean)) else clean
+        yahoo_sym = self._format_for_yahoo(symbol, is_index=is_index)
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -650,6 +665,7 @@ class QuoteRouter:
             return None
 
         clean = self._clean_symbol(symbol)
+        alpaca_sym = self._format_for_alpaca(symbol)
         base_url = (
             os.getenv("ALPACA_DATA_URL")
             or os.getenv("ALPACA_API_URL")
@@ -660,7 +676,7 @@ class QuoteRouter:
         if "/v2" not in base_url:
             base_url = f"{base_url}/v2"
 
-        url = f"{base_url}/stocks/{clean}/trades/latest"
+        url = f"{base_url}/stocks/{alpaca_sym}/trades/latest"
         headers = {"APCA-API-KEY-ID": alpaca_key, "APCA-API-SECRET-KEY": alpaca_secret}
 
         try:
@@ -689,7 +705,7 @@ class QuoteRouter:
         if not alpaca_key or not alpaca_secret or not symbols:
             return results
 
-        clean_syms = [s for s in symbols if not self._is_index(s)]
+        clean_syms = list(dict.fromkeys(self._format_for_alpaca(s) for s in symbols if not self._is_index(s)))
         if not clean_syms:
             return results
 
@@ -718,8 +734,9 @@ class QuoteRouter:
                             net_c = round(px - close_p, 2)
                             net_p = round((net_c / close_p) * 100, 2) if close_p > 0 else 0.0
 
-                            results[sym] = QuoteData(
-                                symbol=sym,
+                            clean_sym = self._clean_symbol(sym)
+                            qd = QuoteData(
+                                symbol=clean_sym,
                                 last_price=px,
                                 bid=float(quote.get("bp") or 0.0),
                                 ask=float(quote.get("ap") or 0.0),
@@ -733,6 +750,9 @@ class QuoteRouter:
                                 source="ALPACA",
                                 timestamp=time.time(),
                             )
+                            results[clean_sym] = qd
+                            if sym != clean_sym:
+                                results[sym] = qd
             except Exception as e:
                 logger.debug(f"Alpaca snapshot chunk failed: {e}")
 

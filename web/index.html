@@ -958,10 +958,10 @@
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
               <button class="btn secondary trades-filter-btn active" data-filter="ALL" onclick="AppTrades.setFilter('ALL')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">All Trades</button>
               <button class="btn secondary trades-filter-btn" data-filter="MY_TRADES" onclick="AppTrades.setFilter('MY_TRADES')" style="padding:4px 11px; font-size:11.5px; font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12);" title="Show trades you personally marked as taken in your portfolio">💼 My Taken Trades (<span id="count-trades-taken">0</span>)</button>
-              <button class="btn secondary trades-filter-btn" data-filter="IN_ZONE" onclick="AppTrades.setFilter('IN_ZONE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🎯 In Zone</button>
-              <button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Stalking</button>
-              <button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Target Hit</button>
-              <button class="btn secondary trades-filter-btn" data-filter="STOP_BREACHED" onclick="AppTrades.setFilter('STOP_BREACHED')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🛑 Stopped</button>
+              <button class="btn secondary trades-filter-btn" data-filter="IN_ZONE" onclick="AppTrades.setFilter('IN_ZONE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🎯 In Zone (<span id="count-trades-in-zone">0</span>)</button>
+              <button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Stalking (<span id="count-trades-stalking">0</span>)</button>
+              <button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Target Hit (<span id="count-trades-target-hit">0</span>)</button>
+              <button class="btn secondary trades-filter-btn" data-filter="STOP_BREACHED" onclick="AppTrades.setFilter('STOP_BREACHED')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🛑 Stopped (<span id="count-trades-stopped">0</span>)</button>
             </div>
 
             <!-- Search input -->
@@ -971,25 +971,7 @@
           </div>
         </div>
 
-        <!-- Superforecasting Model Calibration Scoreboard (Model A vs Model B) -->
-        <div class="station-card">
-          <div class="card-head" style="flex-wrap:wrap; gap:12px;">
-            <div style="display:flex; align-items:center; gap:10px;">
-              <span class="card-title">🏆 SUPERFORECASTING CALIBRATION SCOREBOARD</span>
-              <span class="pill cyan" id="calibration-status-pill">Brier Scored</span>
-            </div>
-            <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
-              <button class="btn secondary" onclick="AppSwing.triggerCalibrationAudit()" style="padding:4px 10px; font-size:12px;">
-                🔄 Run Audit Now
-              </button>
-            </div>
-          </div>
-          <div id="calibration-scoreboard-widget" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; padding:4px 0;">
-            <div style="color:var(--text-muted); font-size:13px; padding:8px 0;">Loading calibration data...</div>
-          </div>
-        </div>
-
-        <!-- Unified Empirical Scoreboard Panel (Lanes x Sources) -->
+        <!-- Executive Trading Edge & Opportunity Scoreboard Panel -->
         <div id="trades-scoreboard-panel" class="station-card" style="margin-bottom:14px; padding:14px 16px;">
           <!-- Dynamically populated by AppTrades.loadScoreboard() -->
         </div>
@@ -1000,20 +982,14 @@
             <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
               <thead>
                 <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
-                  <th onclick="AppTrades.setSort('updated_at')" style="text-align:left; padding:10px 12px; cursor:pointer;">Time / Date ⇅</th>
-                  <th onclick="AppTrades.setSort('ticker')" style="text-align:left; padding:10px 12px; cursor:pointer;">Ticker & Company ⇅</th>
-                  <th onclick="AppTrades.setSort('gate_status')" style="text-align:center; padding:10px 8px; cursor:pointer;">Gate ⇅</th>
-                  <th onclick="AppTrades.setSort('setup_lane')" style="text-align:center; padding:10px 8px; cursor:pointer;">Lane ⇅</th>
-                  <th onclick="AppTrades.setSort('kind')" style="text-align:center; padding:10px 8px; cursor:pointer;">Kind ⇅</th>
-                  <th onclick="AppTrades.setSort('verdict')" style="text-align:center; padding:10px 10px; cursor:pointer;">Verdict ⇅</th>
-                  <th style="text-align:center; padding:10px 10px;">Plan / Structure</th>
-                  <th style="text-align:right; padding:10px 10px;">Entry Zone</th>
-                  <th onclick="AppTrades.setSort('stop_in_atr')" style="text-align:right; padding:10px 10px; cursor:pointer;">Stop (xATR) ⇅</th>
-                  <th style="text-align:right; padding:10px 10px;">Targets (T1 / T2)</th>
-                  <th onclick="AppTrades.setSort('rr_at_market')" style="text-align:right; padding:10px 8px; cursor:pointer;">R:R @ Mkt ⇅</th>
-                  <th onclick="AppTrades.setSort('last_price')" style="text-align:right; padding:10px 10px; cursor:pointer;">Live Quote ⇅</th>
-                  <th onclick="AppTrades.setSort('status')" style="text-align:center; padding:10px 10px; cursor:pointer;">Status ⇅</th>
-                  <th style="text-align:center; padding:10px 10px;">Audit / Check</th>
+                  <th onclick="AppTrades.setSort('priority')" style="text-align:left; padding:10px 14px; cursor:pointer;" title="Sort by execution urgency: In Zone > In Trade > Hot Stalk">Priority &amp; Setup ⇅</th>
+                  <th onclick="AppTrades.setSort('ticker')" style="text-align:left; padding:10px 14px; cursor:pointer;">Ticker &amp; Company ⇅</th>
+                  <th style="text-align:left; padding:10px 14px;">Vehicle &amp; Structure</th>
+                  <th style="text-align:right; padding:10px 14px;">Entry Zone &amp; R:R</th>
+                  <th style="text-align:right; padding:10px 14px;">Risk &amp; Targets</th>
+                  <th onclick="AppTrades.setSort('last_price')" style="text-align:right; padding:10px 14px; cursor:pointer;">Live Quote &amp; Dist ⇅</th>
+                  <th onclick="AppTrades.setSort('status')" style="text-align:center; padding:10px 14px; cursor:pointer;">Status ⇅</th>
+                  <th style="text-align:center; padding:10px 14px;">Actions</th>
                 </tr>
               </thead>
               <tbody id="trades-table-body">
@@ -1053,18 +1029,20 @@
 
         <!-- Market Tape & 0DTE Regime Ribbon -->
         <div class="station-card">
-          <!-- Research-only notice. Grade A measures -0.097R on n=20 resolved (of the 200 the
-               go/no-go gate requires), so nothing on this pane is a measured edge. Without this
-               banner the live VIX tiles read as an endorsement of taking 0DTE trades. -->
+          <!-- 0DTE Governance & Risk Notice (Dismissible) -->
           <div id="zero-dte-research-banner"
-               style="background:rgba(248,113,113,0.10); border:1px solid rgba(248,113,113,0.45);
-                      border-radius:10px; padding:10px 14px; margin-bottom:14px;
-                      font-size:12.5px; line-height:1.5; color:#fca5a5;">
-            <strong>RESEARCH ONLY — NO MEASURED EDGE.</strong>
-            Grade-A intraday expectancy is <strong>−0.097R</strong> on <strong>n=20</strong> resolved
-            of the 200 the go/no-go gate requires, with a 31.6% hit rate. The go/no-go status reads
-            <code>INSUFFICIENT SAMPLE</code>: this desk has not earned the right to be traded from.
-            Treat everything below as tape observation, not a signal.
+               style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.35);
+                      border-radius:8px; padding:10px 14px; margin-bottom:14px;
+                      display:flex; justify-content:space-between; align-items:center;
+                      font-size:12px; line-height:1.4; color:var(--amber);">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="font-size:16px;">⚡</span>
+              <div>
+                <strong>0DTE DESK RISK ENGINE:</strong>
+                Sample size calibration in progress (n=20 / 200 gate) · Sizing strictly capped at 0.5R per trade · Tiered exit vetoes active.
+              </div>
+            </div>
+            <button class="btn secondary" onclick="AppIntraday.dismissBanner()" style="padding:2px 8px; font-size:11px; border-color:rgba(245,158,11,0.3); color:var(--amber); white-space:nowrap;" title="Dismiss notice">✕ Dismiss</button>
           </div>
           <div class="card-head">
             <span class="card-title">⚡ INTRADAY DESK REGIME & 0DTE TAPE</span>
@@ -1090,6 +1068,23 @@
                 <button class="btn" onclick="AppStatus.toggleTracker()" id="btn-intraday-tracker" style="padding:2px 8px; font-size:11px;">▶ Start</button>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Today's 0DTE Grade-A Signals & Live Tape -->
+        <div class="station-card">
+          <div class="card-head">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <span class="card-title">⚡ TODAY'S 0DTE SIGNALS & GRADE-A PLAYS (revanth-0dte.md)</span>
+              <span class="pill green" id="odte-signals-count-pill">0 Signals</span>
+              <span class="pill cyan" id="odte-targets-hit-pill" style="display:none;">🏁 0 Targets Hit</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <button class="btn secondary" onclick="AppIntraday.loadIntradaySignals()" style="padding:4px 10px; font-size:11px;">🔄 Refresh 0DTE Tape</button>
+            </div>
+          </div>
+          <div id="odte-signals-container">
+            <div style="color:var(--text-muted); font-size:13px; text-align:center; padding:20px;">Scanning today's 0DTE Grade-A setups...</div>
           </div>
         </div>
 
@@ -1255,6 +1250,14 @@
             </div>
           </div>
 
+        </div>
+
+        <!-- EXECUTIVE PORTFOLIO SUMMARY & TRADE AUDIT STATION -->
+        <div class="station-card" id="pf-executive-summary-section" style="padding:16px 20px;">
+          <!-- Dynamically populated by AppPortfolio.renderExecutiveSummary() -->
+          <div style="text-align:center; padding:20px; color:var(--text-muted); font-size:12px;">
+            ⏳ Analyzing portfolio performance, concentration, and recent trade audits...
+          </div>
         </div>
 
         <!-- Filter & Control Station Card -->

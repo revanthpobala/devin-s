@@ -8,6 +8,167 @@ window.AppIntraday = {
   _rawAlerts: [],
   _alertsSortField: 'timestamp',
   _alertsSortAsc: false,
+  _rawSignals: [],
+  _sigSortField: 'ticker',
+  _sigSortAsc: true,
+
+  dismissBanner() {
+    const el = document.getElementById('zero-dte-research-banner');
+    if (el) el.style.display = 'none';
+    try { localStorage.setItem('dismiss_0dte_banner', 'true'); } catch (e) {}
+  },
+
+  checkBanner() {
+    try {
+      if (localStorage.getItem('dismiss_0dte_banner') === 'true') {
+        const el = document.getElementById('zero-dte-research-banner');
+        if (el) el.style.display = 'none';
+      }
+    } catch (e) {}
+  },
+
+  sortSignals(field) {
+    if (this._sigSortField === field) {
+      this._sigSortAsc = !this._sigSortAsc;
+    } else {
+      this._sigSortField = field;
+      this._sigSortAsc = (field === 'ticker' || field === 'status') ? true : false;
+    }
+    this.renderSignalsTable();
+  },
+
+  sigSortIndicator(field) {
+    if (this._sigSortField !== field) {
+      return '<span style="opacity:0.35; font-size:10px; margin-left:3px;">⇅</span>';
+    }
+    return `<span style="color:var(--cyan-glow); font-size:11px; font-weight:800; margin-left:3px;">${this._sigSortAsc ? '▲' : '▼'}</span>`;
+  },
+
+  async loadIntradaySignals() {
+    const container = document.getElementById('odte-signals-container');
+    try {
+      const data = await window.AppApi.getIntradaySignals();
+      this._rawSignals = data.signals || [];
+      const countPill = document.getElementById('odte-signals-count-pill');
+      if (countPill) countPill.innerText = `${this._rawSignals.length} Grade-A Plays (${data.date || 'Today'})`;
+
+      const hitPill = document.getElementById('odte-targets-hit-pill');
+      if (hitPill) {
+        if (data.targets_hit > 0) {
+          hitPill.style.display = 'inline-flex';
+          hitPill.innerText = `🏁 ${data.targets_hit} Target Hit`;
+        } else {
+          hitPill.style.display = 'none';
+        }
+      }
+
+      this.renderSignalsTable();
+    } catch (e) {
+      console.error('Failed loading 0DTE signals', e);
+      if (container) container.innerHTML = `<div style="color:var(--text-muted); font-size:12px; text-align:center; padding:16px;">Error loading 0DTE signals: ${e.message}</div>`;
+    }
+  },
+
+  renderSignalsTable() {
+    const container = document.getElementById('odte-signals-container');
+    if (!container) return;
+
+    const signals = [...this._rawSignals];
+    if (signals.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-muted); font-size:13px; text-align:center; padding:24px;">No Grade-A 0DTE signals recorded for today yet. Market monitor active.</div>';
+      return;
+    }
+
+    signals.sort((a, b) => {
+      const f = this._sigSortField;
+      if (f === 'ticker') {
+        const sa = (a.ticker || '').toLowerCase();
+        const sb = (b.ticker || '').toLowerCase();
+        return this._sigSortAsc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      }
+      if (f === 'entry') return this._sigSortAsc ? (a.entry_price - b.entry_price) : (b.entry_price - a.entry_price);
+      if (f === 'spot') return this._sigSortAsc ? (a.spot_price - b.spot_price) : (b.spot_price - a.spot_price);
+      if (f === 'pnl') return this._sigSortAsc ? (a.pnl_pct - b.pnl_pct) : (b.pnl_pct - a.pnl_pct);
+      if (f === 'status') {
+        const sa = (a.status || '').toLowerCase();
+        const sb = (b.status || '').toLowerCase();
+        return this._sigSortAsc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      }
+      return 0;
+    });
+
+    container.innerHTML = `
+      <table class="cockpit-table">
+        <thead>
+          <tr>
+            <th onclick="AppIntraday.sortSignals('ticker')" style="cursor:pointer; user-select:none;">TICKER & CONTRACT ${this.sigSortIndicator('ticker')}</th>
+            <th>SIDE</th>
+            <th>GRADE</th>
+            <th onclick="AppIntraday.sortSignals('entry')" style="cursor:pointer; user-select:none;">ENTRY PX ${this.sigSortIndicator('entry')}</th>
+            <th onclick="AppIntraday.sortSignals('spot')" style="cursor:pointer; user-select:none;">CURRENT SPOT ${this.sigSortIndicator('spot')}</th>
+            <th>TARGET 1 / STOP</th>
+            <th onclick="AppIntraday.sortSignals('pnl')" style="cursor:pointer; user-select:none;">P&L % ${this.sigSortIndicator('pnl')}</th>
+            <th onclick="AppIntraday.sortSignals('status')" style="cursor:pointer; user-select:none;">EXECUTION STATUS ${this.sigSortIndicator('status')}</th>
+            <th style="text-align:right;">TACTICAL</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${signals.map(s => {
+            const sym = s.ticker;
+            const side = (s.side || 'LONG').toUpperCase();
+            const isLong = side.includes('LONG') || side.includes('CALL') || side.includes('BUY');
+            const entryStr = s.entry_price ? `$${parseFloat(s.entry_price).toFixed(2)}` : 'N/A';
+            const spotStr = s.spot_price ? `$${parseFloat(s.spot_price).toFixed(2)}` : 'N/A';
+            const t1Str = s.target_1 ? `$${parseFloat(s.target_1).toFixed(2)}` : '—';
+            const stopStr = s.stop_price ? `$${parseFloat(s.stop_price).toFixed(2)}` : '—';
+            const pnl = parseFloat(s.pnl_pct) || 0.0;
+            const pnlColor = pnl >= 0 ? '#10b981' : '#ef4444';
+            const compI = window.AppUtils ? AppUtils.getCompanyName(sym) : sym;
+            const compTitle = (compI || sym).replace(/"/g, '&quot;');
+
+            let statusBadge = s.status_badge || 'amber';
+            let statusText = s.status_text || 'Triggered';
+            if (s.status === 'ACTIVE_OPEN') {
+              statusBadge = 'green';
+              statusText = '🟢 Open Position';
+            } else if (s.status === 'TARGET_HIT') {
+              statusBadge = 'cyan';
+              statusText = '🏁 Target 1 Hit';
+            } else if (s.status === 'EXITED') {
+              statusBadge = 'red';
+              statusText = s.exit_info ? `🛑 Exited ($${parseFloat(s.exit_info.exit_price || 0).toFixed(2)})` : '🛑 Exited';
+            }
+
+            return `
+              <tr>
+                <td>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span class="tv-symbol-hover" data-ticker="${sym}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="if(window.AppSwing) AppSwing.openTradingViewModal('${sym}', '15')" title="${compTitle} ($${sym}) · Hover for Live Chart">${sym}</span>
+                    <span style="font-size:11px; font-weight:600; color:var(--text-main); font-family:'JetBrains Mono', monospace;">${s.contract}</span>
+                  </div>
+                </td>
+                <td><span class="pill ${isLong ? 'green' : 'red'}" style="padding:1px 6px; font-size:10px; font-weight:700;">${isLong ? 'CALLS' : 'PUTS'}</span></td>
+                <td><span class="pill green" style="padding:1px 6px; font-size:10px; font-weight:700;">Grade ${s.grade || 'A'}</span></td>
+                <td style="font-weight:600; font-family:'JetBrains Mono', monospace;">${entryStr}</td>
+                <td style="font-weight:700; font-family:'JetBrains Mono', monospace; color:${pnl >= 0 ? '#34d399' : '#fb7185'};">${spotStr}</td>
+                <td style="font-size:11px; font-family:'JetBrains Mono', monospace;">
+                  <span style="color:var(--emerald-light); font-weight:600;" title="Target 1">T1: ${t1Str}</span>
+                  <span style="color:var(--border); margin:0 4px;">|</span>
+                  <span style="color:var(--rose-light);" title="Stop Loss">Stop: ${stopStr}</span>
+                </td>
+                <td style="color:${pnlColor}; font-weight:700; font-family:'JetBrains Mono', monospace;">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</td>
+                <td><span class="pill ${statusBadge}" style="padding:2px 8px; font-size:10.5px; font-weight:700;">${statusText}</span></td>
+                <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end; align-items:center;">
+                  <button class="btn secondary" onclick="if(window.AppChat) { window.AppChat.askRevChat('Give me a real-time tactical evaluation on the 0DTE setup for $${sym} (Entry: ${entryStr}, Spot: ${spotStr}, Target: ${t1Str}, Stop: ${stopStr}). Should I take/hold/trim this play?'); }" style="padding:2px 7px; font-size:10.5px; font-weight:700; color:var(--blue);" title="Ask Copilot for tactical 0DTE review">💬 Query</button>
+                  <button class="btn secondary" onclick="if(window.AppSwing) AppSwing.openTradingViewModal('${sym}', '15')" style="padding:2px 7px; font-size:10.5px; font-weight:700; color:var(--cyan-glow);" title="Open 15m intraday TradingView chart">📈 Chart</button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  },
 
   sortPositions(field) {
     if (this._posSortField === field) {
@@ -27,6 +188,7 @@ window.AppIntraday = {
   },
 
   async loadIntradayPositions() {
+    this.checkBanner();
     try {
       const data = await window.AppApi.getPositions();
       const countPill = document.getElementById('intraday-pos-count');
@@ -45,6 +207,9 @@ window.AppIntraday = {
 
       // Render positions with active sort
       this.renderPositionsTable();
+
+      // Refresh today's 0DTE Grade-A signals table
+      this.loadIntradaySignals();
 
       // Also refresh the daily alerts feed
       this.loadDailyAlerts();
@@ -111,7 +276,6 @@ window.AppIntraday = {
         const vb = parseFloat(b.target || 0);
         return this._posSortAsc ? va - vb : vb - va;
       }
-      // Default: opened_at time (newest first when _posSortAsc is false)
       const ta = (a.opened_at || '').toLowerCase();
       const tb = (b.opened_at || '').toLowerCase();
       return this._posSortAsc ? ta.localeCompare(tb) : tb.localeCompare(ta);
@@ -154,20 +318,27 @@ window.AppIntraday = {
             const stop = p.stop ? `$${parseFloat(p.stop).toFixed(2)}` : 'N/A';
             const target = p.target ? `$${parseFloat(p.target).toFixed(2)}` : 'N/A';
             const opened = (p.opened_at || '').substring(11, 19) || 'Active';
+            const lastEval = p.last_eval ? p.last_eval.replace(/\n+/g, ' · ') : '0DTE ATM Calls Active · Scale 50% at Target 1, ratchet stop to Breakeven (+0.05c).';
 
             return `
               <tr>
                 <td class="tv-symbol-hover" data-ticker="${sym}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="AppIntraday.queryPosition('${sym}', '${side}', '${entry}', '${spot}', '${pnl}')" title="Click to query $${sym} in REV CHAT · Hover for Live TradingView Chart">${sym} 🔍</td>
                 <td><span class="pill ${isLong ? 'green' : 'red'}" style="padding:1px 6px; font-size:10px;">${side}</span></td>
-                <td>${entry}</td>
-                <td style="font-weight:600;">${spot}</td>
-                <td style="color:${pnlColor}; font-weight:700;">${pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(2)}%</td>
-                <td style="color:var(--rose-light);">${stop}</td>
-                <td style="color:var(--emerald-light);">${target}</td>
+                <td style="font-family:'JetBrains Mono', monospace;">${entry}</td>
+                <td style="font-weight:600; font-family:'JetBrains Mono', monospace;">${spot}</td>
+                <td style="color:${pnlColor}; font-weight:700; font-family:'JetBrains Mono', monospace;">${pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(2)}%</td>
+                <td style="color:var(--rose-light); font-family:'JetBrains Mono', monospace;">${stop}</td>
+                <td style="color:var(--emerald-light); font-family:'JetBrains Mono', monospace;">${target}</td>
                 <td style="color:var(--text-muted); font-size:11px;">${opened}</td>
                 <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end; align-items:center;">
+                  <button class="btn secondary" onclick="if(window.AppSwing) AppSwing.openTradingViewModal('${sym}', '15')" style="padding:2px 7px; font-size:10.5px; font-weight:700; color:var(--cyan-glow);" title="Open 15m Chart">📈 Chart</button>
                   <button class="btn secondary" onclick="AppIntraday.queryPosition('${sym}', '${side}', '${entry}', '${spot}', '${pnl}')" style="padding:2px 7px; font-size:10.5px; font-weight:700; color:var(--blue);" title="Ask Copilot to analyze this position">💬 Query</button>
                   <button class="btn danger" onclick="AppIntraday.closePosition('${sym}')" style="padding:2px 7px; font-size:10.5px;">🛑 Close</button>
+                </td>
+              </tr>
+              <tr style="background:rgba(6,182,212,0.03); border-bottom:1px solid var(--border);">
+                <td colspan="9" style="padding:6px 14px; font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--text-muted);">
+                  <span style="color:#38bdf8; font-weight:700;">TACTICAL PLAYBOOK:</span> ${lastEval}
                 </td>
               </tr>
             `;

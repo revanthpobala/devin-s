@@ -128,26 +128,26 @@ Your output must be formatted in clean, institutional Markdown matching this exa
 [
   {
     "type": "touch",
-    "level": [IndependentEntry],
+    "level": [0.0],
     "horizon_days": 14,
-    "event": "Stock touches Independent Entry level of $[IndependentEntry]",
+    "event": "Stock touches Independent Entry level of $0.00",
     "probability": 0.50,
     "rationale": "Independent evaluation of pullback probability based on volume profile VAL/POC and 14d conformal envelope."
   },
   {
     "type": "touch",
-    "level": [IndependentTarget1],
-    "before_level": [IndependentStop],
+    "level": [0.0],
+    "before_level": [0.0],
     "horizon_days": 30,
-    "event": "Stock reaches Independent Target 1 of $[IndependentTarget1] before stop of $[IndependentStop]",
+    "event": "Stock reaches Independent Target 1 of $0.00 before stop of $0.00",
     "probability": 0.60,
     "rationale": "Independent evaluation of reaching Target 1 based on Dealer GEX Call Wall and Monte Carlo volatility."
   },
   {
     "type": "close_below",
-    "level": [IndependentStop],
+    "level": [0.0],
     "horizon_days": 45,
-    "event": "Stock closes below Independent Tactical Stop Loss of $[IndependentStop]",
+    "event": "Stock closes below Independent Tactical Stop Loss of $0.00",
     "probability": 0.25,
     "rationale": "Independent evaluation of stop breach based on Put Wall support and 95% worst-case MAE boundary."
   }

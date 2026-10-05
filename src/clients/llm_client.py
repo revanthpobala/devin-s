@@ -682,16 +682,19 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
     csv_path = chart_dir / f"{ticker}_datawindow.csv"
     dw_path = chart_dir / f"{ticker}_datawindow.json"
 
-    if not csv_path.exists():
-        # Only check triage directory for same date
-        triage_root = config.BASE_DIR / "data" / "triage" / date_str
-        if triage_root.exists():
-            for sub in ["_DEEP_RESEARCH", "force", ""]:
-                cand = triage_root / sub / ticker / f"{ticker}_datawindow.csv" if sub else triage_root / ticker / f"{ticker}_datawindow.csv"
-                if cand.exists():
-                    csv_path = cand
-                    dw_path = cand.parent / f"{ticker}_datawindow.json"
-                    break
+    for cand in [
+        config.BASE_DIR / "data" / "raw" / date_str / ticker / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "raw" / date_str / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "triage" / date_str / "_DEEP_RESEARCH" / ticker / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "triage" / date_str / "force" / ticker / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "triage" / date_str / ticker / f"{ticker}_datawindow.csv",
+    ]:
+        if cand.exists():
+            csv_path = cand
+            dw_cand = cand.parent / f"{ticker}_datawindow.json"
+            if dw_cand.exists():
+                dw_path = dw_cand
+            break
 
     if not csv_path.exists():
         return f"Error: No historical datawindow.csv found for {ticker} on {date_str}."
@@ -855,6 +858,17 @@ def fetch_historical_zone_and_regime_analytics_tool(ticker: str, lookback_bars: 
     date_str = date_str or time.strftime("%Y-%m-%d")
     chart_dir = config.BASE_DIR / "data" / "raw" / date_str / ticker
     csv_path = chart_dir / f"{ticker}_datawindow.csv"
+    for cand in [
+        config.BASE_DIR / "data" / "raw" / date_str / ticker / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "raw" / date_str / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "triage" / date_str / "_DEEP_RESEARCH" / ticker / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "triage" / date_str / "force" / ticker / f"{ticker}_datawindow.csv",
+        config.BASE_DIR / "data" / "triage" / date_str / ticker / f"{ticker}_datawindow.csv",
+    ]:
+        if cand.exists():
+            csv_path = cand
+            break
+
     if not csv_path.exists():
         return f"Error: No historical datawindow.csv found for {ticker} on {date_str}."
 

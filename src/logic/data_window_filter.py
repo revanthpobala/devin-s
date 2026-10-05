@@ -623,8 +623,6 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
         exported_rr_mkt = f.get("long_rr_at_market")
         if exported_rr_mkt is not None and exported_rr_mkt > 0:
             rr = exported_rr_mkt
-        elif f.get("_rr_mkt_deliberately_absent"):
-            rr = None
         elif stop is not None and tgt is not None and price is not None and price > stop and tgt > price:
             rr = (reward / risk) if (risk is not None and risk > 0) else None
         else:
@@ -711,7 +709,18 @@ def _choose_winner(L: dict, S: dict, f: Dict[str, Optional[float]]) -> dict:
     if L["mode"] == "NONE" and S["mode"] == "NONE":
         buy = f["buy"] or 0.0
         sell = f["sell"] or 0.0
-        W = L if buy >= sell else S
+        stage = int(round(f.get("stage") or 0))
+        # Structurally bullish setups (Weinstein Stage 1 Base, Stage 2 Advancing, Stage 5 Recovery,
+        # or MTF long aligned, or holding above 200 SMA / within reach of 52w highs): LONG must win!
+        is_structurally_bullish = (
+            stage in (1, 2, 5)
+            or (f.get("mtf_long") or 0.0) >= 1.0
+            or (f.get("ext_pct") or 0.0) >= -10.0
+        )
+        if is_structurally_bullish or buy >= sell:
+            W = L
+        else:
+            W = S
         W["mode"] = "NONE"
     else:
         candidates = [s for s in (L, S) if s["mode"] != "NONE"]

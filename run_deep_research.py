@@ -110,6 +110,15 @@ def run_deep_research_pipeline(
 
     try:
         run_deep_research(date_str, target_ticker, force=force or bool(force_tickers))
+        
+        # Automatically sync watch levels to SQLite, Tastytrade mobile push alerts, and audit ledgers
+        try:
+            from run_watch_alerts import sync_reports_to_watchlist
+            sync_res = sync_reports_to_watchlist(date_str=date_str, target_ticker=target_ticker, sync_tastytrade=True)
+            logger.info(f"Post-research sync complete: {sync_res.count} target(s) indexed, {sync_res.tt_alerts_count} Tastytrade cloud alert(s) registered.")
+        except Exception as e_sync:
+            logger.debug(f"Post-research watchlist sync note: {e_sync}")
+
         _mark_job_complete(final_job_id, success=True)
         logger.info("=" * 60)
         logger.info("DEEP RESEARCH PHASE COMPLETE.")

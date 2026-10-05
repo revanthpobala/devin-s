@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src import config
-from src.logic.process_survivor import generate_thesis_task, prefilter_ticker
+from src.logic.process_survivor import _find_artifact, generate_thesis_task, prefilter_ticker
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -18,9 +18,8 @@ logging.basicConfig(
 
 
 def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
-    """Move a ticker's complete artifact set from src_dir into target_dir so the
-    triage folder is self-contained: chart png, data window json, news dossier,
-    and both thesis files (md + json)."""
+    """Copy a ticker's complete artifact set from src_dir into target_dir so the
+    triage folder is self-contained while preserving golden copies in data/raw."""
     safe = ticker.replace(":", "_")
     target_ticker_dir = target_dir / safe
     target_ticker_dir.mkdir(parents=True, exist_ok=True)
@@ -29,12 +28,13 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
     if src_ticker_dir.exists() and src_ticker_dir.is_dir():
         for item in src_ticker_dir.iterdir():
             if item.is_file():
-                shutil.move(str(item), str(target_ticker_dir / item.name))
+                shutil.copy2(str(item), str(target_ticker_dir / item.name))
         return
 
     for fname in (
         f"{safe}_chart.png",
         f"{safe}_chart_zoom.png",
+        f"{safe}_chart_plain.png",
         f"{safe}_datawindow.json",
         f"{safe}_datawindow.csv",
         f"{safe}_news_research.md",
@@ -47,7 +47,7 @@ def _move_ticker_artifacts(src_dir: Path, target_dir: Path, ticker: str):
     ):
         src = src_dir / fname
         if src.exists():
-            shutil.move(str(src), str(target_ticker_dir / fname))
+            shutil.copy2(str(src), str(target_ticker_dir / fname))
 
 
 def _consolidate_ledger(out_dir: Path):
@@ -168,6 +168,35 @@ def run_local_research(
         return
 
     logger.info(f"Local-LLM research for {len(survivors)} survivor(s) on {today_str}")
+
+    # Phase 2A-Auto: Mandatory Chart & Data Window Scraping for Local Research.
+    # Every local research pass MUST have scraped charts and Data Windows. Never evaluate
+    # an un-scraped ticker with blank data.
+    missing_scrape = []
+    for s in survivors:
+        sym = (s.get("Ticker") or s.get("Symbol") or s.get("ticker", "")).strip().upper()
+        if not sym:
+            continue
+        safe_sym = sym.replace(":", "_")
+        chart_p = _find_artifact(out_dir, f"{safe_sym}_chart.png")
+        chart_z = _find_artifact(out_dir, f"{safe_sym}_chart_zoom.png")
+        dw_json = _find_artifact(out_dir, f"{safe_sym}_datawindow.json")
+        dw_csv = _find_artifact(out_dir, f"{safe_sym}_datawindow.csv")
+        has_chart = chart_p.exists() or chart_z.exists()
+        has_dw = dw_json.exists() or dw_csv.exists()
+        if not (has_chart and has_dw):
+            missing_scrape.append(sym)
+
+    if missing_scrape:
+        logger.info(
+            f"📸 Scraping missing TradingView charts & Data Windows for {len(missing_scrape)} ticker(s): {missing_scrape}..."
+        )
+        from run_swing_research import run_swing_pipeline
+        for s_sym in missing_scrape:
+            try:
+                run_swing_pipeline(target_date=today_str, target_ticker=s_sym, headless=True)
+            except Exception as e_sc:
+                logger.error(f"Failed auto-scrape for {s_sym} during local research: {e_sc}")
 
     # Phase 2C (PASS 1 — deterministic prefilter, CHEAP, no local-LLM call):
     # rank every survivor by reproducible rank_score so we only spend the
@@ -384,35 +413,37 @@ def run_local_research(
             f"Deep-research uncapped: all {len(keep_deep)} eligible tickers kept."
         )
 
-    for stale_dir, keep in ((deep_dir, keep_deep), (force_dir, keep_force)):
-        if not stale_dir.exists():
-            continue
-        # If this run flagged nothing for a folder, DO NOT wipe it — preserve the
-        # prior run's artifacts (charts, theses) instead of nuking them. Only
-        # prune when we actually have a non-empty set to keep.
-        if not keep:
-            logger.info(f"No keepers for {stale_dir.name}; preserving existing artifacts.")
-            continue
-        for old in stale_dir.glob("*"):
-            # A file belongs to a kept ticker if its name starts with that ticker
-            # followed by '_' or '.' (e.g. AAPL_chart.png, AAPL_thesis.json,
-            # AAPL.png). Anything else is a leftover from a previous run.
-            name = old.name.upper()
-            is_stale = True
-            for tk in keep:
-                if name == tk or name.startswith(tk + "_") or name.startswith(tk + "."):
-                    is_stale = False
-                    break
-            if is_stale:
-                try:
-                    if old.is_file() or old.is_symlink():
-                        old.unlink()
-                    elif old.is_dir():
-                        import shutil
+    # Only prune stale artifacts on full batch runs; NEVER wipe other tickers on single-ticker runs!
+    if not tgt:
+        for stale_dir, keep in ((deep_dir, keep_deep), (force_dir, keep_force)):
+            if not stale_dir.exists():
+                continue
+            # If this run flagged nothing for a folder, DO NOT wipe it — preserve the
+            # prior run's artifacts (charts, theses) instead of nuking them. Only
+            # prune when we actually have a non-empty set to keep.
+            if not keep:
+                logger.info(f"No keepers for {stale_dir.name}; preserving existing artifacts.")
+                continue
+            for old in stale_dir.glob("*"):
+                # A file belongs to a kept ticker if its name starts with that ticker
+                # followed by '_' or '.' (e.g. AAPL_chart.png, AAPL_thesis.json,
+                # AAPL.png). Anything else is a leftover from a previous run.
+                name = old.name.upper()
+                is_stale = True
+                for tk in keep:
+                    if name == tk or name.startswith(tk + "_") or name.startswith(tk + "."):
+                        is_stale = False
+                        break
+                if is_stale:
+                    try:
+                        if old.is_file() or old.is_symlink():
+                            old.unlink()
+                        elif old.is_dir():
+                            import shutil
 
-                        shutil.rmtree(old)
-                except Exception as e:
-                    logger.warning(f"Failed to remove stale artifact {old}: {e}")
+                            shutil.rmtree(old)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove stale artifact {old}: {e}")
 
     segregated_count = 0
     for rec in all_thesis.values():

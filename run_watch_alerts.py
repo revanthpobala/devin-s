@@ -469,16 +469,33 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                         msg = f"[{ticker}] Price ${live_price:.2f} reached Target 1 (${target_1:.2f}) without entry filling! Stock ran away from stalking zone."
                         log_trigger_alert(ticker, alert_fired, msg, live_price)
 
-        # D. Entry Zone Stalking Trigger Check (With 1.0% Institutional Floor Proximity Buffer)
+        # D. Entry Zone Stalking Trigger Check (With Real-Time On-Arrival Local Evaluation)
         elif hit_in_zone:
             new_status = "IN_ZONE"
-            if old_status in ("STALKING", "INVALIDATED", "STOP_BREACHED"):
-                alert_fired = "ENTRY_TRIGGERED"
-                prox_tag = " [Floor Proximity Buffer]" if in_proximity_zone else ""
-                opt_str = f" | Play: {t.get('options_summary')}" if t.get("options_summary") else ""
-                reclaim_tag = " [Support Reclaimed]" if old_status in ("INVALIDATED", "STOP_BREACHED") else ""
-                msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag}{reclaim_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
+            # Trigger On-Arrival Real-Time Local Evaluation & Tactical Triage
+            try:
+                from src.logic.zone_arrival_evaluator import evaluate_target_on_zone_arrival
+                eval_res = evaluate_target_on_zone_arrival(ticker, live_price, t)
+                if eval_res.get("is_actionable_now"):
+                    alert_fired = "ENTRY_ACTIONABLE_BUY" if side == "LONG" else "ENTRY_ACTIONABLE_SHORT"
+                    msg = (
+                        f"[{ticker}] 🟢 ACTIONABLE {side} ENTRY: Price ${live_price:.2f} confirmed in zone "
+                        f"[${entry_low:.2f}–${entry_high:.2f}]. Stop: ${eval_res['tactical_stop']:.2f}, "
+                        f"T1: ${eval_res['target_1']:.2f}, R:R: {eval_res['live_rr']:.2f}:1."
+                    )
+                else:
+                    alert_fired = "ENTRY_TRIGGERED"
+                    msg = f"[{ticker}] Price ${live_price:.2f} in zone [${entry_low:.2f}–${entry_high:.2f}] ({eval_res.get('verdict_label')})."
                 log_trigger_alert(ticker, alert_fired, msg, live_price)
+            except Exception as e_eval:
+                logger.warning(f"[{ticker}] On-arrival zone evaluation error: {e_eval}")
+                if old_status in ("STALKING", "INVALIDATED", "STOP_BREACHED"):
+                    alert_fired = "ENTRY_TRIGGERED"
+                    prox_tag = " [Floor Proximity Buffer]" if in_proximity_zone else ""
+                    opt_str = f" | Play: {t.get('options_summary')}" if t.get("options_summary") else ""
+                    reclaim_tag = " [Support Reclaimed]" if old_status in ("INVALIDATED", "STOP_BREACHED") else ""
+                    msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag}{reclaim_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
+                    log_trigger_alert(ticker, alert_fired, msg, live_price)
         else:
             if old_status in ("IN_TRADE", "IN_ZONE"):
                 # Maintain active trade holding above stop loss
@@ -509,6 +526,21 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                         pass
                 new_status = "EXPIRED" if is_expired else "STALKING"
 
+        # Determine if target should remain actionable or be reset
+        target_actionable = None
+        eval_verdict = None
+        if new_status in ("TARGET_HIT", "COMPLETED"):
+            target_actionable = 0
+            eval_verdict = "TARGET_HIT"
+        elif new_status in ("INVALIDATED", "STOP_BREACHED", "STOPPED", "MISSED_RUNAWAY", "EXPIRED", "REJECTED_BY_GATE"):
+            target_actionable = 0
+            eval_verdict = "STAND_ASIDE"
+        elif new_status != "IN_ZONE":
+            target_actionable = 0
+            eval_verdict = "STALKING"
+        elif alert_fired in ("ENTRY_ACTIONABLE_BUY", "ENTRY_ACTIONABLE_SHORT"):
+            target_actionable = 1
+
         # Update SQLite DB
         update_target_live_state(
             ticker,
@@ -516,6 +548,8 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             status=new_status,
             distance_to_entry_pct=distance_pct,
             alert_type=alert_fired,
+            is_actionable_now=target_actionable,
+            evaluation_verdict=eval_verdict,
         )
 
         t_copy = dict(t)

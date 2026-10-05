@@ -57,3 +57,10 @@ reports/*
 .tv-state.json
 kalshi/*
 edge_scanner_tmp/
+# --- Ignore all image files ---
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg

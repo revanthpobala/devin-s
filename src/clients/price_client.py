@@ -29,6 +29,9 @@ def get_current_price(symbol: str, context: str = "surveillance") -> Optional[fl
     return quote_router.get_price(symbol, context=context)
 
 
+get_realtime_price = get_current_price
+
+
 def get_current_prices_batch(symbols: List[str], context: str = "surveillance") -> Dict[str, float]:
     """
     Fetch live current prices for multiple symbols in batch.

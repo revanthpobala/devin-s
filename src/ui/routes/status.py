@@ -53,12 +53,14 @@ def get_company_names_dict() -> Dict[str, str]:
 def _get_live_vix() -> Optional[float]:
     """Fetch live VIX spot price with fast caching."""
     try:
-        from src.clients.price_client import get_realtime_price
-        p = get_realtime_price("^VIX")
+        from src.clients.price_client import get_current_price
+        p = get_current_price("^VIX")
+        if not p or p <= 0:
+            p = get_current_price("VIX")
         if p and p > 0:
             return round(p, 2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error fetching live VIX: {e}")
     return None
 
 

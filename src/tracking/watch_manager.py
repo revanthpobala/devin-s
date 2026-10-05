@@ -91,6 +91,14 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN fill_price REAL")
             if "quantity" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN quantity REAL DEFAULT 100")
+            if "evaluation_verdict" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN evaluation_verdict TEXT")
+            if "evaluation_playbook" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN evaluation_playbook TEXT")
+            if "evaluation_time" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN evaluation_time TEXT")
+            if "is_actionable_now" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN is_actionable_now INTEGER DEFAULT 0")
 
             cursor.execute(
                 """
@@ -438,31 +446,41 @@ def update_target_live_state(
     status: str,
     distance_to_entry_pct: Optional[float] = None,
     alert_type: Optional[str] = None,
+    is_actionable_now: Optional[int] = None,
+    evaluation_verdict: Optional[str] = None,
 ) -> None:
-    """Update live price, distance, status, and alert state for a ticker."""
+    """Update live price, distance, status, alert state, and actionability for a ticker."""
     now = _now_iso()
+    status_upper = (status or "").upper()
+    terminal_statuses = (
+        "TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED",
+        "STOPPED", "MISSED_RUNAWAY", "EXPIRED", "REJECTED_BY_GATE"
+    )
+    if status_upper in terminal_statuses:
+        if is_actionable_now is None:
+            is_actionable_now = 0
+        if evaluation_verdict is None:
+            evaluation_verdict = "TARGET_HIT" if "TARGET" in status_upper else "STAND_ASIDE"
+
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
+            query_parts = ["last_price = ?", "status = ?", "distance_to_entry_pct = ?", "updated_at = ?"]
+            params: list = [live_price, status, distance_to_entry_pct, now]
             if alert_type:
-                cursor.execute(
-                    """
-                    UPDATE watch_targets 
-                    SET last_price = ?, status = ?, distance_to_entry_pct = ?,
-                        last_alert_type = ?, last_alert_at = ?, updated_at = ?
-                    WHERE ticker = ?
-                    """,
-                    (live_price, status, distance_to_entry_pct, alert_type, now, now, ticker.upper()),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE watch_targets 
-                    SET last_price = ?, status = ?, distance_to_entry_pct = ?, updated_at = ?
-                    WHERE ticker = ?
-                    """,
-                    (live_price, status, distance_to_entry_pct, now, ticker.upper()),
-                )
+                query_parts.extend(["last_alert_type = ?", "last_alert_at = ?"])
+                params.extend([alert_type, now])
+            if is_actionable_now is not None:
+                query_parts.append("is_actionable_now = ?")
+                params.append(is_actionable_now)
+            if evaluation_verdict is not None:
+                query_parts.append("evaluation_verdict = ?")
+                params.append(evaluation_verdict)
+            params.append(ticker.upper())
+            cursor.execute(
+                f"UPDATE watch_targets SET {', '.join(query_parts)} WHERE ticker = ?",
+                params,
+            )
             conn.commit()
 
 

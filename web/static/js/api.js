@@ -179,6 +179,12 @@ window.AppApi = {
     return await res.json();
   },
 
+  async getIntradaySignals() {
+    const res = await fetch('/api/intraday/signals');
+    if (!res.ok) throw new Error(`Failed to fetch intraday signals: ${res.status}`);
+    return await res.json();
+  },
+
   async getAlertsHistory(limit = 1000, date = null, symbol = null, strategy = null) {
     let url = `/api/alerts/history?limit=${limit}`;
     if (date) url += `&date=${encodeURIComponent(date)}`;

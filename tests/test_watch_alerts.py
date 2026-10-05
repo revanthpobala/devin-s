@@ -122,7 +122,7 @@ def test_evaluate_watch_cycle_state_transitions(tmp_path):
             assert len(res) == 1
             assert res[0]["status"] == "IN_ZONE"
             assert res[0]["distance_to_entry_pct"] == 0.0
-            assert res[0]["last_alert_type"] == "ENTRY_TRIGGERED"
+            assert res[0]["last_alert_type"] in ("ENTRY_TRIGGERED", "ENTRY_ACTIONABLE_BUY")
 
         # 3. Price reaches Target 1 ($60.5) -> Transitions to TARGET_HIT
         with patch("run_watch_alerts.get_current_price", return_value=60.5):
@@ -315,7 +315,7 @@ def test_floor_proximity_buffer(tmp_path):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
             assert res[0]["status"] == "IN_ZONE"
-            assert res[0]["last_alert_type"] == "ENTRY_TRIGGERED"
+            assert res[0]["last_alert_type"] in ("ENTRY_TRIGGERED", "ENTRY_ACTIONABLE_BUY")
 
 
 def test_research_queue_date_resolution(tmp_path):

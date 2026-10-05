@@ -682,13 +682,15 @@ class ContinuousScreenerDaemon(threading.Thread):
             self._today_date = target_date
             self.auto_deep_dispatched_today = set()
 
-        # Detect already-completed tickers from reports/ directory to prevent duplicate research
-        reports_dir = config.BASE_DIR / "reports" / target_date
-        already_completed_today = set()
-        if reports_dir.exists():
-            for f in reports_dir.glob("*_summary.md"):
-                t = f.name.replace("_summary.md", "").upper()
-                already_completed_today.add(t)
+        # Detect already-completed tickers from reports/ directory (today + trailing 5 sessions) to prevent duplicate research
+        reports_root = config.BASE_DIR / "reports"
+        already_completed_recent = set()
+        if reports_root.exists():
+            date_dirs = sorted([d for d in reports_root.glob("202*") if d.is_dir()], reverse=True)[:5]
+            for d in date_dirs:
+                for f in d.glob("*_summary.md"):
+                    t = f.name.replace("_summary.md", "").upper()
+                    already_completed_recent.add(t)
 
         slots_left = self.max_auto_deep_per_day - len(self.auto_deep_dispatched_today)
         if slots_left <= 0:
@@ -698,7 +700,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         eligible = []
         for c in candidates:
             sym = str(c.get("symbol") or c.get("Symbol") or c.get("Ticker") or "").upper().strip()
-            if not sym or sym in already_completed_today or sym in self.auto_deep_dispatched_today:
+            if not sym or sym in already_completed_recent or sym in self.auto_deep_dispatched_today:
                 continue
 
             price = float(c.get("price") or 0.0)

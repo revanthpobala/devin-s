@@ -676,6 +676,10 @@ window.AppDesk = {
                         <span class="badge" style="border-color:${distTone}; color:${distTone}; font-weight:800; font-size:10px;">
                           ${opp.in_zone ? '🎯 IN ZONE' : opp.state_label}
                         </span>
+                        ${opp.stage === 'SCREENER_COIL' 
+                          ? `<span class="badge" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3); font-weight:800; font-size:9.5px;">⚡ SCREENER COIL</span>` 
+                          : `<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); font-weight:800; font-size:9.5px;">🔬 DEEP RESEARCH</span>`
+                        }
                       </div>
                       <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:10.5px; color:var(--text-muted); margin-top:3px;">
                         <span class="pill ${String(opp.vintage || '').includes('TODAY') ? 'green' : 'cyan'}" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
@@ -725,14 +729,14 @@ window.AppDesk = {
                   <!-- PM Thesis / Takeaways -->
                   ${opp.pm_bullets && opp.pm_bullets.length > 0 ? `
                   <div style="margin-top:10px; font-size:11px; color:var(--text-main); line-height:1.4; background:var(--bg-surface); border-radius:8px; padding:8px 10px; border:1px solid var(--border);">
-                    <div style="font-size:9.5px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Senior PM Directive:</div>
+                    <div style="font-size:9.5px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Institutional PM Directive / Thesis:</div>
                     ${opp.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
                   </div>` : ''}
 
                   <!-- Invalidation Rule -->
-                  ${opp.invalidation && opp.invalidation.rationale ? `
+                  ${opp.invalidation && (opp.invalidation.rationale || opp.invalidation.level) ? `
                   <div style="margin-top:8px; font-size:10px; color:var(--rose-light); font-family:var(--font-mono); background:rgba(244,63,94,0.05); padding:6px 8px; border-radius:6px; border:1px solid rgba(244,63,94,0.2);">
-                    🛑 <b>Invalidation:</b> ${opp.invalidation.rationale}
+                    🛑 <b>Invalidation:</b> ${opp.invalidation.rationale || `Defended floor stop breached at $${opp.invalidation.level}`}
                   </div>` : ''}
 
                 </div>
@@ -745,9 +749,14 @@ window.AppDesk = {
                   <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:6px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('${repDate}', '${sym}', 'plan')">
                     📑 Dossier
                   </button>
-                  <button class="btn secondary" style="font-size:11px; padding:6px 10px;" onclick="AppDesk.triggerDeep('${sym}', this)" title="Re-run Multi-Pass Deep Research">
-                    🔬 Research
-                  </button>
+                  ${opp.needs_deep_research 
+                    ? `<button class="btn" style="font-size:11px; padding:6px 12px; font-weight:800; background:linear-gradient(135deg, #7c3aed 0%, #a855f7 100%); color:white;" onclick="AppDesk.triggerDeep('${sym}', this)" title="Dispatch candidate into Autonomous Deep Research">
+                        🔬 Run Deep Research
+                      </button>`
+                    : `<button class="btn secondary" style="font-size:11px; padding:6px 10px;" onclick="AppDesk.triggerDeep('${sym}', this)" title="Re-run Multi-Pass Deep Research">
+                        🔬 Research
+                      </button>`
+                  }
                   <a href="https://www.tradingview.com/chart/?symbol=${sym}" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open TradingView Chart">
                     📈 TV
                   </a>
