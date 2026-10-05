@@ -1521,7 +1521,7 @@ window.AppSwing = {
     const directUrlBtn = document.getElementById('btn-modal-direct-url');
     if (directUrlBtn) {
       directUrlBtn.href = `/research/${chat.ticker}`;
-      directUrlBtn.title = `Open standalone http://127.0.0.1:8050/research/${chat.ticker} in a new tab`;
+      directUrlBtn.title = `Open standalone /research/${chat.ticker} in a new tab`;
     }
 
     if (window.AppChat && typeof window.AppChat.updateSidebarFocusBadge === 'function') {

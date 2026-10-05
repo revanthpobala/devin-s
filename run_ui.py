@@ -6,6 +6,7 @@ Modular entry point delegating to src.ui application package.
 from __future__ import annotations
 
 import argparse
+import socket
 import threading
 import webbrowser
 import uvicorn
@@ -40,20 +41,38 @@ from src.ui.services.copilot_context import (
 
 app = create_app()
 
+
+def _get_lan_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stock Trading Operations Cockpit UI")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind the UI server to (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8050, help="Port to run the UI server on (default 8050)")
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open web browser")
     parser.add_argument("--reload", action="store_true", help="Enable live reloading for development")
     args = parser.parse_args()
 
-    url = f"http://127.0.0.1:{args.port}"
+    lan_ip = _get_lan_ip()
+    local_url = f"http://127.0.0.1:{args.port}"
+    network_url = f"http://{lan_ip}:{args.port}"
+
     print(f"\n=======================================================")
     print(f"STOCK TRADING OPERATIONS COCKPIT LIVE AT:")
-    print(f">> {url}")
+    print(f">> Local:   {local_url}")
+    if lan_ip != "127.0.0.1":
+        print(f">> Network: {network_url}")
     print(f"=======================================================\n")
 
     if not args.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
 
-    uvicorn.run("run_ui:app", host="127.0.0.1", port=args.port, reload=args.reload, log_level="warning")
+    uvicorn.run("run_ui:app", host=args.host, port=args.port, reload=args.reload, log_level="warning")
