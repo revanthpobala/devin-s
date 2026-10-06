@@ -439,37 +439,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "execute_python_code",
-            "description": (
-                "Executes Python in a quantitative sandbox with pre-loaded 'df' (300 daily bars x 85 indicators), 'dw' (Data Window dict), 'np', 'pd', 'scipy', 'stats', and 'math'.\n"
-                "ROLE: You are the Lead Quantitative Strategist. Do NOT blindly copy boilerplate code. Formulate an open-ended mathematical hypothesis for this specific stock and execute custom Python to prove or disprove it.\n\n"
-                "APPLICATIONS & QUANTITATIVE WORKFLOWS:\n"
-                "1. Empirical Regime & Setup Backtesting: Query `df` for similar historical setups (e.g., matching Stage, Buy Score, RVOL, or Extension) and compute sample size N, forward return distribution, and win rates.\n"
-                "2. Volatility Risk Premium & Edge: Compare Historical Volatility (`HV20`) vs Implied Volatility (`Energy IV30`) to determine if options premium is statistically overpriced (sell credit) or cheap (buy debit).\n"
-                "3. Volume Flow & Absorption Dynamics: Analyze volume accumulation ratio (`_volume_acc_dist_ratio_60d`) and price interaction at High Volume Nodes (`VP HVN`) or Anchored VWAPs.\n"
-                "4. Options Payoff, Breakeven & EV Modeling: Model candidate multi-leg spreads (Bull Put, Bull Call, LEAP Diagonal) with exact net debit/credit, maximum profit, max risk, and breakeven.\n"
-                "5. Probabilistic Path & Touch Modeling: Simulate empirical price paths (e.g. Monte Carlo or drift-diffusion) to estimate probability of touching specific structural stops vs targets over 21-120 days.\n\n"
-                "MUST use print() to output results. Code runs in a secure sandbox with instant execution."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "Executable Python code (concise, max 50 lines). Pre-loaded variables: df, dw, ticker, np, pd, math, json, datetime. Use print() to output results.",
-                    },
-                    "ticker": {
-                        "type": "string",
-                        "description": "The stock ticker symbol (e.g., 'AMD')",
-                    },
-                },
-                "required": ["code"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "fetch_prior_research",
             "description": "Retrieves the most recent prior research summary and trade plan from 'reports/<date>/<ticker>_summary.md' within the last lookback_days (default 14 days). Use this to audit active stalk states, track thesis evolution, and check whether prior limit orders or triggers have played out.",
             "parameters": {
@@ -748,7 +717,7 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
 
 
 def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = None, is_independent: bool = False) -> str:
-    """Safely executes a Python code snippet with pre-loaded df, dw, and math/pandas modules."""
+    """Safely executes a Python code snippet with pre-loaded df, dw, and math/pandas modules (user approval required)."""
     import io
     import sys
     import math
@@ -775,7 +744,6 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     dw_path = chart_dir / dw_name
 
     if not csv_path.exists():
-        # Check date_str's triage folder before checking anywhere else
         triage_date_dir = config.BASE_DIR / "data" / "triage" / date_str
         for sub in ["_DEEP_RESEARCH", "force", ""]:
             cand = triage_date_dir / sub / ticker / csv_name if sub else triage_date_dir / ticker / csv_name
@@ -797,7 +765,6 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
     dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
 
-    # If Model B (is_independent), sanitize to allowlist only: time, open, high, low, close, volume
     if is_independent and not df.empty:
         allowlist = {"time", "date", "open", "high", "low", "close", "volume"}
         keep_cols = [c for c in df.columns if c.lower() in allowlist]
@@ -816,7 +783,6 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     except ImportError:
         talib = None
 
-    # Sandbox environment
     sandbox_globals = {
         "pd": pd,
         "np": np,
@@ -832,7 +798,6 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         "print": print,
     }
 
-    # Capture stdout
     stdout_buf = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = stdout_buf
@@ -1247,21 +1212,7 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "execute_python_code":
-        code_str = args.get("code", "")
-        logger.info(f"LLM executed tool: execute_python_code(ticker='{ticker}', code_len={len(code_str)}, ind={is_independent})")
-        res_str = execute_python_code_tool(code=code_str, ticker=ticker, date_str=date_str, is_independent=is_independent)
-        artifact_cache.save(date_str, ticker, cache_key, {
-            "code": code_str,
-            "stdout": res_str,
-        })
-        try:
-            from src.data.artifact_cache import get_artifact_dir
-            t_dir = get_artifact_dir(date_str, ticker)
-            py_file = t_dir / f"{ticker}_{cache_key}.py"
-            py_file.write_text(f"# Quantitative Script for {ticker} ({date_str})\n# Generated by Deep Research Agent\n\n{code_str}\n", encoding="utf-8")
-        except Exception:
-            pass
-        return res_str
+        return "Security Error: execute_python_code tool has been permanently disabled for security."
     elif function_name == "run_quantitative_plugin":
         plugin_name = args.get("plugin_name", "all")
         logger.info(f"LLM executed tool: run_quantitative_plugin(ticker='{ticker}', plugin='{plugin_name}')")

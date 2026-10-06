@@ -105,17 +105,9 @@ def get_feedback_loop_data() -> Dict[str, Any]:
     open_positions: List[Dict[str, Any]] = []
     all_open_syms = set(active_tickers)
 
-    # Batch quotes for genuine open positions
-    live_quotes: Dict[str, float] = {}
-    if all_open_syms:
-        try:
-            live_quotes = get_current_prices_batch(list(all_open_syms), context="positions")
-        except Exception:
-            pass
-
     for sym in sorted(list(all_open_syms)):
         rec = active_state.get(sym, {})
-        spot = live_quotes.get(sym) or float(rec.get("last_price") or rec.get("entry_price") or 0.0)
+        spot = float(rec.get("last_price") or rec.get("spot_price") or rec.get("entry_price") or rec.get("alert_price") or 0.0)
         entry = float(rec.get("entry_price") or rec.get("alert_price") or 0.0)
         stop = float(rec.get("stop") or 0.0)
         target = float(rec.get("target") or 0.0)
@@ -320,17 +312,22 @@ def get_feedback_loop_data() -> Dict[str, Any]:
 
     # Aggregate Scorecard
     total_evaluated = len(evaluated_closed)
-    win_rate = round((wins / total_evaluated * 100.0), 1) if total_evaluated > 0 else 0.0
+    scored_trades = wins + losses + scratches
+    null_r_count = total_evaluated - scored_trades
+    win_rate = round((wins / scored_trades * 100.0), 1) if scored_trades > 0 else 0.0
     avg_win_r = round(win_r_sum / wins, 2) if wins > 0 else 0.0
     avg_loss_r = round(loss_r_sum / losses, 2) if losses > 0 else 0.0
+    loss_rate = round((losses / scored_trades * 100.0), 1) if scored_trades > 0 else 0.0
     profit_factor = round(win_r_sum / loss_r_sum, 2) if loss_r_sum > 0 else (99.0 if win_r_sum > 0 else 1.0)
-    expectancy = round((win_rate / 100.0 * avg_win_r) - ((1.0 - win_rate / 100.0) * avg_loss_r), 2)
+    expectancy = round((win_rate / 100.0 * avg_win_r) - (loss_rate / 100.0 * avg_loss_r), 2) if scored_trades > 0 else 0.0
 
     return {
         "open_positions": open_positions,
         "closed_positions": evaluated_closed[:40],
         "scorecard": {
             "total_trades": total_evaluated,
+            "scored_trades": scored_trades,
+            "null_r_count": null_r_count,
             "open_count": len(open_positions),
             "wins": wins,
             "losses": losses,

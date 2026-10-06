@@ -296,12 +296,12 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                         "verdict": "COILED_BASE",
                         "conviction": 7,
                         "score": int(c.get("priority_score") or 75),
-                        "entry_low": round(sup * 0.995, 2) if sup > 0 else round(px * 0.995, 2),
-                        "entry_high": round(sup * 1.005, 2) if sup > 0 else round(px * 1.005, 2),
-                        "tactical_stop": round(stop_lvl, 2),
-                        "target_1": round(t1_lvl, 2),
+                        "entry_low": round(sup, 2) if sup > 0 else None,
+                        "entry_high": round(sup, 2) if sup > 0 else None,
+                        "tactical_stop": round(stop_lvl, 2) if stop_lvl > 0 else None,
+                        "target_1": round(t1_lvl, 2) if t1_lvl > 0 else None,
                         "target_2": round(t2_lvl, 2) if t2_lvl > 0 else None,
-                        "breakout_level": round(float(c.get("ceiling_level") or 0.0), 2),
+                        "breakout_level": round(float(c.get("ceiling_level") or 0.0), 2) if c.get("ceiling_level") else None,
                         "vehicle_type": "SHARES",
                         "vehicle_label": f"EQUITY · Weinstein Stage {stg} · {setup_name} · IVR {ivr_str}",
                         "options_plan": {},
@@ -350,7 +350,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         dist_pct = 0.0
         if spot > 0:
             if side == "LONG":
-                if e_low > 0 and e_high > 0:
+                if e_low is not None and e_high is not None and e_low > 0 and e_high > 0:
                     if e_low <= spot <= (e_high * 1.004):
                         in_zone = True
                         dist_pct = 0.0
@@ -358,11 +358,11 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                         dist_pct = round(((spot - e_high) / e_high) * 100.0, 2)
                     else:
                         dist_pct = round(((spot - e_low) / e_low) * 100.0, 2)
-                elif e_high > 0:
+                elif e_high is not None and e_high > 0:
                     dist_pct = round(((spot - e_high) / e_high) * 100.0, 2)
                     in_zone = abs(dist_pct) <= 0.4
             else:  # SHORT
-                if e_low > 0 and e_high > 0:
+                if e_low is not None and e_high is not None and e_low > 0 and e_high > 0:
                     if (e_low * 0.996) <= spot <= e_high:
                         in_zone = True
                         dist_pct = 0.0
@@ -376,14 +376,14 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         is_stop_breached = False
         if spot > 0:
             if side == "LONG":
-                if t1 > 0 and spot >= t1:
+                if t1 is not None and t1 > 0 and spot >= t1:
                     is_target_hit = True
-                elif stop > 0 and spot <= stop:
+                elif stop is not None and stop > 0 and spot <= stop:
                     is_stop_breached = True
             else:  # SHORT
-                if t1 > 0 and spot <= t1:
+                if t1 is not None and t1 > 0 and spot <= t1:
                     is_target_hit = True
-                elif stop > 0 and spot >= stop:
+                elif stop is not None and stop > 0 and spot >= stop:
                     is_stop_breached = True
 
         if is_target_hit or is_stop_breached:
@@ -396,12 +396,12 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         live_rr = 0.0
         if is_target_hit or is_stop_breached:
             live_rr = 0.0
-        elif spot > 0 and stop > 0 and t1 > 0:
+        elif spot > 0 and stop is not None and stop > 0 and t1 is not None and t1 > 0:
             if side == "LONG" and spot > stop and t1 > spot:
                 live_rr = round((t1 - spot) / (spot - stop), 2)
             elif side == "SHORT" and stop > spot and spot > t1:
                 live_rr = round((spot - t1) / (stop - spot), 2)
-        elif spot <= 0 and e_high > 0 and stop > 0 and t1 > 0:
+        elif spot <= 0 and e_high is not None and e_high > 0 and stop is not None and stop > 0 and t1 is not None and t1 > 0:
             if side == "LONG" and e_high > stop:
                 live_rr = round((t1 - e_high) / (e_high - stop), 2)
             elif side == "SHORT" and stop > e_low:
@@ -519,8 +519,8 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
 
         # Extract tactical levels from playbook or alert price
         playbook = a.get("llm_playbook") or ""
-        stop_match = re.search(r"Stop(?:\s*Loss)?\s*[:=\s]\s*\$?(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
-        target_match = re.search(r"Target(?:\s*[12])?\s*[:=\s]\s*\$?(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
+        stop_match = re.search(r"\bStop(?:\s*Loss)?\b\s*[:=\s]\s*\$?(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
+        target_match = re.search(r"\bTarget(?:\s*1)?\b\s*[:=\s]\s*\$?(\d+(?:\.\d+)?)", playbook, re.IGNORECASE)
 
         try:
             stop_val = float(stop_match.group(1)) if stop_match else 0.0
@@ -556,16 +556,9 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
         in_zone = abs(dist) <= 0.6
         a["in_zone"] = in_zone
 
-        is_act = bool(in_zone and rr >= 2.0 and stop_val > 0 and target_val > 0)
-        a["measured_actionable"] = is_act
-        a["gate_reasons"] = [] if is_act else [
-            msg for msg, ok in [
-                ("not in trigger zone", in_zone),
-                (f"R:R {rr:.2f} < 2.0 floor", rr >= 2.0),
-                ("missing stop level", stop_val > 0),
-                ("missing target level", target_val > 0),
-            ] if not ok
-        ]
+        a["source"] = "tv_alert"
+        a["measured_actionable"] = False
+        a["gate_reasons"] = ["levels from alert text"]
 
         if in_zone:
             a["alert_state"] = "IN_ZONE"

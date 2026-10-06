@@ -622,7 +622,8 @@ def evaluate_technical_coiling(
     # 8. Revanth Proxy R:R (rev-screener.pine):
     swing_lo = float(lows.iloc[-10:].min()) if len(lows) >= 10 else float(lows.min())
     target_hi = round(high_60d * 1.08, 2) if lane == "CONTINUATION" else high_60d
-    long_risk = last_close - swing_lo
+    raw_risk = last_close - swing_lo
+    long_risk = max(0.50, min(raw_risk, last_close * 0.15)) if raw_risk > 0 else 0.50
     long_reward = target_hi - last_close
     long_rr = round(long_reward / long_risk, 1) if long_risk > 0 and long_reward > 0 else 0.0
     atrs_up = round(long_risk / atr20, 2) if atr20 > 0 else 0.0

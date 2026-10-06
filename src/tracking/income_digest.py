@@ -292,8 +292,8 @@ def run_digest(
 
     if holdings is None:
         try:
-            from src.tracking.position_state import load_positions
-            pos_data = load_positions()
+            from src.tracking.position_state import list_open
+            pos_data = list_open()
             if isinstance(pos_data, dict):
                 open_pos = pos_data.get("open_positions", pos_data)
                 if isinstance(open_pos, dict):

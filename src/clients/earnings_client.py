@@ -182,3 +182,23 @@ def format_earnings_fact_block(ticker: str, dw: Optional[Dict[str, Any]] = None)
             lines.append(f"\nHistorical median 1-day earnings reaction: ±{median_move}%")
 
     return "\n".join(lines)
+
+
+def check_earnings_safety(
+    ticker: str,
+    min_days: int = 14,
+    as_of_date: Optional[Any] = None,
+) -> tuple[bool, Optional[int], str]:
+    """Check if ticker has sufficient earnings clearance.
+
+    Returns (is_safe, days_to_earnings, reason).
+    Fails closed if earnings date cannot be verified.
+    """
+    days = get_next_earnings_days(ticker, as_of_date=as_of_date)
+    sym = (ticker or "").upper()
+    if days is None:
+        return False, None, f"Earnings date unknown for {sym} — failed closed"
+    if days < min_days:
+        return False, days, f"Earnings in {days} day(s) (< {min_days} day minimum safety window for {sym})"
+    return True, days, f"Earnings clear in {days} day(s) (>= {min_days} days for {sym})"
+

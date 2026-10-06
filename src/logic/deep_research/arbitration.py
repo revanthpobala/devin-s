@@ -341,7 +341,7 @@ def run_arbitration(
         watch_data.setdefault("date", date_str)
         triage_lane = setup_lane
         if not triage_lane or triage_lane in ("WATCH_SHADOW", "UNKNOWN", "DEFAULT", "STANDARD"):
-            triage_lane = "RR_SETUP"
+            triage_lane = "JUDGE"
         watch_data["setup_lane"] = triage_lane
 
         from src.logic.report_level_extractor import _apply_options_cleanup
@@ -370,8 +370,9 @@ def run_arbitration(
         }
 
         # Code caps the verdict if triage is no_setup or actionable gate fails
-        from src.logic.actionable_gate import is_actionable
-        gate_ok, gate_reasons = is_actionable(dw_dict, plan)
+        from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+        gate_in = gate_inputs_from_datawindow(dw_dict)
+        gate_ok, gate_reasons = is_actionable(gate_in, plan)
         is_no_setup = str(setup_lane or "").strip().lower() in ("no_setup", "none", "")
 
         verdict = str(watch_data.get("verdict", "")).strip()

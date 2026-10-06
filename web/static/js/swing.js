@@ -165,13 +165,13 @@ window.AppSwing = {
     }
 
     if (scanBtn && !scanBtn.disabled) {
-      scanBtn.innerHTML = isShort ? '🔍 Scan Prime Shorts' : '🔍 Scan Long Bases';
+      scanBtn.innerHTML = isShort ? '🔍 Scan Ceiling Exhaustion' : '🔍 Scan Long Bases';
       scanBtn.title = isShort ? 'Scan 983 Schwab constituents for overextended ceiling stalls' : 'Scan 983 Schwab constituents for 20 EMA / 50 SMA coiling bases';
     }
 
     if (researchAllBtn) {
       researchAllBtn.innerHTML = isShort ? '🚀 Research All Shorts' : '🚀 Research All Longs';
-      researchAllBtn.title = isShort ? 'Launch full deep research pipeline for all prime short candidates' : 'Launch full deep research pipeline for all coiled long candidates';
+      researchAllBtn.title = isShort ? 'Launch full deep research pipeline for all ceiling exhaustion candidates' : 'Launch full deep research pipeline for all coiled long candidates';
     }
   },
 
@@ -198,7 +198,7 @@ window.AppSwing = {
 
       const countPill = document.getElementById('schwab-screener-status-pill');
       if (countPill) {
-        const label = isShort ? 'Prime Short Exhaustion' : 'Coiled Base Setups';
+        const label = isShort ? 'Ceiling Exhaustion Setups' : 'Coiled Base Setups';
         countPill.innerText = `${candidates.length} ${label} (${data.date || 'Today'})`;
         countPill.style.color = isShort ? 'var(--red-light)' : 'var(--cyan-glow)';
         countPill.style.borderColor = isShort ? 'var(--red)' : 'var(--border)';
@@ -228,7 +228,7 @@ window.AppSwing = {
       if (candidates.length === 0) {
         container.innerHTML = `
           <div style="color:var(--text-muted); font-size:12.5px; padding:16px 8px; text-align:center;">
-            <span>No ${isShort ? 'prime short exhaustion' : 'pre-move compression'} setups found for ${data.date || 'today'}. Click <strong>"${isShort ? 'Scan Prime Shorts' : 'Scan Long Bases'}"</strong> above to scan the 983 Schwab constituents live!</span>
+            <span>No ${isShort ? 'ceiling exhaustion' : 'pre-move compression'} setups found for ${data.date || 'today'}. Click <strong>"${isShort ? 'Scan Ceiling Exhaustion' : 'Scan Long Bases'}"</strong> above to scan the 983 Schwab constituents live!</span>
           </div>
         `;
         return;
@@ -811,10 +811,10 @@ window.AppSwing = {
   async autoResearchAllSurvivors() {
     const isShort = this._screenerSide === 'short';
     if (!this._currentScreenerCandidates || this._currentScreenerCandidates.length === 0) {
-      return alert(`No ${isShort ? 'prime short' : 'long basing'} survivors available. Run the Schwab scan first!`);
+      return alert(`No ${isShort ? 'ceiling exhaustion' : 'long basing'} survivors available. Run the Schwab scan first!`);
     }
 
-    const label = isShort ? 'prime short' : 'coiled long';
+    const label = isShort ? 'ceiling exhaustion' : 'coiled long';
     const total = this._currentScreenerCandidates.length;
     const conf = confirm(`Queue deep research for all ${total} ${label} candidates?\n(The system will automatically process 2 at a time based on hardware slots until all ${total} finish)`);
     if (!conf) return;

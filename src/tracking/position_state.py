@@ -72,6 +72,14 @@ def load_state() -> dict:
         return {}
 
 
+def list_open() -> dict:
+    """Return the current open positions dict."""
+    return load_state()
+
+
+load_positions = list_open
+
+
 
 
 def _save_state(state: dict) -> None:
@@ -392,6 +400,7 @@ def update_position(ticker: str, **fields) -> dict | None:
         state = load_state()
         rec = state.get(ticker)
         if rec is None:
+            logger.warning(f"[state] update requested for {ticker} but position is not open.")
             return None
 
         # Never overwrite initial_stop once set

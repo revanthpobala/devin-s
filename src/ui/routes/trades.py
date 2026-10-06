@@ -312,25 +312,54 @@ def get_suggested_trades_endpoint():
             )
 
             eval_verdict = t.get("evaluation_verdict")
-            is_actionable_now = bool(t.get("is_actionable_now"))
             eval_playbook = t.get("evaluation_playbook") or ""
+
+            from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+
+            in_zone_flag = 1.0 if is_strictly_in_zone else 0.0
+            entry_px = entry_high or last_price or entry_low
+            dw_dict = {
+                "long_in_zone": in_zone_flag,
+                "long_rr_at_market": rr_ratio,
+                "long_stop_loss": stop_loss,
+                "atr14": atr_num if atr_num > 0 else None,
+                "price": last_price,
+                "signal_pack": float(t["signal_pack"]) if t.get("signal_pack") is not None else (raw.get("signal_pack")),
+                "fade_long": float(t["fade"]) if t.get("fade") is not None else (raw.get("fade_long")),
+                "action_long": float(t["action_long"]) if t.get("action_long") is not None else (20.0 if t.get("setup_lane") == "CODE20" else raw.get("action_long")),
+                "ext_z_self": float(t["ext_z"]) if t.get("ext_z") is not None else (raw.get("ext_z_self")),
+            }
+            dw_raw = raw.get("datawindow") or raw.get("_datawindow")
+            if dw_raw:
+                gate_in_dw = gate_inputs_from_datawindow(dw_raw)
+                for k, v in gate_in_dw.items():
+                    if dw_dict.get(k) is None and v is not None:
+                        dw_dict[k] = v
+
+            gate_in = gate_inputs_from_datawindow(dw_dict)
+            is_actionable_now, gate_fails = is_actionable(gate_in, {"side": side.lower(), "entry": entry_px})
 
             # Rigorous Actionability Gate: Terminated, stopped, target hit, or out-of-zone trades are NEVER actionable to buy now!
             if is_terminated or hit_target or hit_stop or not is_strictly_in_zone:
                 is_actionable_now = False
                 if hit_target or status_str in ("TARGET_HIT", "COMPLETED"):
                     eval_verdict = "TARGET_HIT"
+                    gate_fails.append("Trade already reached target")
                 elif hit_stop or status_str in ("INVALIDATED", "STOP_BREACHED", "STOPPED"):
                     eval_verdict = "STAND_ASIDE"
+                    gate_fails.append("Trade breached stop")
+                elif not is_strictly_in_zone:
+                    if "price not in actionable zone" not in gate_fails and "long_in_zone missing or zero" not in gate_fails:
+                        gate_fails.append("Price not in entry zone")
             else:
-                if eval_verdict and "ACTIONABLE" in eval_verdict:
-                    is_actionable_now = True
+                if is_actionable_now:
+                    eval_verdict = "ACTIONABLE_BUY"
 
             t["evaluation_verdict"] = eval_verdict
             t["is_actionable_now"] = is_actionable_now
             t["evaluation_playbook"] = eval_playbook
             t["measured_actionable"] = is_actionable_now
-            t["gate_reasons"] = t.get("gate_reasons") or ([] if is_actionable_now else ["Setup not in actionable entry zone or not qualified"])
+            t["gate_reasons"] = gate_fails
 
             # Quantitative Priority Engine
             if is_terminated or status_str in ("TARGET_HIT", "COMPLETED"):
@@ -406,19 +435,34 @@ def take_trade_endpoint(data: dict):
         quantity = float(data.get("quantity") or default_qty or 100)
         notes = data.get("notes") or "User personally entered position"
         row_id = data.get("id") or data.get("row_id")
+        sugg_id = data.get("suggestion_id")
 
-        if not ticker and not row_id:
-            raise HTTPException(status_code=400, detail="Ticker or ID required")
+        if not ticker and not row_id and not sugg_id:
+            raise HTTPException(status_code=400, detail="Ticker, row_id, or suggestion_id required")
 
         with get_db() as conn:
             c = conn.cursor()
+            if sugg_id:
+                c.execute("""
+                    UPDATE suggestions 
+                    SET taken = 1, your_fill = ?, notes = COALESCE(?, notes)
+                    WHERE id = ?
+                """, (fill_price if fill_price > 0 else None, notes, sugg_id))
+                if not ticker:
+                    s_r = c.execute("SELECT ticker FROM suggestions WHERE id = ?", (sugg_id,)).fetchone()
+                    if s_r:
+                        ticker = s_r[0]
             if row_id:
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
                     WHERE rowid = ?
                 """, (fill_price if fill_price > 0 else None, quantity, row_id))
-            elif ticker:
+                if not ticker:
+                    w_r = c.execute("SELECT ticker FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+                    if w_r:
+                        ticker = w_r[0]
+            if ticker:
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
@@ -436,7 +480,7 @@ def take_trade_endpoint(data: dict):
             _WATCH_TARGETS_CACHE.clear()
         except Exception:
             pass
-        return {"success": True, "message": f"Successfully recorded trade for {ticker or row_id} at ${fill_price:.2f}"}
+        return {"success": True, "message": f"Successfully recorded trade for {ticker or row_id or sugg_id} at ${fill_price:.2f}"}
     except Exception as e:
         logger.error(f"Error in take_trade_endpoint: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -448,20 +492,30 @@ def untake_trade_endpoint(data: dict):
     try:
         ticker = (data.get("ticker") or "").upper().strip()
         row_id = data.get("id") or data.get("row_id")
+        sugg_id = data.get("suggestion_id")
         with get_db() as conn:
             c = conn.cursor()
+            if sugg_id:
+                c.execute("""
+                    UPDATE suggestions 
+                    SET taken = 0, your_fill = NULL
+                    WHERE id = ?
+                """, (sugg_id,))
+                if not ticker:
+                    s_r = c.execute("SELECT ticker FROM suggestions WHERE id = ?", (sugg_id,)).fetchone()
+                    if s_r:
+                        ticker = s_r[0]
             if row_id:
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
                     WHERE rowid = ?
                 """, (row_id,))
-                c.execute("""
-                    UPDATE suggestions 
-                    SET taken = 0, your_fill = NULL
-                    WHERE id = ?
-                """, (row_id,))
-            elif ticker:
+                if not ticker:
+                    w_r = c.execute("SELECT ticker FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+                    if w_r:
+                        ticker = w_r[0]
+            if ticker:
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
@@ -479,7 +533,7 @@ def untake_trade_endpoint(data: dict):
             _WATCH_TARGETS_CACHE.clear()
         except Exception:
             pass
-        return {"success": True, "message": f"Reverted taken status for {ticker}"}
+        return {"success": True, "message": f"Reverted taken status for {ticker or row_id or sugg_id}"}
     except Exception as e:
         logger.error(f"Error in untake_trade_endpoint: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

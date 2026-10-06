@@ -187,16 +187,15 @@ class AutoTriageDaemon(threading.Thread):
                 cur = conn.cursor()
                 query = """
                     SELECT * FROM alerts
-                    WHERE date = ?
-                      AND (llm_decision IS NULL OR llm_decision = ''
+                    WHERE (llm_decision IS NULL OR llm_decision = ''
                            OR llm_decision = '```' OR llm_decision = '...'
                            OR llm_decision = 'AI EVALUATED')
                       AND COALESCE(status, '') != 'FAILED'
                       AND COALESCE(routing_stage, 'RECORDED') != 'ARCHIVED'
-                    ORDER BY timestamp DESC
+                    ORDER BY date DESC, timestamp DESC
                     LIMIT ?
                 """
-                cur.execute(query, (today, self.batch_size))
+                cur.execute(query, (self.batch_size,))
                 rows = cur.fetchall()
 
             if not rows:
@@ -229,6 +228,18 @@ class AutoTriageDaemon(threading.Thread):
                         logger.warning(f"[AutoTriageDaemon] Failed marking {msg_id} as FAILED: {e_up}")
                     continue
 
+                new_attempts = attempts + 1
+                try:
+                    with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+                        try:
+                            conn.execute("UPDATE alerts SET triage_attempts = ? WHERE message_id = ?", (new_attempts, msg_id))
+                        except sqlite3.OperationalError:
+                            conn.execute("ALTER TABLE alerts ADD COLUMN triage_attempts INTEGER DEFAULT 0")
+                            conn.execute("UPDATE alerts SET triage_attempts = ? WHERE message_id = ?", (new_attempts, msg_id))
+                        conn.commit()
+                except Exception as e_att:
+                    logger.debug(f"[AutoTriageDaemon] Error recording attempt for {msg_id}: {e_att}")
+
                 try:
                     res = evaluate_alert_payload(alert_dict, use_tools=False)
                     batch_count += 1
@@ -244,40 +255,27 @@ class AutoTriageDaemon(threading.Thread):
                         update_research_status(sym, d_str, 'LOCAL_WATCH')
                     elif 'CUT' in decision:
                         update_research_status(sym, d_str, 'LOCAL_CUT')
+                    elif new_attempts >= 3 and not decision:
+                        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+                            conn.execute(
+                                "UPDATE alerts SET status = 'FAILED', llm_decision = 'FAILED', routing_stage = 'ARCHIVED' WHERE message_id = ?",
+                                (msg_id,)
+                            )
+                            conn.commit()
                 except Exception as e:
                     logger.warning(f"[AutoTriageDaemon] Failed evaluating {alert_dict.get('symbol')}: {e}")
-                    new_attempts = attempts + 1
                     status_val = 'FAILED' if new_attempts >= 3 else 'PENDING'
                     decision_val = 'FAILED' if new_attempts >= 3 else None
                     stage_val = 'ARCHIVED' if new_attempts >= 3 else None
                     try:
                         with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
-                            try:
-                                conn.execute(
-                                    """UPDATE alerts SET triage_attempts = ?, status = ?,
-                                       llm_decision = COALESCE(?, llm_decision),
-                                       routing_stage = COALESCE(?, routing_stage)
-                                       WHERE message_id = ?""",
-                                    (new_attempts, status_val, decision_val, stage_val, msg_id)
-                                )
-                            except sqlite3.OperationalError:
-                                try:
-                                    conn.execute("ALTER TABLE alerts ADD COLUMN triage_attempts INTEGER DEFAULT 0")
-                                    conn.execute(
-                                        """UPDATE alerts SET triage_attempts = ?, status = ?,
-                                           llm_decision = COALESCE(?, llm_decision),
-                                           routing_stage = COALESCE(?, routing_stage)
-                                           WHERE message_id = ?""",
-                                        (new_attempts, status_val, decision_val, stage_val, msg_id)
-                                    )
-                                except Exception:
-                                    conn.execute(
-                                        """UPDATE alerts SET status = ?,
-                                           llm_decision = COALESCE(?, llm_decision),
-                                           routing_stage = COALESCE(?, routing_stage)
-                                           WHERE message_id = ?""",
-                                        (status_val, decision_val, stage_val, msg_id)
-                                    )
+                            conn.execute(
+                                """UPDATE alerts SET status = ?,
+                                   llm_decision = COALESCE(?, llm_decision),
+                                   routing_stage = COALESCE(?, routing_stage)
+                                   WHERE message_id = ?""",
+                                (status_val, decision_val, stage_val, msg_id)
+                            )
                             conn.commit()
                     except Exception as e_db:
                         logger.warning(f"[AutoTriageDaemon] Error updating attempt count for {msg_id}: {e_db}")

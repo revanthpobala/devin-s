@@ -207,20 +207,58 @@ def evaluate_target_on_zone_arrival(
         )
     elif in_zone:
         if live_rr >= 2.0 and side == "LONG":
-            verdict = "ACTIONABLE_BUY"
-            verdict_label = "🟢 BUY SHARES NOW"
-            is_actionable = True
-            reasons.append(f"Price ${spot_price:.2f} is in buy box [${entry_low:.2f}–${entry_high:.2f}] holding above stop ${stop:.2f}.")
-            reasons.append(f"Asymmetric risk/reward: {live_rr:.2f}:1 R:R (Target: ${target_1:.2f}, Risk: {risk_pct}%).")
-            
-            # Exact execution recommendation
-            limit_price = round(spot_price, 2)
-            playbook = (
-                f"🟢 ACTIONABLE EXECUTION PERMISSION ({side}):\n"
-                f"• Level Defense: Confirmed structural floor shelf at ${stop:.2f} is holding intact.\n"
-                f"• Share Order: Enter {side} shares around ${limit_price:.2f} (Zone: ${entry_low:.2f}–${entry_high:.2f}).\n"
-                f"• Risk & Target: Tactical Stop = ${stop:.2f} (Risk: -{risk_pct}%) | Target 1 = ${target_1:.2f} (+{reward_pct}%) | R:R = {live_rr:.2f}:1."
-            )
+            dw = watch_target.get("datawindow") or watch_target.get("_datawindow")
+            if not dw and "raw_json" in watch_target:
+                try:
+                    raw = json.loads(watch_target["raw_json"]) if isinstance(watch_target["raw_json"], str) else watch_target["raw_json"]
+                    dw = raw.get("datawindow") or raw.get("_datawindow")
+                except Exception:
+                    dw = None
+
+            from src.logic.actionable_gate import is_actionable as check_is_actionable, gate_inputs_from_datawindow
+            if dw:
+                gate_in = gate_inputs_from_datawindow(dw)
+            else:
+                gate_in = {
+                    "atr14": watch_target.get("atr_at_signal") or watch_target.get("atr14"),
+                    "fade_long": watch_target.get("fade") or watch_target.get("fade_long"),
+                    "long_in_zone": 1.0,
+                    "signal_pack": watch_target.get("signal_pack"),
+                    "action_long": watch_target.get("action_long") or (20.0 if watch_target.get("setup_lane") in ("CODE20", "REVERSAL") else None),
+                    "ext_z_self": watch_target.get("ext_z") or watch_target.get("ext_z_self"),
+                    "price": spot_price,
+                    "long_rr_at_market": live_rr,
+                    "long_stop_loss": stop,
+                }
+            gate_in["price"] = spot_price
+            gate_in["long_rr_at_market"] = live_rr
+            gate_in["long_in_zone"] = 1.0
+            gate_in["long_stop_loss"] = stop
+
+            act_ok, act_reasons = check_is_actionable(gate_in)
+            if act_ok:
+                verdict = "ACTIONABLE_BUY"
+                verdict_label = "🟢 BUY SHARES NOW"
+                is_actionable = True
+                reasons.append(f"Price ${spot_price:.2f} is in buy box [${entry_low:.2f}–${entry_high:.2f}] holding above stop ${stop:.2f}.")
+                reasons.append(f"Asymmetric risk/reward: {live_rr:.2f}:1 R:R (Target: ${target_1:.2f}, Risk: {risk_pct}%).")
+
+                # Exact execution recommendation
+                limit_price = round(spot_price, 2)
+                playbook = (
+                    f"🟢 ACTIONABLE EXECUTION PERMISSION ({side}):\n"
+                    f"• Level Defense: Confirmed structural floor shelf at ${stop:.2f} is holding intact.\n"
+                    f"• Share Order: Enter {side} shares around ${limit_price:.2f} (Zone: ${entry_low:.2f}–${entry_high:.2f}).\n"
+                    f"• Risk & Target: Tactical Stop = ${stop:.2f} (Risk: -{risk_pct}%) | Tactical Stop = ${stop:.2f} | Target 1 = ${target_1:.2f} (+{reward_pct}%) | R:R = {live_rr:.2f}:1."
+                )
+            else:
+                verdict = "STALKING"
+                verdict_label = f"⏳ IN ZONE (GATE VETO)"
+                is_actionable = False
+                reasons.extend(act_reasons)
+                playbook = (
+                    f"⏳ STALK — Spot ${spot_price:.2f} is in zone, but gate vetoed execution: {'; '.join(act_reasons)}."
+                )
         else:
             verdict = "STALKING"
             verdict_label = f"⏳ IN ZONE (POOR R:R {live_rr:.1f}:1)"

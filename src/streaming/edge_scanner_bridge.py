@@ -288,6 +288,7 @@ class EdgeScannerBridge:
                 )
                 return True
 
+            self._mark_dispatched(sym)
             _set_candidate_status(sym, "RESEARCHING")
             logger.info(
                 f"🚀 [EdgeScannerBridge] Dispatched {sym} ({direction}, "
@@ -391,8 +392,9 @@ class EdgeScannerBridge:
 
     def _mark_dispatched(self, sym: str) -> None:
         """Record a dispatch. Caller must hold self._lock."""
-        self.dispatched_today.add(sym)
-        self.dispatches_count += 1
+        if sym not in self.dispatched_today:
+            self.dispatched_today.add(sym)
+            self.dispatches_count += 1
 
     def _spawn_research_worker(self, sym: str, alert: Dict[str, Any], today_str: str) -> None:
         """Run the autonomous deep-research pipeline for one candidate (blocking)."""
@@ -435,8 +437,6 @@ class EdgeScannerBridge:
                 return
             logger.info(f"✅ Autonomous deep research pipeline finished for {sym}.")
 
-            with self._lock:
-                self._mark_dispatched(sym)
             _set_candidate_status(sym, "COMPLETED")
 
             # Verify research verdict and sync watch alerts only if approved

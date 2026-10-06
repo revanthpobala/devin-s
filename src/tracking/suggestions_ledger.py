@@ -144,6 +144,10 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
                 lane_prior_win REAL,
                 lane_prior_ev REAL,
                 pb_funnel INTEGER,
+                signal_pack REAL,
+                fade REAL,
+                ext_z REAL,
+                stop_width_atr REAL,
                 scorer_version INTEGER DEFAULT 1,
                 fill_date TEXT,
                 fill_price REAL,
@@ -166,7 +170,8 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
             "planned_rr", "atr_at_signal", "taken", "your_fill", "notes", "is_modeled",
             "gate_status", "gate_reasons", "verdict", "setup_lane", "kind",
             "rr_at_market_at_signal", "spot_at_signal", "lane_prior_win", "lane_prior_ev",
-            "pb_funnel", "scorer_version", "fill_date", "fill_price", "exit_date", "exit_price",
+            "pb_funnel", "signal_pack", "fade", "ext_z", "stop_width_atr",
+            "scorer_version", "fill_date", "fill_price", "exit_date", "exit_price",
             "exit_reason", "bars_held", "gross_r", "r_net", "mae_r", "scored_at", "created_at"
         ]
         common_cols = [c for c in target_cols if c in existing_cols]
@@ -224,6 +229,10 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
                 lane_prior_win REAL,
                 lane_prior_ev REAL,
                 pb_funnel INTEGER,
+                signal_pack REAL,
+                fade REAL,
+                ext_z REAL,
+                stop_width_atr REAL,
                 scorer_version INTEGER DEFAULT 1,
                 fill_date TEXT,
                 fill_price REAL,
@@ -279,6 +288,10 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
             ("lane_prior_win", "REAL"),
             ("lane_prior_ev", "REAL"),
             ("pb_funnel", "INTEGER"),
+            ("signal_pack", "REAL"),
+            ("fade", "REAL"),
+            ("ext_z", "REAL"),
+            ("stop_width_atr", "REAL"),
             ("scorer_version", "INTEGER DEFAULT 1"),
             ("fill_date", "TEXT"),
             ("fill_price", "REAL"),
@@ -333,11 +346,14 @@ def append_suggestion(data: Dict[str, Any]) -> int:
     shares_plan = data.get("shares_plan") or {}
     entry_type = data.get("entry_type") or shares_plan.get("entry_type") or "LIMIT"
 
-    def _to_num(val: Any) -> Optional[float]:
+    def _to_num(val: Any, allow_negative: bool = False) -> Optional[float]:
         if val is None or val == "" or val == "N/A":
             return None
         try:
-            return float(val)
+            f = float(val)
+            if not allow_negative and f < 0:
+                return None
+            return f
         except (ValueError, TypeError):
             return None
 
@@ -359,7 +375,11 @@ def append_suggestion(data: Dict[str, Any]) -> int:
     spot_at_signal = _to_num(data.get("spot_at_signal") or data.get("spot") or data.get("price"))
     rr_at_market_at_signal = _to_num(data.get("rr_at_market_at_signal") or data.get("rr_at_market") or data.get("long_rr_at_market"))
     lane_prior_win = _to_num(data.get("lane_prior_win"))
-    lane_prior_ev = _to_num(data.get("lane_prior_ev"))
+    lane_prior_ev = _to_num(data.get("lane_prior_ev"), allow_negative=True)
+    signal_pack = _to_num(data.get("signal_pack"))
+    fade = _to_num(data.get("fade"))
+    ext_z = _to_num(data.get("ext_z"), allow_negative=True)
+    stop_width_atr = _to_num(data.get("stop_width_atr"))
     # Signal Pack PB-funnel bit. None stays NULL -- never backfilled, so a pre-PB row can never
     # masquerade as a measured no-PB row.
     pb_raw = data.get("pb_funnel")
@@ -386,8 +406,9 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     target_1, target_2, planned_rr, atr_at_signal,
                     taken, your_fill, notes, is_modeled, gate_status, gate_reasons,
                     verdict, setup_lane, kind, rr_at_market_at_signal, spot_at_signal,
-                    lane_prior_win, lane_prior_ev, pb_funnel, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    lane_prior_win, lane_prior_ev, pb_funnel,
+                    signal_pack, fade, ext_z, stop_width_atr, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ticker, date, source) DO UPDATE SET
                     report_hash=excluded.report_hash,
                     side=excluded.side,
@@ -414,6 +435,10 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     lane_prior_win=COALESCE(excluded.lane_prior_win, suggestions.lane_prior_win),
                     lane_prior_ev=COALESCE(excluded.lane_prior_ev, suggestions.lane_prior_ev),
                     pb_funnel=COALESCE(excluded.pb_funnel, suggestions.pb_funnel),
+                    signal_pack=COALESCE(excluded.signal_pack, suggestions.signal_pack),
+                    fade=COALESCE(excluded.fade, suggestions.fade),
+                    ext_z=COALESCE(excluded.ext_z, suggestions.ext_z),
+                    stop_width_atr=COALESCE(excluded.stop_width_atr, suggestions.stop_width_atr),
                     fill_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_date END,
                     fill_price=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_price END,
                     exit_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_date END,
@@ -435,7 +460,8 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                         taken, your_fill, notes, is_modeled, gate_status, gate_reasons,
                         verdict, setup_lane, kind,
                         rr_at_market_at_signal, spot_at_signal,
-                        lane_prior_win, lane_prior_ev, pb_funnel, _now_iso(),
+                        lane_prior_win, lane_prior_ev, pb_funnel,
+                        signal_pack, fade, ext_z, stop_width_atr, _now_iso(),
                     ),
                 )
                 conn.commit()

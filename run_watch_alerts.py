@@ -32,6 +32,7 @@ from src.tracking.watch_manager import (
     get_active_watch_targets,
     get_all_watch_targets,
     log_trigger_alert,
+    sweep_expired_watch_targets,
     update_target_live_state,
     upsert_watch_target,
 )
@@ -193,14 +194,24 @@ def sync_reports_to_watchlist(
                                 data["suggestion_id"] = srow[0]
                             else:
                                 from src.tracking.suggestions_ledger import append_suggestion
+                                from src.logic.actionable_gate import gate_inputs_from_datawindow
                                 sp = data.get("shares_plan", {})
                                 dw_data = data.get("datawindow") or data.get("_datawindow") or {}
-                                atr_at_sig = data.get("atr_at_signal") or dw_data.get("atr14")
-                                rr_at_sig = data.get("rr_at_market_at_signal") or dw_data.get("long_rr_at_market")
+                                gate_in = gate_inputs_from_datawindow(dw_data)
+                                atr_at_sig = data.get("atr_at_signal") or gate_in.get("atr14")
+                                rr_at_sig = data.get("rr_at_market_at_signal") or gate_in.get("long_rr_at_market")
+                                sig_pack = data.get("signal_pack") or gate_in.get("signal_pack")
+                                fade_val = data.get("fade") or gate_in.get("fade_long")
+                                ext_z_val = data.get("ext_z") or gate_in.get("ext_z_self")
+                                stop_val = sp.get("tactical_stop") or gate_in.get("long_stop_loss")
+                                entry_val = sp.get("entry_zone_high") or gate_in.get("price")
+                                stop_width_atr = None
+                                if atr_at_sig and atr_at_sig > 0 and stop_val and entry_val:
+                                    stop_width_atr = round(abs(entry_val - stop_val) / atr_at_sig, 3)
                                 raw_sig = data.get("pb_funnel")
-                                if raw_sig is None and dw_data.get("signal_pack") is not None:
+                                if raw_sig is None and sig_pack is not None:
                                     try:
-                                        raw_sig = int(bool(int(round(float(dw_data["signal_pack"]))) & 32))
+                                        raw_sig = int(bool(int(round(float(sig_pack))) & 32))
                                     except Exception:
                                         raw_sig = None
                                 sid = append_suggestion({
@@ -212,7 +223,7 @@ def sync_reports_to_watchlist(
                                     "entry_low": sp.get("entry_zone_low"),
                                     "entry_high": sp.get("entry_zone_high"),
                                     "breakout_level": sp.get("breakout_level"),
-                                    "stop": sp.get("tactical_stop"),
+                                    "stop": stop_val,
                                     "target_1": sp.get("target_1"),
                                     "target_2": sp.get("target_2"),
                                     "planned_rr": sp.get("rr_ratio"),
@@ -223,6 +234,10 @@ def sync_reports_to_watchlist(
                                     "atr_at_signal": atr_at_sig,
                                     "rr_at_market_at_signal": rr_at_sig,
                                     "pb_funnel": raw_sig,
+                                    "signal_pack": sig_pack,
+                                    "fade": fade_val,
+                                    "ext_z": ext_z_val,
+                                    "stop_width_atr": stop_width_atr,
                                     "notes": f"Judge directive: {data.get('verdict')}",
                                 })
                                 if sid and sid > 0:
@@ -258,6 +273,11 @@ def sync_reports_to_watchlist(
 
 def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
     """Run one single price polling and trigger evaluation cycle across all active watch targets."""
+    try:
+        now_et = get_eastern_now()
+        sweep_expired_watch_targets(days=5, as_of_date=now_et.strftime("%Y-%m-%d"))
+    except Exception as e_swp:
+        logger.debug(f"Sweep expired watch targets exception: {e_swp}")
     targets = get_active_watch_targets()
     if not targets:
         logger.info("No active watch targets in SQLite DB.")
@@ -335,25 +355,19 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         if inv_price and inv_price > 0:
             if side == "LONG":
                 if live_price <= inv_price:
-                    # Daily close defense: symmetric 1.0% band; only triggers close breach after 16:00 ET
-                    if "CLOSE" in inv_cond:
-                        if not is_after_close:
-                            is_testing_floor = True
-                        elif live_price > (inv_price * 0.99):
-                            is_testing_floor = True
-                        else:
-                            is_stop_breached = True
+                    # Invalidation requires market close: intraday wicks are testing floor
+                    if not is_after_close:
+                        is_testing_floor = True
+                    elif "CLOSE" in inv_cond and live_price > (inv_price * 0.99):
+                        is_testing_floor = True
                     else:
                         is_stop_breached = True
             elif side == "SHORT":
                 if live_price >= inv_price:
-                    if "CLOSE" in inv_cond:
-                        if not is_after_close:
-                            is_testing_floor = True
-                        elif live_price < (inv_price * 1.01):
-                            is_testing_floor = True
-                        else:
-                            is_stop_breached = True
+                    if not is_after_close:
+                        is_testing_floor = True
+                    elif "CLOSE" in inv_cond and live_price < (inv_price * 1.01):
+                        is_testing_floor = True
                     else:
                         is_stop_breached = True
 
@@ -411,9 +425,9 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             msg = f"[{ticker}] Breakout triggered! Price ${live_price:.2f} crossed breakout level (${breakout_level:.2f}). Trade active.{stop_str}"
             log_trigger_alert(ticker, alert_fired, msg, live_price)
 
-        # C. Target Reached Check (Differentiate IN_TRADE / IN_ZONE vs STALKING with bar verification)
+        # C. Target Reached Check (Differentiate IN_TRADE vs STALKING with bar verification; IN_ZONE is NOT filled)
         elif hit_t2:
-            if old_status in ("IN_TRADE", "IN_ZONE"):
+            if old_status in ("IN_TRADE",):
                 new_status = "TARGET_HIT"
                 if old_status != "TARGET_HIT":
                     alert_fired = "TARGET_2_REACHED"
@@ -448,7 +462,7 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                         log_trigger_alert(ticker, alert_fired, msg, live_price)
 
         elif hit_t1:
-            if old_status in ("IN_TRADE", "IN_ZONE"):
+            if old_status in ("IN_TRADE",):
                 new_status = "TARGET_HIT"
                 if old_status != "TARGET_HIT":
                     alert_fired = "TARGET_1_REACHED"

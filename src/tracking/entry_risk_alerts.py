@@ -229,29 +229,32 @@ class Onset:
     def over_risk_cap(self) -> bool:
         return self.risk_pct is not None and self.risk_pct > self.risk_cap_pct
 
+    signal_pack: Optional[float] = None
+
     def entry_gate(self) -> Tuple[bool, List[str]]:
-        """The ENTRY push predicate. Returns (qualifies, reasons_it_did_not)."""
-        fails: List[str] = []
-        min_rr = rr_config.min_rr()
-        if not self.packs_present:
-            return False, ["no Zone RR Flags Pack / Signal Pack on this bar (unmeasured)"]
-        if not self.in_zone:
-            fails.append("not in the long zone")
-        if not self.long_rr_valid:
+        """The ENTRY push predicate. Evaluated by single shared actionable gate."""
+        from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+        dw_in = {
+            "atr14": self.atr,
+            "fade_long": 1.0 if self.fade_long else (0.0 if self.fade_long is not None else None),
+            "long_in_zone": 1.0 if self.long_in_zone else 0.0,
+            "signal_pack": self.signal_pack,
+            "action_long": self.action_code,
+            "ext_z_self": self.ext_z,
+            "price": self.close,
+            "long_rr_at_market": getattr(self, "_rr_raw", self.rr_at_market),
+            "long_stop_loss": self.stop,
+        }
+        gate_in = gate_inputs_from_datawindow(dw_in)
+        plan = {"side": "long", "entry": self.close}
+        ok, fails = is_actionable(gate_in, plan)
+        if not self.packs_present and not any("signal_pack" in f for f in fails):
+            fails.append("no Zone RR Flags Pack / Signal Pack on this bar (unmeasured)")
+            ok = False
+        if not self.long_rr_valid and ok:
             fails.append("long R:R not marked valid")
-        if not self.rr_ok:
-            fails.append(f"RR@mkt {self.rr_at_market} < {min_rr}")
-        if self.stop_tight:
-            fails.append(f"stop width {self.stop_width_atr} ATR < {STOP_ATR_MIN} floor")
-        if not self.fade_off:
-            fails.append("fade gate active (do not chase)")
-        if not self.is_pb:
-            fails.append("not PB funnel (measured exclusion -> digest only)")
-        if self.action_code in (17, 18):
-            fails.append(f"action code {self.action_code} (PARABOLIC/TOXIC)")
-        if self.ext_z is not None and self.ext_z >= 2.5:
-            fails.append(f"ext_z {self.ext_z} >= 2.5")
-        return (not fails), fails
+            ok = False
+        return ok, fails
 
     def next_open_verdict(self, open_px: Optional[float]) -> Tuple[bool, str]:
         """The next-open rule. Skip if the open lands at/below the stop or at/above the target."""
@@ -292,6 +295,7 @@ def onset_from_datawindow(ticker: str, dw: Dict[str, Any], date: str = "") -> On
         fade_long=sp["fade_long"],
         pb_funnel=sp["pb_funnel"],
         packs_present=zr["present"] and sp["present"],
+        signal_pack=_f(dw, DW_SIGNAL_PACK),
     )
 
 
@@ -533,8 +537,8 @@ def run_daily_alert_sweep(
     # Load held positions from positions.json
     held_tickers = set()
     try:
-        from src.tracking.position_state import load_positions
-        pos_data = load_positions()
+        from src.tracking.position_state import list_open
+        pos_data = list_open()
         if isinstance(pos_data, dict):
             open_pos = pos_data.get("open_positions", pos_data)
             if isinstance(open_pos, dict):

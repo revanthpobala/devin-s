@@ -1145,11 +1145,11 @@
                 ${ideas.map(idea => `
                   <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:12px 16px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                      <span style="font-weight:800; font-size:13px; color:var(--text-main);">${idea.title}</span>
-                      <span class="pill" style="font-size:10px; font-weight:700;">${idea.category}</span>
+                      <span style="font-weight:800; font-size:13px; color:var(--text-main);">${escapeHtml(idea.title)}</span>
+                      <span class="pill" style="font-size:10px; font-weight:700;">${escapeHtml(idea.category)}</span>
                     </div>
-                    <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${idea.action}</div>
-                    <div style="font-family:var(--font-mono); font-size:11px; color:var(--cyan); margin-top:6px;">${idea.metrics}</div>
+                    <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">${escapeHtml(idea.action)}</div>
+                    <div style="font-family:var(--font-mono); font-size:11px; color:var(--cyan); margin-top:6px;">${escapeHtml(idea.metrics)}</div>
                   </div>
                 `).join('')}
               </div>
@@ -1205,14 +1205,14 @@
           <h2>📜 Historical Research Dossier Timeline</h2>
           <div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
             ${timeline.map(item => `
-              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px 18px; display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="switchReportDate('${item.date}')">
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px 18px; display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="switchReportDate('${escapeHtml(item.date)}')">
                 <div>
                   <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-family:var(--font-mono); font-weight:800; font-size:13px; color:var(--cyan);">${item.date}</span>
-                    <span class="pill" style="font-size:10px; font-weight:700;">${item.verdict || 'REVIEW'}</span>
+                    <span style="font-family:var(--font-mono); font-weight:800; font-size:13px; color:var(--cyan);">${escapeHtml(item.date)}</span>
+                    <span class="pill" style="font-size:10px; font-weight:700;">${escapeHtml(item.verdict || 'REVIEW')}</span>
                     <span style="font-family:var(--font-mono); font-size:11.5px; color:var(--text-muted);">$${item.spot ? Number(item.spot).toFixed(2) : '--'}</span>
                   </div>
-                  <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">${item.preview || item.summary || 'Click to view full dossier for this session.'}</div>
+                  <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">${escapeHtml(item.preview || item.summary || 'Click to view full dossier for this session.')}</div>
                 </div>
                 <button class="btn-action btn-secondary" style="font-size:11px;">Inspect ➔</button>
               </div>
@@ -1425,7 +1425,12 @@
     }
 
     function escapeHtml(str) {
-      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
     }
 
     // App Startup

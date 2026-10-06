@@ -149,6 +149,12 @@ def format_unmasked_recency_block(dw_dict: dict) -> str:
 
 
 def build_preloaded_block(pre_ctx: dict) -> str:
+    prior_res = str(pre_ctx.get('prior_research') or "")
+    if prior_res:
+        import re
+        prior_res = re.sub(r"#### Prior Plan A Levels:.*?(?=\n####|\Z)", "", prior_res, flags=re.DOTALL)
+        prior_res = re.sub(r"### Plan A.*?(?=\n###|\n##|\Z)", "", prior_res, flags=re.DOTALL).strip()
+
     return f"""
         --- 2g. PRE-LOADED DETERMINISTIC QUANT, TA-LIB & VOLATILITY ANALYTICS ---
         [DETERMINISTIC CPU MONTE CARLO PROBABILITIES (20,000 PATHS), VRP & CORE MOVING AVERAGE EXTENSIONS]:
@@ -167,7 +173,7 @@ def build_preloaded_block(pre_ctx: dict) -> str:
         {pre_ctx.get('historical_analytics')}
 
         [PRIOR 14-DAY RESEARCH DOSSIER (Macro / Catalyst Context Only — Do NOT Anchor to Prior Levels)]:
-        {pre_ctx.get('prior_research')}
+        {prior_res}
 
         ⚡ OPTIONS & QUANT DIRECTIVE: The 20,000-path Monte Carlo trajectory, IV/HV volatility risk premium, and core moving average extensions are ALREADY pre-computed above on the CPU. Formulate your directional thesis, options plan, and target expiration window directly from these deterministic probabilities. Emit tool calls (`fetch_options_chain` or `scrape_tradingview_options_finder`) to retrieve the exact strikes and expirations tailored to your trade plan.
         """

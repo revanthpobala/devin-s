@@ -21,9 +21,9 @@ def _safe_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
     if val is None:
         return default
     try:
-        s = str(val).replace(",", "").strip()
+        s = str(val).replace(",", "").strip().rstrip(".")
         if s.startswith("$"):
-            s = s[1:].strip()
+            s = s[1:].strip().rstrip(".")
         return float(s)
     except (ValueError, TypeError):
         return default
@@ -234,13 +234,13 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     # Spot Price — resolved up front so all downstream parsing & validation can use it.
     spot_price = _dw_lookup(dw_data, "close", "Close")
     if not spot_price:
-        m_spot = re.search(r"Bar close:\s*\$([0-9.]+)", summary_text)
+        m_spot = re.search(r"Bar close:\s*\$([0-9,.]+)", summary_text)
         if m_spot:
-            spot_price = float(m_spot.group(1))
+            spot_price = _safe_float(m_spot.group(1)) or 0.0
         elif arbitration_text:
-            m_spot_arb = re.search(r"(?:Spot Price|Price|spot|spot at):\s*\$([0-9.]+)", arbitration_text, re.IGNORECASE)
+            m_spot_arb = re.search(r"(?:Spot Price|Price|spot|spot at):\s*\$([0-9,.]+)", arbitration_text, re.IGNORECASE)
             if m_spot_arb:
-                spot_price = float(m_spot_arb.group(1))
+                spot_price = _safe_float(m_spot_arb.group(1)) or 0.0
 
     # Before extraction, if _arbitration.md contains NO_LEVELS or LEVEL GATE REJECTED,
     # try to parse the embedded JSON block anyway so the briefing/UI can show the thesis card.
@@ -431,10 +431,10 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         v_raw = m_verdict.group(1).strip().upper()
         if any(neg in v_raw for neg in ("DO NOT", "DON'T", "NOT BUY", "NO BUY", "NO ENTRY", "NO_ENTRY", "NO TRADE", "NO_TRADE")):
             verdict = "NO_TRADE"
-        elif re.search(r"\bENTER\b", v_raw) or re.search(r"\bBUY\b", v_raw):
-            verdict = "ENTER"
         elif re.search(r"\bSTALK\b", v_raw):
             verdict = "STALK"
+        elif re.search(r"\bENTER\b", v_raw) or re.search(r"\bBUY\b", v_raw):
+            verdict = "ENTER"
         elif re.search(r"\b(?:CASH|SKIP|AVOID)\b", v_raw):
             verdict = "CASH_SKIP"
         elif re.search(r"\bWATCH\b", v_raw):

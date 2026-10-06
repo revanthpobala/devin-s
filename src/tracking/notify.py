@@ -312,7 +312,7 @@ def notify(
             logger.debug("notify: DIGEST suppressed before the close")
             return False
     elif not force and is_quiet_hours() and tier != "OPS":
-        logger.info("notify [%s] %s suppressed (outside the 14:30-16:30 MT push window)",
+        logger.info("notify [%s] %s suppressed (outside the 07:00-16:30 MT push window)",
                     tier, title)
         return False
 

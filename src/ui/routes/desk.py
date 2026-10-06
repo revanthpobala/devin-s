@@ -349,24 +349,23 @@ def get_today():
                     dist = r.get("dist")
                     near = dist is not None and abs(float(dist)) <= 1.5
 
-                    # Single actionable gate
-                    min_rr_floor = rr_config.min_rr()
-                    in_zone_flag = 1 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0
-                    stop_w_atr = float(r["stop_width_atr"]) if r.get("stop_width_atr") is not None else 1.0
-                    atr_est = float(atr_at_signal) if (atr_at_signal and atr_at_signal > 0) else (abs(entry_h - stop) / max(0.01, stop_w_atr) if (entry_h and stop) else 5.0)
+                    # Single actionable gate using real stored fields only
+                    from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+                    in_zone_flag = 1.0 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0.0
+                    entry_px = r.get("entry_high") or last_px or r.get("entry_low")
                     dw_dict = {
                         "long_in_zone": in_zone_flag,
                         "long_rr_at_market": rr_at_market,
                         "long_stop_loss": stop,
-                        "atr14": atr_est,
-                        "price": last_px or r.get("price") or 100.0,
-                        "signal_pack": float(r.get("signal_pack") or 36.0),
-                        "fade_long": 0.0 if not r.get("fade_gate") else 1.0,
-                        "action_long": float(r.get("action_code") or (20.0 if r.get("setup_lane") == "CODE20" else 1.0)),
-                        "ext_z_self": float(r.get("ext_z") or 0.0),
+                        "atr14": float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else None,
+                        "price": last_px or r.get("price"),
+                        "signal_pack": float(r["signal_pack"]) if r.get("signal_pack") is not None else None,
+                        "fade_long": (0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else None,
+                        "action_long": float(r["action_code"]) if r.get("action_code") is not None else (20.0 if r.get("setup_lane") == "CODE20" else None),
+                        "ext_z_self": float(r["ext_z"]) if r.get("ext_z") is not None else None,
                     }
-                    entry_px = r.get("entry_high") or last_px or r.get("entry_low")
-                    is_act, gate_fails = is_actionable(dw_dict, {"side": "long", "entry": entry_px})
+                    gate_in = gate_inputs_from_datawindow(dw_dict)
+                    is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": entry_px})
                     r["measured"] = is_act
                     r["measured_actionable"] = is_act
                     r["gate_reasons"] = gate_fails
@@ -949,13 +948,6 @@ def get_journal(
                             r["plan_stop"] = f"{float(r['stop']):.2f}"
                         except Exception:
                             r["plan_stop"] = str(r["stop"])
-                    elif r.get("entry_low") and float(r.get("entry_low") or 0) > 0:
-                        try:
-                            # 2.5% structural floor defense if explicit stop was omitted
-                            synth_stop = float(r["entry_low"]) * 0.975
-                            r["plan_stop"] = f"{synth_stop:.2f}"
-                        except Exception:
-                            r["plan_stop"] = "–"
                     else:
                         r["plan_stop"] = "–"
 

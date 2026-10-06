@@ -125,7 +125,7 @@ def test_evaluate_watch_cycle_state_transitions(tmp_path):
             assert res[0]["last_alert_type"] in ("ENTRY_TRIGGERED", "ENTRY_ACTIONABLE_BUY")
 
         # 3. Price reaches Target 1 ($60.5) -> Transitions to TARGET_HIT
-        with patch("run_watch_alerts.get_current_price", return_value=60.5):
+        with patch("run_watch_alerts.get_current_price", return_value=60.5), patch("src.tracking.execution_validator.evaluate_setup_lifecycle", return_value={"was_filled": True, "fill_price": 51.0}):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
             assert res[0]["status"] == "TARGET_HIT"
@@ -693,6 +693,66 @@ def test_sync_reports_to_watchlist_defaults_tastytrade_disabled():
         assert count == 1
         mock_upsert.assert_called_once()
         mock_tt_cls.assert_not_called()
+
+
+def test_sweep_expired_watch_targets(tmp_path):
+    test_db = tmp_path / "test_sweep.db"
+    with patch.object(watch_manager, "DB_PATH", test_db):
+        watch_manager.init_watch_db()
+
+        # Target 1: Created 10 days ago (expired)
+        old_payload = {
+            "ticker": "OLD_TICKER",
+            "date": "2026-08-10",
+            "created_date": "2026-08-10",
+            "expires_on": "2026-08-17",
+            "verdict": "STALK",
+            "conviction": 5,
+            "actionable": True,
+            "shares_plan": {
+                "entry_type": "LIMIT",
+                "entry_zone_low": 50.0,
+                "entry_zone_high": 52.0,
+                "tactical_stop": 47.0,
+                "target_1": 60.0,
+                "target_2": 65.0,
+            },
+            "status": "STALKING",
+        }
+        watch_manager.upsert_watch_target(old_payload)
+
+        # Target 2: Fresh today
+        fresh_payload = {
+            "ticker": "FRESH_TICKER",
+            "date": "2026-08-25",
+            "created_date": "2026-08-25",
+            "expires_on": "2026-09-01",
+            "verdict": "STALK",
+            "conviction": 6,
+            "actionable": True,
+            "shares_plan": {
+                "entry_type": "LIMIT",
+                "entry_zone_low": 100.0,
+                "entry_zone_high": 102.0,
+                "tactical_stop": 95.0,
+                "target_1": 115.0,
+                "target_2": 120.0,
+            },
+            "status": "STALKING",
+        }
+        watch_manager.upsert_watch_target(fresh_payload)
+
+        expired_count = watch_manager.sweep_expired_watch_targets(days=5, as_of_date="2026-08-25")
+        assert expired_count == 1
+
+        active = watch_manager.get_active_watch_targets()
+        active_syms = [a["ticker"] for a in active]
+        assert "FRESH_TICKER" in active_syms
+        assert "OLD_TICKER" not in active_syms
+
+        all_t = {t["ticker"]: t for t in watch_manager.get_all_watch_targets()}
+        assert all_t["OLD_TICKER"]["status"] == "EXPIRED"
+        assert all_t["FRESH_TICKER"]["status"] == "STALKING"
 
 
 

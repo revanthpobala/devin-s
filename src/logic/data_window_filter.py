@@ -903,18 +903,16 @@ def run_data_window_filter(
         and rr_mkt >= rr_pass_floor()
         and act_code not in _ACTION_SOFT_CAUTION_CODES
     ):
-        atr14 = f.get("atr14") or 0.0
-        stop = W.get("stop")
-        entry = W.get("entry") or price
-        stop_width = ((entry - stop) / atr14) if (atr14 > 0 and stop is not None and entry is not None) else 0.0
-        is_pb = (f.get("pb_funnel") == 1.0)
-        stop_width_ok = (stop_width >= STOP_ATR_MIN)
+        from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+        gate_in = gate_inputs_from_datawindow(f)
+        gate_ok, gate_reasons = is_actionable(gate_in, W)
 
-        if is_pb and stop_width_ok:
+        if gate_ok:
             triage = "PASS"
             reason = "rr_at_market_lane_strong" if rr_mkt >= rr_strong_floor() else "rr_at_market_lane"
         else:
             triage = "WATCH"
+            is_pb = bool(gate_in.get("signal_pack") and (int(round(float(gate_in["signal_pack"]))) & 32))
             reason = "rr_lane_no_pb" if not is_pb else "rr_lane_tight_stop"
     # RSI2 branch ranked below at-market R:R lane; requires not no_fresh_long per Phase 6
     elif is_rsi2_setup and not no_fresh_long:

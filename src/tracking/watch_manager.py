@@ -462,6 +462,82 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
             logger.info(f"[{ticker}] Registered in Watchlist DB (Side: {side}, Verdict: {data.get('verdict')}, Status: {data.get('status')})")
 
 
+def sweep_expired_watch_targets(days: int = 5, as_of_date: Optional[str] = None) -> int:
+    """Expire STALKING and IN_ZONE targets older than `days` trading days or past `expires_on`."""
+    now = _now_iso()
+    today_dt = datetime.strptime(as_of_date[:10], "%Y-%m-%d").date() if as_of_date else datetime.now().date()
+    today_str = today_dt.strftime("%Y-%m-%d")
+
+    expired_count = 0
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT ticker, date, created_date, expires_on, status 
+                FROM watch_targets 
+                WHERE status IN ('STALKING', 'IN_ZONE', 'WATCH')
+                """
+            )
+            rows = cursor.fetchall()
+            for r in rows:
+                ticker = r["ticker"]
+                exp_on = r["expires_on"]
+                created_d_str = r["created_date"] or r["date"]
+                is_expired = False
+
+                if exp_on and today_str > str(exp_on)[:10]:
+                    is_expired = True
+                elif created_d_str:
+                    try:
+                        c_dt = datetime.strptime(str(created_d_str)[:10], "%Y-%m-%d").date()
+                        t_days = 0
+                        cur = c_dt
+                        while cur < today_dt:
+                            cur += timedelta(days=1)
+                            if cur.weekday() < 5:
+                                t_days += 1
+                        if t_days >= days:
+                            is_expired = True
+                    except Exception:
+                        pass
+
+                if is_expired:
+                    cursor.execute(
+                        """
+                        UPDATE watch_targets 
+                        SET status = 'EXPIRED', is_active = 0, is_actionable_now = 0, updated_at = ?
+                        WHERE ticker = ?
+                        """,
+                        (now, ticker),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO watch_alerts (ticker, date, trigger_type, message, spot_price, triggered_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            ticker.upper(),
+                            today_str,
+                            "THESIS_EXPIRED",
+                            f"[{ticker}] Stalking/In-Zone thesis expired after {days} trading days.",
+                            0.0,
+                            now,
+                        ),
+                    )
+                    expired_count += 1
+            if expired_count > 0:
+                conn.commit()
+                try:
+                    from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
+
+                    _WATCH_TARGETS_CACHE.clear()
+                except Exception:
+                    pass
+                logger.info(f"[watch_manager] Swept and marked {expired_count} watch targets as EXPIRED.")
+    return expired_count
+
+
 def get_active_watch_targets() -> List[Dict[str, Any]]:
     """Return all active watch targets that are not terminated."""
     with _db_lock:

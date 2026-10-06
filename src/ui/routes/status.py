@@ -261,9 +261,13 @@ class KillProcessRequest(BaseModel):
 def kill_process(req: KillProcessRequest):
     """Terminate our background processes only by PID."""
     import psutil
-    allowed_pids = {p["pid"] for p in _get_active_processes()}
+    allowed_pids = {
+        p["pid"]
+        for p in _get_active_processes()
+        if not any(protected in p.get("cmd", "") for protected in ("run_ui.py", "main.py"))
+    }
     if req.pid not in allowed_pids:
-        raise HTTPException(status_code=403, detail=f"PID {req.pid} is not a valid trading background process")
+        raise HTTPException(status_code=403, detail=f"PID {req.pid} is not an allowed background process to terminate")
     try:
         p = psutil.Process(req.pid)
         for child in p.children(recursive=True):

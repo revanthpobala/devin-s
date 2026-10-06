@@ -234,11 +234,26 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 old_tgt = 0.0
 
             # Key on gate state and Pine zone/stop within 0.25 ATR (not recomputed RR)
-            try:
-                atr_val = float(dw.get("ATR 14") or dw.get("ATR") or dw.get("atr") or 1.0)
-            except Exception:
-                atr_val = 1.0
-            tol = 0.25 * (atr_val if atr_val > 0 else 1.0)
+            atr_val = None
+            for k in ("RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "ATR", "atr"):
+                if dw.get(k) is not None:
+                    try:
+                        v = float(dw[k])
+                        if v > 0:
+                            atr_val = v
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if atr_val is None and rec.get("atr_at_signal") is not None:
+                try:
+                    v = float(rec["atr_at_signal"])
+                    if v > 0:
+                        atr_val = v
+                except (ValueError, TypeError):
+                    pass
+            if atr_val is None or atr_val <= 0:
+                return False
+            tol = 0.25 * atr_val
 
             if cur_ac == old_ac and cur_iz == old_iz:
                 if abs(cur_stop - old_stop) <= tol and abs(cur_tgt - old_tgt) <= tol:

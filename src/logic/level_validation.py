@@ -307,6 +307,9 @@ def validate_levels(
     # ── Lanes classification ──────────────────────────────────
     setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()
     is_judge = (str(plan.get("source") or "").lower() in ("judge", "arbitration") or bool(plan.get("is_judge", False)))
+    if is_judge:
+        setup_lane = "JUDGE"
+        plan["setup_lane"] = "JUDGE"
     is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD")
     is_rsi2 = (setup_lane == "RSI2")
     is_measured_lane = is_measured_pine or is_rsi2
@@ -344,7 +347,7 @@ def validate_levels(
                     f"rsi2_geometry: stop ${stop:.2f} (exp ${exp_stop:.2f}) or target_1 ${target_1:.2f} (exp ${exp_t1:.2f}) deviates > 0.05 ATR (${tol:.2f}) from close +/- 2/4 ATR"
                 )
     elif has_shares_entry:
-        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW): stop floor
+        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW, JUDGE): stop floor
         fill = breakout_level if (entry_type == "BREAKOUT" and breakout_level > 0) else (entry_low if entry_low > 0 else entry_high)
         if atr > 0 and fill > 0:
             pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
@@ -367,21 +370,18 @@ def validate_levels(
         rr_at_market = 0.0
     plan["rr_at_market"] = rr_at_market
 
-    # Skip planned R:R floor and at-market R:R floor for measured lanes
+    # Planned R:R floor to T1 (non-measured lanes)
     if has_shares_entry and not is_measured_lane:
         mid_entry = _zone_midpoint(entry_low, entry_high) if (entry_low and entry_high) else entry_high
         rr = _planned_rr(entry_low, mid_entry, stop, target_1, side)
-        rr_t2 = _planned_rr(entry_low, mid_entry, stop, target_2, side) if target_2 > 0 else rr
-        if (rr < LEVEL_RR_FLOOR and rr_t2 < LEVEL_RR_FLOOR):
+        if rr < LEVEL_RR_FLOOR:
             reasons.append(
-                f"planned R:R {rr:.4f} to T1 and {rr_t2:.4f} to T2 below floor {LEVEL_RR_FLOOR}"
+                f"planned R:R {rr:.4f} to T1 below floor {LEVEL_RR_FLOOR}"
             )
-        # The at-market floor follows the UI-tunable gate (src/tracking/rr_config) so this check
-        # and the desk/ENTRY gate cannot disagree about what "actionable" means. Only the
-        # at-market leg is tunable; LEVEL_RR_FLOOR above is a different quantity (planned R:R from
-        # the zone low to T1/T2) and stays pinned.
-        from src.tracking.rr_config import min_rr as at_market_floor
 
+    # At-market R:R floor applies to ALL lanes (including measured lanes)
+    if has_shares_entry:
+        from src.tracking.rr_config import min_rr as at_market_floor
         if rr_at_market < at_market_floor():
             reasons.append(
                 f"at-market R:R {rr_at_market:.2f} below {at_market_floor():.2f} floor "

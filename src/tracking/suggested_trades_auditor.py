@@ -570,6 +570,23 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                 # spread, so one row could report r=-1.00 next to $0.00. Derive both from the
                 # spread for options rows and say so in the notes.
                 if was_filled and r_mult is not None:
+                    row_atr = None
+                    try:
+                        s_row = cursor.execute(
+                            "SELECT atr_at_signal FROM suggestions WHERE ticker = ? AND date = ? LIMIT 1",
+                            (t["ticker"], t.get("date")),
+                        ).fetchone()
+                        if s_row and s_row[0]:
+                            row_atr = float(s_row[0])
+                    except Exception:
+                        pass
+                    if row_atr is None:
+                        try:
+                            from src.logic.level_validation import _compute_atr14_from_bars
+                            row_atr = _compute_atr14_from_bars(t["ticker"], t.get("date"))
+                        except Exception:
+                            row_atr = None
+
                     from src.tracking.r_calculator import compute_r
                     unit_tag = "option" if (is_options and debit > 0) else "share"
                     r_calc = compute_r(
@@ -578,7 +595,7 @@ def evaluate_all_suggested_trades(refresh_quotes: bool = False, window: int = 10
                         exit_px=exit_px,
                         stop=stop,
                         side=side,
-                        atr=None,
+                        atr=row_atr,
                         debit=debit if is_options else None,
                         dollar_pnl=dollar_pnl if is_options else None,
                     )

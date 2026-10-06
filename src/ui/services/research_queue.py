@@ -297,6 +297,17 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
     """Worker thread running sequential research pipeline with SQLite persistence and memory-leak protection."""
     init_db()
     ticker_u = ticker.strip().upper()
+    if not re.match(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$", ticker_u):
+        logger.warning(f"Rejecting invalid or traversal ticker in research worker: {ticker_u}")
+        with get_db() as conn:
+            conn.cursor().execute(
+                "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = ?, completed_at = ? WHERE job_id = ?",
+                (f"Invalid ticker format: {ticker_u}", datetime.now(timezone.utc).isoformat(), job_id),
+            )
+            conn.commit()
+        dispatch_next_queued_job()
+        return
+
     py_exe = sys.executable
     log_file_path = LOGS_DIR / f"{job_id}.log"
     recent_lines: collections.deque[str] = collections.deque(maxlen=25)

@@ -1668,7 +1668,7 @@ def trigger_research(req: ResearchRequest):
     if not tickers:
         raise HTTPException(status_code=400, detail="Ticker is required")
     for t in tickers:
-        if not re.match(r'^[A-Z0-9.\-_/]{1,12}$', t):
+        if not re.match(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$", t):
             raise HTTPException(status_code=400, detail=f"Invalid ticker format: {t}")
     if req.date and req.date.strip():
         if not re.match(r'^\d{4}-\d{2}-\d{2}$', req.date.strip()):
