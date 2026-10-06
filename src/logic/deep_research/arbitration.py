@@ -488,6 +488,16 @@ def run_arbitration(
         if sugg_id and sugg_id > 0:
             watch_data["suggestion_id"] = sugg_id
 
+        watch_data["signal_pack"] = gate_in.get("signal_pack")
+        watch_data["fade"] = gate_in.get("fade_long")
+        watch_data["action_long"] = gate_in.get("action_long")
+        watch_data["ext_z"] = gate_in.get("ext_z_self")
+        watch_data["atr_at_signal"] = atr_at_signal or gate_in.get("atr14")
+        watch_data["zone_rr_flags"] = dw_dict.get("Zone RR Flags Pack") or dw_dict.get("zone_rr_flags")
+        watch_data["rr_at_market_at_signal"] = rr_at_market_at_signal or gate_in.get("long_rr_at_market")
+        watch_data["datawindow"] = gate_in
+        watch_data["actionable"] = 1 if (gate_ok and _ok) else 0
+
         upsert_watch_target(watch_data)
         logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB (suggestion_id={watch_data.get('suggestion_id')}).")
 

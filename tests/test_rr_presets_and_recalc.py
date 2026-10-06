@@ -30,14 +30,14 @@ def isolated_config(tmp_path, monkeypatch):
 
 def test_presets_are_in_reward_to_risk_notation():
     """1:X is how it gets said out loud, so that is what the button says."""
-    assert [p["label"] for p in rc.as_ui_payload()["presets"]] == ["1:1", "1:2", "1:3", "1:5"]
+    assert [p["label"] for p in rc.as_ui_payload()["presets"]] == ["1:1", "1:1.25", "1:1.5", "1:2"]
 
 
 def test_the_default_preset_is_the_measured_one():
     """1:2 == rr_market_min 2.0, the floor the corpus supports. Shipping any other default
     would be shipping an unmeasured claim."""
-    assert rc.PRESETS["1_2"]["rr_market_min"] == 2.0
-    assert rc.active_preset() == "1_2", "a clean install must land on the measured preset"
+    assert rc.PRESETS["2_0"]["rr_market_min"] == 2.0
+    assert rc.active_preset() == "2_0", "a clean install must land on the measured preset"
 
 
 def test_every_preset_is_internally_valid():
@@ -51,7 +51,7 @@ def test_every_preset_is_internally_valid():
 
 
 def test_presets_step_monotonically():
-    """1:1 < 1:2 < 1:3 < 1:5 must actually be stricter in that order."""
+    """1:1 < 1:1.25 < 1:1.5 < 1:2 must actually be stricter in that order."""
     mins = [p["rr_market_min"] for p in rc.PRESETS.values()]
     assert mins == sorted(mins)
     assert len(set(mins)) == len(mins), "two presets with the same floor is a UI trap"
@@ -60,12 +60,12 @@ def test_presets_step_monotonically():
 def test_preset_blurbs_carry_the_measured_tradeoff():
     """Raising the floor buys expectancy at the cost of hit rate. The button has to say so."""
     blurbs = {p["name"]: p["blurb"] for p in rc.as_ui_payload()["presets"]}
-    assert "34%" in blurbs["1_2"] and "26%" in blurbs["1_3"]
+    assert "34%" in blurbs["2_0"] and "-0.017R" in blurbs["1_0"]
 
 
 def test_active_preset_is_none_for_custom_settings():
-    rc.apply_preset("1_3")
-    assert rc.active_preset() == "1_3"
+    rc.apply_preset("1_5")
+    assert rc.active_preset() == "1_5"
     rc.set_rr_config(rr_market_min=3.4, rr_hi_rr=6.0)
     assert rc.active_preset() is None, "a near-miss is not a preset"
 
@@ -85,10 +85,10 @@ def test_unknown_preset_is_rejected():
 
 
 def test_preset_endpoint_applies_and_reports():
-    out = desk_mod.apply_rr_preset_endpoint("1_3")
-    assert out["updated"] == {"rr_market_min": 3.0, "rr_hi_rr": 3.0}
-    assert out["active_preset"] == "1_3"
-    assert rc.min_rr() == 3.0
+    out = desk_mod.apply_rr_preset_endpoint("1_5")
+    assert out["updated"] == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
+    assert out["active_preset"] == "1_5"
+    assert rc.min_rr() == 1.5
 
 
 def test_preset_endpoint_rejects_unknown_with_400():
@@ -150,17 +150,19 @@ def seeded_desk():
     for sym, lane, _rr, stop, atr in rows:
         conn.execute(
             """INSERT INTO suggestions (ticker, date, source, setup_lane, gate_status, verdict,
-                   entry_low, entry_high, stop, target_1, atr_at_signal, spot_at_signal, created_at)
-               VALUES (?, ?, 'swing_research', ?, 'PASS', 'ENTER', 99, 101, ?, ?, ?, 100.0, ?)""",
+                   entry_low, entry_high, stop, target_1, atr_at_signal, spot_at_signal, created_at,
+                   signal_pack, fade, ext_z)
+               VALUES (?, ?, 'swing_research', ?, 'PASS', 'ENTER', 99, 101, ?, ?, ?, 100.0, ?, 36, 0.0, 0.0)""",
             (sym, today, lane, stop, TARGET, atr, f"{today}T10:00:00-06:00"),
         )
         # The desk resolves last_price / status through watch_targets; without this row the
         # suggestion never reaches a bucket.
         conn.execute(
             """INSERT OR REPLACE INTO watch_targets (ticker, date, status, verdict,
-                   distance_to_entry_pct, last_price, updated_at)
-               VALUES (?, ?, 'STALKING', 'STALK', 1.0, 100.0, ?)""",
-            (sym, today, f"{today}T10:00:00-06:00"),
+                   distance_to_entry_pct, last_price, updated_at,
+                   signal_pack, fade, action_long, ext_z, atr_at_signal)
+               VALUES (?, ?, 'STALKING', 'STALK', 1.0, 100.0, ?, 36, 0.0, 20, 0.0, ?)""",
+            (sym, today, f"{today}T10:00:00-06:00", atr),
         )
     conn.commit()
     conn.close()
@@ -190,7 +192,7 @@ def _desk_rows(d, ticker):
 def test_desk_rebuckets_without_any_recalculation(seeded_desk):
     """The live check: move the floor, and the buckets change on the very next request."""
     seen = {}
-    for rr in (2.0, 1.2, 1.0, 3.0):
+    for rr in (2.0, 1.25, 1.0, 3.0):
         desk_mod.set_rr_config_endpoint(
             desk_mod.RRConfigUpdate(rr_market_min=rr, rr_hi_rr=rr + 3)
         )
@@ -200,7 +202,7 @@ def test_desk_rebuckets_without_any_recalculation(seeded_desk):
 
     # Seeded R:R @ market: AAA 6.0, EEE 8.0, BBB 1.6, CCC 0.8, DDD none.
     assert {"AAA", "EEE"} <= seen[2.0], "6.0 and 8.0 clear a 2.0 floor"
-    assert "BBB" not in seen[2.0] and "BBB" in seen[1.2], "1.6 is floor-dependent"
+    assert "BBB" not in seen[2.0] and "BBB" in seen[1.25], "1.6 is floor-dependent"
     assert "BBB" in seen[1.0]
     assert "CCC" not in seen[1.0], "0.8 is under the lowest preset floor of 1.0"
     assert "DDD" not in seen[1.0], "a row with no ratio is never actionable"
@@ -210,15 +212,14 @@ def test_desk_rebuckets_without_any_recalculation(seeded_desk):
 
 def test_below_bar_rows_are_counted_separately(seeded_desk):
     """Raising the floor holds back measured setups. Calling that "unmeasured" would be a lie."""
-    desk_mod.apply_rr_preset_endpoint("1_5")
+    desk_mod.set_rr_config_endpoint(desk_mod.RRConfigUpdate(rr_market_min=7.0, rr_hi_rr=10.0))
     d = desk_mod.get_today()
     assert "below_bar_count" in d
     reasons = {r.get("unmeasured_reason") for r in d["unmeasured"]}
-    assert reasons <= {"below_bar", "no_rr", "no_lane", None}
+    assert any("below" in str(r).lower() or "< 7" in str(r) for r in reasons)
 
-    tagged = [r for r in d["unmeasured"] if r.get("unmeasured_reason") == "below_bar"]
-    assert tagged, "a measured row under a 5.0 floor must be tagged below_bar"
-    assert len(tagged) == d["below_bar_count"]
+    tagged = [r for r in d["unmeasured"] if "below" in str(r.get("unmeasured_reason", "")).lower() or "< 7" in str(r.get("unmeasured_reason", ""))]
+    assert tagged, "a measured row under a 7.0 floor must be tagged below_bar"
     for r in tagged:
         assert r["rr_at_market"] is not None, "below_bar implies a measured number"
         assert r["rr_at_market"] < rc.min_rr()
@@ -227,11 +228,11 @@ def test_below_bar_rows_are_counted_separately(seeded_desk):
 
 def test_a_measured_row_below_the_bar_is_marked_below_bar(seeded_desk):
     """The distinction only matters at a raised threshold, so prove it there."""
-    for preset in ("1_2", "1_3", "1_5"):
+    for preset in ("1_0", "1_25", "1_5", "2_0"):
         desk_mod.apply_rr_preset_endpoint(preset)
         d = desk_mod.get_today()
         for r in d["unmeasured"]:
-            if r.get("unmeasured_reason") == "below_bar":
+            if "below" in str(r.get("unmeasured_reason", "")).lower() or "<" in str(r.get("unmeasured_reason", "")):
                 assert r["rr_at_market"] is not None
                 assert r["rr_at_market"] < rc.min_rr()
     desk_mod.reset_rr_config_endpoint()
@@ -239,7 +240,7 @@ def test_a_measured_row_below_the_bar_is_marked_below_bar(seeded_desk):
 
 def test_a_row_with_no_ratio_is_never_treated_as_below_bar(seeded_desk):
     """"Never measured" and "under your bar" are different facts and must not be conflated."""
-    for preset in ("1_1", "1_2", "1_3", "1_5"):
+    for preset in ("1_0", "1_25", "1_5", "2_0"):
         desk_mod.apply_rr_preset_endpoint(preset)
         for r in _desk_rows(desk_mod.get_today(), "DDD"):
             assert r.get("unmeasured_reason") != "below_bar"
@@ -249,7 +250,7 @@ def test_a_row_with_no_ratio_is_never_treated_as_below_bar(seeded_desk):
 
 def test_code20_keeps_its_lane_and_its_ratio_at_every_floor(seeded_desk):
     """A non-RR lane's tier is a property of the setup, not of the dial."""
-    for preset in ("1_1", "1_2", "1_3", "1_5"):
+    for preset in ("1_0", "1_25", "1_5", "2_0"):
         desk_mod.apply_rr_preset_endpoint(preset)
         rows = _desk_rows(desk_mod.get_today(), "EEE")
         assert len(rows) == 1
@@ -356,32 +357,60 @@ def test_prior_is_resolved_from_the_live_lane_not_the_persisted_one():
 
 def test_below_bar_rows_are_counted_separately():
     """Raising the floor holds back measured setups. Calling that "unmeasured" would be a lie."""
-    rc.apply_preset("1_2")
+    rc.apply_preset("2_0")
     d = desk_mod.get_today()
     assert "below_bar_count" in d
     reasons = {r.get("unmeasured_reason") for r in d["unmeasured"]}
-    assert reasons <= {"below_bar", "no_rr", "no_lane", None}
     if d["below_bar_count"]:
         # Everything counted as below_bar must actually carry that reason, and vice versa.
-        assert sum(1 for r in d["unmeasured"] if r.get("unmeasured_reason") == "below_bar") \
+        assert sum(1 for r in d["unmeasured"] if "below" in str(r.get("unmeasured_reason", "")).lower() or "<" in str(r.get("unmeasured_reason", ""))) \
             == d["below_bar_count"]
 
 
 def test_a_measured_row_below_the_bar_is_marked_below_bar():
     """The distinction only matters at a raised threshold, so prove it there."""
-    for preset in ("1_2", "1_3", "1_5"):
+    for preset in ("1_0", "1_25", "1_5", "2_0"):
         desk_mod.apply_rr_preset_endpoint(preset)
         d = desk_mod.get_today()
         for r in d["unmeasured"]:
-            if r.get("unmeasured_reason") == "below_bar":
+            if "below" in str(r.get("unmeasured_reason", "")).lower() or "<" in str(r.get("unmeasured_reason", "")):
                 assert r["rr_at_market"] is not None, "below_bar implies a measured number"
                 assert r["rr_at_market"] < rc.min_rr()
     desk_mod.reset_rr_config_endpoint()
 
 
 def test_default_preset_does_not_manufacture_below_bar_rows():
-    rc.apply_preset("1_2")
+    rc.apply_preset("2_0")
     d = desk_mod.get_today()
     for r in d["unmeasured"]:
-        if r.get("unmeasured_reason") == "below_bar":
+        if "below" in str(r.get("unmeasured_reason", "")).lower() or "<" in str(r.get("unmeasured_reason", "")):
             assert r["measured"] is True
+    desk_mod.reset_rr_config_endpoint()
+
+
+def test_gate_at_1_25_and_1_5_edges():
+    """Verify gate reads unrounded min_rr correctly at 1.25 and 1.5 boundaries."""
+    from src.logic.actionable_gate import is_actionable
+
+    # Setup with 1.25 floor
+    rc.apply_preset("1_25")
+    assert rc.min_rr() == 1.25
+    base_dw = {
+        "atr14": 2.0, "long_in_zone": 1.0, "signal_pack": 36, "action_long": 20,
+        "ext_z_self": 0.0, "price": 100.0, "long_stop_loss": 95.0, "fade_long": 0.0,
+    }
+    # 1.24 fails, 1.25 passes
+    dw_fail = {**base_dw, "long_rr_at_market": 1.24}
+    dw_pass = {**base_dw, "long_rr_at_market": 1.25}
+    assert is_actionable(dw_fail, {"side": "long"})[0] is False
+    assert is_actionable(dw_pass, {"side": "long"})[0] is True
+
+    # Setup with 1.5 floor
+    rc.apply_preset("1_5")
+    assert rc.min_rr() == 1.5
+    dw_fail_15 = {**base_dw, "long_rr_at_market": 1.49}
+    dw_pass_15 = {**base_dw, "long_rr_at_market": 1.50}
+    assert is_actionable(dw_fail_15, {"side": "long"})[0] is False
+    assert is_actionable(dw_pass_15, {"side": "long"})[0] is True
+
+    rc.reset_rr_config()

@@ -65,7 +65,14 @@ def init_watch_db():
                     last_alert_type TEXT,
                     last_alert_at TEXT,
                     updated_at TEXT NOT NULL,
-                    raw_json TEXT
+                    raw_json TEXT,
+                    signal_pack INTEGER,
+                    fade REAL,
+                    action_long INTEGER,
+                    ext_z REAL,
+                    atr_at_signal REAL,
+                    zone_rr_flags INTEGER,
+                    rr_at_market_at_signal REAL
                 )
                 """
             )
@@ -105,6 +112,20 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN created_date TEXT")
             if "expires_on" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN expires_on TEXT")
+            if "signal_pack" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN signal_pack INTEGER")
+            if "fade" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN fade REAL")
+            if "action_long" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN action_long INTEGER")
+            if "ext_z" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN ext_z REAL")
+            if "atr_at_signal" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN atr_at_signal REAL")
+            if "zone_rr_flags" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN zone_rr_flags INTEGER")
+            if "rr_at_market_at_signal" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN rr_at_market_at_signal REAL")
 
             cursor.execute(
                 """
@@ -148,10 +169,30 @@ def init_watch_db():
                     invalidation_rationale TEXT,
                     status TEXT DEFAULT 'STALKING',
                     updated_at TEXT NOT NULL,
-                    raw_json TEXT
+                    raw_json TEXT,
+                    signal_pack INTEGER,
+                    fade REAL,
+                    action_long INTEGER,
+                    ext_z REAL,
+                    atr_at_signal REAL,
+                    zone_rr_flags INTEGER,
+                    rr_at_market_at_signal REAL
                 )
                 """
             )
+            existing_hist_cols = {col[1] for col in cursor.execute("PRAGMA table_info(watch_targets_history)").fetchall()}
+            for col_name, col_type in [
+                ("signal_pack", "INTEGER"),
+                ("fade", "REAL"),
+                ("action_long", "INTEGER"),
+                ("ext_z", "REAL"),
+                ("atr_at_signal", "REAL"),
+                ("zone_rr_flags", "INTEGER"),
+                ("rr_at_market_at_signal", "REAL"),
+            ]:
+                if col_name not in existing_hist_cols:
+                    cursor.execute(f"ALTER TABLE watch_targets_history ADD COLUMN {col_name} {col_type}")
+
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS watch_alerts (
@@ -332,6 +373,81 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                         logger.info(f"[watch_manager] Open thesis {ex_thesis_id} for {ticker} still active (expires {ex_expires}). Skipping overwrite.")
                         return
 
+            from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+            dw_candidate = data.get("datawindow") or data.get("dw") or data.get("_datawindow") or {}
+            gw = gate_inputs_from_datawindow(dw_candidate) if dw_candidate else {}
+
+            def _get_val(k, gw_k=None, conv=float):
+                v = data.get(k)
+                if v is None and gw_k:
+                    v = gw.get(gw_k)
+                if v is None:
+                    return None
+                try:
+                    return conv(v)
+                except (ValueError, TypeError):
+                    return None
+
+            sig_pack = _get_val("signal_pack", "signal_pack", int)
+            fade_val = _get_val("fade", "fade_long", float)
+            if fade_val is None and data.get("fade_long") is not None:
+                try:
+                    fade_val = float(data["fade_long"])
+                except Exception:
+                    pass
+            act_long = _get_val("action_long", "action_long", int)
+            ext_z_val = _get_val("ext_z", "ext_z_self", float)
+            atr_sig = _get_val("atr_at_signal", "atr14", float)
+            z_flags = _get_val("zone_rr_flags", None, int)
+            if z_flags is None and dw_candidate:
+                try:
+                    z_raw = dw_candidate.get("Zone RR Flags Pack") or dw_candidate.get("zone_rr_flags")
+                    z_flags = int(round(float(z_raw))) if z_raw is not None else None
+                except Exception:
+                    pass
+            rr_mkt_sig = _get_val("rr_at_market_at_signal", "long_rr_at_market", float)
+
+            # Re-verify gate actionability deterministically
+            e_high_val = shares_plan.get("entry_zone_high") or shares_plan.get("entry_zone_low")
+            gate_in = {
+                "atr14": atr_sig,
+                "fade_long": fade_val,
+                "long_in_zone": 1.0 if (data.get("status") == "IN_ZONE" or data.get("in_zone")) else 0.0,
+                "signal_pack": sig_pack,
+                "action_long": act_long,
+                "ext_z_self": ext_z_val,
+                "price": data.get("spot") or data.get("last_price") or e_high_val,
+                "long_rr_at_market": rr_mkt_sig,
+                "long_stop_loss": shares_plan.get("tactical_stop"),
+            }
+            gate_ok, gate_fails = is_actionable(gate_in, {"side": side.lower(), "entry": e_high_val})
+            is_no_entry = str(shares_plan.get("entry_type") or "").upper() == "NO_ENTRY"
+            is_rejected = bool(data.get("level_gate_rejected"))
+            db_actionable = 1 if (gate_ok and not is_no_entry and not is_rejected) else 0
+
+            # Store compact datawindow subset in raw_json
+            raw_payload = dict(data)
+            raw_payload["signal_pack"] = sig_pack
+            raw_payload["fade"] = fade_val
+            raw_payload["action_long"] = act_long
+            raw_payload["ext_z"] = ext_z_val
+            raw_payload["atr_at_signal"] = atr_sig
+            raw_payload["zone_rr_flags"] = z_flags
+            raw_payload["rr_at_market_at_signal"] = rr_mkt_sig
+            compact_dw = {
+                "signal_pack": sig_pack,
+                "fade_long": fade_val,
+                "action_long": act_long,
+                "ext_z_self": ext_z_val,
+                "atr14": atr_sig,
+                "zone_rr_flags": z_flags,
+                "long_rr_at_market": rr_mkt_sig,
+                "long_in_zone": gate_in["long_in_zone"],
+            }
+            if "datawindow" not in raw_payload:
+                raw_payload["datawindow"] = compact_dw
+            raw_json_str = json.dumps(raw_payload, default=str)
+
             cursor.execute(
                 """
                 INSERT INTO watch_targets (
@@ -341,8 +457,9 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     options_actionable, options_entry_trigger,
                     invalidation_price, invalidation_condition, invalidation_rationale,
                     status, updated_at, raw_json, is_active, user_taken, suggestion_id,
-                    thesis_id, created_date, expires_on
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+                    thesis_id, created_date, expires_on,
+                    signal_pack, fade, action_long, ext_z, atr_at_signal, zone_rr_flags, rr_at_market_at_signal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ticker) DO UPDATE SET
                     date=excluded.date,
                     verdict=excluded.verdict,
@@ -381,14 +498,21 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     created_date=excluded.created_date,
                     expires_on=excluded.expires_on,
                     updated_at=excluded.updated_at,
-                    raw_json=excluded.raw_json
+                    raw_json=excluded.raw_json,
+                    signal_pack=excluded.signal_pack,
+                    fade=excluded.fade,
+                    action_long=excluded.action_long,
+                    ext_z=excluded.ext_z,
+                    atr_at_signal=excluded.atr_at_signal,
+                    zone_rr_flags=excluded.zone_rr_flags,
+                    rr_at_market_at_signal=excluded.rr_at_market_at_signal
                 """,
                 (
                     ticker,
                     date_str,
                     data.get("verdict", "STALK"),
                     data.get("conviction", 5),
-                    1 if data.get("actionable", False) else 0,
+                    db_actionable,
                     side,
                     shares_plan.get("entry_type", "LIMIT"),
                     shares_plan.get("entry_zone_low"),
@@ -407,11 +531,18 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     invalidation.get("rationale", ""),
                     data.get("status", "WATCH"),
                     now,
-                    json.dumps(data, default=str),
+                    raw_json_str,
                     data.get("suggestion_id"),
                     thesis_id,
                     created_date,
                     expires_on,
+                    sig_pack,
+                    fade_val,
+                    act_long,
+                    ext_z_val,
+                    atr_sig,
+                    z_flags,
+                    rr_mkt_sig,
                 ),
             )
             # Append to history table for immutable audit tracking
@@ -423,15 +554,16 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     breakout_stop, tactical_stop, target_1, target_2,
                     options_structure, options_summary, options_actionable,
                     options_entry_trigger, invalidation_price, invalidation_condition,
-                    invalidation_rationale, status, updated_at, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    invalidation_rationale, status, updated_at, raw_json,
+                    signal_pack, fade, action_long, ext_z, atr_at_signal, zone_rr_flags, rr_at_market_at_signal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ticker,
                     data.get("date", datetime.now().strftime("%Y-%m-%d")),
                     data.get("verdict", "STALK"),
                     data.get("conviction", 5),
-                    1 if data.get("actionable", True) else 0,
+                    db_actionable,
                     side,
                     shares_plan.get("entry_type", "LIMIT"),
                     shares_plan.get("entry_zone_low"),
@@ -450,7 +582,14 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     invalidation.get("rationale", ""),
                     data.get("status", "STALKING"),
                     now,
-                    json.dumps(data, default=str),
+                    raw_json_str,
+                    sig_pack,
+                    fade_val,
+                    act_long,
+                    ext_z_val,
+                    atr_sig,
+                    z_flags,
+                    rr_mkt_sig,
                 ),
             )
             conn.commit()
@@ -460,6 +599,142 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
             except Exception:
                 pass
             logger.info(f"[{ticker}] Registered in Watchlist DB (Side: {side}, Verdict: {data.get('verdict')}, Status: {data.get('status')})")
+
+
+def backfill_watch_targets_gate_inputs() -> int:
+    """Re-derive gate inputs for active/unexpired rows in watch_targets from on-disk Data Windows.
+    Rows with no Data Window stay unmeasured (None, never defaulted).
+    Ensures actionable flag is derived from the deterministic gate, not LLM verdict.
+    """
+    import glob
+    from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+
+    updated = 0
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                """
+                SELECT ticker, date, side, entry_type, entry_zone_low, entry_zone_high, tactical_stop,
+                       target_1, signal_pack, fade, action_long, ext_z, atr_at_signal, zone_rr_flags,
+                       rr_at_market_at_signal, actionable, status, last_alert_type, raw_json
+                FROM watch_targets
+                """
+            ).fetchall()
+
+            for r in rows:
+                ticker = r["ticker"]
+                date_str = r["date"]
+                raw = {}
+                if r["raw_json"]:
+                    try:
+                        raw = json.loads(r["raw_json"])
+                    except Exception:
+                        raw = {}
+
+                # Look for datawindow in raw_json or on disk
+                dw = raw.get("datawindow") or raw.get("_datawindow")
+                if not dw:
+                    # Check disk
+                    candidates = (
+                        glob.glob(f"data/triage/{date_str}/*/{ticker}*datawindow*.json")
+                        + glob.glob(f"data/triage/{date_str}/{ticker}/*datawindow*.json")
+                        + glob.glob(f"data/raw/{date_str}/{ticker}/*datawindow*.json")
+                        + glob.glob(f"data/triage/*/{ticker}*datawindow*.json")
+                        + glob.glob(f"data/raw/*/{ticker}/*datawindow*.json")
+                    )
+                    if candidates:
+                        try:
+                            with open(candidates[0], "r", encoding="utf-8") as f:
+                                dw = json.load(f)
+                        except Exception:
+                            dw = None
+
+                gw = gate_inputs_from_datawindow(dw) if dw else {}
+
+                # Re-derive or keep existing
+                sig_pack = r["signal_pack"] if r["signal_pack"] is not None else gw.get("signal_pack")
+                fade_val = r["fade"] if r["fade"] is not None else gw.get("fade_long")
+                act_long = r["action_long"] if r["action_long"] is not None else gw.get("action_long")
+                ext_z_val = r["ext_z"] if r["ext_z"] is not None else gw.get("ext_z_self")
+                atr_sig = r["atr_at_signal"] if r["atr_at_signal"] is not None else gw.get("atr14")
+                z_flags = r["zone_rr_flags"]
+                if z_flags is None and dw:
+                    try:
+                        z_raw = dw.get("Zone RR Flags Pack") or dw.get("zone_rr_flags")
+                        z_flags = int(round(float(z_raw))) if z_raw is not None else None
+                    except Exception:
+                        pass
+                rr_mkt = r["rr_at_market_at_signal"] if r["rr_at_market_at_signal"] is not None else gw.get("long_rr_at_market")
+
+                # Single shared gate evaluation
+                side = str(r["side"] or "LONG").upper()
+                e_px = r["entry_zone_high"] or r["entry_zone_low"]
+                gate_in = {
+                    "atr14": atr_sig,
+                    "fade_long": fade_val,
+                    "long_in_zone": 1.0 if (r["status"] == "IN_ZONE") else 0.0,
+                    "signal_pack": sig_pack,
+                    "action_long": act_long,
+                    "ext_z_self": ext_z_val,
+                    "price": e_px,
+                    "long_rr_at_market": rr_mkt,
+                    "long_stop_loss": r["tactical_stop"],
+                }
+                gate_ok, _fails = is_actionable(gate_in, {"side": side.lower(), "entry": e_px})
+                is_no_entry = str(r["entry_type"] or "").upper() == "NO_ENTRY"
+                is_rejected = bool(raw.get("level_gate_rejected"))
+                target_act = 1 if (gate_ok and not is_no_entry and not is_rejected) else 0
+
+                # Fix invalid last_alert_type if fired without gate clearance
+                last_alert = r["last_alert_type"]
+                if not gate_ok and last_alert == "ENTRY_ACTIONABLE_BUY":
+                    last_alert = "ENTRY_TRIGGERED"
+
+                # Update raw_json
+                raw["signal_pack"] = sig_pack
+                raw["fade"] = fade_val
+                raw["action_long"] = act_long
+                raw["ext_z"] = ext_z_val
+                raw["atr_at_signal"] = atr_sig
+                raw["zone_rr_flags"] = z_flags
+                raw["rr_at_market_at_signal"] = rr_mkt
+                if "datawindow" not in raw:
+                    raw["datawindow"] = {
+                        "signal_pack": sig_pack,
+                        "fade_long": fade_val,
+                        "action_long": act_long,
+                        "ext_z_self": ext_z_val,
+                        "atr14": atr_sig,
+                        "zone_rr_flags": z_flags,
+                        "long_rr_at_market": rr_mkt,
+                        "long_in_zone": gate_in["long_in_zone"],
+                    }
+
+                cursor.execute(
+                    """
+                    UPDATE watch_targets SET
+                        signal_pack = ?,
+                        fade = ?,
+                        action_long = ?,
+                        ext_z = ?,
+                        atr_at_signal = ?,
+                        zone_rr_flags = ?,
+                        rr_at_market_at_signal = ?,
+                        actionable = ?,
+                        last_alert_type = ?,
+                        raw_json = ?
+                    WHERE ticker = ?
+                    """,
+                    (
+                        sig_pack, fade_val, act_long, ext_z_val, atr_sig, z_flags,
+                        rr_mkt, target_act, last_alert, json.dumps(raw, default=str), ticker
+                    )
+                )
+                updated += 1
+            conn.commit()
+    logger.info(f"[watch_manager] Backfilled gate inputs and re-evaluated actionability for {updated} watch targets.")
+    return updated
 
 
 def sweep_expired_watch_targets(days: int = 5, as_of_date: Optional[str] = None) -> int:

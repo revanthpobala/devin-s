@@ -54,7 +54,12 @@ def client(tmp_path, monkeypatch):
                     kind TEXT DEFAULT 'NEW',
                     verdict TEXT DEFAULT 'ENTER',
                     entry_type TEXT DEFAULT 'LIMIT',
-                    breakout_level REAL
+                    breakout_level REAL,
+                    atr_at_signal REAL,
+                    signal_pack REAL,
+                    fade REAL,
+                    action_long INTEGER,
+                    ext_z REAL
                 )
             """)
 
@@ -98,7 +103,7 @@ def client(tmp_path, monkeypatch):
                 )
             """)
 
-            cursor.execute("INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, stop, target_1) VALUES (?, ?, 'test', 'PASS', 'RR_SETUP', 100, 110, 95, 130)", ('MSFT', today))
+            cursor.execute("INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, stop, target_1, atr_at_signal, signal_pack, fade, action_long, ext_z) VALUES (?, ?, 'test', 'PASS', 'RR_SETUP', 100, 110, 95, 130, 5.0, 36, 0.0, 20, 0.0)", ('MSFT', today))
             cursor.execute("INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, stop, target_1) VALUES (?, ?, 'test', 'PASS', 'CODE20', 200, 210, 190, 240)", ('AAPL', today))
             cursor.execute("INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, stop, target_1, fill_date, exit_date, r_net) VALUES (?, ?, 'legacy', 'PASS', 'CODE20', 900, 910, 880, 950, '2026-09-25', '2026-09-26', 1.5)", ('TSLA', '2026-09-24'))
             cursor.execute("INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, stop, target_1, fill_date, exit_date, r_net) VALUES (?, ?, 'legacy', 'PASS', 'RR_SETUP', 600, 610, 580, 640, '2026-09-25', '2026-09-26', -1.0)", ('NVDA', '2026-09-24'))
@@ -114,7 +119,7 @@ def client(tmp_path, monkeypatch):
 
             # last_price drives RR@mkt: MSFT at 105 against stop 95 / target 130 gives 2.5, which
             # is what earns it a place in needs-you rather than the unmeasured group.
-            cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, last_price, updated_at) VALUES ('MSFT', ?, 'IN_ZONE', 'ENTER', 0.5, 105.0, ?)", (today, today))
+            cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, last_price, updated_at, signal_pack, fade, action_long, ext_z, atr_at_signal) VALUES ('MSFT', ?, 'IN_ZONE', 'ENTER', 0.5, 105.0, ?, 36, 0.0, 20, 0.0, 5.0)", (today, today))
             cursor.execute("INSERT INTO watch_targets (ticker, date, status, verdict, distance_to_entry_pct, last_price, updated_at) VALUES ('AAPL', ?, 'STALKING', 'STALK', 3.0, 205.0, ?)", (today, today))
 
             cursor.execute("INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date) VALUES ('job-1', 'AAPL', 'full', 'DONE', 'COMPLETED', ?, ?)", (datetime.now().isoformat(), today))

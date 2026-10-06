@@ -52,27 +52,28 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # 2. Non-loopback Auth Middleware
+    # 2. Non-loopback Auth Middleware (enforced only if COCKPIT_TOKEN is set)
     @app.middleware("http")
     async def auth_middleware(request, call_next):
-        client_host = request.client.host if request.client else "127.0.0.1"
-        if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
-            import os
-            expected_token = os.getenv("COCKPIT_TOKEN")
-            auth_header = request.headers.get("Authorization", "")
-            token = (
-                request.headers.get("X-Cockpit-Token")
-                or request.headers.get("COCKPIT_TOKEN")
-                or (auth_header[7:] if auth_header.startswith("Bearer ") else auth_header)
-                or request.query_params.get("token")
-                or request.query_params.get("cockpit_token")
-            )
-            if not expected_token or not token or token != expected_token:
-                from fastapi.responses import JSONResponse
-                return JSONResponse(
-                    status_code=401,
-                    content={"error": "Unauthorized: valid COCKPIT_TOKEN required for non-loopback access."},
+        import os
+        expected_token = os.getenv("COCKPIT_TOKEN")
+        if expected_token:
+            client_host = request.client.host if request.client else "127.0.0.1"
+            if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+                auth_header = request.headers.get("Authorization", "")
+                token = (
+                    request.headers.get("X-Cockpit-Token")
+                    or request.headers.get("COCKPIT_TOKEN")
+                    or (auth_header[7:] if auth_header.startswith("Bearer ") else auth_header)
+                    or request.query_params.get("token")
+                    or request.query_params.get("cockpit_token")
                 )
+                if not token or token != expected_token:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=401,
+                        content={"error": "Unauthorized: valid COCKPIT_TOKEN required for non-loopback access."},
+                    )
         return await call_next(request)
 
     # 3. Cache-Control Header Middleware

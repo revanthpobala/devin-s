@@ -1733,7 +1733,7 @@ def run_schwab_pre_move_scan(
         filtered_out_s = len(short_survivors) - len(qualified_shorts)
 
         print("\n" + "=" * 135)
-        print(f">> 🎯 TOP {len(short_top_picks)} PRIME SHORT / CEILING REJECTION SETUPS (Schwab 1000 Index / SCHK)")
+        print(f">> [*] TOP {len(short_top_picks)} PRIME SHORT / CEILING REJECTION SETUPS (Schwab 1000 Index / SCHK)")
         if filtered_out_s > 0:
             print(f">> Filtered out {filtered_out_s} low-conviction/momentum tickers. Showing best setups tight.")
         print(f">> Market Tide: {market_tide.get('trend_str')} (SPY ${market_tide.get('last_px'):.2f})")

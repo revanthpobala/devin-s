@@ -371,7 +371,7 @@ informative; WHETHER it pays is not established** — that needs real option pri
 
 | State | Strategy |
 |---|---|
-| ⚖️ R:R callout active (esp. **teal ≥5**) | **HOLD — no CC.** This is the one measured long edge; do not cap it |
+| ⚖️ R:R callout active (esp. **teal ≥3**) | **HOLD — no CC.** This is the one measured long edge; do not cap it |
 | **`Ext Z` > 2 or 🚫 DO NOT CHASE** | **AGGRESSIVE CC** — the widest measured margin (8.8% touch at 1.5× ExpMove) |
 | `IV Rank` > 80 (any extension) | **STANDARD CC** at ≥1.25× ExpMove — premium rich AND touch odds lower on this ruler |
 | `IV Rank` < 20 | **NO CC** — thin credit and *higher* touch odds. Own the shares, or buy calls |
@@ -480,7 +480,7 @@ call has no stop and caps upside instead. Different payoff, different question; 
 | Code 20 + one-time earnings miss/guide-cut, catalyst stabilizes within 1–2 quarters | 75–100% with OOS confirms — 71% of such dumps won at 60d in the news study (§16.4b) |
 | ⚖️ R:R callout (in zone, `Long RR At Market >= 2`, fade off) + non-indicator pillar | 100% |
 | ⚖️ R:R callout, Stage 2, no external pillar | 75% |
-| ⚖️ R:R teal tier (at-market R:R >= 5) + pillar | 75% |
+| ⚖️ R:R teal tier (at-market R:R >= 3) + pillar | 75% |
 | Row 8 WAIT/WATCH only (no ⚖️ R:R, no code 20) | 0% |
 | High `Short Pressure Score` + short levels | sizing context only — **no short entry promotion** |
 | **`Ext Pct vs MA200` 25–60%** | **0%** |

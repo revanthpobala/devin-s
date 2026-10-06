@@ -562,7 +562,7 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
 
         if in_zone:
             a["alert_state"] = "IN_ZONE"
-            a["state_label"] = "🎯 IN ENTRY TRIGGER"
+            a["state_label"] = "alert-text levels, unmeasured"
             a["urgency_rank"] = 1
         elif abs(dist) <= 1.8:
             a["alert_state"] = "COILING"

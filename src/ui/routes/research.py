@@ -50,6 +50,15 @@ router = APIRouter(tags=["research"])
 _REPORT_BUNDLE_CACHE: Dict[str, tuple[float, dict]] = {}
 _REPORT_CACHE_TTL = 300  # 5 minutes TTL
 
+TICKER_REGEX = re.compile(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$")
+
+
+def validate_ticker(ticker: str) -> str:
+    ticker_u = (ticker or "").strip().upper()
+    if not TICKER_REGEX.match(ticker_u):
+        raise HTTPException(status_code=400, detail=f"Invalid ticker symbol: {ticker!r}")
+    return ticker_u
+
 
 def extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
     """Extract structured levels and PM verdict metadata for a research report."""
@@ -740,7 +749,7 @@ def get_report_bundle_single(ticker: str):
 @router.get("/api/report/{date}/{ticker}")
 def get_report_bundle(date: str, ticker: str):
     """Return all 3 model markdown reports, available dates, and historical timeline for a ticker."""
-    ticker_u = ticker.upper().strip()
+    ticker_u = validate_ticker(ticker)
     cache_key = f"{date}_{ticker_u}"
     now_ts = time.time()
 
@@ -1352,7 +1361,7 @@ def get_ticker_quote(ticker: str):
     """Fetch live real-time price and day stats for a ticker directly from Schwab."""
     from src.clients.price_client import get_current_price
 
-    sym = ticker.upper().strip()
+    sym = validate_ticker(ticker)
     price = None
     net_change = 0.0
     net_pct = 0.0
@@ -1413,7 +1422,7 @@ def get_options_flow_endpoint(ticker: str, refresh: bool = False):
     """Fetch unusual options flow anomalies and institutional sweep metrics from Schwab API."""
     from src.clients.schwab_client import get_unusual_options_flow_data
 
-    sym = ticker.upper().strip()
+    sym = validate_ticker(ticker)
     try:
         data = get_unusual_options_flow_data(sym, force_refresh=refresh)
         return data
@@ -1430,7 +1439,8 @@ def get_options_flow_endpoint(ticker: str, refresh: bool = False):
 @router.get("/api/charts/{date}/{ticker}/{chart_type}")
 def get_chart_image(date: str, ticker: str, chart_type: str):
     """Serve chart PNG images."""
-    img_path = find_chart_path(date, ticker, chart_type)
+    ticker_u = validate_ticker(ticker)
+    img_path = find_chart_path(date, ticker_u, chart_type)
     if not img_path or not img_path.exists():
         raise HTTPException(status_code=404, detail="Chart image not found")
     return FileResponse(str(img_path), media_type="image/png")
@@ -1439,7 +1449,8 @@ def get_chart_image(date: str, ticker: str, chart_type: str):
 @router.get("/api/charts/latest/{ticker}/{chart_type}")
 def get_latest_chart_image(ticker: str, chart_type: str):
     """Serve most recent chart PNG image for a ticker without requiring a date."""
-    img_path = find_chart_path("", ticker, chart_type)
+    ticker_u = validate_ticker(ticker)
+    img_path = find_chart_path("", ticker_u, chart_type)
     if not img_path or not img_path.exists():
         raise HTTPException(status_code=404, detail=f"Chart image not found for {ticker}")
     return FileResponse(str(img_path), media_type="image/png")

@@ -234,13 +234,20 @@ class Onset:
     def entry_gate(self) -> Tuple[bool, List[str]]:
         """The ENTRY push predicate. Evaluated by single shared actionable gate."""
         from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+        sig_p = self.signal_pack
+        if sig_p is None and self.packs_present:
+            if self.pb_funnel is not None and self.fade_long is not None:
+                sig_p = float((32 if self.pb_funnel else 0) | (4 if not self.fade_long else 0))
+            elif self.pb_funnel is not None:
+                sig_p = float(32 if self.pb_funnel else 0)
+
         dw_in = {
-            "atr14": self.atr,
-            "fade_long": 1.0 if self.fade_long else (0.0 if self.fade_long is not None else None),
+            "atr14": self.atr if self.atr is not None else ((abs(self.close - self.stop) / STOP_ATR_MIN) if (self.close is not None and self.stop is not None) else None),
+            "fade_long": 1.0 if self.fade_long is True else (0.0 if self.fade_long is False else None),
             "long_in_zone": 1.0 if self.long_in_zone else 0.0,
-            "signal_pack": self.signal_pack,
-            "action_long": self.action_code,
-            "ext_z_self": self.ext_z,
+            "signal_pack": sig_p,
+            "action_long": self.action_code if self.action_code is not None else (20.0 if self.packs_present else None),
+            "ext_z_self": self.ext_z if self.ext_z is not None else (0.0 if self.packs_present else None),
             "price": self.close,
             "long_rr_at_market": getattr(self, "_rr_raw", self.rr_at_market),
             "long_stop_loss": self.stop,
@@ -248,7 +255,7 @@ class Onset:
         gate_in = gate_inputs_from_datawindow(dw_in)
         plan = {"side": "long", "entry": self.close}
         ok, fails = is_actionable(gate_in, plan)
-        if not self.packs_present and not any("signal_pack" in f for f in fails):
+        if not self.packs_present:
             fails.append("no Zone RR Flags Pack / Signal Pack on this bar (unmeasured)")
             ok = False
         if not self.long_rr_valid and ok:

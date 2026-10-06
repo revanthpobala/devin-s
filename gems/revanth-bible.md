@@ -573,11 +573,11 @@ longRRValid = longRR >= minRR
 ```
 - `rrHaircut` = 0.5 (shrinks Dir Prob toward 50 — overfit edges decay live)
 - `rrKellyBuffer` = 1.3 (fractional-Kelly cushion above break-even)
-- `rrFloor` = 0.70 (hard floor — calibrated walk-forward on 17 tickers)
+- `rrFloor` = 2.00 (hard floor — recalibrated on 544 tickers with stop-outs counted; was 0.70)
 
-> **Verified exact.** Recomputing `Long RR Valid` offline from `Dir Prob` and `RR To Target` using
-> these three constants reproduces the exported flag on **100.000% of 1,466,095 bars**. If you ever
-> change `rrHaircut`, the Python side must change with it or this identity breaks.
+> **Verified exact (at the old 0.70 floor).** Recomputing `Long RR Valid` offline from Evidence Bias and the
+> side's R:R using these constants reproduced the exported flag on 100.000% of 1,466,095 bars. With
+> `rrFloor` now 2.00 the floor dominates `minRR`; change `rrHaircut`/`rrFloor` on the Python side together.
 
 ### 6.3 TOXIC RISK
 Two conditions, both required — it is not simply "wide stop":
@@ -649,21 +649,29 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 > **The Data Window is the ONLY source of truth.** Never OCR numbers off the dashboard
 > image. Use the chart image for pattern context only; read all values from here.
 
-### 8.1 Main Indicator (62 fields — 12 chart plots, then 50 dedicated exports)
+### 8.1 Main Indicator (58 plots — 12 chart plots, then 46 dedicated exports)
 
-> **Four fields an older decoder may look for do not exist as columns.** `Long RR Valid` / `Short RR Valid` /
-> `Long In Zone` / `Short In Zone` are bits of **Zone RR Flags Pack** (#41). `Darvas State` /
-> `Darvas Box Quality` / `Squeeze Release Dir` / `RS Leader` are bits of **Premove Pack** (#61).
-> `Darvas Box Bot` is gone — only `Darvas Box Top` remains. `Long RR` is gone but recomputable losslessly:
-> `(Long Target − Long Entry) / (Long Entry − Long Stop Loss)`. **Scrapes older than 2026-08-13 still carry
-> the retired columns**, so read by header name and tolerate their absence.
+> **Re-derived from the plot titles in `revanth-enhanced-indicator.pine` (Oct 2026).** The header text is the
+> CSV column. Columns an older decoder may look for that are **no longer plots**: `Long RR At Market`,
+> `RR To Target`, `Action Long Code`, `Action Short Code`, `Entry At Market`, `Dir Prob Pct Above 50 Bull`
+> (renamed `Evidence Bias Pct Above 50 Bull`), `Buy/Sell Category Pack`, `Long Ignition`, `Stage` and
+> `Stage Age Bars` (now one pack), and the four pattern/age columns (now two packs). `load_exports.py` /
+> `csv_adapter.derive_datawindow_fields` rebuild the useful ones:
+> `Action Long Code = Context Action Pack % 32`, `Action Short Code = (pack // 32) % 32`,
+> `Entry At Market = pack // 1024`, `Stage = Context Stage Age Pack % 8`, `Stage Age = pack // 8`, and
+> `Long RR At Market = (Long Target − close) / (close − Long Stop Loss)` **only if close > stop and target > close**
+> (else absent). Older scrapes carry the retired columns, so **read by header name** and tolerate absence.
+> `Long RR Valid` / `Short RR Valid` / `Long In Zone` / `Short In Zone` are bits of **Zone RR Flags Pack**;
+> Darvas/RS-leader/squeeze-direction are bits of **Premove Pack**.
 >
-> ⚠️ **The script sits at exactly 64/64 plots (TradingView's hard cap, RE10140) — a new export requires
-> deleting one.** Count the way TradingView does: `plot`/`plotshape`/`plotchar`/`plotarrow`/`bgcolor`/
-> `barcolor`/`fill`/`hline` = 1 each, `plotcandle`/`plotbar` = **4** each, and a `plot()` assigned to a
-> variable still counts. Grepping for `plot(` alone undercounts and will report headroom that is not there.
+> **Active action codes** (current source): long `{5, 8, 10–13, 15–18, 20}`, short `{5, 8, 10–13, 15, 16, 18}`.
+> Codes `1–4, 6, 7, 9, 14, 19, 21` are retired; the decoder still maps them for old scrapes only.
+>
+> ⚠️ **The script sits near TradingView's 64-plot cap (RE10140).** Count the way TradingView does:
+> `plot`/`plotshape`/`plotchar`/`plotarrow`/`bgcolor`/`barcolor`/`fill`/`hline` = 1 each, `plotcandle`/`plotbar` = **4**
+> each, and a `plot()` assigned to a variable still counts. Grepping for `plot(` alone undercounts.
 
-| # | Field | Type | Description |
+| # | Field (CSV header) | Type | Description |
 |---|-------|------|-------------|
 | 1 | Sprint Line EMA | price | Fast EMA(5) cloud line |
 | 2 | Hull Baseline HMA | price | Hull MA(20) cloud line |
@@ -673,77 +681,77 @@ off, but a broken structure invalidates the zone no matter how strong its score 
 | 6 | Weinstein MA 150 | price | HMA(150) — stage analysis |
 | 7 | Golden Cross | 0/1 | EMA50 crossed above MA200 this bar |
 | 8 | Death Cross | 0/1 | EMA50 crossed below MA200 this bar |
-| 9 | Zone 0 Long | 0/1 | `revScoreLong >= 10`, **and `barstate.isconfirmed`** — reads 0 on the live bar |
-| 10 | Zone 0 Short | 0/1 | `revScoreShort >= 10`, same confirmation gate |
+| 9 | Zone 0 Long | 0/1 | `isRevZone0Long` and `barstate.isconfirmed` — reads 0 on the live bar |
+| 10 | Zone 0 Short | 0/1 | Short-side twin, same confirmation gate |
 | 11 | AVWAP Resistance | price | Anchored VWAP resistance |
 | 12 | AVWAP Support | price | Anchored VWAP support |
 | 13 | Long Setup Score | 0–100 | Context score; high values do not predict better entries |
 | 14 | Short Pressure Score | 0–100 | Pressure context; not a validated short edge |
-| 15 | Stage 1 Base 2 Up 3 Top 4 Down | 0–5 | Weinstein stage (0=IPO, 5=Recovery) |
-| 16 | Stage Age Bars | int | Bars in current stage |
-| 17 | Long Entry | price | Suggested long entry level |
-| 18 | Long Entry Zone Bot | price | Zone lower bound |
-| 19 | Long Entry Zone Top | price | Zone upper bound |
-| 20 | Long Stop Loss | price | Structure-first stop |
-| 21 | Long Target | price/∅ | Target (blank if behind entry) |
-| 22 | Short Entry | price | Suggested short entry |
-| 23 | Short Entry Zone Bot | price | Short zone lower bound |
-| 24 | Short Entry Zone Top | price | Short zone upper bound |
-| 25 | Short Stop Loss | price | Short stop |
-| 26 | Short Target | price/∅ | Short target (blank if behind entry) |
-| 27 | Entry At Market 0No 1L 2S 3Both | 0–3 | 0=structural, 1=long at-market, 2=short, 3=both |
-| 28 | Long Rev Zone | 0–26 observed | Mean-reversion score (Connors) — §9.1. p99 = 10.5; 33% of bars are 0 |
-| 29 | Short Rev Zone | 0–23.5 observed | Same, short side. 38% zeros |
-| 30 | Ext Pct vs MA200 | % | `(close − MA 200 Slow)/MA 200 Slow × 100`, signed. Verified exact |
-| 31 | Exhaustion Gradient | 0–1 | Blended trend-maturity/overheat (§15 formula). p99 = 0.42 |
-| 32 | Ext Z Self Relative | σ | Extension vs own history — **252 bars daily, 52 weekly**. Fat-tailed: observed −25.8 to +112.9, p99 only 2.4 |
-| 33 | Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz | 0–6 | Market regime — **priority enum, see §15.6** |
-| 34 | Exp Move Pct 21b | % | `HV20 × √(21/252)` — already a percent, no further scaling |
-| 35 | Dir Prob Pct Above 50 Bull | 0–100 | Evidence-spread direction. Single-name EV input only (§16.10) |
-| 36 | Long Ignition Fresh Breakout | 0/1 | Fresh qualified breakout — descriptive tag, not a trigger (§15.7) |
-| 37 | RR To Target | ratio | Reward:risk of the **dominant side** (`buyScore >= sellScore ? longRR : shortRR`) — NOT always the long. **0 = invalid (4.5% of bars).** p99 = 7.8; still worth clamping in EV math |
-| 38 | Long RR At Market | ratio | **(Long Target − close) / (close − Long Stop Loss)** — the ratio you get buying at THIS price. **Prefer this over `RR To Target` for any "should I buy now" question.** The zone ratio overstates it on 53.7% of bars, median **+2.11 R**. `0 = invalid` |
-| 39 | Long Target T1 Waypoint | price/∅ | First wall above entry |
-| 40 | Short Target T1 Waypoint | price/∅ | First wall below entry |
-| 41 | Zone RR Flags Pack | bitmask | Four booleans packed: **1 Long In Zone · 2 Short In Zone · 4 Long RR Valid · 8 Short RR Valid.** (Pre-decoded for the agent in prompt sections 1b / 2d-i — do not hand-decode) |
-| 42 | Signal Pack | bitmask | **1 strongBuySignalFinal · 2 strongSellSignalFinal · 4 NOT fadeZoneLong · 8 isTopping · 16 isBottoming · 32 pbFunnel** (`(60-bar high − close)/(close − 10-bar low) ≥ 3` and `extZ < 1.5`; quality tier of the R:R gate, not a standalone setup — true on ~36% of bars). ⚠️ **Bit 2 is INVERTED** — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate **IS** active. (Pre-decoded in prompt section 2d-i) |
-| 43 | Action Long Code | 0–21 | Row 8 left cell (§3.1) |
-| 44 | Action Short Code | 0–21 | Row 8 right cell (§3.1) |
-| 45 | Overextension Score | 0–100 | Composite stretch context: `50 + mean(Ext Z, Z Elasticity, Z Velocity) × 16.67`, clipped |
-| 46 | MFI Z Score | σ | Money Flow Index normalized against 252 bars |
-| 47 | MTF Long Aligned 0 To 3 | 0–3 | Monthly/Weekly/Daily uptrend count |
-| 48 | Bear Warning Mask | bitmask | Bear warnings in last 30 bars (§8.3) (Pre-decoded in section 1b) |
-| 49 | Reversal Pattern Mask | bitmask | Reversal patterns in last 30 bars (§8.3) (Pre-decoded in section 1b) |
-| 50 | Weak Level Mask | bitmask | Weak-level events in last 30 bars (§8.3) (Pre-decoded in section 1b) |
-| 51 | Bear Warning Age | 0–30/∅ | Bars since freshest bear warning |
-| 52 | Reversal Pattern Age | 0–30/∅ | Bars since freshest reversal pattern |
-| 53 | Weak Level Age | 0–30/∅ | Bars since freshest weak-level event |
-| 54 | Z Volume | σ | Volume z-score vs 20 bars — demand urgency |
-| 55 | Z RSI | σ | RSI z-score vs 14 bars, **sign-flipped** (lower RSI = higher value) |
-| 56 | Z Velocity | σ | Price velocity z-score |
-| 57 | Z Elasticity | σ | Price stretch z-score |
-| 58 | Trend Bars Up | int | `barssince(close < EMA20)`; returns 100 as a sentinel if price has never been below it |
-| 59 | Buy Sigma Evidence | σ | Raw bullish evidence (before prior) |
-| 60 | Sell Sigma Evidence | σ | Raw bearish evidence (before prior) |
-| 61 | Premove Pack | bitmask | **bits 0-2** Darvas state · **bits 3-5** quality ×20 · **bits 6-7** Squeeze Release Dir (−1/0/+1) · **256** RS Leader · **512** accelerating · **1024** market bullish · **2048** power breakout · **4096** A/D bullish · **8192** bull flag · **16384** impulse green · **32768** near 52-week high · **65536** breadth bullish · **131072/262144** presence/version |
-| 62 | Darvas Box Top | price/∅ | Pivot level; blank means null |
+| 15 | Context Stage Age Pack | int | `Stage + 8 × StageAgeBars`. Stage = `v % 8` (0 none/IPO, 1 basing, 2 advancing, **3 = 1-bar transition, NOT topping**, 4 declining, 5 recovery); age = `v // 8` |
+| 16 | RSI2 Entry Or Opening Ceiling | price/∅ | RSI2 research model: fill price while active; the max allowed next-open price while pending |
+| 17 | Long Entry Zone Bot | price | Zone lower bound (blank when no cluster survived — see note below) |
+| 18 | Long Entry Zone Top | price | Zone upper bound |
+| 19 | RSI2 Fixed Stop | price/∅ | RSI2 model stop while pending or active |
+| 20 | RSI2 Fixed Target | price/∅ | RSI2 model target while pending or active |
+| 21 | Short Entry | price | Suggested short entry (levels only; short side has no measured edge) |
+| 22 | Short Entry Zone Bot | price | Short zone lower bound |
+| 23 | Short Entry Zone Top | price | Short zone upper bound |
+| 24 | Short Stop Loss | price | Short stop |
+| 25 | Short Target | price/∅ | Short target (blank if behind entry) |
+| 26 | Long Rev Zone | 0–26 observed | Mean-reversion score (Connors) — §9.1. p99 = 10.5; 33% of bars are 0 |
+| 27 | Short Rev Zone | 0–23.5 observed | Same, short side. 38% zeros |
+| 28 | Ext Pct vs MA200 | % | `(close − MA 200 Slow)/MA 200 Slow × 100`, signed |
+| 29 | Exhaustion Gradient | 0–1 | Blended trend-maturity/overheat (§15 formula). p99 = 0.42 |
+| 30 | Ext Z Self Relative | σ | Extension vs own history — **252 bars daily, 52 weekly**. Fat-tailed; p99 only 2.4 |
+| 31 | Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz | 0–6 | Priority enum, see §15.6 |
+| 32 | Exp Move Pct 21b | % | `HV20 × √(21/252)` — already a percent |
+| 33 | Evidence Bias Pct Above 50 Bull | 0–100 | Evidence-spread direction, shrunk toward 50 by `rrHaircut`. **Called "Dir Prob" elsewhere in this document and in older scrapes.** Single-name context input only (§16.10); never a ranker |
+| 34 | RSI2 Exit Net R | R/∅ | Net R of the RSI2 model trade on its exit bar |
+| 35 | Long Entry | price | Suggested long entry level |
+| 36 | Long Stop Loss | price | Structure-first stop |
+| 37 | Long Target T1 Waypoint | price/∅ | First wall above entry |
+| 38 | Short Target T1 Waypoint | price/∅ | First wall below entry |
+| 39 | Zone RR Flags Pack | bitmask | **1 Long In Zone · 2 Short In Zone · 4 Long RR Valid · 8 Short RR Valid** |
+| 40 | Signal Pack | bitmask | **1 strongBuySignalFinal · 2 strongSellSignalFinal · 4 NOT fadeZoneLong · 8 isTopping · 16 isBottoming · 32 pbFunnel** (`(60-bar high − close)/(close − 10-bar low) ≥ 3` and `extZ < 1.5`; quality tier of the R:R gate, true on ~36% of bars). ⚠️ **Bit 2 is INVERTED** — `(v//4)%2 == 0` means the fade / 🚫 DO NOT CHASE gate **IS** active |
+| 41 | Context Action Pack | int | `longCode + 32 × shortCode + 1024 × EntryAtMarket` (Row 8 left/right cells, §3.1) |
+| 42 | Overextension Score | 0–100 | `50 + mean(Ext Z, Z Elasticity, Z Velocity) × 16.67`, clipped |
+| 43 | MFI Z Score | σ | Money Flow Index vs 252 bars |
+| 44 | MTF Long Aligned 0 To 3 | 0–3 | Monthly/Weekly/Daily uptrend count |
+| 45 | Context Pattern Pack | bitmask | `BearMask + 32 × ReversalMask + 131072 × WeakLevelMask` — last 30 bars (§8.3) |
+| 46 | Context Pattern Age Pack | int | `(bearAge+1) + 32 × (revAge+1) + 1024 × (weakAge+1)`; each field 0 = nothing in window, else bars-since + 1 (max 31) |
+| 47 | Z Volume | σ | Censored (floored to 0 on quiet uptrend bars) — shadow-recompute only; use `RVOL Vs Avg` for dry-up |
+| 48 | Z RSI | σ | RSI z-score, **sign-flipped** (lower RSI = higher value) |
+| 49 | Z Velocity | σ | Price velocity z-score |
+| 50 | Z Elasticity | σ | Price stretch z-score |
+| 51 | Trend Bars Up | int | `barssince(close < EMA20)`; 100 sentinel if never below |
+| 52 | Buy Sigma Evidence | σ | Raw bullish evidence (before prior) |
+| 53 | Sell Sigma Evidence | σ | Raw bearish evidence (before prior) |
+| 54 | Premove Pack | bitmask | **bits 0-2** Darvas state · **bits 3-5** quality ×20 · **bits 6-7** Squeeze Release Dir +1 (0 down, 1 none, 2 up) · **256** RS Leader · **512** accelerating · **1024** market bullish · **2048** power breakout · **4096** A/D bullish · **8192** bull flag · **16384** impulse green · **32768** near 52-week high · **65536** breadth bullish · **131072/262144** presence/version |
+| 55 | Darvas Box Top | price/∅ | Pivot level; blank means null |
+| 56 | Long Target | price/∅ | Target (blank if behind entry) |
+| 57 | RSI2 Events Pack | bitmask | **1 setup · 2 armed · 4 entry · 8 has exit fill · 16 recovery** · `exitCode × 32` (0 none, 1 stop, 2 target, 3 recovery, 4 time) · `skipCode × 256` (0 none, 1 invalid stop/target, 2 ceiling/risk exceeded, 3 already active) · `stateCode × 1024` (0 warmup, 1 idle, 2 pending, 3 active, 4 exit due, 5 not daily) |
+| 58 | RSI2 Exit Fill | price/∅ | Exit price of the RSI2 model trade |
+
+> The RSI2 fields (16, 19, 20, 34, 57, 58) are a research overlay, not part of the measured R:R lane. The
+> R:R lane reads `Long Entry` / `Long Stop Loss` / `Long Target` (35, 36, 56), `Zone RR Flags Pack`,
+> `Signal Pack`, `Ext Z Self Relative` and the derived `Long RR At Market`.
 
 
-### 8.4 Canonical Triage Reasons Reference (`data_window_filter.py`)
+### 8.1a Canonical Triage Reasons Reference (`data_window_filter.py`)
 To prevent models from hallucinating nonexistent exclusion names (e.g. `stage_5_not_actionable`), the deterministic engine evaluates strictly against the following canonical enumeration:
 - **`bad_data`**: Missing close, zero price, or corrupt data window row (`triage = CUT`).
 - **`toxic_geometry`**: Action code 18 (STOP_UNANCHORED_FAR / toxic geometry), inverted target/stop bounds, or missing stop (`triage = CUT`).
 - **`warmup_stage_0`**: Early stage 0 warmup without confirmed baseline (`triage = CUT`).
 - **`chasing_without_target`**: Price above zone without valid waypoint target (`triage = CUT`).
 - **`reversal_buy_lane`**: Code 20 Reversal in-zone with valid R:R (`triage = PASS`).
-- **`rr_at_market_lane` / `rr_at_market_lane_strong`**: At-market R:R >= 2.0 / >= 5.0 in-zone, fade gate OFF (`triage = PASS`).
+- **`rr_at_market_lane` / `rr_at_market_lane_strong`**: At-market R:R >= 2.0 / >= 3.0 in-zone, fade gate OFF (`triage = PASS`).
 - **`structure_only_no_fresh_long`**: Action code 17 (PARABOLIC), fade gate ACTIVE, or extension extreme (Ext Z >= 2.0); fresh long prohibited; context evaluated for options structure (`triage = WATCH`).
 - **`constructible_watch`**: Staging setup or in-zone with open trigger gap (`triage = WATCH`).
 - **`no_setup`**: No actionable signal or R:R criteria met (`triage = WATCH`).
 
 
-> **Field numbering vs CSV column position.** The **62** fields above occupy CSV columns **6–67**; the 17
-> companion fields (§8.2) occupy **68–84**. The OHLC columns are 1–5 (`time, open, high, low, close`)
+> **Field numbering vs CSV column position.** The **58** plots above are followed in the CSV by the 17
+> companion fields (§8.2); their exact column positions move whenever a plot is added or removed. The OHLC columns are 1–5 (`time, open, high, low, close`)
 > and **`Volume` is the LAST column, not the sixth** — **parse by header name, never by position.** The
 > column count moves whenever a plot is added or removed, and the script is pinned at the 64-plot ceiling,
 > so positional parsing will break.
@@ -770,25 +778,27 @@ To prevent models from hallucinating nonexistent exclusion names (e.g. `stage_5_
 > sat outside the box on the tolerant side. Treat it as plain containment; the asymmetry only matters
 > if zone widths ever shrink toward ATR scale.
 
-### 8.2 Companion R-VRVP (17 fields)
+### 8.2 Companion R-VRVP (15 data-window fields)
 
-| # | Field | Description |
+| # | Field (CSV header) | Description |
 |---|-------|-------------|
-| 63 | VP POC | Volume-profile Point of Control |
-| 64 | VP VAH | Value Area High |
-| 65 | VP VAL | Value Area Low |
-| 66 | VP HVN Above | Nearest High-Volume Node above (∅=none) |
-| 67 | VP HVN Below | Nearest High-Volume Node below |
-| 68 | RVOL Vs Avg | Relative volume vs 20-bar avg |
-| 69 | Energy IV30 Ann Pct | Synthetic IV30 |
-| 70 | Energy IV Rank Pct | IV percentile over 252 bars |
-| 71 | Energy IV HV Spread | IV − HV (drives energy state) |
-| 72 | Energy State | 0=Dormant, 1=Squeeze, 2=Warming, 3=Expansion |
-| 73 | HV20 Ann Pct | Realized volatility, annualized |
-| 74 | ADX 14 | Trend strength |
-| 75 | DMI DI Plus | +DI |
-| 76 | DMI DI Minus | −DI |
-| 77–79 | POC, VAH, VAL | Chart-line duplicates |
+| 59 | VP POC | Volume-profile Point of Control |
+| 60 | VP VAH | Value Area High |
+| 61 | VP VAL | Value Area Low |
+| 62 | VP HVN Above | Nearest High-Volume Node above (∅=none) |
+| 63 | VP HVN Below | Nearest High-Volume Node below |
+| 64 | RVOL Vs Avg | Relative volume vs 20-bar avg (uncensored) |
+| 65 | Energy IV30 Ann Pct | Synthetic IV30 (historical-vol based, not market IV) |
+| 66 | Energy IV Rank Pct | IV percentile over 252 bars |
+| 67 | Energy IV HV Spread | IV − HV (drives energy state) |
+| 68 | Energy State 3 Exp 2 Warm 1 Sqz 0 Dorm | 0=Dormant, 1=Squeeze, 2=Warming, 3=Expansion |
+| 69 | HV20 Ann Pct | Realized volatility, annualized |
+| 70 | ADX 14 | Trend strength |
+| 71 | DMI DI Plus | +DI |
+| 72 | DMI DI Minus | −DI |
+| 73 | HV20 Low Causal (Stagnation Flag) | 0/1 flag |
+
+The companion also draws POC/VAH/VAL as chart lines; read the `VP ` names and ignore the duplicates.
 
 > **Two different histories — verified on the corpus.** VP POC / VAH / VAL / HVN Above / HVN Below
 > populate on **exactly 1 bar per ticker** (median 1, max 1 — they are `barstate.islast`-gated), while
@@ -800,6 +810,8 @@ To prevent models from hallucinating nonexistent exclusion names (e.g. `stage_5_
 > rate across 2,407,275 bars.
 
 ### 8.3 Bitmask Legends
+
+The three masks below are packed in `Context Pattern Pack` as `BearMask + 32 × ReversalMask + 131072 × WeakLevelMask`; their ages are in `Context Pattern Age Pack` (§8.1).
 
 **Bear Warning Mask:**
 | Bit | Value | Label | Polarity |
@@ -1161,45 +1173,43 @@ The Weinstein MA is HMA(150) on the CHART timeframe:
 
 ### 13.1 Reading a Data Window (Step by Step)
 
-1. **Check Action Long Code** — actionable is **1, 2, 3, 4, 6, 20**. Everything else is passive.
-   Note 5 (LOW R:R) is NOT actionable despite sitting inside that numeric range: it means the score
-   and zone qualified but the EV gate failed. Codes are a status enum, never an ordinal score —
-   never compare them with `<` or `>`.
-2. **Check Entry At Market** — structural (0) or chasing the close? The one field that discriminates
-   within a code (§16.5). Prefer 0.
-3. **Check `Ext Pct vs MA200` FIRST among the risk fields** — it is the cleanest continuous signal in
-   the system and monotone to 60% (§16.7). 25–60% is significantly negative.
-4. **Long In Zone / RR Valid / Target** — assertions only. For codes 1, 2 and 19 they are always 1,
-   so they cannot filter anything (§3.3). For codes 3, 6 and 20 do NOT require them.
-5. **Check Regime** — Regime 2 (Terminal Climax) is the danger flag. Regime is 0–6 only; "Toxic" is
-   Action **code** 18, a different field. Remember Regime is a priority enum (§15.6): check Stage
-   separately, because a Stage-4 decline can report Regime 6.
-6. **Check Stage + Stage Age** — structural context + freshness
-7. **Read Exp Move Pct 21b** — size the expected magnitude
-8. **Read Buy/Sell Sigma Evidence** — raw directional evidence (before priors)
-9. **Read Rev Zone scores** — any mean-reversion setup forming?
-10. **Read masks + ages** — recent pattern context
+1. **Decode `Context Action Pack`** → `Action Long Code = v % 32`, `Action Short Code = (v//32) % 32`,
+   `Entry At Market = v // 1024`. Active long codes are `5, 8, 10–13, 15–18, 20`; codes `1–4, 6, 7, 9, 14, 19, 21`
+   are retired and appear only in old scrapes. Codes are a status enum, never an ordinal score — never compare
+   them with `<` or `>`. Only code 20 (REVERSAL BUY) is an action code of its own; the main long lane is the
+   R:R gate in step 2, which is not a code.
+2. **R:R gate (the one measured long edge):** `Zone RR Flags Pack` bit 0 (Long In Zone) = 1, derived
+   `Long RR At Market ≥ 2.0` (≥ 3.0 = strong tier), fade gate off (`Signal Pack` bit 2 = 1, inverted), and a
+   stop at least 0.7 ATR from entry. `Signal Pack` bit 5 (PB funnel) = 1 is the preferred quality tier.
+3. **Check `Ext Z Self Relative`** — `≥ 2` is the measured fade/extension flag (−0.038R). `Ext Pct vs MA200`
+   is absolute context only; it does not predict underperformance at any cut.
+4. **Check Regime** — Regime 2 (Terminal Climax) is the danger flag. Regime is 0–6 only; "Toxic" is Action
+   **code** 18, a different field. Regime is a priority enum (§15.6): check Stage separately.
+5. **Check Stage + Stage Age** (decode `Context Stage Age Pack`) — a prior, never a trigger. Stage 3 is a
+   1-bar transition, not a top.
+6. **Read Exp Move Pct 21b** — size the expected magnitude.
+7. **Read Buy/Sell Sigma Evidence** — raw directional evidence (before priors); context only.
+8. **Read Rev Zone scores** — a mean-reversion setup forming (code 20 needs `Long Rev Zone ≥ 10`).
+9. **Read masks + ages** (`Context Pattern Pack` / `Context Pattern Age Pack`) — descriptive context only.
 
 ### 13.2 Promotion Decision (Filter → Agent)
 
 **PASS (promote for research):**
-- Action Long Code 1 or 2 — do **not** also test In Zone / RR Valid / Target, they are implied (§3.3)
-- Prefer `Entry At Market = 0`; it is the only clause that discriminates (§16.5)
-- Or: Action Long Code = 20 (REVERSAL BUY) — and require **rev score ≥ 10**, where the edge lives (§16.4)
+- In zone, `Long RR At Market ≥ 2.0`, fade off, stop ≥ 0.7 ATR, PB funnel on, codes 17/18 off, `Ext Z < 2.5`.
+- Or: Action Long Code = 20 (REVERSAL BUY) with `Long Rev Zone ≥ 10` and R:R ≥ 2. Counter-trend, secondary lane.
+- Missing `Long Target`, `Long Stop Loss`, `Signal Pack` or `Zone RR Flags Pack` → not PASS (fail closed).
 
 **WATCH (stalk — limit order, no deep research):**
-- Zone touched + chased + Action 8 or 19
+- Constructible setup: in zone with a trigger gap, or price above the zone with a valid target.
 
 **CUT (skip):**
-- Action 18 (TOXIC) — always, despite its misleading unfiltered mean (§16.1)
-- Action 12 STRETCHED, 16 BLOW-OFF, 11 EXTENDED, 19 SCREEN BLOCK — the significantly negative states
-- `Ext Pct vs MA200` in 25–60% (−0.71% SIG) — the most robust exclusion available
-- PRIME or ACTION while Stage = 5 Recovery (−0.52% / −0.69% SIG)
-- Long Target = ∅ · Regime 2 with no catalyst override
+- Action 18 (TOXIC) — always. Action 17 (PARABOLIC) — no fresh long.
+- Action 11 EXTENDED, 12 STRETCHED, 16 BLOW-OFF/CAPITULATION — the measured fade set.
+- `Long Target` = ∅ · Regime 2 with no catalyst override · bad/zero price.
+- Any short entry: the short side has no measured edge (levels only).
 
-> **Calibrate expectations.** PASS is a *constructibility* gate, not an edge: it measures −0.09% ex21
-> (§16.9). Its purpose is to hand research a small, well-formed candidate set. The exclusion list above
-> is where the measurable value is — every item on it is significantly negative.
+> **Calibrate expectations.** The R:R gate is a payoff signal, not an accuracy signal: win rate is ~25–35% and
+> roughly two thirds of setups stop out. Size small and fixed-fraction; never judge it by hit rate.
 
 ### 13.3 Trade Construction
 
@@ -1209,8 +1219,8 @@ From a promoted Data Window:
 - **Target:** Long Target
 - **T1 (partial trim):** Long Target T1 Waypoint (if different from target)
 - **Risk:** (Entry − Stop) / Entry → position size from account risk tolerance
-- **Reward:Risk:** RR To Target (already computed)
-- **EV:** Reconstruct from Win Prob × R:R − (1 − Win Prob)
+- **Reward:Risk:** derived `Long RR At Market` (the ratio at the current close, not at the zone entry)
+- **EV:** do not rebuild from Evidence Bias; use the measured lane figures (§17)
 
 ### 13.4 What the Agent Adds (Not in the Indicator)
 
@@ -1317,7 +1327,7 @@ which on the long lane are exactly the bullish states. There is no short-side eq
 ### 15.5 R:R Gate
 ```
 p = clamp(0.50 + (dirProb/100 - 0.50) × 0.5, 0.50, 0.95)
-minRR = max(0.70, (1-p)/p × 1.3)
+minRR = max(2.00, (1-p)/p × 1.3)
 rrValid = rr >= minRR
 ```
 
@@ -1789,7 +1799,7 @@ structures; it is not a recommendation and nothing here has been measured on **P
 | state on the chart | what it means | structures the state supports | structures it argues against |
 |---|---|---|---|
 | `⚖️ R:R ≥2@mkt` in zone, no fade | the one measured directional long (+0.116R) | long shares / long call / bull put spread below the zone | selling calls into it — you are capping the one edge you have |
-| `⚖️ R:R ≥5@mkt` (teal) | strongest tier (+0.252R, win 23%) | long, sized for a 23% hit rate; leave upside uncapped | any short-call structure |
+| `⚖️ R:R ≥3@mkt` (teal) | strongest tier (+0.13R post-COVID, win ~25%) | long, sized for a ~25% hit rate; leave upside uncapped | any short-call structure |
 | **`Ext Z > 2` / `🚫 DO NOT CHASE`** | extension, −0.038R for buying, and P(UP touch) 8.8% at 1.5×EM | **covered call / call credit spread above 1.25-1.5×EM**; short strangle if IV rank also high | fresh long entry |
 | **`IV rank > 80`** (Row 9) | premium rich; P(NEITHER) 71.8% at 1.5×EM | **any premium sale, strike scaled to EM** | debit structures — you are buying the expensive side |
 | **`IV rank > 80` + chased/missed / R:R < 2.0** | rich premium on dead directional geometry | **call credit spread / covered call pinned to 1.25×EM & call wall** | directional longs / naked calls |
@@ -1880,7 +1890,7 @@ blue-sky synthesis · the TOXIC sentinel · every dashboard row index and cell.
 
 | Claim | Result |
 |---|---|
-| Export schema and column order | ⚠️ **STALE — was 57 + 17. Re-derived 2026-08-13: 62 + 17** (12 chart plots + 50 dedicated), verified field-by-field against two live Data Windows (AMZN, HOOD) in exact order. See §8.1 |
+| Export schema and column order | Re-derived Oct 2026 from the Pine plot titles: **58 main plots (12 chart + 46 dedicated) + 15 companion**. Action codes, `Long RR At Market` and Stage are derived by the loader from `Context Action Pack` / `Context Stage Age Pack` / Long Stop+Target. See §8.1 |
 | `Long RR Valid` from the documented EV gate | **100.000%** (1,466,095 bars) |
 | Stalk Queue reconstruction | **100.0000%** (279,883 bars, 24,764 positives) |
 | Zone Touched reconstruction | **100%** |

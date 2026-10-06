@@ -187,15 +187,16 @@ class AutoTriageDaemon(threading.Thread):
                 cur = conn.cursor()
                 query = """
                     SELECT * FROM alerts
-                    WHERE (llm_decision IS NULL OR llm_decision = ''
+                    WHERE date = ?
+                      AND (llm_decision IS NULL OR llm_decision = ''
                            OR llm_decision = '```' OR llm_decision = '...'
                            OR llm_decision = 'AI EVALUATED')
                       AND COALESCE(status, '') != 'FAILED'
                       AND COALESCE(routing_stage, 'RECORDED') != 'ARCHIVED'
-                    ORDER BY date DESC, timestamp DESC
+                    ORDER BY timestamp DESC
                     LIMIT ?
                 """
-                cur.execute(query, (self.batch_size,))
+                cur.execute(query, (today, self.batch_size))
                 rows = cur.fetchall()
 
             if not rows:

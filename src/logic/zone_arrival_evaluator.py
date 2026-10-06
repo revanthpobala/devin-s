@@ -221,21 +221,29 @@ def evaluate_target_on_zone_arrival(
             else:
                 gate_in = {
                     "atr14": watch_target.get("atr_at_signal") or watch_target.get("atr14"),
-                    "fade_long": watch_target.get("fade") or watch_target.get("fade_long"),
-                    "long_in_zone": 1.0,
+                    "fade_long": watch_target.get("fade") if watch_target.get("fade") is not None else watch_target.get("fade_long"),
+                    "long_in_zone": 1.0 if (entry_low <= spot_price <= entry_high) else 0.0,
                     "signal_pack": watch_target.get("signal_pack"),
-                    "action_long": watch_target.get("action_long") or (20.0 if watch_target.get("setup_lane") in ("CODE20", "REVERSAL") else None),
-                    "ext_z_self": watch_target.get("ext_z") or watch_target.get("ext_z_self"),
+                    "action_long": watch_target.get("action_long"),
+                    "ext_z_self": watch_target.get("ext_z") if watch_target.get("ext_z") is not None else watch_target.get("ext_z_self"),
                     "price": spot_price,
                     "long_rr_at_market": live_rr,
                     "long_stop_loss": stop,
                 }
             gate_in["price"] = spot_price
             gate_in["long_rr_at_market"] = live_rr
-            gate_in["long_in_zone"] = 1.0
+            gate_in["long_in_zone"] = 1.0 if (entry_low <= spot_price <= entry_high) else 0.0
             gate_in["long_stop_loss"] = stop
 
-            act_ok, act_reasons = check_is_actionable(gate_in)
+            is_no_entry = str(watch_target.get("entry_type") or "").upper() == "NO_ENTRY"
+            is_gate_rejected = bool(watch_target.get("level_gate_rejected"))
+            act_ok, act_reasons = check_is_actionable(gate_in, {"side": side.lower(), "entry": spot_price})
+            if is_no_entry:
+                act_ok = False
+                act_reasons.append("entry_type is NO_ENTRY")
+            if is_gate_rejected:
+                act_ok = False
+                act_reasons.append("level gate was rejected at triage")
             if act_ok:
                 verdict = "ACTIONABLE_BUY"
                 verdict_label = "🟢 BUY SHARES NOW"

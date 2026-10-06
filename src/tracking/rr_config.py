@@ -53,29 +53,33 @@ STOP_ATR_MIN = 0.7
 # higher expectancy per trade (0.072R -> 0.151R) at a materially worse hit rate (34% -> 26%).
 # That trade-off is the whole decision, so it is stated rather than left to be discovered.
 PRESETS: Dict[str, Dict[str, Any]] = {
-    "1_1": {
+    "1_0": {
         "label": "1:1",
         "rr_market_min": 1.0,
-        "rr_hi_rr": 2.0,
-        "blurb": "permissive · research mode, expect noise",
+        "rr_hi_rr": 3.0,
+        "blurb": "permissive · research mode (negative prior -0.017R)",
+        "below_measured_floor": True,
     },
-    "1_2": {
+    "1_25": {
+        "label": "1:1.25",
+        "rr_market_min": 1.25,
+        "rr_hi_rr": 3.0,
+        "blurb": "permissive · below measured floor (-0.013R)",
+        "below_measured_floor": True,
+    },
+    "1_5": {
+        "label": "1:1.5",
+        "rr_market_min": 1.5,
+        "rr_hi_rr": 3.0,
+        "blurb": "research mode · below measured floor (-0.013R)",
+        "below_measured_floor": True,
+    },
+    "2_0": {
         "label": "1:2",
         "rr_market_min": 2.0,
         "rr_hi_rr": 3.0,
-        "blurb": "measured default · PB 34% win / +0.07R",
-    },
-    "1_3": {
-        "label": "1:3",
-        "rr_market_min": 3.0,
-        "rr_hi_rr": 3.0,
-        "blurb": "selective · PB 26% win / +0.15R",
-    },
-    "1_5": {
-        "label": "1:5",
-        "rr_market_min": 5.0,
-        "rr_hi_rr": 5.0,
-        "blurb": "outliers only · PB rare, expect few rows",
+        "blurb": "measured default · PB 34% win / +0.089R edge",
+        "below_measured_floor": False,
     },
 }
 
@@ -267,6 +271,7 @@ def as_ui_payload() -> Dict[str, Any]:
                 "blurb": p["blurb"],
                 "rr_market_min": p["rr_market_min"],
                 "rr_hi_rr": p["rr_hi_rr"],
+                "below_measured_floor": p.get("below_measured_floor", False),
                 "active": active_preset() == name,
             }
             for name, p in PRESETS.items()

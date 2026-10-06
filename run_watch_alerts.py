@@ -242,6 +242,15 @@ def sync_reports_to_watchlist(
                                 })
                                 if sid and sid > 0:
                                     data["suggestion_id"] = sid
+
+                                data["signal_pack"] = sig_pack
+                                data["fade"] = fade_val
+                                data["ext_z"] = ext_z_val
+                                data["action_long"] = gate_in.get("action_long")
+                                data["atr_at_signal"] = atr_at_sig
+                                data["rr_at_market_at_signal"] = rr_at_sig
+                                data["zone_rr_flags"] = dw_data.get("Zone RR Flags Pack") or dw_data.get("zone_rr_flags")
+                                data["datawindow"] = gate_in
                 except Exception:
                     pass
 

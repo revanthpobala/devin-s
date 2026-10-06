@@ -193,6 +193,12 @@ def get_today():
                             w.status,
                             w.distance_to_entry_pct as dist,
                             w.last_price,
+                            w.action_long as w_action_long,
+                            w.signal_pack as w_signal_pack,
+                            w.fade as w_fade,
+                            w.ext_z as w_ext_z,
+                            w.atr_at_signal as w_atr_at_signal,
+                            w.rr_at_market_at_signal as w_rr_at_market_at_signal,
                             ROW_NUMBER() OVER (
                                 PARTITION BY LOWER(s.ticker)
                                 ORDER BY s.id DESC
@@ -313,7 +319,7 @@ def get_today():
                     r["room_to_stop"] = round(room_to_stop, 3)
 
                     # Stop width in ATR if available
-                    atr_at_signal = r.get("atr_at_signal")
+                    atr_at_signal = r.get("atr_at_signal") if r.get("atr_at_signal") is not None else r.get("w_atr_at_signal")
                     if atr_at_signal and atr_at_signal > 0 and entry_h and stop:
                         r["stop_width_atr"] = round(abs(entry_h - stop) / atr_at_signal, 2)
                     else:
@@ -327,7 +333,7 @@ def get_today():
                     # a spot (7 of 177 rows today), so when it is absent we compute the same ratio
                     # from the live print and the persisted stop/target, and say which one it is.
                     # A row with neither is genuinely unmeasured and must not be ranked.
-                    rr_at_signal = r.get("rr_at_market_at_signal")
+                    rr_at_signal = r.get("rr_at_market_at_signal") if r.get("rr_at_market_at_signal") is not None else r.get("w_rr_at_market_at_signal")
                     try:
                         rr_at_signal = float(rr_at_signal) if rr_at_signal else None
                     except (TypeError, ValueError):
@@ -350,19 +356,24 @@ def get_today():
                     near = dist is not None and abs(float(dist)) <= 1.5
 
                     # Single actionable gate using real stored fields only
+                    min_rr_floor = rr_config.min_rr()
                     from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
                     in_zone_flag = 1.0 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0.0
                     entry_px = r.get("entry_high") or last_px or r.get("entry_low")
+                    sig_pack_val = r.get("signal_pack") if r.get("signal_pack") is not None else r.get("w_signal_pack")
+                    fade_val = r.get("fade") if r.get("fade") is not None else r.get("w_fade")
+                    action_long_val = r.get("action_long") if r.get("action_long") is not None else (r.get("w_action_long") if r.get("w_action_long") is not None else (r.get("action_code") if r.get("action_code") is not None else None))
+                    ext_z_val = r.get("ext_z") if r.get("ext_z") is not None else r.get("w_ext_z")
                     dw_dict = {
                         "long_in_zone": in_zone_flag,
                         "long_rr_at_market": rr_at_market,
                         "long_stop_loss": stop,
                         "atr14": float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else None,
                         "price": last_px or r.get("price"),
-                        "signal_pack": float(r["signal_pack"]) if r.get("signal_pack") is not None else None,
-                        "fade_long": (0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else None,
-                        "action_long": float(r["action_code"]) if r.get("action_code") is not None else (20.0 if r.get("setup_lane") == "CODE20" else None),
-                        "ext_z_self": float(r["ext_z"]) if r.get("ext_z") is not None else None,
+                        "signal_pack": float(sig_pack_val) if sig_pack_val is not None else None,
+                        "fade_long": float(fade_val) if fade_val is not None else ((0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else None),
+                        "action_long": float(action_long_val) if action_long_val is not None else None,
+                        "ext_z_self": float(ext_z_val) if ext_z_val is not None else None,
                     }
                     gate_in = gate_inputs_from_datawindow(dw_dict)
                     is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": entry_px})

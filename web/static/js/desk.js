@@ -719,8 +719,8 @@ window.AppDesk = {
                       <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">
                         ${vehicleIcon} EXECUTION BLUEPRINT
                       </div>
-                      <span class="badge" style="border-color:var(--green); color:var(--green); font-size:9.5px; font-weight:800;">
-                        ${rrTxt}
+                      <span class="badge" style="border-color:${(opp.live_rr && opp.live_rr < 2.0) ? 'var(--amber)' : 'var(--green)'}; color:${(opp.live_rr && opp.live_rr < 2.0) ? 'var(--amber)' : 'var(--green)'}; font-size:9.5px; font-weight:800;">
+                        ${rrTxt}${(opp.live_rr && opp.live_rr > 0 && opp.live_rr < 2.0) ? ' · below measured floor' : ''}
                       </span>
                     </div>
                     <div style="font-weight:700; color:var(--text-main);">${opp.vehicle_label}</div>
