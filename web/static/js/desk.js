@@ -626,6 +626,26 @@ window.AppDesk = {
             </div>
           </div>
 
+          <!-- Closest to Gate Strip (Task d7) -->
+          ${(todayData && todayData.closest_to_gate && todayData.closest_to_gate.length > 0) ? `
+          <div style="margin-bottom:14px; background:rgba(245,158,11,0.06); border:1px solid rgba(245,158,11,0.25); border-radius:8px; padding:10px 14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <div style="font-size:11.5px; font-weight:800; color:var(--amber);">
+                ⏳ CLOSEST TO GATE (${todayData.closest_to_gate.length} Setups Missing Exactly 1 Condition)
+              </div>
+              <span style="font-size:10.5px; color:var(--text-muted);">One condition away from becoming actionable</span>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              ${todayData.closest_to_gate.map(c => `
+                <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:11px; display:flex; align-items:center; gap:6px;">
+                  <b style="color:var(--text-main); font-family:var(--font-mono);">${c.ticker}</b>
+                  ${c.wait_for ? `<span style="color:var(--cyan); font-family:var(--font-mono); font-size:10px;">(${c.wait_for})</span>` : ''}
+                  <span style="color:var(--amber); font-size:10px;">⚠️ Missing: ${c.missing_condition}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>` : ''}
+
           <!-- Opportunities Grid -->
           <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
         `;
@@ -731,6 +751,12 @@ window.AppDesk = {
                   <div style="margin-top:10px; font-size:11px; color:var(--text-main); line-height:1.4; background:var(--bg-surface); border-radius:8px; padding:8px 10px; border:1px solid var(--border);">
                     <div style="font-size:9.5px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Institutional PM Directive / Thesis:</div>
                     ${opp.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
+                  </div>` : ''}
+
+                  <!-- Stalk Limit Price Target (Task d6) -->
+                  ${opp.wait_for ? `
+                  <div style="margin-top:8px; font-size:11px; color:var(--cyan); background:rgba(6,182,212,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(6,182,212,0.25); font-family:var(--font-mono); font-weight:700;">
+                    🎯 <b>Stalk Target Limit:</b> ${opp.wait_for} <span style="font-weight:400; font-size:10px; color:var(--text-muted);">(to achieve measured R:R floor)</span>
                   </div>` : ''}
 
                   <!-- Gate Reasons / Blocker -->

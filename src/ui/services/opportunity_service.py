@@ -363,15 +363,16 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         side = s["side"]
         d_str = s.get("report_date") or today_mt_str
 
-        # Check for Data Window and evaluate gate
+        # 1. Comprehensive Data Window Search across triage, raw, _DEEP_RESEARCH, and force dirs
         dw = None
         if s.get("stage") != "SCREENER_COIL":
-            # Check raw / triage / reports dirs for datawindow
-            dw_cands = [
-                config.BASE_DIR / "data" / "raw" / d_str / sym / f"{sym}_datawindow.json",
-                config.BASE_DIR / "data" / "triage" / d_str / sym / f"{sym}_datawindow.json",
-                config.BASE_DIR / "data" / "raw" / d_str / f"{sym}_datawindow.json",
-            ]
+            dw_cands = (
+                list((config.BASE_DIR / "data" / "triage" / str(d_str)).glob(f"**/{sym}*datawindow*.json"))
+                + list((config.BASE_DIR / "data" / "raw" / str(d_str) / sym).glob(f"*datawindow*.json"))
+                + list((config.BASE_DIR / "data" / "raw" / str(d_str)).glob(f"{sym}*datawindow*.json"))
+                + list((config.BASE_DIR / "data" / "triage").glob(f"**/{sym}*datawindow*.json"))
+                + list((config.BASE_DIR / "data" / "raw").glob(f"**/{sym}/*datawindow*.json"))
+            )
             for dwp in dw_cands:
                 if dwp.exists():
                     try:
@@ -380,20 +381,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                     except Exception:
                         pass
 
-        if dw:
-            gate_in = gate_inputs_from_datawindow(dw)
-            gate_in["price"] = spot if spot > 0 else gate_in.get("price")
-            is_act, fails = check_is_actionable(gate_in, {"side": side.lower(), "entry": e_high or spot, "stop": stop, "t1": t1})
-            s["is_actionable"] = is_act
-            s["gate_reasons"] = fails
-        elif s.get("stage") == "SCREENER_COIL":
-            s["is_actionable"] = False
-            s["gate_reasons"] = ["Awaiting Data Window measurement"]
-        else:
-            s["is_actionable"] = False
-            s["gate_reasons"] = s.get("gate_reasons") or ["No Data Window available to evaluate gate"]
-
-        # Calculate distance and in-zone status
+        # 2. Calculate distance and in-zone status
         in_zone = False
         dist_pct = 0.0
         if spot > 0:
@@ -419,7 +407,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                     else:
                         dist_pct = round(((spot - e_high) / e_high) * 100.0, 2)
 
-        # Check terminal conditions
+        # 3. Check terminal conditions
         is_target_hit = False
         is_stop_breached = False
         if spot > 0:
@@ -440,13 +428,12 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         s["in_zone"] = in_zone
         s["dist_pct"] = dist_pct
 
-        # Dynamic Live R:R (Guard against stop hugging spot artifact R:R)
+        # 4. Dynamic Live R:R (Guard against stop hugging spot artifact R:R)
         live_rr = 0.0
         if is_target_hit or is_stop_breached:
             live_rr = 0.0
         elif spot > 0 and stop is not None and stop > 0 and t1 is not None and t1 > 0:
             risk = (spot - stop) if side == "LONG" else (stop - spot)
-            # Require meaningful risk distance (> 0.5% of spot) to prevent division-by-noise artifact
             if risk > (0.005 * spot):
                 if side == "LONG" and spot > stop and t1 > spot:
                     live_rr = round((t1 - spot) / risk, 2)
@@ -458,6 +445,52 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             elif side == "SHORT" and stop > e_low:
                 live_rr = round((e_low - t1) / (stop - e_low), 2)
         s["live_rr"] = live_rr
+
+        # 5. Calculate exact Limit Price to reach active R:R floor (Task d6)
+        from src.tracking import rr_config
+        active_floor = rr_config.min_rr()
+        limit_price = None
+        if stop is not None and stop > 0 and t1 is not None and t1 > stop:
+            calc_limit = round((t1 + active_floor * stop) / (1.0 + active_floor), 2)
+            atr_val = float(s.get("atr") or s.get("atr14") or 1.0)
+            if dw:
+                atr_raw = dw.get("atr14") or dw.get("rsi2_atr14") or dw.get("RSI2 ATR14")
+                if atr_raw is not None and str(atr_raw).replace(".", "", 1).isdigit():
+                    atr_val = float(atr_raw)
+            if (calc_limit - stop) / max(0.01, atr_val) >= 0.7:
+                limit_price = calc_limit
+                s["limit_price"] = limit_price
+                s["wait_for"] = f"wait for ${limit_price:.2f}"
+
+        # 6. Evaluate Canonical Gate with Live Inputs
+        if dw:
+            gate_in = gate_inputs_from_datawindow(dw)
+            gate_in["price"] = spot if spot > 0 else gate_in.get("price")
+            gate_in["long_in_zone"] = 1.0 if in_zone else (0.0 if spot > 0 else gate_in.get("long_in_zone"))
+            if live_rr > 0:
+                gate_in["long_rr_at_market"] = live_rr
+            if stop and stop > 0:
+                gate_in["long_stop_loss"] = stop
+
+            is_act, fails = check_is_actionable(
+                gate_in,
+                {
+                    "side": side.lower(),
+                    "entry": e_high or spot,
+                    "stop": stop,
+                    "t1": t1,
+                    "rr": live_rr if live_rr > 0 else None,
+                    "in_zone": 1.0 if in_zone else 0.0,
+                }
+            )
+            s["is_actionable"] = is_act
+            s["gate_reasons"] = fails
+        elif s.get("stage") == "SCREENER_COIL":
+            s["is_actionable"] = False
+            s["gate_reasons"] = ["Awaiting Data Window measurement"]
+        else:
+            s["is_actionable"] = False
+            s["gate_reasons"] = s.get("gate_reasons") or ["No Data Window available to evaluate gate"]
 
         # Opportunity State classification
         if is_target_hit:

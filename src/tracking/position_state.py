@@ -87,11 +87,25 @@ def _save_state(state: dict) -> None:
     tmp = POSITIONS_FILE.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, default=str)
-    try:
-        tmp.replace(POSITIONS_FILE)  # atomic on Windows + POSIX
-    except OSError:
-        tmp.unlink()
-        raise
+    
+    for attempt in range(5):
+        try:
+            tmp.replace(POSITIONS_FILE)  # atomic on Windows + POSIX
+            return
+        except (PermissionError, OSError):
+            if attempt < 4:
+                time.sleep(0.05)
+            else:
+                try:
+                    with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(state, f, indent=2, default=str)
+                    if tmp.exists():
+                        tmp.unlink(missing_ok=True)
+                    return
+                except Exception:
+                    if tmp.exists():
+                        tmp.unlink(missing_ok=True)
+                    raise
 
 
 def open_position(

@@ -182,7 +182,10 @@ def get_system_status():
     watch_count = 0
     try:
         with get_db() as conn:
-            watch_count = conn.cursor().execute("SELECT COUNT(*) FROM watch_targets").fetchone()[0]
+            watch_count = conn.cursor().execute("""
+                SELECT COUNT(*) FROM watch_targets 
+                WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'WATCH', 'COILED_TRIGGER')
+            """).fetchone()[0]
     except Exception:
         pass
 

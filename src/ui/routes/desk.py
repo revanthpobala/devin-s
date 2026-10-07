@@ -405,6 +405,16 @@ def get_today():
                     # Sorting on raw RR promotes exactly these rows. Never sort on it.
                     r["sort_rr"] = -1.0 if r["stop_tight"] else (rr_at_market or -1.0)
 
+                    # Calculate wait-for limit price if RR < min_rr_floor (Task d6)
+                    r["limit_price"] = None
+                    r["wait_for"] = None
+                    if stop and target and target > stop and (rr_at_market is None or rr_at_market < min_rr_floor):
+                        calc_limit = round((target + min_rr_floor * stop) / (1.0 + min_rr_floor), 2)
+                        atr_chk = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else 1.0
+                        if (calc_limit - stop) / max(0.01, atr_chk) >= 0.7:
+                            r["limit_price"] = calc_limit
+                            r["wait_for"] = f"wait for ${calc_limit:.2f}"
+
                     live_rr = None
                     flag = None
                     if last_px and last_px > stop and target and target > last_px:
