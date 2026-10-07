@@ -50,7 +50,7 @@ router = APIRouter(tags=["research"])
 _REPORT_BUNDLE_CACHE: Dict[str, tuple[float, dict]] = {}
 _REPORT_CACHE_TTL = 300  # 5 minutes TTL
 
-TICKER_REGEX = re.compile(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$")
+TICKER_REGEX = re.compile(r"^[A-Z0-9]{1,6}(?:[./-][A-Z0-9]{1,2})?$")
 
 
 def validate_ticker(ticker: str) -> str:
@@ -772,49 +772,72 @@ def get_report_bundle(date: str, ticker: str):
     rep_root = config.BASE_DIR / "reports"
     triage_root = config.BASE_DIR / "data" / "triage"
 
-    report_dates_set = set()
+    md_dates_set = set()
+    other_dates_set = set()
     scrape_dates_set = set()
 
+    # 1. Reports root: check if any markdown file for ticker_u exists in reports/{date}
     if rep_root.exists():
         for d in rep_root.iterdir():
             if d.is_dir() and d.name.startswith("202"):
-                if (d / f"{ticker_u}_arbitration.md").exists() or (d / f"{ticker_u}_summary.md").exists() or (d / f"{ticker_u}_independent.md").exists():
-                    report_dates_set.add(d.name)
+                if (
+                    (d / f"{ticker_u}_arbitration.md").exists()
+                    or (d / f"{ticker_u}_summary.md").exists()
+                    or (d / f"{ticker_u}_independent.md").exists()
+                    or (d / f"{ticker_u}_gemini_dr.md").exists()
+                    or (d / f"{ticker_u}_thesis.md").exists()
+                ):
+                    md_dates_set.add(d.name)
+                else:
+                    for f in d.iterdir():
+                        if f.is_file() and f.suffix.lower() == ".md" and f.name.upper().startswith(ticker_u):
+                            md_dates_set.add(d.name)
+                            break
 
+    # 2. Raw root: check if ticker_u folder has markdown files or datawindow
     if raw_root.exists():
         for d in raw_root.iterdir():
             if d.is_dir() and d.name.startswith("202"):
                 sym_dir = d / ticker_u
                 if sym_dir.exists():
-                    if (
-                        (sym_dir / f"{ticker_u}_arbitration.md").exists()
-                        or (sym_dir / f"{ticker_u}_gemini_thesis.md").exists()
-                        or (sym_dir / f"{ticker_u}_thesis.json").exists()
-                        or (sym_dir / f"{ticker_u}_triage.json").exists()
-                        or (sym_dir / f"{ticker_u}_watch_levels.json").exists()
-                    ):
-                        report_dates_set.add(d.name)
-                    elif (sym_dir / f"{ticker_u}_datawindow.json").exists():
-                        scrape_dates_set.add(d.name)
+                    has_md = False
+                    for f in sym_dir.iterdir():
+                        if f.is_file() and f.suffix.lower() == ".md":
+                            md_dates_set.add(d.name)
+                            has_md = True
+                            break
+                    if not has_md:
+                        if (sym_dir / f"{ticker_u}_datawindow.json").exists() or (sym_dir / f"{ticker_u}_datawindow.csv").exists():
+                            scrape_dates_set.add(d.name)
+                        if (
+                            (sym_dir / f"{ticker_u}_thesis.json").exists()
+                            or (sym_dir / f"{ticker_u}_triage.json").exists()
+                            or (sym_dir / f"{ticker_u}_watch_levels.json").exists()
+                        ):
+                            other_dates_set.add(d.name)
 
                 if (d / f"{ticker_u}_triage.json").exists():
-                    report_dates_set.add(d.name)
+                    other_dates_set.add(d.name)
 
                 if (d / "consolidate" / "consolidated_results.json").exists():
                     try:
                         with open(d / "consolidate" / "consolidated_results.json", "r", encoding="utf-8") as cr_f:
                             cr_data = json.load(cr_f)
                             if isinstance(cr_data, dict) and ticker_u in cr_data:
-                                report_dates_set.add(d.name)
+                                other_dates_set.add(d.name)
                     except Exception:
                         pass
 
+    # 3. Triage root
     if triage_root.exists():
         for d in triage_root.iterdir():
             if d.is_dir() and d.name.startswith("202"):
-                if list(d.glob(f"**/{ticker_u}_thesis.json")) or list(d.glob(f"**/{ticker_u}_triage.json")) or list(d.glob(f"**/{ticker_u}_gemini_thesis.md")):
-                    report_dates_set.add(d.name)
+                if list(d.glob(f"**/{ticker_u}*.md")):
+                    md_dates_set.add(d.name)
+                elif list(d.glob(f"**/{ticker_u}_thesis.json")) or list(d.glob(f"**/{ticker_u}_triage.json")):
+                    other_dates_set.add(d.name)
 
+    # 4. Alert & suggestions DB
     try:
         from src.tracking.alert_db import _get_connection as _get_alert_conn, _db_lock as _alert_db_lock
         with _alert_db_lock:
@@ -825,14 +848,14 @@ def get_report_bundle(date: str, ticker: str):
                 ).fetchall()
                 for r in rows:
                     if r["date"] and str(r["date"]).startswith("202"):
-                        report_dates_set.add(str(r["date"])[:10])
+                        other_dates_set.add(str(r["date"])[:10])
                 s_rows = acon.cursor().execute(
                     "SELECT DISTINCT date FROM suggestions WHERE (UPPER(ticker) = ? OR LOWER(ticker) = ?) ORDER BY date DESC",
                     (ticker_u, ticker_u.lower())
                 ).fetchall()
                 for r in s_rows:
                     if r["date"] and str(r["date"]).startswith("202"):
-                        report_dates_set.add(str(r["date"])[:10])
+                        other_dates_set.add(str(r["date"])[:10])
     except Exception as e:
         logger.debug(f"Could not load alert dates for {ticker_u}: {e}")
 
@@ -844,27 +867,27 @@ def get_report_bundle(date: str, ticker: str):
             ).fetchall()
             for r in rows:
                 if r["date"] and r["date"].startswith("202"):
-                    report_dates_set.add(r["date"][:10])
+                    other_dates_set.add(r["date"][:10])
     except Exception:
         pass
 
-    all_sorted_dates = sorted(list(report_dates_set if report_dates_set else scrape_dates_set), reverse=True)
+    all_sorted_dates = sorted(list(md_dates_set | other_dates_set | scrape_dates_set), reverse=True)
+    if not all_sorted_dates:
+        all_sorted_dates = [datetime.now().strftime("%Y-%m-%d")]
 
     req_date = (date or "").strip()
     target_date = req_date
-    if all_sorted_dates and (target_date not in all_sorted_dates or target_date in ("latest", "today", "now", "", "undefined", "null")):
-        target_date = all_sorted_dates[0]
-    elif not target_date and all_sorted_dates:
-        target_date = all_sorted_dates[0]
-    elif not target_date:
-        target_date = datetime.now().strftime("%Y-%m-%d")
+    if not target_date or target_date in ("latest", "today", "now", "", "undefined", "null"):
+        # Prioritize newest date with actual markdown dossier files on disk!
+        if md_dates_set:
+            target_date = sorted(list(md_dates_set), reverse=True)[0]
+        else:
+            target_date = all_sorted_dates[0]
+    elif target_date not in all_sorted_dates:
+        # Pinned date not in list, keep target_date as requested
+        pass
 
-    ref_dt = datetime.strptime(target_date, "%Y-%m-%d") if re.match(r"^\d{4}-\d{2}-\d{2}$", target_date) else datetime.now()
-    cutoff_dt_str = (ref_dt - timedelta(days=35)).strftime("%Y-%m-%d")
-
-    available_dates = [d for d in all_sorted_dates if d >= cutoff_dt_str or d == target_date]
-    if not available_dates:
-        available_dates = all_sorted_dates[:10] if all_sorted_dates else [target_date]
+    available_dates = all_sorted_dates[:50]
     if target_date not in available_dates:
         available_dates.insert(0, target_date)
 
@@ -873,33 +896,7 @@ def get_report_bundle(date: str, ticker: str):
         w_d = raw_root / d_str / ticker_u
         s_md, i_md, a_md = None, None, None
 
-        # 1. Summary / Model A
-        s_cand = r_d / f"{ticker_u}_summary.md"
-        if not s_cand.exists() and w_d.exists():
-            for c_name in (f"{ticker_u}_gemini_thesis.md", f"{ticker_u}_summary.md"):
-                c_p = w_d / c_name
-                if c_p.exists():
-                    s_cand = c_p
-                    break
-        if s_cand and s_cand.exists():
-            try:
-                s_md = s_cand.read_text(encoding="utf-8")
-            except Exception:
-                pass
-
-        # 2. Independent / Model B
-        i_cand = r_d / f"{ticker_u}_independent.md"
-        if not i_cand.exists() and w_d.exists():
-            c_p = w_d / f"{ticker_u}_independent_thesis.md"
-            if c_p.exists():
-                i_cand = c_p
-        if i_cand and i_cand.exists():
-            try:
-                i_md = i_cand.read_text(encoding="utf-8")
-            except Exception:
-                pass
-
-        # 3. Senior-PM Arbitration
+        # 1. Senior-PM Arbitration
         a_cand = r_d / f"{ticker_u}_arbitration.md"
         if not a_cand.exists() and w_d.exists():
             c_p = w_d / f"{ticker_u}_arbitration.md"
@@ -911,12 +908,62 @@ def get_report_bundle(date: str, ticker: str):
             except Exception:
                 pass
 
+        # 2. Summary / Model A
+        s_cand = r_d / f"{ticker_u}_summary.md"
+        if not s_cand.exists() and r_d.exists():
+            for alt_name in (
+                f"{ticker_u}_gemini_dr.md",
+                f"{ticker_u}_gemini_thesis.md",
+                f"{ticker_u}_minimax_summary.md",
+                f"{ticker_u}_mimo_summary.md",
+                f"{ticker_u}_qwen3.7_summary.md",
+                f"{ticker_u}_thesis.md",
+            ):
+                cand = r_d / alt_name
+                if cand.exists():
+                    s_cand = cand
+                    break
+        if not s_cand.exists() and w_d.exists():
+            for c_name in (
+                f"{ticker_u}_gemini_thesis.md",
+                f"{ticker_u}_summary.md",
+                f"{ticker_u}_thesis.md",
+                f"{ticker_u}_news_research.md",
+            ):
+                c_p = w_d / c_name
+                if c_p.exists():
+                    s_cand = c_p
+                    break
+            if not s_cand.exists():
+                for c_p in w_d.glob(f"{ticker_u}*.md"):
+                    if c_p.is_file() and not c_p.name.endswith("_arbitration.md") and not c_p.name.endswith("_independent.md"):
+                        s_cand = c_p
+                        break
+        if s_cand and s_cand.exists():
+            try:
+                s_md = s_cand.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+        # 3. Independent / Model B
+        i_cand = r_d / f"{ticker_u}_independent.md"
+        if not i_cand.exists() and w_d.exists():
+            c_p = w_d / f"{ticker_u}_independent_thesis.md"
+            if c_p.exists():
+                i_cand = c_p
+        if i_cand and i_cand.exists():
+            try:
+                i_md = i_cand.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
         # 4. Triage fallback if no reports in rep or raw
-        if not s_md and not i_md and not a_md:
+        if not s_md and not i_md and not a_md and triage_root.exists():
             triage_cands = [
-                config.BASE_DIR / "data" / "triage" / d_str / "_DEEP_RESEARCH" / f"{ticker_u}_gemini_thesis.md",
-                config.BASE_DIR / "data" / "triage" / d_str / "force" / f"{ticker_u}_gemini_thesis.md",
-                config.BASE_DIR / "data" / "triage" / d_str / f"{ticker_u}_gemini_thesis.md",
+                triage_root / d_str / "_DEEP_RESEARCH" / f"{ticker_u}_gemini_thesis.md",
+                triage_root / d_str / "force" / f"{ticker_u}_gemini_thesis.md",
+                triage_root / d_str / f"{ticker_u}_gemini_thesis.md",
+                triage_root / d_str / f"{ticker_u}_thesis.md",
             ]
             for tc in triage_cands:
                 if tc.exists():
@@ -925,29 +972,49 @@ def get_report_bundle(date: str, ticker: str):
                         break
                     except Exception:
                         pass
+            if not s_md and not i_md and not a_md:
+                t_sub = triage_root / d_str
+                if t_sub.exists():
+                    for tc in t_sub.glob(f"**/{ticker_u}*.md"):
+                        if tc.is_file():
+                            try:
+                                s_md = tc.read_text(encoding="utf-8")
+                                break
+                            except Exception:
+                                pass
 
         return s_md, i_md, a_md
 
     summary_md, independent_md, arbitration_md = _read_dossier_files(target_date)
 
-    # Check local research dossier for the target date first
+    # Check local research dossier for target date
     local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
 
-    # Only fall back to an older date if the target_date was NOT explicitly pinned AND has NO deep research AND NO local research dossier
-    if not summary_md and not independent_md and not arbitration_md and not local_dossier_md:
-        if not req_date or req_date in ("latest", "today", "now", "", "undefined", "null"):
-            for alt_d in available_dates:
-                if alt_d == target_date:
-                    continue
-                alt_s, alt_i, alt_a = _read_dossier_files(alt_d)
-                if alt_s or alt_i or alt_a:
-                    summary_md, independent_md, arbitration_md = alt_s, alt_i, alt_a
-                    target_date = alt_d
-                    local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
-                    break
+    # Fallback to an older date if target_date has no deep research reports
+    if not summary_md and not independent_md and not arbitration_md:
+        for alt_d in available_dates:
+            if alt_d == target_date:
+                continue
+            alt_s, alt_i, alt_a = _read_dossier_files(alt_d)
+            if alt_s or alt_i or alt_a:
+                summary_md, independent_md, arbitration_md = alt_s, alt_i, alt_a
+                target_date = alt_d
+                local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
+                break
 
+    # If arbitration is missing but a real deep summary/independent exists, use it as primary display
     if not arbitration_md and (summary_md or independent_md):
-        arbitration_md = f"# {ticker_u} | ARBITRATION & EXECUTIVE RESEARCH DOSSIER ({target_date})\n\n*(Displaying primary research report for {target_date})*\n\n" + (independent_md or summary_md)
+        cand_md = summary_md or independent_md
+        if cand_md and not cand_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER"):
+            arbitration_md = cand_md
+
+    # If summary is missing but real arbitration exists, mirror it
+    if not summary_md and arbitration_md:
+        if not arbitration_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER"):
+            summary_md = arbitration_md
+
+    # Note: If deep reports are missing and only local_dossier_md exists, do NOT mirror it into
+    # arbitration_md or summary_md. Each tab maintains its true content so pending states render cleanly.
 
     zoom_path = find_chart_path(target_date, ticker_u, "zoom")
     plain_path = find_chart_path(target_date, ticker_u, "plain")

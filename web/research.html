@@ -10,11 +10,12 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&family=Outfit:wght@400;600;700;800;900&display=swap" rel="stylesheet">
   
-  <!-- Markdown Parser -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Markdown Parser (Local Vendor) -->
+  <script src="/static/vendor/marked.min.js"></script>
 
   <!-- Base Cockpit Stylesheet -->
   <link rel="stylesheet" href="/static/css/base.css?v=50">
+  <link rel="stylesheet" href="/static/css/components.css?v=51">
   
   <style>
     :root {
@@ -35,9 +36,11 @@
       overflow: hidden;
     }
 
-    /* Top Navigation Header */
+    /* Top Navigation Header (Sticky) */
     .research-header {
-      position: relative;
+      position: sticky;
+      top: 0;
+      z-index: 50;
       flex-shrink: 0;
       height: var(--header-h);
       background: var(--bg-surface);
@@ -45,27 +48,68 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 16px;
-      gap: 12px;
+      padding: 0 14px;
+      gap: 8px;
       box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .research-header::-webkit-scrollbar {
+      display: none;
     }
 
     .header-left, .header-right {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 6px;
       flex-wrap: nowrap;
       min-width: 0;
+      flex-shrink: 0;
+    }
+
+    .global-desk-nav {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: nowrap;
+      margin-right: 6px;
+      padding-right: 8px;
+      border-right: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .global-desk-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 6px;
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .global-desk-link:hover {
+      color: var(--cyan);
+      border-color: var(--cyan);
+      background: rgba(6, 182, 212, 0.08);
+      transform: translateY(-1px);
     }
 
     .brand-back-btn {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 5px 10px;
-      font-size: 11.5px;
-      font-weight: 700;
-      color: var(--text-muted);
+      gap: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--text-main);
       background: var(--bg-subtle);
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
@@ -83,23 +127,24 @@
     .ticker-hero {
       display: flex;
       align-items: baseline;
-      gap: 8px;
+      gap: 6px;
       white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .ticker-hero-sym {
       font-family: var(--font-heading);
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 900;
       letter-spacing: 0.5px;
       color: var(--cyan);
     }
 
     .ticker-hero-name {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       color: var(--text-muted);
-      max-width: 160px;
+      max-width: 130px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -508,6 +553,51 @@
       background: rgba(6, 182, 212, 0.1);
       border-color: var(--cyan);
     }
+    .copilot-action-pill, a[href^="action:"] {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 6px 4px 0;
+      padding: 6px 12px;
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--cyan);
+      background: rgba(6, 182, 212, 0.12);
+      border: 1px solid rgba(6, 182, 212, 0.4);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.18s ease;
+      line-height: 1.35;
+    }
+    .copilot-action-pill:hover, a[href^="action:"]:hover {
+      background: rgba(6, 182, 212, 0.28);
+      border-color: var(--cyan);
+      color: #fff;
+      transform: translateY(-1px);
+      box-shadow: 0 3px 10px rgba(6, 182, 212, 0.35);
+    }
+    .copilot-action-pill.alert-action-pill, a[href^="action:alert"] {
+      color: #f59e0b;
+      border-color: rgba(245, 158, 11, 0.4);
+      background: rgba(245, 158, 11, 0.12);
+    }
+    .copilot-action-pill.alert-action-pill:hover, a[href^="action:alert"]:hover {
+      color: #fff;
+      background: rgba(245, 158, 11, 0.25);
+      border-color: #f59e0b;
+    }
+    .copilot-action-pill.watch-action-pill, a[href^="action:watch"] {
+      color: #10b981;
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.12);
+    }
+    .copilot-action-pill.watch-action-pill:hover, a[href^="action:watch"]:hover {
+      color: #fff;
+      background: rgba(16, 185, 129, 0.25);
+      border-color: #10b981;
+    }
     .copilot-input-area {
       padding: 10px 14px;
       background: var(--bg-surface);
@@ -600,9 +690,29 @@
   <!-- Top Ribbon -->
   <header class="research-header">
     <div class="header-left">
-      <a href="/" class="brand-back-btn" title="Return to Stock Trading Cockpit Home">
-        <span>🏛️ Cockpit</span>
-      </a>
+      <nav class="global-desk-nav" aria-label="Global Operations Desks">
+        <a href="/" class="brand-back-btn" title="Return to Stock Trading Operations Cockpit Home">
+          <span>🏛️ Cockpit</span>
+        </a>
+        <a href="/?desk=today" class="global-desk-link" title="Today's Operational Briefing">
+          <span>⚡ Today</span>
+        </a>
+        <a href="/?desk=radar" class="global-desk-link" title="Swing Research Radar & Queue">
+          <span>🎯 Radar</span>
+        </a>
+        <a href="/?desk=screener" class="global-desk-link" title="Schwab 1000 Screener & Pre-Move Scan">
+          <span>🚨 Screener</span>
+        </a>
+        <a href="/?desk=trades" class="global-desk-link" title="Institutional Trade Setups & P&L Log">
+          <span>💡 Trades</span>
+        </a>
+        <a href="/?desk=portfolio" class="global-desk-link" title="Active Positions & Account Risk">
+          <span>💼 Portfolio</span>
+        </a>
+        <a href="/?desk=watchlist" class="global-desk-link" title="Watchlist Price Triggers & Stalking">
+          <span>📡 Watchlist</span>
+        </a>
+      </nav>
 
       <div class="ticker-hero">
         <span class="ticker-hero-sym" id="hdr-ticker-sym">--</span>
@@ -626,7 +736,7 @@
     <div class="header-right">
       <!-- Quick Ticker Switcher -->
       <div class="ticker-switcher-wrap" title="Quickly switch to any of the 1,000 tickers">
-        <input type="text" id="quick-ticker-input" class="ticker-switcher-input" placeholder="TICKER" maxlength="7" list="constituent-tickers" onkeydown="handleSwitcherKey(event)">
+        <input type="text" id="quick-ticker-input" class="ticker-switcher-input" placeholder="TICKER" maxlength="7" list="constituent-tickers" onkeydown="handleSwitcherKey(event)" onchange="handleSwitcherChange(event)">
         <datalist id="constituent-tickers"></datalist>
       </div>
 
@@ -863,8 +973,20 @@
       const contentEl = document.getElementById('dossier-content');
       contentEl.innerHTML = `<div style="padding:40px; text-align:center; color:var(--text-muted);">⏳ Loading research dossier for <strong>${esc(ticker)}</strong>...</div>`;
 
-      document.getElementById('hdr-ticker-sym').innerText = `$${ticker}`;
-      document.getElementById('copilot-ticker-badge').innerText = `$${ticker}`;
+      const hdrSymEl = document.getElementById('hdr-ticker-sym');
+      if (hdrSymEl) {
+        hdrSymEl.innerText = `$${ticker}`;
+        hdrSymEl.setAttribute('data-ticker', ticker);
+        hdrSymEl.classList.add('tv-symbol-hover');
+        hdrSymEl.title = `$${ticker} · Hover for Live TradingView Chart`;
+      }
+      const copilotBadge = document.getElementById('copilot-ticker-badge');
+      if (copilotBadge) {
+        copilotBadge.innerText = `$${ticker}`;
+        copilotBadge.setAttribute('data-ticker', ticker);
+        copilotBadge.classList.add('tv-symbol-hover');
+        copilotBadge.title = `$${ticker} · Hover for Live TradingView Chart`;
+      }
       document.getElementById('quick-ticker-input').value = ticker;
       document.getElementById('btn-open-cockpit').href = `/?ticker=${encodeURIComponent(ticker)}&modal=research`;
 
@@ -893,6 +1015,7 @@
           }
         }
         updateTradesCount(State.ticker);
+        updateTabStatusBadges(data);
 
         renderActiveTab();
       } catch (e) {
@@ -1038,30 +1161,49 @@
       if (!data) return;
 
       if (tab === 'arb') {
-        const content = data.arbitration_md;
+        const content = data.arbitration_md || (data.has_deep_research ? data.summary_md : null);
         if (content && !content.includes('LOCAL RESEARCH DOSSIER') && !content.includes('TACTICAL RADAR')) {
           bodyEl.innerHTML = parseMarkdown(content);
         } else {
-          renderPendingState(bodyEl, 'Senior PM Arbitration', 'Multi-model arbitration has not been synthesized yet for this date.');
+          renderPendingState(bodyEl, 'Senior PM Arbitration', 'Multi-model quantitative deep research and PM arbitration have not been executed yet for this candidate.');
         }
       } else if (tab === 'sum') {
-        const content = data.summary_md;
-        if (content && !content.includes('LOCAL RESEARCH DOSSIER')) {
+        const content = data.summary_md || (data.has_deep_research ? data.arbitration_md : null);
+        if (content && !content.includes('LOCAL RESEARCH DOSSIER') && !content.includes('TACTICAL RADAR')) {
           bodyEl.innerHTML = parseMarkdown(content);
         } else {
-          renderPendingState(bodyEl, 'Model A (Synthesis)', 'Model A synthesis has not been generated yet for this date.');
+          renderPendingState(bodyEl, 'Model A (Synthesis)', 'Model A deep research synthesis has not been generated yet for this candidate.');
         }
       } else if (tab === 'ind') {
         const content = data.independent_md;
-        if (content && !content.includes('LOCAL RESEARCH DOSSIER')) {
+        if (content && !content.includes('LOCAL RESEARCH DOSSIER') && !content.includes('TACTICAL RADAR')) {
           bodyEl.innerHTML = parseMarkdown(content);
         } else {
-          renderPendingState(bodyEl, 'Model B (Independent)', 'Model B independent thesis is not available for this date.');
+          renderPendingState(bodyEl, 'Model B (Independent)', 'Model B independent thesis is not available for this candidate.');
         }
       } else if (tab === 'local') {
         const content = data.local_dossier_md;
         if (content) {
-          bodyEl.innerHTML = parseMarkdown(content);
+          const bannerHtml = `
+            <div style="background:linear-gradient(135deg, rgba(6,182,212,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(6,182,212,0.28); border-radius:8px; padding:10px 14px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+              <div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span style="font-weight:700; color:var(--cyan); font-size:12.5px;">📑 LOCAL RESEARCH &amp; TRIAGE DOSSIER</span>
+                  <span class="pill" style="font-size:9.5px; padding:1px 6px; background:rgba(6,182,212,0.15); color:var(--cyan); border:1px solid rgba(6,182,212,0.3);">LOCAL-FIRST AI</span>
+                  <span class="pill" style="font-size:9.5px; padding:1px 6px; background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3);">${data.date || 'Today'}</span>
+                </div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+                  Generated via deterministic pre-filter and local Qwen triage. Multi-model deep research (PM Arbitration, Model A, Model B) can be executed on demand.
+                </div>
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="btn-action btn-primary-gradient" style="font-size:11px; padding:4px 10px;" onclick="triggerDeepResearch()">
+                  🔬 Run Deep Research
+                </button>
+              </div>
+            </div>
+          `;
+          bodyEl.innerHTML = bannerHtml + parseMarkdown(content);
         } else {
           renderPendingState(bodyEl, 'Local Dossier', 'No local triage dossier recorded.');
         }
@@ -1462,6 +1604,7 @@
             <button class="btn-action btn-primary-gradient" onclick="renderTradesTab(document.getElementById('dossier-content'), State.ticker)">Retry</button>
           </div>
         `;
+      }
     }
 
     // Markdown Parser Wrapper
@@ -1470,25 +1613,61 @@
       let cleanText = String(mdText).trim();
 
       // Strip raw watch levels JSON if present at top
-      const wlMatch = cleanText.match(/```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?"shares_plan"[\s\S]*?\})\s*```/);
       let rawLevelsJson = null;
-      if (wlMatch) {
-        rawLevelsJson = wlMatch[1];
-        cleanText = cleanText.replace(wlMatch[0], '').trim();
-      }
+      try {
+        const wlMatch = cleanText.match(/```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?"shares_plan"[\s\S]*?\})\s*```/);
+        if (wlMatch) {
+          rawLevelsJson = wlMatch[1];
+          cleanText = cleanText.replace(wlMatch[0], '').trim();
+        }
+      } catch (e) {}
 
       let html = '';
-      if (window.marked) {
-        html = window.marked.parse(cleanText, { breaks: true, gfm: true });
-      } else {
+      try {
+        if (window.marked && typeof window.marked.parse === 'function') {
+          html = window.marked.parse(cleanText, { breaks: true, gfm: true });
+        } else if (typeof window.marked === 'function') {
+          html = window.marked(cleanText, { breaks: true, gfm: true });
+        } else {
+          html = cleanText.replace(/\n/g, '<br/>');
+        }
+      } catch (err) {
+        console.error('Markdown parse error:', err);
         html = cleanText.replace(/\n/g, '<br/>');
       }
+
+      // 1. Transform action:ask?prompt=... into interactive clickable prompt pills
+      html = html.replace(/<a\s+[^>]*href=["']action:ask\?prompt=([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, promptEnc, label) => {
+        let prompt = '';
+        try { prompt = decodeURIComponent(promptEnc.replace(/\+/g, '%20')); } catch (e) { prompt = promptEnc; }
+        return `<button type="button" class="copilot-action-pill" onclick="sendCopilotPrompt(this.dataset.prompt)" data-prompt="${esc(prompt)}" title="Click to ask Copilot / execute this option">${label}</button>`;
+      });
+
+      // 2. Transform action:alert into one-click cloud alert trigger
+      html = html.replace(/<a\s+[^>]*href=["']action:alert\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+        return `<button type="button" class="copilot-action-pill alert-action-pill" onclick="handleActionUrl('action:alert?${esc(query)}')" title="Register Tastytrade Cloud Alert">${label}</button>`;
+      });
+
+      // 3. Transform action:watch into one-click Watchlist target trigger
+      html = html.replace(/<a\s+[^>]*href=["']action:watch\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+        return `<button type="button" class="copilot-action-pill watch-action-pill" onclick="handleActionUrl('action:watch?${esc(query)}')" title="Add to Watch Targets">${label}</button>`;
+      });
+
+      // 4. Transform any other generic action: link into clickable button
+      html = html.replace(/<a\s+[^>]*href=["'](action:[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, actUrl, label) => {
+        return `<button type="button" class="copilot-action-pill" onclick="handleActionUrl(this.dataset.action)" data-action="${esc(actUrl)}">${label}</button>`;
+      });
+
+      // 5. Auto-wrap cashtags ($TICKER) so hovering them immediately pops up the TradingView live chart
+      html = html.replace(/(^|[\s>(])\$([A-Z]{1,6})\b(?![^<]*>)/g, (match, prefix, sym) => {
+        return `${prefix}<span class="tv-symbol-hover" data-ticker="${sym}" style="cursor:pointer; font-weight:700; color:var(--cyan-glow, #38bdf8);" title="$${sym} · Hover for Live TradingView Chart">$${sym}</span>`;
+      });
 
       if (rawLevelsJson) {
         html += `
           <details style="margin-top:32px; border:1px solid var(--border); border-radius:6px; background:var(--bg-subtle); padding:10px 14px; font-size:11.5px;">
             <summary style="cursor:pointer; font-weight:700; color:var(--text-muted); user-select:none;">🔧 Raw Tactical Levels JSON (Extracted for Watchlist)</summary>
-            <pre style="margin-top:10px; padding:12px; background:rgba(0,0,0,0.4); border-radius:4px; overflow-x:auto;"><code class="language-json">${escapeHtml(rawLevelsJson)}</code></pre>
+            <pre style="margin-top:10px; padding:12px; background:rgba(0,0,0,0.4); border-radius:4px; overflow-x:auto;"><code class="language-json">${esc(rawLevelsJson)}</code></pre>
           </details>
         `;
       }
@@ -1667,6 +1846,32 @@
       }
     }
 
+    function handleSwitcherChange(e) {
+      const val = (e.target.value || '').trim().toUpperCase();
+      if (val) {
+        const sub = State.activeTab === 'trades' ? '/trades' : '';
+        window.location.href = `/research/${val}${sub}`;
+      }
+    }
+
+    function updateTabStatusBadges(data) {
+      if (!data) return;
+      const hasRealArb = Boolean(data.arbitration_md && !data.arbitration_md.includes('LOCAL RESEARCH DOSSIER') && !data.arbitration_md.includes('TACTICAL RADAR'));
+      const hasRealSum = Boolean(data.summary_md && !data.summary_md.includes('LOCAL RESEARCH DOSSIER') && !data.summary_md.includes('TACTICAL RADAR'));
+      const hasRealInd = Boolean(data.independent_md && !data.independent_md.includes('LOCAL RESEARCH DOSSIER') && !data.independent_md.includes('TACTICAL RADAR'));
+      const hasLocal = Boolean(data.local_dossier_md);
+
+      const arbBtn = document.getElementById('tab-arb-btn');
+      const sumBtn = document.getElementById('tab-sum-btn');
+      const indBtn = document.getElementById('tab-ind-btn');
+      const localBtn = document.getElementById('tab-local-btn');
+
+      if (arbBtn) arbBtn.innerHTML = `⚖️ PM Arbitration ${hasRealArb ? '' : '<span style="font-size:9.5px; opacity:0.65; font-weight:600; padding:1px 5px; border-radius:4px; background:rgba(255,255,255,0.06); border:1px solid var(--border);">Pending</span>'}`;
+      if (sumBtn) sumBtn.innerHTML = `📊 Model A (Synthesis) ${hasRealSum ? '' : '<span style="font-size:9.5px; opacity:0.65; font-weight:600; padding:1px 5px; border-radius:4px; background:rgba(255,255,255,0.06); border:1px solid var(--border);">Pending</span>'}`;
+      if (indBtn) indBtn.innerHTML = `🧭 Model B (Independent) ${hasRealInd ? '' : '<span style="font-size:9.5px; opacity:0.65; font-weight:600; padding:1px 5px; border-radius:4px; background:rgba(255,255,255,0.06); border:1px solid var(--border);">Pending</span>'}`;
+      if (localBtn) localBtn.innerHTML = `📑 Local Dossier ${hasLocal ? '<span style="font-size:9.5px; color:var(--cyan); font-weight:700; padding:1px 5px; border-radius:4px; background:rgba(6,182,212,0.12); border:1px solid rgba(6,182,212,0.3);">Ready</span>' : ''}`;
+    }
+
     function escapeHtml(str) {
       return String(str || '')
         .replace(/&/g, '&amp;')
@@ -1674,6 +1879,36 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+    }
+
+    function handleActionUrl(href) {
+      if (!href) return;
+      if (href.startsWith('action:ask?') || href.startsWith('action:chat?')) {
+        const rawQuery = href.substring(href.indexOf('?') + 1);
+        let prompt = '';
+        try {
+          const params = new URLSearchParams(rawQuery.replace(/\+/g, '%20'));
+          prompt = params.get('prompt') || params.get('q') || '';
+        } catch (e) {
+          prompt = rawQuery.replace(/^prompt=/i, '').replace(/\+/g, ' ');
+        }
+        if (prompt) {
+          sendCopilotPrompt(prompt);
+        }
+      } else if (href.startsWith('action:alert?')) {
+        syncTastytradeAlerts();
+      } else if (href.startsWith('action:watch?')) {
+        syncTastytradeAlerts();
+      } else {
+        const raw = href.replace(/^action:[a-z_]*\??/i, '').replace(/\+/g, ' ');
+        if (raw) {
+          try {
+            sendCopilotPrompt(decodeURIComponent(raw));
+          } catch (e) {
+            sendCopilotPrompt(raw);
+          }
+        }
+      }
     }
 
     // App Startup
@@ -1689,9 +1924,36 @@
         renderActiveTab();
       });
 
+      // Global event delegation for interactive action URLs & pills
+      document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.copilot-action-pill');
+        if (btn) {
+          if (btn.dataset && btn.dataset.prompt) {
+            e.preventDefault();
+            e.stopPropagation();
+            sendCopilotPrompt(btn.dataset.prompt);
+            return;
+          }
+          if (btn.dataset && btn.dataset.action) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleActionUrl(btn.dataset.action);
+            return;
+          }
+        }
+        const link = e.target.closest('a[href^="action:"]');
+        if (link) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleActionUrl(link.getAttribute('href'));
+        }
+      });
+
       // Auto poll live price every 15 seconds
       setInterval(refreshLivePrice, 15000);
     });
   </script>
+  <!-- Universal TradingView Live Chart Hover Engine -->
+  <script src="/static/js/tv_hover.js?v=2"></script>
 </body>
 </html>

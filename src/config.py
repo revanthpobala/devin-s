@@ -142,6 +142,10 @@ MARKET_CLOSE_MINUTE = int(os.getenv("MARKET_CLOSE_MINUTE", "30"))
 # A per-process --market-hours-only CLI flag can still override this for one-off runs.
 SCREENER_MARKET_HOURS_ONLY = os.getenv("SCREENER_MARKET_HOURS_ONLY", "true").lower() in ("1", "true", "yes")
 
+# Earnings blackout gate window in calendar days (default 5 days).
+# Excludes tickers reporting earnings within 5 days to preserve pre-earnings runway.
+SCREENER_EARNINGS_BLACKOUT_DAYS = int(os.getenv("SCREENER_EARNINGS_BLACKOUT_DAYS", "5"))
+
 # DISPLAY-ONLY. Retired as a dispatch gate on the measured result: over 348,879 replayed screener
 # bars, the MEDIUM_PRIORITY band it selects measures -0.063R era-stable and MEDIUM-without-PB
 # -0.164R era-stable; HIGH_PRIORITY's +0.417R is 99% PB with a -1R median and a 16.7% win rate, so

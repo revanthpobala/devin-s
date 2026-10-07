@@ -709,10 +709,12 @@ def evaluate_technical_coiling(
     return res
 
 
-def check_earnings_blackout(ticker: str, window_days: int = 30) -> bool:
-    """Gate 4: Returns True if earnings are safely > window_days away (default 30).
+def check_earnings_blackout(ticker: str, window_days: Optional[int] = None) -> bool:
+    """Gate 4: Returns True if earnings are safely > window_days away (default from config, 14 days).
     Fail-closed: Returns False if within window_days, if earnings date is unknown/unavailable,
     or on any error."""
+    if window_days is None:
+        window_days = getattr(config, "SCREENER_EARNINGS_BLACKOUT_DAYS", 14)
     try:
         from src.clients.earnings_client import get_next_earnings_days
 

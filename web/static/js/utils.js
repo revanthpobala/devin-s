@@ -40,19 +40,25 @@ window.AppUtils = {
           ? window.marked.parse(cleanText, { breaks: true, gfm: true })
           : window.marked(cleanText, { breaks: true, gfm: true });
         // Transform interactive action links into clickable button pills
-        html = html.replace(/<a\s+href=["']action:ask\?prompt=([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, promptEnc, label) => {
-          const prompt = decodeURIComponent(promptEnc.replace(/\+/g, '%20'));
-          return `<button class="ticker-pill-btn" onclick="AppChat.askActiveChat('${prompt.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:var(--cyan-glow); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12); cursor:pointer;">${label}</button>`;
+        html = html.replace(/<a\s+[^>]*href=["']action:ask\?prompt=([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, promptEnc, label) => {
+          let prompt = '';
+          try { prompt = decodeURIComponent(promptEnc.replace(/\+/g, '%20')); } catch (e) { prompt = promptEnc; }
+          return `<button type="button" class="ticker-pill-btn copilot-action-pill" data-action="ask" data-prompt="${this.escapeHtml(prompt)}" onclick="AppChat.askActiveChat(this.dataset.prompt)" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:var(--cyan-glow); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12); cursor:pointer;">${label}</button>`;
         });
 
         // Transform action:alert into one-click Tastytrade cloud alert trigger
-        html = html.replace(/<a\s+href=["']action:alert\?([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, query, label) => {
-          return `<button class="ticker-pill-btn alert-pill-btn" onclick="AppChat.handleSetAlertAction('${query.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#f59e0b; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🔔</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
+        html = html.replace(/<a\s+[^>]*href=["']action:alert\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+          return `<button type="button" class="ticker-pill-btn alert-pill-btn copilot-action-pill" data-action="alert" data-query="${this.escapeHtml(query)}" onclick="AppChat.handleSetAlertAction(this.dataset.query)" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#f59e0b; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🔔</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
         });
 
         // Transform action:watch into one-click Watchlist target trigger
-        html = html.replace(/<a\s+href=["']action:watch\?([^"']+)["']>([\s\S]*?)<\/a>/gi, (match, query, label) => {
-          return `<button class="ticker-pill-btn watch-pill-btn" onclick="AppChat.handleAddWatchAction('${query.replace(/'/g, "\\'")}')" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🎯</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
+        html = html.replace(/<a\s+[^>]*href=["']action:watch\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+          return `<button type="button" class="ticker-pill-btn watch-pill-btn copilot-action-pill" data-action="watch" data-query="${this.escapeHtml(query)}" onclick="AppChat.handleAddWatchAction(this.dataset.query)" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🎯</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
+        });
+
+        // Auto-wrap cashtags ($TICKER) so hovering them immediately pops up the TradingView live chart
+        html = html.replace(/(^|[\s>(])\$([A-Z]{1,6})\b(?![^<]*>)/g, (match, prefix, sym) => {
+          return `${prefix}<span class="tv-symbol-hover" data-ticker="${sym}" style="cursor:pointer; font-weight:700; color:var(--cyan-glow, #38bdf8);" title="$${sym} · Hover for Live TradingView Chart">$${sym}</span>`;
         });
 
         // If structured watch levels were extracted, append as a subtle collapsible drawer at the very bottom
@@ -72,10 +78,10 @@ window.AppUtils = {
             ADD_ATTR: ['target', 'onclick', 'data-action', 'data-prompt', 'data-query', 'class', 'style', 'open']
           });
         } else {
-          // Fallback: neutralize <img onerror> or <script> tags
+          // Fallback: neutralize <script> and dangerous inline event handlers
           html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
                      .replace(/<img\b[^>]*\bonerror\s*=[^>]*>/gi, '')
-                     .replace(/<[a-z0-9_-]+\b[^>]*\bon[a-z]+\s*=[^>]*>/gi, '');
+                     .replace(/<(?!button\b)[a-z0-9_-]+\b[^>]*\bon[a-z]+\s*=[^>]*>/gi, '');
         }
         return html;
       }
@@ -259,6 +265,83 @@ window.AppUtils = {
           }
         }
       });
+
+      // Also convert raw text cashtags ($TICKER) in text nodes into interactive elements
+      if (document.createTreeWalker) {
+        const walker = document.createTreeWalker(
+          root,
+          NodeFilter.SHOW_TEXT,
+          {
+            acceptNode: (node) => {
+              const parent = node.parentElement;
+              if (!parent) return NodeFilter.FILTER_REJECT;
+              const tag = parent.tagName.toUpperCase();
+              if (['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'SELECT', 'CODE', 'PRE'].includes(tag)) {
+                return NodeFilter.FILTER_REJECT;
+              }
+              if (parent.closest('.tv-symbol-hover, [data-ticker], .tv-hover-card, .ticker-pill-btn')) {
+                return NodeFilter.FILTER_REJECT;
+              }
+              if (/\$([A-Z]{1,6})\b/.test(node.textContent)) {
+                return NodeFilter.FILTER_ACCEPT;
+              }
+              return NodeFilter.FILTER_SKIP;
+            }
+          }
+        );
+
+        const textNodes = [];
+        let cur;
+        while ((cur = walker.nextNode())) {
+          textNodes.push(cur);
+        }
+
+        textNodes.forEach(node => {
+          const text = node.textContent;
+          const frag = document.createDocumentFragment();
+          let lastIndex = 0;
+          const regex = /\$([A-Z]{1,6})\b/g;
+          let m;
+          let matched = false;
+
+          while ((m = regex.exec(text)) !== null) {
+            const sym = m[1];
+            if (m.index > lastIndex) {
+              frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+            }
+            const span = document.createElement('span');
+            span.className = 'tv-symbol-hover ticker-with-tooltip';
+            span.dataset.ticker = sym;
+            span.style.cursor = 'pointer';
+            span.style.color = 'var(--cyan-glow, #38bdf8)';
+            span.style.fontWeight = '700';
+            const comp = this.getCompanyName(sym);
+            span.title = comp ? `${sym}: ${comp} · Hover for Live TradingView Chart` : `$${sym} · Hover for Live TradingView Chart`;
+            span.textContent = `$${sym}`;
+            span.addEventListener('click', (e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
+                window.AppSwing.openReportModal(null, sym);
+              } else {
+                window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
+              }
+            });
+            frag.appendChild(span);
+            lastIndex = regex.lastIndex;
+            matched = true;
+          }
+
+          if (matched) {
+            if (lastIndex < text.length) {
+              frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+            }
+            if (node.parentNode) {
+              node.parentNode.replaceChild(frag, node);
+            }
+          }
+        });
+      }
     } catch (e) {
       console.warn('decorateTickerTooltips error:', e);
     }

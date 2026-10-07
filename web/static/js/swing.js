@@ -2737,7 +2737,7 @@ window.AppSwing = {
         `;
       }
     } else if (tab === 'arb') {
-      const arbContent = data.arbitration_md;
+      const arbContent = (data.arbitration_md && !data.arbitration_md.includes('LOCAL RESEARCH DOSSIER')) ? data.arbitration_md : null;
       if (arbContent) {
         bodyEl.innerHTML = window.AppUtils.renderMarkdown(arbContent);
       } else {
@@ -2760,7 +2760,7 @@ window.AppSwing = {
         `;
       }
     } else if (tab === 'sum') {
-      const sumContent = data.summary_md;
+      const sumContent = (data.summary_md && !data.summary_md.includes('LOCAL RESEARCH DOSSIER')) ? data.summary_md : null;
       if (sumContent) {
         bodyEl.innerHTML = window.AppUtils.renderMarkdown(sumContent);
       } else {
@@ -2783,7 +2783,7 @@ window.AppSwing = {
         `;
       }
     } else if (tab === 'ind') {
-      const indContent = data.independent_md;
+      const indContent = (data.independent_md && !data.independent_md.includes('LOCAL RESEARCH DOSSIER')) ? data.independent_md : null;
       if (indContent) {
         const bannerHtml = `
           <div style="background:linear-gradient(135deg, rgba(139,92,246,0.1), rgba(59,130,246,0.06)); border:1px solid rgba(139,92,246,0.28); border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
@@ -3015,9 +3015,9 @@ window.AppSwing = {
     this._currentTvModalInterval = interval;
     this.setTicker(rawSym);
 
-    let prefExch = 'BATS';
+    let prefExch = 'AUTO';
     try {
-      prefExch = localStorage.getItem('tv_hover_exchange') || 'BATS';
+      prefExch = localStorage.getItem('tv_hover_exchange') || 'AUTO';
     } catch (e) {}
     const sym = (!rawSym.includes(':') && prefExch && prefExch !== 'AUTO') ? `${prefExch}:${rawSym}` : rawSym;
 
@@ -3067,9 +3067,9 @@ window.AppSwing = {
   setTradingViewModalInterval(interval) {
     this._currentTvModalInterval = interval;
     const rawSym = this._currentTvModalTicker || 'SPY';
-    let prefExch = 'BATS';
+    let prefExch = 'AUTO';
     try {
-      prefExch = localStorage.getItem('tv_hover_exchange') || 'BATS';
+      prefExch = localStorage.getItem('tv_hover_exchange') || 'AUTO';
     } catch (e) {}
     const sym = (!rawSym.includes(':') && prefExch && prefExch !== 'AUTO') ? `${prefExch}:${rawSym}` : rawSym;
 
@@ -3100,9 +3100,9 @@ window.AppSwing = {
     if (!host) return;
 
     const rawSym = this._currentTvModalTicker || 'SPY';
-    let prefExch = 'BATS';
+    let prefExch = 'AUTO';
     try {
-      prefExch = localStorage.getItem('tv_hover_exchange') || 'BATS';
+      prefExch = localStorage.getItem('tv_hover_exchange') || 'AUTO';
     } catch (e) {}
     const sym = (!rawSym.includes(':') && prefExch && prefExch !== 'AUTO') ? `${prefExch}:${rawSym}` : rawSym;
     const interval = this._currentTvModalInterval || 'D';

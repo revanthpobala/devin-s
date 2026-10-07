@@ -80,13 +80,20 @@ header {
   min-width: 0;
 }
 
-/* Desk Switcher Bar */
+/* Desk Switcher Bar (Sticky under Header) */
 .desk-switcher-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
   flex-wrap: wrap;
+  position: sticky;
+  top: 57px;
+  z-index: 45;
+  background: var(--bg-surface);
+  padding: 8px 4px 10px 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
 }
 
 .desk-nav-btn {

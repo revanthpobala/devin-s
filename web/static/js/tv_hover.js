@@ -1,16 +1,33 @@
 /**
  * TradingView Live Chart Hover Engine
- * Universally provides instant, interactive TradingView chart previews on hovering any stock ticker symbol.
+ * Universally provides instant, interactive TradingView chart previews on hovering any stock ticker symbol across the entire application.
  */
 (function() {
   'use strict';
 
+  // Comprehensive set of non-ticker words & UI labels to avoid false positives
   const RESERVED_WORDS = new Set([
     'PASS', 'WAIT', 'CUT', 'LONG', 'SHORT', 'BUY', 'SELL', 'EXIT', 'ENTER',
     'DATE', 'TIME', 'PRICE', 'ACTION', 'SCORE', 'GRADE', 'INFO', 'AI', 'CLOSE',
     'TOTAL', 'ACTIVE', 'IN_ZONE', 'STALKING', 'STOP', 'TARGET', 'STATUS',
     'OPEN', 'TYPE', 'SIDE', 'ENTRY', 'SPOT', 'PNL', 'HIGH', 'LOW', 'VOLUME',
-    'INSPECT', 'QUERY', 'RESTORE', 'DETAILS', 'DISMISS', 'VIEW', 'LOGS'
+    'INSPECT', 'QUERY', 'RESTORE', 'DETAILS', 'DISMISS', 'VIEW', 'LOGS',
+    'RADAR', 'SCREEN', 'TRADES', 'SWING', 'INTRADAY', 'PORT', 'LIVE', 'SYNC',
+    'CHART', 'EXP', 'STRIKE', 'DELTA', 'GAMMA', 'THETA', 'VEGA', 'CALL', 'PUT',
+    'BEAR', 'BULL', 'HOLD', 'SETUP', 'BIAS', 'NOTE', 'DESC', 'RISK', 'PROFIT',
+    'LOSS', 'FEES', 'NET', 'MAX', 'MIN', 'AVG', 'LAST', 'BID', 'ASK', 'SIZE',
+    'VOL', 'IV', 'HV', 'HV30', 'ATR', 'RSI', 'EMA', 'SMA', 'MACD', 'BB',
+    'ALL', 'AUTO', 'BATS', 'NYSE', 'AMEX', 'CBOE', 'EDIT', 'DONE', 'SAVE',
+    'BACK', 'NEXT', 'PREV', 'HOME', 'PAGE', 'HELP', 'TEST', 'RUN', 'TASK',
+    'MODE', 'NEW', 'HOT', 'COLD', 'TRUE', 'FALSE', 'NULL', 'NONE', 'NAN',
+    'DAY', 'WEEK', 'YEAR', '1D', '5M', '15M', '1H', '4H', 'TODAY', 'RTH',
+    'ETH', 'USD', 'USDT', 'BTC', 'API', 'URL', 'APP', 'OK', 'NO', 'YES',
+    'THE', 'FOR', 'AND', 'NOR', 'BUT', 'YET', 'SO', 'AT', 'BY', 'IN', 'OF', 'ON', 'TO', 'UP',
+    'TAB', 'BTN', 'DESK', 'ROWS', 'ITEM', 'TAG', 'USER', 'BOT', 'CHAT', 'DOC', 'FILE', 'NAME',
+    'EXEC', 'ZONE', 'TIER', 'CODE', 'LOAD', 'POST', 'SEND', 'REFRESH',
+    'COPY', 'DATA', 'BASE', 'MENU', 'CONF', 'SET', 'FIND', 'LIST', 'SHOW', 'HIDE', 'SORT',
+    'CASH', 'COST', 'GAIN', 'DRAW', 'STAT', 'TERM', 'SEEK', 'RANK', 'RATE',
+    'ZERO', 'PEAK', 'DIP', 'GAP', 'ALERT', 'PUSH', 'RESET', 'CLEAR', 'APPLY'
   ]);
 
   window.AppTvHover = {
@@ -18,7 +35,7 @@
     _iframeEl: null,
     _loadingEl: null,
     _currentSym: '',
-    _currentExchange: 'BATS',
+    _currentExchange: 'AUTO',
     _currentInterval: 'D',
     _currentTarget: null,
     _hoverTimer: null,
@@ -33,11 +50,226 @@
 
       try {
         const saved = localStorage.getItem('tv_hover_exchange');
-        if (saved) this._currentExchange = saved;
-      } catch (e) {}
+        if (saved && saved !== 'BATS') {
+          this._currentExchange = saved;
+        } else {
+          this._currentExchange = 'AUTO';
+          localStorage.setItem('tv_hover_exchange', 'AUTO');
+        }
+      } catch (e) {
+        this._currentExchange = 'AUTO';
+      }
 
+      this._injectStyles();
       this._createCardElement();
       this._bindGlobalEvents();
+    },
+
+    _injectStyles() {
+      if (document.getElementById('tv-hover-engine-styles')) return;
+      const style = document.createElement('style');
+      style.id = 'tv-hover-engine-styles';
+      style.textContent = `
+        .tv-hover-card {
+          position: fixed !important;
+          z-index: 99999 !important;
+          width: 580px;
+          height: 400px;
+          background: rgba(15, 23, 42, 0.98);
+          backdrop-filter: blur(18px);
+          -webkit-backdrop-filter: blur(18px);
+          border: 1px solid rgba(6, 182, 212, 0.5);
+          border-radius: 10px;
+          box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.9), 0 0 24px rgba(6, 182, 212, 0.3);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          pointer-events: auto;
+          opacity: 0;
+          transform: translateY(6px) scale(0.98);
+          transition: opacity 0.16s cubic-bezier(0.16, 1, 0.3, 1), transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .tv-hover-card.visible {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        .tv-hover-header {
+          padding: 8px 12px;
+          background: rgba(30, 41, 59, 0.9);
+          border-bottom: 1px solid rgba(51, 65, 85, 0.6);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          user-select: none;
+          flex-shrink: 0;
+        }
+        .tv-hover-title-group {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          overflow: hidden;
+          min-width: 0;
+        }
+        .tv-hover-sym {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 15px;
+          font-weight: 800;
+          color: #38bdf8;
+          letter-spacing: 0.5px;
+        }
+        .tv-hover-name {
+          font-size: 11px;
+          font-weight: 600;
+          color: #94a3b8;
+          max-width: 140px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .tv-hover-price {
+          display: inline-flex;
+          align-items: center;
+          margin-left: 2px;
+        }
+        .tv-hover-live-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 6px;
+          border-radius: 4px;
+          background: rgba(16, 185, 129, 0.12);
+          border: 1px solid rgba(16, 185, 129, 0.3);
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10.5px;
+          font-weight: 700;
+          color: #34d399;
+          white-space: nowrap;
+        }
+        .tv-hover-live-pill .dot.live-pulse {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #10b981;
+          box-shadow: 0 0 6px #10b981;
+          animation: tvLivePulse 1.8s infinite ease-in-out;
+        }
+        @keyframes tvLivePulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.35; transform: scale(0.75); }
+        }
+        .tv-hover-actions {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-shrink: 0;
+        }
+        .tv-hover-exchange-select {
+          background: rgba(15, 23, 42, 0.7);
+          border: 1px solid rgba(51, 65, 85, 0.7);
+          color: #cbd5e1;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10.5px;
+          font-weight: 700;
+          border-radius: 4px;
+          padding: 2px 4px;
+          cursor: pointer;
+          outline: none;
+        }
+        .tv-hover-exchange-select:hover, .tv-hover-exchange-select:focus {
+          border-color: #38bdf8;
+          color: #38bdf8;
+        }
+        .tv-hover-exchange-select option {
+          background: #0f172a;
+          color: #f1f5f9;
+        }
+        .tv-hover-intervals {
+          display: flex;
+          align-items: center;
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(51, 65, 85, 0.6);
+          border-radius: 4px;
+          padding: 1px;
+        }
+        .tv-hover-int-btn {
+          border: none;
+          background: transparent;
+          color: #94a3b8;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          font-weight: 700;
+          padding: 2px 5px;
+          border-radius: 3px;
+          cursor: pointer;
+          transition: all 0.12s ease;
+        }
+        .tv-hover-int-btn:hover {
+          color: #f1f5f9;
+          background: rgba(255, 255, 255, 0.08);
+        }
+        .tv-hover-int-btn.active {
+          color: #0f172a;
+          background: #38bdf8;
+          font-weight: 800;
+        }
+        .tv-hover-btn-action {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          padding: 2px 7px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(51, 65, 85, 0.7);
+          border-radius: 4px;
+          color: #e2e8f0;
+          font-size: 10.5px;
+          font-weight: 700;
+          text-decoration: none;
+          cursor: pointer;
+          transition: all 0.12s ease;
+        }
+        .tv-hover-btn-action:hover {
+          background: rgba(6, 182, 212, 0.2);
+          border-color: #38bdf8;
+          color: #38bdf8;
+        }
+        .tv-hover-chart-body {
+          position: relative;
+          flex: 1;
+          background: #0f172a;
+          overflow: hidden;
+        }
+        .tv-hover-iframe {
+          width: 100%;
+          height: 100%;
+          border: none;
+          display: block;
+        }
+        .tv-hover-loading {
+          position: absolute;
+          inset: 0;
+          background: rgba(15, 23, 42, 0.9);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          color: #38bdf8;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          font-weight: 600;
+          pointer-events: none;
+          transition: opacity 0.2s ease;
+          z-index: 5;
+        }
+        .tv-hover-loading .dot.pulse {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: #38bdf8;
+          animation: tvLivePulse 1.2s infinite ease-in-out;
+        }
+      `;
+      document.head.appendChild(style);
     },
 
     _createCardElement() {
@@ -56,11 +288,11 @@
             </div>
             <div class="tv-hover-actions">
               <select id="tv-hover-exchange" class="tv-hover-exchange-select" onchange="AppTvHover.setExchange(this.value)" title="Exchange routing prefix (saved in settings)">
-                <option value="BATS">BATS</option>
+                <option value="AUTO" selected>AUTO</option>
                 <option value="NASDAQ">NASDAQ</option>
                 <option value="NYSE">NYSE</option>
                 <option value="AMEX">AMEX</option>
-                <option value="AUTO">AUTO</option>
+                <option value="BATS">BATS</option>
               </select>
               <div class="tv-hover-intervals">
                 <button class="tv-hover-int-btn" data-int="5" onclick="AppTvHover.setInterval('5')">5m</button>
@@ -69,13 +301,13 @@
                 <button class="tv-hover-int-btn active" data-int="D" onclick="AppTvHover.setInterval('D')">1D</button>
               </div>
               <button class="tv-hover-btn-action" onclick="AppTvHover.openFullModal()" title="Expand to Full Interactive Modal">⛶ Full</button>
-              <a class="tv-hover-btn-action" id="tv-hover-link-ext" target="_blank" href="#" title="Open directly in TradingView (loads with your real-time subscription & indicators)">↗</a>
+              <a class="tv-hover-btn-action" id="tv-hover-link-ext" target="_blank" href="#" title="Open directly in TradingView">↗</a>
             </div>
           </div>
           <div class="tv-hover-chart-body">
             <div class="tv-hover-loading" id="tv-hover-loading">
-              <span class="dot pulse" style="background:var(--cyan-glow, #38bdf8);"></span>
-              <span>Loading Chart...</span>
+              <span class="dot pulse"></span>
+              <span>Loading Live Chart...</span>
             </div>
             <iframe id="tv-hover-iframe" class="tv-hover-iframe" frameborder="0" scrolling="no" allowtransparency="true"></iframe>
           </div>
@@ -100,7 +332,7 @@
 
       card.addEventListener('mouseleave', () => {
         this._isCardHovered = false;
-        this._scheduleHide(180);
+        this._scheduleHide(200);
       });
     },
 
@@ -111,27 +343,46 @@
         if (!symbolInfo) return;
 
         const { sym, el } = symbolInfo;
+
+        // If mouse is already inside the active element and showing this symbol, keep alive
+        if (this._currentTarget === el && this._cardEl && this._cardEl.classList.contains('visible') && this._currentSym === sym) {
+          this._isTargetHovered = true;
+          clearTimeout(this._hideTimer);
+          return;
+        }
+
         this._isTargetHovered = true;
         clearTimeout(this._hideTimer);
 
-        if (this._currentSym === sym && this._cardEl && this._cardEl.style.display !== 'none') {
-          // Already showing this symbol
+        if (this._currentSym === sym && this._cardEl && this._cardEl.classList.contains('visible')) {
           this._currentTarget = el;
           return;
         }
 
         clearTimeout(this._hoverTimer);
+        // Snappy dwell time (140ms): instant response when pausing on a ticker, avoids quick swipe triggers
         this._hoverTimer = setTimeout(() => {
           if (this._isTargetHovered) {
             this.show(el, sym);
           }
-        }, 220); // 220ms hover dwell time for instant response without cursor flickers
+        }, 140);
       }, true);
 
       // Global mouseout listener
       document.addEventListener('mouseout', (e) => {
         const symbolInfo = this._resolveSymbolFromEvent(e);
         if (!symbolInfo) return;
+
+        // CRITICAL ANTI-FLICKER: If moving to a child of the same element or into the hover card, do NOT cancel
+        const related = e.relatedTarget;
+        if (related) {
+          if (symbolInfo.el.contains(related)) {
+            return;
+          }
+          if (this._cardEl && this._cardEl.contains(related)) {
+            return;
+          }
+        }
 
         this._isTargetHovered = false;
         clearTimeout(this._hoverTimer);
@@ -154,20 +405,51 @@
 
     _resolveSymbolFromEvent(e) {
       const target = e.target;
-      if (!target || !target.closest) return null;
+      if (!target) return null;
 
-      // Priority 1: explicitly marked ticker containers
-      const el = target.closest('[data-ticker], [data-symbol], [data-tv-symbol], .ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .ticker-with-tooltip, .ticker-table-card, .tv-symbol-hover');
-      if (el) {
-        let sym = el.getAttribute('data-ticker') || el.getAttribute('data-symbol') || el.getAttribute('data-tv-symbol');
-        if (!sym) {
-          sym = (el.textContent || '').trim().replace(/^\$/, '').replace(/🔍/g, '').trim().toUpperCase();
-        }
-        sym = this._cleanTicker(sym);
-        if (sym) return { sym, el };
+      // Priority 1: Explicit data attributes on target or ancestors
+      const dataEl = target.closest('[data-ticker], [data-symbol], [data-tv-symbol], [data-sym], [data-target-ticker], [data-ticker-sym]');
+      if (dataEl) {
+        let raw = dataEl.getAttribute('data-ticker') ||
+                  dataEl.getAttribute('data-symbol') ||
+                  dataEl.getAttribute('data-tv-symbol') ||
+                  dataEl.getAttribute('data-sym') ||
+                  dataEl.getAttribute('data-target-ticker') ||
+                  dataEl.getAttribute('data-ticker-sym');
+        const sym = this._cleanTicker(raw, true);
+        if (sym) return { sym, el: dataEl };
       }
 
-      // Priority 2: table cell inside a column labeled Symbol or Ticker
+      // Priority 2: Dedicated ticker classes
+      const classEl = target.closest('.ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .target-sym-text, .ticker-with-tooltip, .ticker-table-card, .tv-symbol-hover, .ticker-badge, .opp-ticker, .ticker-tag, .asset-ticker, .hero-ticker, .ticker-symbol, .ticker-hero-sym, .ticker-name, .stock-sym, .opp-head-ticker');
+      if (classEl) {
+        let sym = this._cleanTicker(classEl.getAttribute('data-ticker') || classEl.textContent, true);
+        if (sym) return { sym, el: classEl };
+      }
+
+      // Priority 3: Links to research (/research/XYZ)
+      const linkEl = target.closest('a[href*="/research/"]');
+      if (linkEl) {
+        const href = linkEl.getAttribute('href') || '';
+        const m = href.match(/\/research\/([A-Za-z0-9_-]+)/);
+        if (m && m[1]) {
+          const sym = this._cleanTicker(m[1], true);
+          if (sym) return { sym, el: linkEl };
+        }
+      }
+
+      // Priority 4: Exact cashtag: $TICKER
+      const inlineEl = target.closest('span, strong, b, a, button, em, code, mark, h1, h2, h3, h4, td, div.badge, div.tag');
+      if (inlineEl) {
+        const txt = (inlineEl.textContent || '').trim();
+        const cashMatch = txt.match(/^\$([A-Z]{1,6})$/i);
+        if (cashMatch) {
+          const sym = this._cleanTicker(cashMatch[1], true);
+          if (sym) return { sym, el: inlineEl };
+        }
+      }
+
+      // Priority 5: Table cell inside column labeled Symbol/Ticker/Underlying/Asset
       const td = target.closest('td');
       if (td && td.parentElement) {
         const tr = td.parentElement;
@@ -177,23 +459,64 @@
           const th = table.querySelector(`thead tr th:nth-child(${cellIndex + 1})`);
           if (th) {
             const thText = (th.textContent || '').toUpperCase();
-            if (thText.includes('SYMBOL') || thText.includes('TICKER')) {
-              let sym = td.getAttribute('data-ticker') || (td.textContent || '').trim().replace(/^\$/, '').replace(/🔍/g, '').trim().toUpperCase();
-              sym = this._cleanTicker(sym);
+            if (thText.includes('SYMBOL') || thText.includes('TICKER') || thText.includes('UNDERLYING') || thText.includes('ASSET') || thText.includes('SYM')) {
+              const sym = this._cleanTicker(td.getAttribute('data-ticker') || td.textContent, true);
               if (sym) return { sym, el: td };
             }
           }
         }
       }
 
+      // Priority 6: Inline element whose trimmed text is 1-5 letters in uppercase
+      if (inlineEl) {
+        const txt = (inlineEl.textContent || '').trim();
+        if (/^\$?[A-Z]{1,5}$/.test(txt)) {
+          const isCash = txt.startsWith('$');
+          const sym = this._cleanTicker(txt, isCash);
+          if (sym) return { sym, el: inlineEl };
+        }
+      }
+
+      // Priority 7: Caret range word extraction from text node
+      if (document.caretRangeFromPoint && e.clientX && e.clientY) {
+        try {
+          const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+          if (range && range.startContainer && range.startContainer.nodeType === Node.TEXT_NODE) {
+            const nodeText = range.startContainer.textContent;
+            const offset = range.startOffset;
+            let start = offset;
+            while (start > 0 && /[A-Za-z0-9$]/.test(nodeText[start - 1])) start--;
+            let end = offset;
+            while (end < nodeText.length && /[A-Za-z0-9$]/.test(nodeText[end])) end++;
+            const word = nodeText.slice(start, end).trim();
+            if (word.startsWith('$') && word.length >= 2 && word.length <= 7) {
+              const sym = this._cleanTicker(word, true);
+              if (sym) {
+                const parentEl = range.startContainer.parentElement || target;
+                return { sym, el: parentEl };
+              }
+            }
+          }
+        } catch (err) {}
+      }
+
       return null;
     },
 
-    _cleanTicker(txt) {
+    _cleanTicker(txt, isCashtag = false) {
       if (!txt) return null;
-      const clean = txt.replace(/[^A-Z]/gi, '').toUpperCase();
-      if (clean.length >= 1 && clean.length <= 6 && !RESERVED_WORDS.has(clean)) {
-        return clean;
+      const clean = String(txt).replace(/^\$/, '').replace(/🔍/g, '').replace(/[^A-Z]/gi, '').toUpperCase().trim();
+      if (!clean) return null;
+
+      // 1-letter tickers (e.g. C, F, T, V) require cashtag or explicit attribute to avoid random letters
+      if (clean.length === 1) {
+        return isCashtag ? clean : null;
+      }
+
+      if (clean.length >= 2 && clean.length <= 5) {
+        if (!RESERVED_WORDS.has(clean) || (isCashtag && ['RUN', 'ALL', 'NEW', 'NOW', 'OUT', 'NET'].includes(clean))) {
+          return clean;
+        }
       }
       return null;
     },
@@ -210,7 +533,7 @@
     _getPrefixedSymbol(sym) {
       if (!sym) return '';
       if (sym.includes(':')) return sym;
-      const exch = (this._currentExchange || 'BATS').trim().toUpperCase();
+      const exch = (this._currentExchange || 'AUTO').trim().toUpperCase();
       if (!exch || exch === 'AUTO') {
         return sym;
       }
@@ -218,7 +541,7 @@
     },
 
     setExchange(exchange, updateFrame = true) {
-      this._currentExchange = (exchange || 'BATS').trim().toUpperCase();
+      this._currentExchange = (exchange || 'AUTO').trim().toUpperCase();
       try {
         localStorage.setItem('tv_hover_exchange', this._currentExchange);
       } catch (e) {}
@@ -248,18 +571,24 @@
       // Restore saved exchange preference
       try {
         const savedExch = localStorage.getItem('tv_hover_exchange');
-        if (savedExch) this._currentExchange = savedExch;
-      } catch (e) {}
+        if (savedExch && savedExch !== 'BATS') {
+          this._currentExchange = savedExch;
+        } else {
+          this._currentExchange = 'AUTO';
+        }
+      } catch (e) {
+        this._currentExchange = 'AUTO';
+      }
 
       const selectEl = document.getElementById('tv-hover-exchange');
       if (selectEl) {
-        selectEl.value = this._currentExchange || 'BATS';
+        selectEl.value = this._currentExchange || 'AUTO';
       }
 
-      // Intelligent default timeframe based on active desk
+      // Default timeframe
       const isIntradayDesk = (window.AppState && window.AppState.currentDesk === 'intraday');
       let defaultInterval = isIntradayDesk ? '15' : 'D';
-      
+
       // Update Title & Company Info
       const symEl = document.getElementById('tv-hover-sym');
       const nameEl = document.getElementById('tv-hover-name');
@@ -267,7 +596,7 @@
 
       if (symEl) symEl.textContent = `$${sym}`;
       if (nameEl) {
-        const comp = window.AppUtils ? AppUtils.getCompanyName(sym) : '';
+        const comp = this._getCompanyName(sym);
         nameEl.textContent = comp || 'Equities';
         nameEl.title = comp || sym;
       }
@@ -288,7 +617,7 @@
       // Interval pills
       this.setInterval(this._currentInterval || defaultInterval, false);
 
-      // Load Chart iframe with exchange prefix
+      // Load Chart iframe
       this._loadChartFrame(sym, this._currentInterval);
 
       // Viewport-aware positioning
@@ -347,6 +676,8 @@
       this.hide();
       if (window.AppSwing && typeof window.AppSwing.openTradingViewModal === 'function') {
         window.AppSwing.openTradingViewModal(sym, int);
+      } else {
+        window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
       }
     },
 
@@ -362,32 +693,60 @@
       }
     },
 
+    _getCompanyName(sym) {
+      if (window.AppUtils && typeof window.AppUtils.getCompanyName === 'function') {
+        return window.AppUtils.getCompanyName(sym);
+      }
+      if (window.COMPANY_NAMES && window.COMPANY_NAMES[sym]) {
+        return window.COMPANY_NAMES[sym];
+      }
+      const quick = {
+        'AAPL': 'Apple Inc.', 'NVDA': 'NVIDIA Corp', 'MSFT': 'Microsoft Corp',
+        'AMZN': 'Amazon.com Inc.', 'GOOG': 'Alphabet Inc.', 'GOOGL': 'Alphabet Inc.',
+        'META': 'Meta Platforms', 'TSLA': 'Tesla Inc.', 'PL': 'Palantir Technologies',
+        'AMD': 'Advanced Micro Devices', 'SPY': 'SPDR S&P 500 ETF', 'QQQ': 'Invesco QQQ Trust'
+      };
+      return quick[sym] || sym;
+    },
+
     _loadSpotPrice(sym, priceEl) {
       if (!priceEl) return;
       if (window.AppApi && typeof window.AppApi.getTickerQuote === 'function') {
-        window.AppApi.getTickerQuote(sym).then(q => {
-          if (q && q.price && this._currentSym === sym) {
-            const p = Number(q.price);
-            const chg = q.net_percent_change !== undefined ? Number(q.net_percent_change) : (q.change_pct !== undefined ? Number(q.change_pct) : null);
-            let chgHtml = '';
-            if (chg !== null) {
-              const chgColor = chg >= 0 ? '#10b981' : '#ef4444';
-              chgHtml = ` <span style="color:${chgColor};font-size:10px;">(${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%)</span>`;
+        window.AppApi.getTickerQuote(sym).then(q => this._renderPriceBadge(q, sym, priceEl)).catch(() => {});
+      } else {
+        fetch(`/api/quote?ticker=${encodeURIComponent(sym)}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data && this._currentSym === sym) {
+              const q = data.quote || data;
+              this._renderPriceBadge(q, sym, priceEl);
             }
-            const src = q.source ? `${q.source} Live` : 'Live';
-            priceEl.innerHTML = `<span class="tv-hover-live-pill" title="0-delay real-time quote directly from ${src} stream"><span class="dot live-pulse"></span>Live $${p.toFixed(2)}${chgHtml}</span>`;
-            priceEl.style.display = 'inline-flex';
-          }
-        }).catch(() => {});
+          })
+          .catch(() => {});
       }
+    },
+
+    _renderPriceBadge(q, sym, priceEl) {
+      if (!q || !priceEl || this._currentSym !== sym) return;
+      const p = Number(q.price || q.last || q.close);
+      if (!p || isNaN(p)) return;
+      const chg = q.net_percent_change !== undefined ? Number(q.net_percent_change) : (q.change_pct !== undefined ? Number(q.change_pct) : null);
+      let chgHtml = '';
+      if (chg !== null && !isNaN(chg)) {
+        const chgColor = chg >= 0 ? '#10b981' : '#ef4444';
+        chgHtml = ` <span style="color:${chgColor};font-size:10.5px;font-weight:700;">(${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%)</span>`;
+      }
+      const src = q.source ? `${q.source} Live` : 'Live';
+      priceEl.innerHTML = `<span class="tv-hover-live-pill" title="0-delay real-time quote directly from ${src} stream"><span class="dot live-pulse"></span>Live $${p.toFixed(2)}${chgHtml}</span>`;
+      priceEl.style.display = 'inline-flex';
     },
 
     _positionCard(targetEl) {
       if (!this._cardEl || !targetEl) return;
 
       const rect = targetEl.getBoundingClientRect();
-      const cardW = 560;
-      const cardH = 390;
+      const cardW = 580;
+      const cardH = 400;
       const padding = 12;
 
       let left = rect.right + padding;

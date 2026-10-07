@@ -220,6 +220,17 @@ window.App = {
         }
       }
 
+      // Check desk routing parameter (e.g. ?desk=trades, ?desk=radar, ?desk=screener, ?desk=portfolio, ?desk=watchlist)
+      let directDesk = urlParams.get('desk') || (window.location.hash.startsWith('#desk-') ? window.location.hash.replace('#desk-', '') : (window.location.hash.startsWith('#') ? window.location.hash.slice(1) : null));
+      if (directDesk) {
+        directDesk = directDesk.toLowerCase().trim();
+        if (directDesk === 'radar') directDesk = 'swing';
+        if (directDesk === 'screener') directDesk = 'screener'; // switchDesk maps to alerts + schwab
+        if (['today', 'swing', 'alerts', 'screener', 'watchlist', 'trades', 'portfolio', 'intraday', 'journal', 'record', 'logs'].includes(directDesk)) {
+          this.switchDesk(directDesk);
+        }
+      }
+
       if (directTicker) {
         directTicker = directTicker.toUpperCase().trim();
         console.log(`[DeepLink] Auto-opening research dossier for $${directTicker}...`);

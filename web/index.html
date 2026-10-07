@@ -47,8 +47,8 @@
     <!-- LEFT COLUMN: Main Trading Desks -->
     <div class="main-desks-column">
 
-      <!-- Main Desk Switcher Bar -->
-      <div class="desk-switcher-bar" style="display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:16px;">
+      <!-- Main Desk Switcher Bar (Sticky) -->
+      <div class="desk-switcher-bar">
         <button class="desk-nav-btn active" id="btn-desk-today" onclick="App.switchDesk('today')">
           <span>⚡</span> Today
         </button>
@@ -1519,7 +1519,7 @@
       <div id="rev-chat-thread" style="flex:1; min-height:0; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; font-size:12.5px; line-height:1.5; background:var(--bg-surface);">
         <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
           <div style="font-weight:700; color:var(--blue); font-size:11px; margin-bottom:4px;">⚡ REV CHAT READY</div>
-          <div style="color:var(--text-muted); font-size:12px;">Ask any question about today's research runs, what was learned, what to do today, tactical levels, or stock setups ($WMT, $MSFT, $AMZN). Live quotes & options available on demand!</div>
+          <div style="color:var(--text-muted); font-size:12px;">Ask any question about today's research runs, what was learned, what to do today, tactical levels, or stock setups (<span class="tv-symbol-hover" data-ticker="WMT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$WMT</span>, <span class="tv-symbol-hover" data-ticker="MSFT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$MSFT</span>, <span class="tv-symbol-hover" data-ticker="AMZN" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$AMZN</span>). Live quotes & options available on demand!</div>
         </div>
       </div>
 
@@ -2791,7 +2791,7 @@
   <script src="/static/js/alerts.js?v=85"></script>
   <script src="/static/js/chat.js?v=76"></script>
   <script src="/static/js/desk.js?v=6"></script>
-  <script src="/static/js/tv_hover.js?v=1"></script>
+  <script src="/static/js/tv_hover.js?v=2"></script>
   <script src="/static/js/app.js?v=76"></script>
 </body>
 </html>

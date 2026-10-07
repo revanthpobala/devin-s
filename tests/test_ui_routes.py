@@ -237,3 +237,16 @@ def test_api_research_ticker_trades(client):
     assert "total_suggestions" in data["summary"]
 
 
+def test_api_report_bundle_markdown_loading(client):
+    """Verify /api/report/latest/{ticker} loads markdown dossiers from disk."""
+    response = client.get("/api/report/latest/GOOGL")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ticker"] == "GOOGL"
+    assert data["date"] != ""
+    assert data["has_deep_research"] is True
+    assert len(data.get("summary_md") or "") > 100
+    assert len(data.get("arbitration_md") or "") > 100
+
+
+

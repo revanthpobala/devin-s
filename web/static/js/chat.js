@@ -730,7 +730,7 @@ window.AppChat = {
       thread.innerHTML = `
         <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
           <div style="font-weight:700; color:var(--blue); font-size:11px; margin-bottom:4px;">⚡ REV CHAT READY</div>
-          <div style="color:var(--text-muted); font-size:12px;">Ask any question about today's research runs, what was learned, what to do today, tactical levels, or stock setups ($WMT, $MSFT, $AMZN). Live quotes & options available on demand!</div>
+          <div style="color:var(--text-muted); font-size:12px;">Ask any question about today's research runs, what was learned, what to do today, tactical levels, or stock setups (<span class="tv-symbol-hover" data-ticker="WMT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$WMT</span>, <span class="tv-symbol-hover" data-ticker="MSFT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$MSFT</span>, <span class="tv-symbol-hover" data-ticker="AMZN" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$AMZN</span>). Live quotes & options available on demand!</div>
         </div>
       `;
       return;
