@@ -28,17 +28,17 @@
       font-family: var(--font-sans);
       margin: 0;
       padding: 0;
-      min-height: 100vh;
+      height: 100vh;
+      max-height: 100vh;
       display: flex;
       flex-direction: column;
-      overflow-x: hidden;
+      overflow: hidden;
     }
 
     /* Top Navigation Header */
     .research-header {
-      position: sticky;
-      top: 0;
-      z-index: 100;
+      position: relative;
+      flex-shrink: 0;
       height: var(--header-h);
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border);
@@ -217,9 +217,10 @@
 
     /* Tactical Levels Cards Ribbon */
     .tactical-ribbon {
+      flex-shrink: 0;
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border);
-      padding: 10px 16px;
+      padding: 8px 16px;
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 10px;
@@ -228,10 +229,10 @@
       background: var(--bg-subtle);
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
-      padding: 8px 12px;
+      padding: 6px 12px;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 2px;
     }
     .tactical-card-label {
       font-size: 10px;
@@ -245,12 +246,12 @@
     }
     .tactical-card-val {
       font-family: var(--font-mono);
-      font-size: 13.5px;
+      font-size: 13px;
       font-weight: 800;
       color: var(--text-main);
     }
     .tactical-card-sub {
-      font-size: 10.5px;
+      font-size: 10px;
       color: var(--text-muted);
     }
 
@@ -258,7 +259,7 @@
     .main-layout {
       display: flex;
       flex: 1;
-      height: calc(100vh - var(--header-h));
+      min-height: 0;
       overflow: hidden;
     }
 
@@ -267,12 +268,14 @@
       display: flex;
       flex-direction: column;
       min-width: 0;
+      min-height: 0;
       overflow: hidden;
       background: var(--bg-surface);
     }
 
     /* Tab Bar */
     .tab-bar {
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -436,6 +439,8 @@
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+      height: 100%;
+      min-height: 0;
       transition: width 0.2s ease, margin-right 0.2s ease;
       overflow: hidden;
     }
@@ -454,6 +459,7 @@
     }
     .copilot-messages {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 14px;
       display: flex;
@@ -691,6 +697,7 @@
           <button class="tab-btn" id="tab-ind-btn" onclick="switchTab('ind')">🧭 Model B (Independent)</button>
           <button class="tab-btn" id="tab-local-btn" onclick="switchTab('local')">📑 Local Dossier</button>
           <button class="tab-btn" id="tab-plan-btn" onclick="switchTab('plan')">🎯 Trade Plan</button>
+          <button class="tab-btn" id="tab-trades-btn" onclick="switchTab('trades')">💼 Suggested Trades (<span id="tab-trades-count">0</span>)</button>
           <button class="tab-btn" id="tab-chart-btn" onclick="switchTab('chart')">📸 Scraped Charts</button>
           <button class="tab-btn" id="tab-tv-btn" onclick="switchTab('tv')">📈 Live TradingView</button>
           <button class="tab-btn" id="tab-flow-btn" onclick="switchTab('flow')">🔥 Options Flow</button>
@@ -753,7 +760,7 @@
       copilotSessionId: 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7)
     };
 
-    // Parse URL params (/research/TICKER or /research/TICKER/DATE or ?ticker=...&date=...)
+    // Parse URL params (/research/TICKER, /research/TICKER/trades, /research/TICKER/DATE, or query params)
     function parseUrlParams() {
       const pathParts = window.location.pathname.split('/').filter(Boolean);
       let sym = '';
@@ -762,13 +769,29 @@
       if (pathParts.length >= 2 && pathParts[0].toLowerCase() === 'research') {
         sym = pathParts[1].toUpperCase();
         if (pathParts.length >= 3) {
-          dt = pathParts[2];
+          const sub = pathParts[2].toLowerCase();
+          if (sub === 'trades') {
+            State.activeTab = 'trades';
+            State.explicitTab = true;
+            dt = 'latest';
+          } else if (/^\d{4}-\d{2}-\d{2}$/.test(sub)) {
+            dt = sub;
+          } else if (['arb', 'sum', 'ind', 'local', 'plan', 'chart', 'tv', 'flow', 'history'].includes(sub)) {
+            State.activeTab = sub;
+            State.explicitTab = true;
+            dt = 'latest';
+          }
         }
       }
 
       const urlParams = new URLSearchParams(window.location.search);
       if (!sym) sym = (urlParams.get('ticker') || urlParams.get('sym') || 'AAPL').toUpperCase();
       if (!dt) dt = urlParams.get('date') || 'latest';
+      const qTab = (urlParams.get('tab') || '').toLowerCase();
+      if (qTab) {
+        State.activeTab = qTab;
+        State.explicitTab = true;
+      }
 
       State.ticker = sym;
       State.date = dt;
@@ -859,25 +882,33 @@
         renderTacticalRibbon(data);
         renderDateSelector(data);
 
-        // Determine default tab
-        if (!data.has_deep_research && data.has_local_dossier) {
-          State.activeTab = 'local';
-        } else if (data.has_deep_research) {
-          State.activeTab = 'arb';
-        } else {
-          State.activeTab = 'local';
+        // Determine default tab if not explicitly requested
+        if (!State.explicitTab) {
+          if (!data.has_deep_research && data.has_local_dossier) {
+            State.activeTab = 'local';
+          } else if (data.has_deep_research) {
+            State.activeTab = 'arb';
+          } else {
+            State.activeTab = 'local';
+          }
         }
+        updateTradesCount(State.ticker);
 
         renderActiveTab();
       } catch (e) {
-        contentEl.innerHTML = `
-          <div class="empty-state-box">
-            <div class="empty-state-icon">⚠️</div>
-            <div class="empty-state-title">Failed to Load Report</div>
-            <div class="empty-state-desc">${e.message}</div>
-            <button class="btn-action btn-primary-gradient" onclick="loadReportBundle(State.ticker, State.date)">Retry</button>
-          </div>
-        `;
+        if (State.activeTab === 'trades') {
+          updateTradesCount(State.ticker);
+          renderTradesTab(contentEl, State.ticker);
+        } else {
+          contentEl.innerHTML = `
+            <div class="empty-state-box">
+              <div class="empty-state-icon">⚠️</div>
+              <div class="empty-state-title">Failed to Load Report</div>
+              <div class="empty-state-desc">${e.message}</div>
+              <button class="btn-action btn-primary-gradient" onclick="loadReportBundle(State.ticker, State.date)">Retry</button>
+            </div>
+          `;
+        }
       }
     }
 
@@ -980,6 +1011,11 @@
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.id === `tab-${tab}-btn`);
       });
+      if (tab === 'trades') {
+        window.history.pushState({}, '', `/research/${State.ticker}/trades`);
+      } else {
+        window.history.pushState({}, '', `/research/${State.ticker}`);
+      }
       renderActiveTab();
     }
 
@@ -987,12 +1023,19 @@
       const tab = State.activeTab;
       const data = State.reportData;
       const bodyEl = document.getElementById('dossier-content');
-      if (!data || !bodyEl) return;
+      if (!bodyEl) return;
 
       // Ensure tab button reflects active state
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.id === `tab-${tab}-btn`);
       });
+
+      if (tab === 'trades') {
+        renderTradesTab(bodyEl, State.ticker);
+        return;
+      }
+
+      if (!data) return;
 
       if (tab === 'arb') {
         const content = data.arbitration_md;
@@ -1222,6 +1265,205 @@
       `;
     }
 
+    async function updateTradesCount(ticker) {
+      if (!ticker) return;
+      try {
+        const res = await fetch(`/api/research/${encodeURIComponent(ticker)}/trades`);
+        if (res.ok) {
+          const data = await res.json();
+          const countEl = document.getElementById('tab-trades-count');
+          if (countEl) countEl.innerText = data.total_trades || 0;
+        }
+      } catch (e) {}
+    }
+
+    async function renderTradesTab(el, ticker) {
+      el.innerHTML = `<div style="padding:40px; text-align:center; color:var(--text-muted);">⏳ Loading suggested trades for <strong>$${esc(ticker)}</strong>...</div>`;
+      try {
+        const res = await fetch(`/api/research/${encodeURIComponent(ticker)}/trades`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const trades = data.trades || [];
+        const summary = data.summary || {};
+
+        const countEl = document.getElementById('tab-trades-count');
+        if (countEl) countEl.innerText = trades.length;
+
+        if (trades.length === 0) {
+          el.innerHTML = `
+            <div class="empty-state-box">
+              <div class="empty-state-icon">💼</div>
+              <div class="empty-state-title">No Suggested Trades for $${esc(ticker)}</div>
+              <div class="empty-state-desc">No swing research suggestions, alert ingestor positions, or broker executions recorded yet for $${esc(ticker)}.</div>
+              <div style="display:flex; justify-content:center; gap:10px;">
+                <button class="btn-action btn-primary-gradient" onclick="triggerDeepResearch()">⚡ Run Deep Research</button>
+                <button class="btn-action btn-secondary" onclick="switchTab('plan')">🎯 View Suggested Plan</button>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
+        const tableRows = trades.map(t => {
+          const isShort = (t.side === 'SHORT');
+          const sideBadge = isShort
+            ? '<span class="pill red" style="font-size:9.5px; padding:1px 5px; font-weight:800;">SHORT</span>'
+            : '<span class="pill green" style="font-size:9.5px; padding:1px 5px; font-weight:800;">LONG</span>';
+
+          const st = (t.status || 'PENDING').toUpperCase();
+          let stBadge = '<span class="pill" style="font-size:9.5px; padding:1px 6px;">CLOSED</span>';
+          if (st === 'WIN') {
+            stBadge = '<span class="pill green" style="font-size:9.5px; padding:2px 7px; font-weight:800; box-shadow:0 0 6px rgba(16,185,129,0.3);">🏆 WIN</span>';
+          } else if (st === 'LOSS') {
+            stBadge = '<span class="pill red" style="font-size:9.5px; padding:2px 7px; font-weight:800;">🛑 LOSS</span>';
+          } else if (st === 'ACTIVE' || st === 'FILLED' || st === 'OPEN') {
+            stBadge = '<span class="pill green pulse" style="font-size:9.5px; padding:2px 7px; font-weight:800;">ACTIVE</span>';
+          } else if (st === 'PENDING') {
+            stBadge = '<span class="pill amber" style="font-size:9.5px; padding:1px 6px; font-weight:700;">⏳ PENDING</span>';
+          } else if (st.includes('REJECTED')) {
+            stBadge = '<span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.7;">EXCLUDED</span>';
+          } else if (st.includes('TARGET')) {
+            stBadge = '<span class="pill green" style="font-size:9.5px; padding:1px 6px; font-weight:800;">TARGET HIT</span>';
+          } else if (st.includes('STOP')) {
+            stBadge = '<span class="pill red" style="font-size:9.5px; padding:1px 6px; font-weight:800;">STOPPED</span>';
+          }
+
+          let pnlHtml = '<span style="color:var(--text-muted);">--</span>';
+          if (t.r_net !== undefined && t.r_net !== null) {
+            const rVal = Number(t.r_net);
+            const rCol = rVal >= 0 ? '#10b981' : '#f43f5e';
+            pnlHtml = `<span style="font-weight:800; font-family:var(--font-mono); font-size:12px; color:${rCol};">${rVal >= 0 ? '+' : ''}${rVal.toFixed(2)}R</span>`;
+            if (t.gross_r !== undefined && t.gross_r !== null && t.gross_r !== t.r_net) {
+              pnlHtml += `<div style="font-size:9.5px; color:var(--text-muted);">Gross: ${Number(t.gross_r).toFixed(2)}R</div>`;
+            }
+          } else if (t.pnl_dollars !== undefined && t.pnl_dollars !== null) {
+            const dVal = Number(t.pnl_dollars);
+            const dCol = dVal >= 0 ? '#10b981' : '#f43f5e';
+            pnlHtml = `<span style="font-weight:800; font-family:var(--font-mono); font-size:12px; color:${dCol};">${dVal >= 0 ? '+' : ''}$${dVal.toFixed(2)}</span>`;
+          }
+
+          let entryRange = '--';
+          if (t.entry_low && t.entry_high) {
+            entryRange = (t.entry_low === t.entry_high) ? `$${Number(t.entry_low).toFixed(2)}` : `$${Number(t.entry_low).toFixed(2)} - $${Number(t.entry_high).toFixed(2)}`;
+          } else if (t.entry_low) {
+            entryRange = `$${Number(t.entry_low).toFixed(2)}`;
+          } else if (t.breakout_level) {
+            entryRange = `BO: $${Number(t.breakout_level).toFixed(2)}`;
+          }
+
+          const fillPrice = t.fill_price ? `$${Number(t.fill_price).toFixed(2)}` : '--';
+          const exitPrice = t.exit_price ? `$${Number(t.exit_price).toFixed(2)}` : '--';
+          const stopPrice = t.stop_loss ? `$${Number(t.stop_loss).toFixed(2)}` : '--';
+          const targetPrice = t.target_1 ? `$${Number(t.target_1).toFixed(2)}` : '--';
+          const t2Price = t.target_2 ? `$${Number(t.target_2).toFixed(2)}` : '';
+
+          return `
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:10px 12px; font-weight:700;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span style="color:var(--text-main); font-size:12.5px;">${esc(t.name)}</span>
+                  <span class="pill" style="font-size:8.5px; padding:1px 5px; color:var(--text-muted);">${esc(t.source)}</span>
+                  ${t.gate_status === 'PASS' ? '<span class="pill green" style="font-size:8px; padding:0 4px;">GATE PASS</span>' : (t.gate_status ? `<span class="pill" style="font-size:8px; padding:0 4px; opacity:0.7;">${esc(t.gate_status)}</span>` : '')}
+                </div>
+                <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">Signal: ${esc((t.date || t.fill_date || '').substring(0, 10))} ${t.entry_type ? `· ${t.entry_type}` : ''}</div>
+                ${t.notes ? `<div style="font-size:10px; color:var(--text-muted); margin-top:2px; font-style:italic;">${esc(t.notes)}</div>` : ''}
+              </td>
+              <td style="text-align:center; padding:10px 6px;">${sideBadge}</td>
+              <td style="text-align:center; padding:10px 6px;">${stBadge}</td>
+              <td style="font-family:var(--font-mono); font-size:11.5px; white-space:nowrap; padding:10px 8px;">
+                <div style="font-weight:700; color:var(--cyan);">${entryRange}</div>
+                ${stopPrice !== '--' ? `<span style="color:var(--rose); font-size:10.5px;">Stop: ${stopPrice}</span>` : ''}
+                ${targetPrice !== '--' ? `<span style="color:var(--emerald); font-size:10.5px; margin-left:4px;">T1: ${targetPrice}</span>` : ''}
+                ${t2Price ? `<span style="color:var(--emerald); font-size:10.5px; margin-left:4px;">T2: ${t2Price}</span>` : ''}
+              </td>
+              <td style="font-family:var(--font-mono); font-size:11.5px; white-space:nowrap; padding:10px 8px;">
+                ${t.fill_price ? `<div style="font-weight:800; color:var(--text-main);">${fillPrice}</div><div style="font-size:10px; color:var(--text-muted);">${esc((t.fill_date || '').substring(0, 10))}</div>` : '<span style="color:var(--text-muted);">Unfilled</span>'}
+              </td>
+              <td style="font-family:var(--font-mono); font-size:11.5px; white-space:nowrap; padding:10px 8px;">
+                ${t.exit_price ? `<div style="font-weight:800; color:var(--text-main);">${exitPrice}</div><div style="font-size:10px; color:var(--text-muted);">${esc((t.exit_date || '').substring(0, 10))}</div>` : '<span style="color:var(--text-muted);">--</span>'}
+              </td>
+              <td style="font-family:var(--font-mono); text-align:right; padding:10px 10px;">
+                ${pnlHtml}
+                ${t.bars_held ? `<div style="font-size:9.5px; color:var(--text-muted);">${t.bars_held} bars</div>` : ''}
+              </td>
+              <td style="font-size:11px; color:var(--text-muted); padding:10px 10px;">
+                <div style="font-weight:600; color:var(--text-main);">${esc(t.exit_reason || (t.gate_reasons || '--'))}</div>
+                ${t.mae_r !== undefined && t.mae_r !== null ? `<div style="font-size:9.5px; color:var(--text-muted);">MAE: ${Number(t.mae_r).toFixed(2)}R</div>` : ''}
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+        el.innerHTML = `
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <!-- Performance Scorecard -->
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px;">
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 14px;">
+                <div style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Total Suggestions</div>
+                <div style="font-size:18px; font-weight:900; color:var(--cyan); font-family:var(--font-mono);">${summary.total_suggestions || trades.length}</div>
+              </div>
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 14px;">
+                <div style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Win Rate</div>
+                <div style="font-size:18px; font-weight:900; color:${(summary.win_rate_pct || 0) >= 50 ? 'var(--emerald)' : 'var(--amber)'}; font-family:var(--font-mono);">${summary.win_rate_pct || 0}%</div>
+                <div style="font-size:9.5px; color:var(--text-muted);">${summary.wins || 0}W / ${summary.losses || 0}L (${summary.closed_trades || 0} closed)</div>
+              </div>
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 14px;">
+                <div style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Total Net R</div>
+                <div style="font-size:18px; font-weight:900; color:${(summary.total_r_net || 0) >= 0 ? 'var(--emerald)' : 'var(--rose)'}; font-family:var(--font-mono);">${(summary.total_r_net || 0) >= 0 ? '+' : ''}${summary.total_r_net || 0}R</div>
+              </div>
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 14px;">
+                <div style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Avg R / Trade</div>
+                <div style="font-size:18px; font-weight:900; color:${(summary.avg_r_net || 0) >= 0 ? 'var(--emerald)' : 'var(--rose)'}; font-family:var(--font-mono);">${(summary.avg_r_net || 0) >= 0 ? '+' : ''}${summary.avg_r_net || 0}R</div>
+              </div>
+              <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 14px;">
+                <div style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Active / Pending</div>
+                <div style="font-size:18px; font-weight:900; color:var(--text-main); font-family:var(--font-mono);">${summary.active_trades || 0} <span style="font-size:12px; font-weight:600; color:var(--text-muted);">/ ${summary.pending_trades || 0}</span></div>
+              </div>
+            </div>
+
+            <!-- Ledger Table -->
+            <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">
+              <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 16px; background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size:13px; font-weight:800; color:var(--cyan); font-family:var(--font-heading);">💼 Suggested Trade Setups &amp; History for $${esc(ticker)}</span>
+                  <span class="pill" style="font-size:10px; font-weight:700;">${trades.length} Setups</span>
+                </div>
+                <button class="btn-action btn-secondary" onclick="renderTradesTab(document.getElementById('dossier-content'), State.ticker)" style="font-size:11px;">🔄 Refresh</button>
+              </div>
+
+              <div style="overflow-x:auto;">
+                <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+                  <thead>
+                    <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border); font-size:10.5px; text-transform:uppercase; color:var(--text-muted);">
+                      <th style="text-align:left; padding:8px 10px;">Setup &amp; Signal Date</th>
+                      <th style="text-align:center; padding:8px 6px;">Side</th>
+                      <th style="text-align:center; padding:8px 6px;">Status</th>
+                      <th style="text-align:left; padding:8px 8px;">Planned Levels (Entry / Stop / T1)</th>
+                      <th style="text-align:left; padding:8px 8px;">Actual Fill</th>
+                      <th style="text-align:left; padding:8px 8px;">Exit</th>
+                      <th style="text-align:right; padding:8px 10px;">PnL (R-Return)</th>
+                      <th style="text-align:left; padding:8px 10px;">Exit Reason / Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${tableRows}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        `;
+      } catch (e) {
+        el.innerHTML = `
+          <div class="empty-state-box">
+            <div class="empty-state-icon">⚠️</div>
+            <div class="empty-state-title">Failed to Load Suggested Trades</div>
+            <div class="empty-state-desc">${e.message}</div>
+            <button class="btn-action btn-primary-gradient" onclick="renderTradesTab(document.getElementById('dossier-content'), State.ticker)">Retry</button>
+          </div>
+        `;
+    }
+
     // Markdown Parser Wrapper
     function parseMarkdown(mdText) {
       if (!mdText) return '';
@@ -1419,7 +1661,8 @@
       if (e.key === 'Enter') {
         const val = (e.target.value || '').trim().toUpperCase();
         if (val) {
-          window.location.href = `/research/${val}`;
+          const sub = State.activeTab === 'trades' ? '/trades' : '';
+          window.location.href = `/research/${val}${sub}`;
         }
       }
     }
@@ -1439,6 +1682,12 @@
       parseUrlParams();
       loadConstituentDatalist();
       loadReportBundle(State.ticker, State.date);
+
+      // Listen for browser Back/Forward navigation
+      window.addEventListener('popstate', () => {
+        parseUrlParams();
+        renderActiveTab();
+      });
 
       // Auto poll live price every 15 seconds
       setInterval(refreshLivePrice, 15000);

@@ -143,7 +143,7 @@ window.AppIntraday = {
               <tr>
                 <td>
                   <div style="display:flex; align-items:center; gap:8px;">
-                    <span class="tv-symbol-hover" data-ticker="${sym}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="if(window.AppSwing) AppSwing.openTradingViewModal('${sym}', '15')" title="${compTitle} ($${sym}) · Hover for Live Chart">${sym}</span>
+                    <span class="tv-symbol-hover" data-ticker="${sym}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="if(window.AppSwing) AppSwing.openReportModal(null, '${sym}')" title="${compTitle} ($${sym}) · Click to open /research/${sym} · Hover for Live Chart">${sym}</span>
                     <span style="font-size:11px; font-weight:600; color:var(--text-main); font-family:'JetBrains Mono', monospace;">${s.contract}</span>
                   </div>
                 </td>
@@ -539,7 +539,7 @@ window.AppIntraday = {
             return `
               <tr>
                 <td style="color:var(--text-muted); font-size:11px; white-space:nowrap;">${timeStr}</td>
-                <td class="tv-symbol-hover" data-ticker="${a.symbol}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="if(window.AppSwing) AppSwing.openTradingViewModal('${a.symbol}', '15')" title="${compTitle} ($${a.symbol}) · Click to open chart · Hover for Live TradingView Chart">${a.symbol}</td>
+                <td class="tv-symbol-hover" data-ticker="${a.symbol}" style="font-weight:700; color:var(--cyan-glow); cursor:pointer;" onclick="if(window.AppSwing) AppSwing.openReportModal(null, '${a.symbol}')" title="${compTitle} ($${a.symbol}) · Click to open /research/${a.symbol} · Hover for Live Chart">${a.symbol}</td>
                 <td><span class="pill ${badgeColor}" style="padding:2px 8px; font-size:10px; font-weight:700;">${actUpper}</span></td>
                 <td style="font-weight:600;">${px}</td>
                 <td style="font-size:11px; color:var(--text-main); font-weight:600;">${gradeScore}</td>

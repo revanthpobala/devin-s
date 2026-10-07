@@ -215,3 +215,23 @@ def test_research_hub_page(client):
     assert "text/html" in response.headers.get("content-type", "")
     assert "Deep Research Dossier" in response.text
 
+
+def test_research_ticker_trades_page(client):
+    """Verify /research/{ticker}/trades serves the research HTML page with trades view."""
+    response = client.get("/research/CAT/trades")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "Trades Taken" in response.text
+
+
+def test_api_research_ticker_trades(client):
+    """Verify /api/research/{ticker}/trades returns JSON list of trades taken."""
+    response = client.get("/api/research/AMD/trades")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["ticker"] == "AMD"
+    assert "trades" in data
+    assert isinstance(data["trades"], list)
+
+

@@ -37,6 +37,22 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+_orig_print = print
+
+def print(*args, **kwargs):
+    try:
+        _orig_print(*args, **kwargs)
+    except UnicodeEncodeError:
+        try:
+            enc = getattr(sys.stdout, "encoding", "ascii") or "ascii"
+            safe_args = [
+                str(a).encode(enc, errors="replace").decode(enc)
+                for a in args
+            ]
+            _orig_print(*safe_args, **kwargs)
+        except Exception:
+            pass
+
 import numpy as np
 import pandas as pd
 
@@ -1685,7 +1701,7 @@ def run_schwab_pre_move_scan(
         filtered_out = len(final_survivors) - len(long_top_picks)
 
         print("\n" + "=" * 135)
-        print(f">> 🎯 TOP {len(long_top_picks)} PRE-MOVE SWING SETUPS (Schwab 1000 Index / SCHK)")
+        print(f">> [*] TOP {len(long_top_picks)} PRE-MOVE SWING SETUPS (Schwab 1000 Index / SCHK)")
         if filtered_out > 0:
             print(f">> Filtered out {filtered_out} low-conviction/declining tickers. Showing best setups tight.")
         print(f">> Market Tide: {market_tide.get('trend_str')} (SPY ${market_tide.get('last_px'):.2f})")

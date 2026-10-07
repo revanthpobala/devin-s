@@ -377,7 +377,7 @@ window.AppSwing = {
                 ${c.eligible === false ? 'title="No PB funnel — a measured exclusion. Post-2020 non-PB onsets average +0.012R, which is noise."' : ''}
                 onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
               <td style="padding:8px 10px;">
-                <button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer;" title="${compTitle} ($${sym}) - Click to view live TradingView Chart" data-ticker="${sym}">$${sym}</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.openReportModal(null, '${sym}')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer;" title="${compTitle} ($${sym}) - Click to open /research/${sym}" data-ticker="${sym}">$${sym}</button>
               </td>
               <td style="text-align:right; padding:8px 10px; font-weight:700; font-family:var(--font-mono);">${px}</td>
               <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); color:var(--red-light);">${stop}</td>
@@ -519,7 +519,7 @@ window.AppSwing = {
           html += `
             <tr style="border-bottom:1px solid var(--border); transition:background 0.2s;" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
               <td style="padding:8px 10px;">
-                <button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer; color:var(--red-light); border-color:#fca5a5;" title="${compTitle} ($${sym}) - Click to view live TradingView Chart" data-ticker="${sym}">$${sym}</button>
+                <button class="ticker-pill-btn" onclick="AppSwing.openReportModal(null, '${sym}')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer; color:var(--red-light); border-color:#fca5a5;" title="${compTitle} ($${sym}) - Click to open /research/${sym}" data-ticker="${sym}">$${sym}</button>
               </td>
               <td style="text-align:right; padding:8px 10px; font-weight:700; font-family:var(--font-mono);">${px}</td>
               <td style="text-align:right; padding:8px 10px; font-family:var(--font-mono); font-weight:700; color:var(--rose-light);">${stop}</td>
@@ -985,7 +985,7 @@ window.AppSwing = {
           <div class="target-card">
             <div class="target-header">
               <div class="target-sym">
-                <span class="target-sym-text" title="${compTitle} ($${t.ticker})" data-ticker="${t.ticker}" style="cursor:help;">${t.ticker}</span>
+                <span class="target-sym-text" title="${compTitle} ($${t.ticker}) · Click to open /research/${t.ticker}" data-ticker="${t.ticker}" style="cursor:pointer;" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')">${t.ticker}</span>
                 ${sideBadge}
                 <span class="spot-badge">$${spot.toFixed(2)}</span>
                 <span class="badge ${statusClass}">${t.status} (${distDisplay})</span>
@@ -1376,7 +1376,49 @@ window.AppSwing = {
     }
   },
 
-  async openReportModal(date, ticker, initialTab = null) {
+  openReportModal(date, ticker, initialTab = null) {
+    if (date === 'undefined' || date === 'null' || date === '') date = null;
+    if (ticker === 'undefined' || ticker === 'null' || ticker === '') ticker = null;
+
+    const isDate = v => v && (String(v).includes('-') || ['latest', 'today', 'now'].includes(String(v).toLowerCase().trim()));
+    if (date && !ticker) {
+      if (!isDate(date)) {
+        ticker = date;
+        date = null;
+      }
+    } else if (date && ticker) {
+      if (!isDate(date) && isDate(ticker)) {
+        const tmp = date;
+        date = ticker;
+        ticker = tmp;
+      }
+    }
+    ticker = (ticker || '').toUpperCase().trim();
+    if (!ticker) return;
+
+    let targetUrl = `/research/${encodeURIComponent(ticker)}`;
+    if (initialTab === 'trades') {
+      targetUrl += '/trades';
+    } else {
+      const params = [];
+      if (date && isDate(date) && date !== 'latest') {
+        params.push(`date=${encodeURIComponent(date)}`);
+      }
+      if (initialTab && initialTab !== 'trades') {
+        params.push(`tab=${encodeURIComponent(initialTab)}`);
+      }
+      if (params.length > 0) {
+        targetUrl += '?' + params.join('&');
+      }
+    }
+
+    const win = window.open(targetUrl, '_blank');
+    if (!win) {
+      window.location.href = targetUrl;
+    }
+  },
+
+  async openReportModalLegacy(date, ticker, initialTab = null) {
     if (date === 'undefined' || date === 'null' || date === '') date = null;
     if (ticker === 'undefined' || ticker === 'null' || ticker === '') ticker = null;
 

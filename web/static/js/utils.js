@@ -207,7 +207,7 @@ window.AppUtils = {
 
   /**
    * Render a ticker symbol with company name tooltip
-   */
+    */
   renderTicker(ticker, options = {}) {
     if (!ticker) return '';
     const sym = String(ticker).toUpperCase().replace(/^\$/, '').trim();
@@ -216,15 +216,15 @@ window.AppUtils = {
     const cls = options.className || 'ticker-with-tooltip';
     const style = options.style || '';
     const escapedName = this.escapeHtml(name);
-    return `<span class="${cls}" title="${escapedName}" data-ticker="${sym}" style="cursor:help; ${style}">${prefix}${sym}</span>`;
+    return `<a href="/research/${sym}" target="_blank" class="${cls}" title="${escapedName} ($${sym}) · Click to open dedicated page" data-ticker="${sym}" style="cursor:pointer; text-decoration:none; color:inherit; ${style}" onclick="event.stopPropagation();">${prefix}${sym}</a>`;
   },
 
   /**
-   * Retroactively decorate all tickers in DOM container with company name tooltips
+   * Retroactively decorate all tickers in DOM container with company name tooltips and new-tab navigation
    */
   decorateTickerTooltips(root = document) {
     try {
-      const candidates = root.querySelectorAll('.ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .recent-job-row strong, .ticker-with-tooltip, .ticker-table-card, [data-ticker]');
+      const candidates = root.querySelectorAll('.ticker-pill-btn, .ticker-cell-sym, .radar-ticker-sym, .target-sym-text, .recent-job-row strong, .ticker-with-tooltip, .ticker-table-card, [data-ticker]');
       candidates.forEach(el => {
         let sym = el.getAttribute('data-ticker');
         if (!sym) {
@@ -236,12 +236,27 @@ window.AppUtils = {
         if (sym) {
           const comp = this.getCompanyName(sym);
           if (comp && (!el.title || el.title.startsWith('Click to open') || el.title.length < comp.length)) {
-            el.title = `${sym}: ${comp} · Hover for Live TradingView Chart`;
+            el.title = `${sym}: ${comp} · Click to open /research/${sym} · Hover for Live Chart`;
           }
           if (!el.getAttribute('data-ticker')) {
             el.setAttribute('data-ticker', sym);
           }
           el.classList.add('tv-symbol-hover');
+          const isTickerPill = el.classList.contains('ticker-pill-btn');
+          if (!el.dataset.tickerClickBound && (el.tagName !== 'BUTTON' || isTickerPill) && el.tagName !== 'INPUT' && el.tagName !== 'A' && !el.closest('a')) {
+            el.dataset.tickerClickBound = '1';
+            el.style.cursor = 'pointer';
+            el.addEventListener('click', (e) => {
+              if (e.target.closest('button.secondary, input, select, textarea, a, .btn-action, .btn:not(.ticker-pill-btn)')) return;
+              e.stopPropagation();
+              e.preventDefault();
+              if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
+                window.AppSwing.openReportModal(null, sym);
+              } else {
+                window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
+              }
+            });
+          }
         }
       });
     } catch (e) {

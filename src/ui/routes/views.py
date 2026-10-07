@@ -42,6 +42,18 @@ def research_ticker_page(ticker: str, date: str = None, view: str = "standalone"
     raise HTTPException(status_code=404, detail="Research view not found")
 
 
+@router.get("/research/{ticker}/trades", response_class=FileResponse)
+def research_ticker_trades_page(ticker: str):
+    """Serve the research dossier view for a ticker with trades tab focused."""
+    research_file = WEB_DIR / "research.html"
+    if research_file.exists():
+        return FileResponse(str(research_file))
+    index_file = WEB_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    raise HTTPException(status_code=404, detail="Research view not found")
+
+
 @router.get("/research/{ticker}/{date}", response_class=FileResponse)
 def research_ticker_date_page(ticker: str, date: str, view: str = "standalone"):
     """Serve research dossier view for a specific ticker and date."""

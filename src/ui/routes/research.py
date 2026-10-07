@@ -1456,6 +1456,193 @@ def get_latest_chart_image(ticker: str, chart_type: str):
     return FileResponse(str(img_path), media_type="image/png")
 
 
+@router.get("/api/research/{ticker}/trades")
+def get_ticker_trades_endpoint(ticker: str):
+    """
+    Returns all trades taken under this ticker by name from:
+    1. suggestions (user-taken or filled swing trades)
+    2. positions (alert ingestor live/closed positions)
+    3. schwab_positions (live Schwab broker executions)
+    """
+    sym = validate_ticker(ticker)
+    trades = []
+
+    def _val(row, key, default=None):
+        return row[key] if key in row.keys() else default
+
+    # 1. suggestions from research_watch.db (complete suggested trade history & performance)
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            table_check = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='suggestions'").fetchone()
+            if table_check:
+                rows = c.execute(
+                    "SELECT * FROM suggestions WHERE UPPER(ticker) = ? ORDER BY date DESC, id DESC",
+                    (sym,)
+                ).fetchall()
+                for r in rows:
+                    f_price = _val(r, "your_fill") if _val(r, "your_fill") is not None else _val(r, "fill_price")
+                    gate_st = _val(r, "gate_status") or "PASS"
+                    exit_d = _val(r, "exit_date")
+                    exit_p = _val(r, "exit_price")
+                    r_net = _val(r, "r_net")
+                    gross_r = _val(r, "gross_r")
+
+                    if exit_d or exit_p:
+                        if r_net is not None and float(r_net) > 0:
+                            status = "WIN"
+                        elif r_net is not None and float(r_net) < 0:
+                            status = "LOSS"
+                        else:
+                            status = "CLOSED"
+                    elif f_price:
+                        status = "ACTIVE"
+                    elif gate_st == "PASS":
+                        status = "PENDING"
+                    else:
+                        status = gate_st
+
+                    trades.append({
+                        "id": f"sugg_{r['id']}",
+                        "name": _val(r, "setup_lane") or _val(r, "kind") or "Swing Setup",
+                        "source": "Swing Suggestion",
+                        "side": _val(r, "side") or "LONG",
+                        "date": _val(r, "date"),
+                        "status": status,
+                        "gate_status": gate_st,
+                        "gate_reasons": _val(r, "gate_reasons"),
+                        "entry_type": _val(r, "entry_type") or "LIMIT",
+                        "entry_low": _val(r, "entry_low"),
+                        "entry_high": _val(r, "entry_high"),
+                        "breakout_level": _val(r, "breakout_level"),
+                        "stop_loss": _val(r, "stop"),
+                        "target_1": _val(r, "target_1"),
+                        "target_2": _val(r, "target_2"),
+                        "planned_rr": _val(r, "planned_rr"),
+                        "fill_date": _val(r, "fill_date") or _val(r, "date"),
+                        "fill_price": f_price,
+                        "exit_date": exit_d,
+                        "exit_price": exit_p,
+                        "exit_reason": _val(r, "exit_reason"),
+                        "bars_held": _val(r, "bars_held"),
+                        "gross_r": gross_r,
+                        "r_net": r_net,
+                        "mae_r": _val(r, "mae_r"),
+                        "taken": bool(_val(r, "taken")),
+                        "verdict": _val(r, "verdict"),
+                        "notes": _val(r, "notes"),
+                    })
+    except Exception as e:
+        logger.warning(f"Error querying suggestions for ticker trades {sym}: {e}")
+
+    # 2. positions from trading_alerts.db
+    try:
+        alerts_db = config.alerts_db_path()
+        if alerts_db.exists():
+            with sqlite3.connect(str(alerts_db), timeout=5.0) as aconn:
+                aconn.row_factory = sqlite3.Row
+                c = aconn.cursor()
+                table_check = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='positions'").fetchone()
+                if table_check:
+                    rows = c.execute(
+                        "SELECT * FROM positions WHERE UPPER(symbol) = ? ORDER BY opened_at DESC",
+                        (sym,)
+                    ).fetchall()
+                    for r in rows:
+                        strat = _val(r, "strategy") or _val(r, "strategy_id") or "Alert Ingestor Trade"
+                        trades.append({
+                            "id": _val(r, "trade_id") or f"pos_{sym}_{_val(r, 'opened_at')}",
+                            "name": strat,
+                            "source": "Alert Ingestor",
+                            "side": _val(r, "side") or "LONG",
+                            "status": _val(r, "status") or "CLOSED",
+                            "fill_date": _val(r, "opened_at"),
+                            "fill_price": _val(r, "entry_price"),
+                            "stop_loss": _val(r, "stop"),
+                            "target_1": _val(r, "target"),
+                            "target_2": None,
+                            "exit_date": _val(r, "closed_at"),
+                            "exit_price": _val(r, "exit_price"),
+                            "exit_reason": _val(r, "exit_reason"),
+                            "quantity": _val(r, "quantity"),
+                            "pnl_dollars": _val(r, "realized_broker_pnl"),
+                            "notes": f"Quantity: {_val(r, 'quantity')}" if _val(r, "quantity") else "",
+                        })
+    except Exception as e:
+        logger.warning(f"Error querying positions for ticker trades {sym}: {e}")
+
+    # 3. schwab_positions from schwab_portfolio.db
+    try:
+        schwab_db = config.BASE_DIR / "data" / "schwab_portfolio.db"
+        if schwab_db.exists():
+            with sqlite3.connect(str(schwab_db), timeout=5.0) as sconn:
+                sconn.row_factory = sqlite3.Row
+                c = sconn.cursor()
+                table_check = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schwab_positions'").fetchone()
+                if table_check:
+                    rows = c.execute(
+                        "SELECT * FROM schwab_positions WHERE UPPER(symbol) = ? OR UPPER(underlying_symbol) = ? ORDER BY id DESC",
+                        (sym, sym)
+                    ).fetchall()
+                    for r in rows:
+                        desc = _val(r, "description") or _val(r, "symbol")
+                        asset_type = _val(r, "asset_type", "")
+                        name_str = f"Schwab {asset_type} - {desc}".strip()
+                        qty = _val(r, "quantity", 0) or 0
+                        trades.append({
+                            "id": f"schwab_{r['id']}",
+                            "name": name_str,
+                            "source": "Schwab Broker",
+                            "side": "LONG" if qty >= 0 else "SHORT",
+                            "status": "OPEN",
+                            "fill_date": (_val(r, "last_synced") or "")[:10],
+                            "fill_price": _val(r, "average_price"),
+                            "stop_loss": None,
+                            "target_1": None,
+                            "target_2": None,
+                            "exit_date": None,
+                            "exit_price": None,
+                            "exit_reason": None,
+                            "quantity": qty,
+                            "pnl_dollars": _val(r, "unrealized_profit_loss"),
+                            "notes": f"Market Value: ${_val(r, 'market_value', '')}, Cost Basis: ${_val(r, 'cost_basis', '')}",
+                        })
+    except Exception as e:
+        logger.warning(f"Error querying schwab positions for ticker trades {sym}: {e}")
+
+    total = len(trades)
+    closed = sum(1 for t in trades if t.get("exit_price") is not None or t.get("status") in ["WIN", "LOSS", "CLOSED"])
+    wins = sum(1 for t in trades if (t.get("r_net") is not None and float(t["r_net"]) > 0) or t.get("status") == "WIN")
+    losses = sum(1 for t in trades if (t.get("r_net") is not None and float(t["r_net"]) < 0) or t.get("status") == "LOSS")
+    active = sum(1 for t in trades if t.get("status") in ["ACTIVE", "FILLED", "OPEN"])
+    pending = sum(1 for t in trades if t.get("status") == "PENDING")
+
+    valid_r = [float(t["r_net"]) for t in trades if t.get("r_net") is not None]
+    total_r = sum(valid_r)
+    avg_r = (total_r / len(valid_r)) if valid_r else 0.0
+    win_rate = (wins / closed * 100.0) if closed > 0 else 0.0
+
+    summary = {
+        "total_suggestions": total,
+        "closed_trades": closed,
+        "wins": wins,
+        "losses": losses,
+        "active_trades": active,
+        "pending_trades": pending,
+        "win_rate_pct": round(win_rate, 1),
+        "total_r_net": round(total_r, 2),
+        "avg_r_net": round(avg_r, 2),
+    }
+
+    return {
+        "success": True,
+        "ticker": sym,
+        "total_trades": total,
+        "summary": summary,
+        "trades": trades,
+    }
+
+
 @router.get("/api/research/sessions")
 def get_session_history(limit: int = 30):
     """Per-session summary: what arrived, what was triaged, what went to deep research.

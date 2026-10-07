@@ -1343,7 +1343,7 @@ window.AppWatchlist = {
           <div class="target-card">
             <div class="target-header">
               <div class="target-sym">
-                <span class="radar-ticker-sym" title="${compTitle} ($${t.ticker})" data-ticker="${t.ticker}" style="cursor:help;">${t.ticker}</span>
+                <span class="radar-ticker-sym" title="${compTitle} ($${t.ticker}) · Click to open /research/${t.ticker}" data-ticker="${t.ticker}" style="cursor:pointer;" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')">${t.ticker}</span>
                 <span class="spot-badge">${spotStr}</span>
                 <span class="badge ${statusClass}">${t.status} (${distDisplay})</span>
               </div>

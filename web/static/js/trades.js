@@ -606,13 +606,15 @@ window.AppTrades = {
 
           <!-- 2. TICKER & COMPANY -->
           <td style="padding:10px 14px;">
-            <div style="display:flex; align-items:center; gap:6px;">
-              <strong class="ticker-with-tooltip" 
-                      title="${compTitle}" 
-                      data-ticker="${sym}" 
-                      style="font-size:13px; font-weight:800; color:var(--cyan-glow, #06b6d4); font-family:var(--font-mono); cursor:help;">
+              <a href="/research/${sym}/trades" 
+                 target="_blank" 
+                 class="ticker-with-tooltip" 
+                 title="${compTitle} ($${sym}) · Click to open /research/${sym}/trades" 
+                 data-ticker="${sym}" 
+                 style="font-size:13px; font-weight:800; color:var(--cyan-glow, #06b6d4); font-family:var(--font-mono); text-decoration:none; cursor:pointer;"
+                 onclick="event.stopPropagation();">
                 $${sym}
-              </strong>
+              </a>
               ${isShort 
                 ? `<span class="pill red" style="font-size:8.5px; padding:1px 4px; font-weight:800;">SHORT</span>`
                 : `<span class="pill green" style="font-size:8.5px; padding:1px 4px; font-weight:800;">LONG</span>`}
