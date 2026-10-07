@@ -221,7 +221,7 @@ def test_research_ticker_trades_page(client):
     response = client.get("/research/CAT/trades")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
-    assert "Trades Taken" in response.text
+    assert "Suggested Trades" in response.text
 
 
 def test_api_research_ticker_trades(client):
@@ -233,5 +233,7 @@ def test_api_research_ticker_trades(client):
     assert data["ticker"] == "AMD"
     assert "trades" in data
     assert isinstance(data["trades"], list)
+    assert "summary" in data
+    assert "total_suggestions" in data["summary"]
 
 
