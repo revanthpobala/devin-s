@@ -269,6 +269,7 @@ def get_today():
                 cut_list = []
                 needs_you = []
                 unmeasured = []
+                closest_to_gate = []
                 missing_symbols = set()
                 processed_syms = set()
 
@@ -380,6 +381,11 @@ def get_today():
                     r["measured"] = is_act
                     r["measured_actionable"] = is_act
                     r["gate_reasons"] = gate_fails
+
+                    if not is_act and gate_fails and len(gate_fails) == 1:
+                        r_close = dict(r)
+                        r_close["missing_condition"] = gate_fails[0]
+                        closest_to_gate.append(r_close)
 
                     # setup_lane is PERSISTED at triage time by the Pine's own thresholds, so it
                     # does not follow a UI change to the R:R floor. Re-tier the R:R lanes from the
@@ -599,6 +605,7 @@ def get_today():
                     "cut": cut_list,
                     "needs_you": needs_you,
                     "unmeasured": unmeasured,
+                    "closest_to_gate": closest_to_gate,
                     "missing_symbols": missing_real,
                     "missing_symbols_excluded_test_rows": missing_test,
                     "missing_symbols_core_gaps": core_gaps,
@@ -621,6 +628,7 @@ def get_today():
                         "cut_count": len(cut_list),
                         "needs_you_count": len(needs_you),
                         "unmeasured_count": len(unmeasured),
+                        "closest_to_gate_count": len(closest_to_gate),
                         "measured_count": len(actionable) + len(stalking) + len(needs_you),
                         "missing_symbols_count": len(missing_real),
                         "missing_symbols_test_rows_excluded": len(missing_test),
@@ -1422,4 +1430,125 @@ def reconcile_positions_endpoint():
     except Exception as e:
         logger.error(f"Error reconciling positions: {e}")
         return {"status": "error", "error": str(e)}
+
+
+class IntakeScanRequest(BaseModel):
+    folder_path: Optional[str] = None
+    date: Optional[str] = None
+
+
+@router.post("/intake-scan")
+def intake_daily_measured_scan(req: Optional[IntakeScanRequest] = None):
+    """
+    Accept a daily measured-scan input (a folder of Data Window JSON/CSV dropped by the scrape job)
+    and route all candidates through the canonical actionable gate (is_actionable); no new thresholds.
+    """
+    import json
+    from pathlib import Path
+    from src import config
+    from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+    from src.data.csv_adapter import parse_csv_datawindow
+
+    date_str = (req.date if req and req.date else None) or get_eastern_date_str()
+    if req and req.folder_path:
+        scan_dir = Path(req.folder_path)
+    else:
+        scan_dir = config.BASE_DIR / "data" / "raw" / date_str
+
+    if not scan_dir.exists():
+        triage_dir = config.BASE_DIR / "data" / "triage" / date_str
+        if triage_dir.exists():
+            scan_dir = triage_dir
+
+    if not scan_dir.exists():
+        return {
+            "status": "error",
+            "message": f"Scan directory not found: {scan_dir}",
+            "passing": [],
+            "closest_to_gate": [],
+            "failing": [],
+            "summary": {"scanned": 0, "passing": 0, "closest_to_gate": 0, "failing": 0},
+        }
+
+    passing = []
+    closest = []
+    failing = []
+
+    dw_files = list(scan_dir.glob("**/*_datawindow.json"))
+    csv_files = list(scan_dir.glob("**/*_datawindow.csv")) + list(scan_dir.glob("**/*_data_window.csv"))
+
+    processed_tickers = set()
+
+    for jf in dw_files:
+        ticker = jf.stem.replace("_datawindow", "").upper()
+        if ticker in processed_tickers:
+            continue
+        processed_tickers.add(ticker)
+        try:
+            raw_dw = json.loads(jf.read_text(encoding="utf-8"))
+            gate_in = gate_inputs_from_datawindow(raw_dw)
+            price = gate_in.get("price") or raw_dw.get("Close") or raw_dw.get("close")
+            is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": price})
+            item = {
+                "ticker": ticker,
+                "file": str(jf),
+                "is_actionable": is_act,
+                "gate_fails": gate_fails,
+                "gate_inputs": gate_in,
+                "price": price,
+            }
+            if is_act:
+                passing.append(item)
+            elif len(gate_fails) == 1:
+                item["missing_condition"] = gate_fails[0]
+                closest.append(item)
+            else:
+                failing.append(item)
+        except Exception as exc:
+            logger.warning(f"Failed parsing {jf}: {exc}")
+
+    for cf in csv_files:
+        ticker = cf.stem.replace("_datawindow", "").replace("_data_window", "").upper()
+        if ticker in processed_tickers:
+            continue
+        processed_tickers.add(ticker)
+        try:
+            dw_dict = parse_csv_datawindow(cf)
+            if dw_dict:
+                gate_in = gate_inputs_from_datawindow(dw_dict)
+                price = gate_in.get("price") or dw_dict.get("Close") or dw_dict.get("close")
+                is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": price})
+                item = {
+                    "ticker": ticker,
+                    "file": str(cf),
+                    "is_actionable": is_act,
+                    "gate_fails": gate_fails,
+                    "gate_inputs": gate_in,
+                    "price": price,
+                }
+                if is_act:
+                    passing.append(item)
+                elif len(gate_fails) == 1:
+                    item["missing_condition"] = gate_fails[0]
+                    closest.append(item)
+                else:
+                    failing.append(item)
+        except Exception as exc:
+            logger.warning(f"Failed parsing {cf}: {exc}")
+
+    return {
+        "status": "ok",
+        "scan_directory": str(scan_dir),
+        "date": date_str,
+        "passing": passing,
+        "closest_to_gate": closest,
+        "failing": failing,
+        "summary": {
+            "scanned": len(processed_tickers),
+            "passing": len(passing),
+            "closest_to_gate": len(closest),
+            "failing": len(failing),
+        },
+    }
+
 

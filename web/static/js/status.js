@@ -397,23 +397,39 @@ window.AppStatus = {
       // 3b. Schwab OAuth 7-Day Lifecycle Indicator
       const schwabPill = document.getElementById('pill-schwab');
       const schwabTxt = document.getElementById('txt-schwab');
+      const schwabBanner = document.getElementById('schwab-expiry-banner');
+      const schwabBannerTxt = document.getElementById('schwab-expiry-banner-text');
       if (schwabPill && schwabTxt && data.schwab_status) {
         const s = data.schwab_status;
         window._lastSchwabStatus = s;
         if (!s.configured) {
           schwabPill.className = 'pill';
           schwabTxt.innerText = '⚪ Schwab Unset';
+          if (schwabBanner) schwabBanner.style.display = 'none';
         } else if (s.valid) {
           if (s.status === 'EXPIRING_SOON') {
             schwabPill.className = 'pill amber pulse';
             schwabTxt.innerText = `⚠️ Schwab (${s.hours_remaining}h left)`;
+            if (schwabBanner) {
+              schwabBanner.style.display = 'flex';
+              if (schwabBannerTxt) {
+                schwabBannerTxt.innerHTML = `⚠️ <strong>Schwab Token Expiring Soon (${s.hours_remaining}h left — expires ${s.expires_at || ''}):</strong> Please re-authenticate via <code>python setup_schwab.py</code>`;
+              }
+            }
           } else {
             schwabPill.className = 'pill green';
             schwabTxt.innerText = `🟢 Schwab (${s.days_remaining}d)`;
+            if (schwabBanner) schwabBanner.style.display = 'none';
           }
         } else {
           schwabPill.className = 'pill red';
           schwabTxt.innerText = '🔴 Schwab Expired';
+          if (schwabBanner) {
+            schwabBanner.style.display = 'flex';
+            if (schwabBannerTxt) {
+              schwabBannerTxt.innerHTML = `🚨 <strong>Schwab Token EXPIRED:</strong> Market data & options sweeps halted. Run <code>python setup_schwab.py</code> to reconnect.`;
+            }
+          }
         }
       }
 

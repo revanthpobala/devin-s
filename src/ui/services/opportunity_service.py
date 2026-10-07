@@ -288,13 +288,26 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
 
                     vintage_str = "⚡ TODAY (Screener)" if check_d == today_mt_str else "📅 Yesterday (Screener)"
 
+                    # Validate coil levels with level_validation: stop below entry, stop width >= 0.7 ATR
+                    from src.logic.level_validation import check_geometry
+                    atr_val = float(c.get("atr") or c.get("atr14") or c.get("ATR") or 0.0)
+                    geo_errs = check_geometry("LONG", "LIMIT", entry_low=sup, entry_high=sup, breakout_level=0.0, stop=stop_lvl, t1=t1_lvl, t2=t2_lvl)
+                    if geo_errs:
+                        logger.debug(f"[{sym}] Screener coil dropped due to invalid geometry: {geo_errs}")
+                        continue
+                    if atr_val > 0 and stop_lvl > 0 and sup > 0:
+                        stop_w_atr = (sup - stop_lvl) / atr_val
+                        if stop_w_atr < 0.7:
+                            logger.debug(f"[{sym}] Screener coil dropped due to tight stop width {stop_w_atr:.2f} < 0.7 ATR")
+                            continue
+
                     raw_setups.append({
                         "ticker": sym,
                         "report_date": check_d,
                         "vintage": vintage_str,
                         "side": "LONG",
                         "verdict": "COILED_BASE",
-                        "conviction": 7,
+                        "conviction": 0,
                         "score": int(c.get("priority_score") or 75),
                         "entry_low": round(sup, 2) if sup > 0 else None,
                         "entry_high": round(sup, 2) if sup > 0 else None,
@@ -317,6 +330,8 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                         "arbitration_path": None,
                         "stage": "SCREENER_COIL",
                         "needs_deep_research": True,
+                        "is_actionable": False,
+                        "gate_reasons": ["Screener coil: awaiting Data Window measurement"],
                     })
             except Exception as e:
                 logger.debug(f"Error reading screener file {sf}: {e}")
@@ -332,6 +347,8 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
     except Exception as e:
         logger.warning(f"Batch price error for opportunities: {e}")
 
+    # Evaluate gate for each setup
+    from src.logic.actionable_gate import is_actionable as check_is_actionable, gate_inputs_from_datawindow
     processed: List[Dict[str, Any]] = []
 
     for s in raw_setups:
@@ -344,6 +361,37 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         stop = s["tactical_stop"]
         t1 = s["target_1"]
         side = s["side"]
+        d_str = s.get("report_date") or today_mt_str
+
+        # Check for Data Window and evaluate gate
+        dw = None
+        if s.get("stage") != "SCREENER_COIL":
+            # Check raw / triage / reports dirs for datawindow
+            dw_cands = [
+                config.BASE_DIR / "data" / "raw" / d_str / sym / f"{sym}_datawindow.json",
+                config.BASE_DIR / "data" / "triage" / d_str / sym / f"{sym}_datawindow.json",
+                config.BASE_DIR / "data" / "raw" / d_str / f"{sym}_datawindow.json",
+            ]
+            for dwp in dw_cands:
+                if dwp.exists():
+                    try:
+                        dw = json.loads(dwp.read_text(encoding="utf-8"))
+                        break
+                    except Exception:
+                        pass
+
+        if dw:
+            gate_in = gate_inputs_from_datawindow(dw)
+            gate_in["price"] = spot if spot > 0 else gate_in.get("price")
+            is_act, fails = check_is_actionable(gate_in, {"side": side.lower(), "entry": e_high or spot, "stop": stop, "t1": t1})
+            s["is_actionable"] = is_act
+            s["gate_reasons"] = fails
+        elif s.get("stage") == "SCREENER_COIL":
+            s["is_actionable"] = False
+            s["gate_reasons"] = ["Awaiting Data Window measurement"]
+        else:
+            s["is_actionable"] = False
+            s["gate_reasons"] = s.get("gate_reasons") or ["No Data Window available to evaluate gate"]
 
         # Calculate distance and in-zone status
         in_zone = False
@@ -392,15 +440,18 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         s["in_zone"] = in_zone
         s["dist_pct"] = dist_pct
 
-        # Dynamic Live R:R
+        # Dynamic Live R:R (Guard against stop hugging spot artifact R:R)
         live_rr = 0.0
         if is_target_hit or is_stop_breached:
             live_rr = 0.0
         elif spot > 0 and stop is not None and stop > 0 and t1 is not None and t1 > 0:
-            if side == "LONG" and spot > stop and t1 > spot:
-                live_rr = round((t1 - spot) / (spot - stop), 2)
-            elif side == "SHORT" and stop > spot and spot > t1:
-                live_rr = round((spot - t1) / (stop - spot), 2)
+            risk = (spot - stop) if side == "LONG" else (stop - spot)
+            # Require meaningful risk distance (> 0.5% of spot) to prevent division-by-noise artifact
+            if risk > (0.005 * spot):
+                if side == "LONG" and spot > stop and t1 > spot:
+                    live_rr = round((t1 - spot) / risk, 2)
+                elif side == "SHORT" and stop > spot and spot > t1:
+                    live_rr = round((spot - t1) / risk, 2)
         elif spot <= 0 and e_high is not None and e_high > 0 and stop is not None and stop > 0 and t1 is not None and t1 > 0:
             if side == "LONG" and e_high > stop:
                 live_rr = round((t1 - e_high) / (e_high - stop), 2)
@@ -425,10 +476,14 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             s["opportunity_state"] = "COILED_TRIGGER"
             s["state_label"] = f"⚡ COILED TRIGGER ({'+' if dist_pct > 0 else ''}{dist_pct}%)"
             s["priority_tier"] = 2
-        elif s["conviction"] >= 7:
+        elif s.get("conviction", 0) >= 7 and s.get("is_actionable", False):
             s["opportunity_state"] = "HIGH_CONVICTION"
             s["state_label"] = f"💎 HIGH CONVICTION ({s['conviction']}/10)"
             s["priority_tier"] = 3
+        elif s.get("stage") == "SCREENER_COIL":
+            s["opportunity_state"] = "SCREENER_UNMEASURED"
+            s["state_label"] = "⏳ screener coil, unmeasured"
+            s["priority_tier"] = 5
         else:
             s["opportunity_state"] = "STALKING"
             s["state_label"] = f"⏳ STALKING ({'+' if dist_pct > 0 else ''}{dist_pct}%)"

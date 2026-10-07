@@ -741,3 +741,61 @@ def format_gex_block(ticker: str) -> str:
         logger.warning(f"[{ticker}] format_gex_block failed: {e}")
         return ""
 
+
+def get_live_option_quote(
+    ticker: str,
+    structure: str,
+    long_strike: float,
+    short_strike: Optional[float] = None,
+    expiration: Optional[str] = None,
+) -> Optional[float]:
+    """Fetch live option premium quote (mid or ask when buying) from Alpaca / yfinance."""
+    if not ticker or not long_strike or long_strike <= 0:
+        return None
+    ticker_u = ticker.strip().upper()
+    struct_u = str(structure or "").upper()
+
+    # Try yfinance for reliable single-strike chain retrieval
+    try:
+        import yfinance as yf
+        yf_t = yf.Ticker(ticker_u)
+        all_exp = yf_t.options
+        if not all_exp:
+            return None
+        target_exp = expiration if (expiration and expiration in all_exp) else all_exp[0]
+        chain = yf_t.option_chain(target_exp)
+
+        is_call = any(tok in struct_u for tok in ("CALL", "BULL_CALL", "COVERED_CALL")) or ("PUT" not in struct_u)
+        df_long = chain.calls if is_call else chain.puts
+        row_long = df_long[abs(df_long["strike"] - long_strike) < 0.05]
+        if row_long.empty:
+            return None
+
+        ask_long = float(row_long.iloc[0].get("ask") or 0.0)
+        bid_long = float(row_long.iloc[0].get("bid") or 0.0)
+        mid_long = round((bid_long + ask_long) / 2.0, 2) if (bid_long > 0 and ask_long > 0) else (ask_long or bid_long)
+
+        # Single leg
+        if not short_strike or short_strike <= 0:
+            return ask_long if ask_long > 0 else (mid_long if mid_long > 0 else None)
+
+        # Spread leg
+        df_short = chain.calls if is_call else chain.puts
+        row_short = df_short[abs(df_short["strike"] - short_strike) < 0.05]
+        if row_short.empty:
+            return ask_long if ask_long > 0 else (mid_long if mid_long > 0 else None)
+
+        ask_short = float(row_short.iloc[0].get("ask") or 0.0)
+        bid_short = float(row_short.iloc[0].get("bid") or 0.0)
+        mid_short = round((bid_short + ask_short) / 2.0, 2) if (bid_short > 0 and ask_short > 0) else (bid_short or ask_short)
+
+        if "SPREAD" in struct_u:
+            net_prem = round(mid_long - mid_short, 2)
+            return net_prem if net_prem > 0 else None
+
+        return ask_long if ask_long > 0 else (mid_long if mid_long > 0 else None)
+    except Exception as e:
+        logger.debug(f"[{ticker_u}] get_live_option_quote error: {e}")
+        return None
+
+

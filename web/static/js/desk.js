@@ -733,6 +733,12 @@ window.AppDesk = {
                     ${opp.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
                   </div>` : ''}
 
+                  <!-- Gate Reasons / Blocker -->
+                  ${opp.gate_reasons && opp.gate_reasons.length > 0 ? `
+                  <div style="margin-top:8px; font-size:10.5px; color:var(--amber); background:rgba(245,158,11,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(245,158,11,0.25);">
+                    ⚠️ <b>Gate Blocker:</b> ${opp.gate_reasons[0]}
+                  </div>` : ''}
+
                   <!-- Invalidation Rule -->
                   ${opp.invalidation && (opp.invalidation.rationale || opp.invalidation.level) ? `
                   <div style="margin-top:8px; font-size:10px; color:var(--rose-light); font-family:var(--font-mono); background:rgba(244,63,94,0.05); padding:6px 8px; border-radius:6px; border:1px solid rgba(244,63,94,0.2);">

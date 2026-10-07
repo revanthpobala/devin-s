@@ -513,25 +513,67 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                     from src.logic.zone_arrival_evaluator import evaluate_target_on_zone_arrival
                     eval_res = evaluate_target_on_zone_arrival(ticker, live_price, t)
                     if eval_res.get("is_actionable_now"):
-                        alert_fired = "ENTRY_ACTIONABLE_BUY" if side == "LONG" else "ENTRY_ACTIONABLE_SHORT"
-                        msg = (
-                            f"[{ticker}] 🟢 ACTIONABLE {side} ENTRY: Price ${live_price:.2f} confirmed in zone "
-                            f"[${entry_low:.2f}–${entry_high:.2f}]. Stop: ${eval_res['tactical_stop']:.2f}, "
-                            f"T1: ${eval_res['target_1']:.2f}, R:R: {eval_res['live_rr']:.2f}:1."
-                        )
+                        # Dedupe: one push per (ticker, setup onset)
+                        onset_d = str(t.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10]
+                        already_pushed = False
+                        try:
+                            with _db_lock:
+                                with _get_connection() as conn:
+                                    cur = conn.cursor()
+                                    r_cnt = cur.execute(
+                                        "SELECT COUNT(*) FROM watch_alerts WHERE ticker = ? AND date = ? AND trigger_type IN ('ENTRY_ACTIONABLE_BUY', 'ENTRY_ACTIONABLE_SHORT')",
+                                        (ticker, onset_d)
+                                    ).fetchone()
+                                    if r_cnt and r_cnt[0] > 0:
+                                        already_pushed = True
+                        except Exception:
+                            pass
+
+                        if not already_pushed:
+                            alert_fired = "ENTRY_ACTIONABLE_BUY" if side == "LONG" else "ENTRY_ACTIONABLE_SHORT"
+                            
+                            # Options line from plan + live quote
+                            opt_p = t.get("options_plan") or {}
+                            if not opt_p and t.get("raw_json"):
+                                try:
+                                    raw_j = json.loads(t["raw_json"])
+                                    opt_p = raw_j.get("options_plan") or {}
+                                except Exception:
+                                    pass
+
+                            opt_line = ""
+                            if opt_p and opt_p.get("structure") and opt_p.get("structure") != "NONE":
+                                struct = opt_p.get("structure")
+                                ls = opt_p.get("long_strike")
+                                ss = opt_p.get("short_strike")
+                                exp = opt_p.get("expiration") or ""
+                                strikes_str = f"${float(ls):.2f}" if (ls and not ss) else (f"${float(ls):.2f}/${float(ss):.2f}" if (ls and ss) else "")
+                                prem_str = None
+                                try:
+                                    from src.clients.options_client import get_live_option_quote
+                                    prem = get_live_option_quote(ticker, struct, float(ls) if ls else 0.0, float(ss) if ss else None, exp)
+                                    if prem is not None:
+                                        prem_str = f"premium ~${prem:.2f} at market"
+                                except Exception:
+                                    pass
+                                if not prem_str:
+                                    prem_str = "premium at market (live quote unavailable)"
+                                opt_line = f"OPTION: {struct} {strikes_str} {exp} {prem_str}".strip()
+
+                            rr_val = eval_res.get("live_rr") or 0.0
+                            msg = f"BUY 100 {ticker} at market ~${live_price:.2f} | stop ${eval_res['tactical_stop']:.2f} | T1 ${eval_res['target_1']:.2f} | R:R {rr_val:.2f}@mkt"
+                            if opt_line:
+                                msg += f"\n{opt_line}"
+
+                            log_trigger_alert(ticker, alert_fired, msg, live_price)
                     else:
-                        alert_fired = "ENTRY_TRIGGERED"
-                        msg = f"[{ticker}] Price ${live_price:.2f} in zone [${entry_low:.2f}–${entry_high:.2f}] ({eval_res.get('verdict_label')})."
-                    log_trigger_alert(ticker, alert_fired, msg, live_price)
+                        # Non-passing arrivals write a log row, no push, no ENTRY_TRIGGERED to the user
+                        logger.info(
+                            f"[{ticker}] Price ${live_price:.2f} in zone [${entry_low:.2f}–${entry_high:.2f}] "
+                            f"failed actionable gate ({'; '.join(eval_res.get('reasons', []))}). No push emitted."
+                        )
                 except Exception as e_eval:
                     logger.warning(f"[{ticker}] On-arrival zone evaluation error: {e_eval}")
-                    if old_status in ("STALKING", "WATCH", "INVALIDATED", "STOP_BREACHED"):
-                        alert_fired = "ENTRY_TRIGGERED"
-                        prox_tag = " [Floor Proximity Buffer]" if in_proximity_zone else ""
-                        opt_str = f" | Play: {t.get('options_summary')}" if t.get("options_summary") else ""
-                        reclaim_tag = " [Support Reclaimed]" if old_status in ("INVALIDATED", "STOP_BREACHED") else ""
-                        msg = f"[{ticker}] Price ${live_price:.2f} entered buy zone{prox_tag}{reclaim_tag} [${entry_low:.2f} – ${entry_high:.2f}]. Order active.{opt_str}"
-                        log_trigger_alert(ticker, alert_fired, msg, live_price)
         else:
             if old_status in ("IN_TRADE", "IN_ZONE"):
                 # Maintain active trade holding above stop loss

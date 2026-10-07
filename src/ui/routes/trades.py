@@ -440,40 +440,105 @@ def take_trade_endpoint(data: dict):
         if not ticker and not row_id and not sugg_id:
             raise HTTPException(status_code=400, detail="Ticker, row_id, or suggestion_id required")
 
+        side = "LONG"
+        stop = None
+        t1 = None
+        t2 = None
+
         with get_db() as conn:
             c = conn.cursor()
             if sugg_id:
+                s_r = c.execute("SELECT ticker, side, stop, target_1, target_2, entry_high, entry_low FROM suggestions WHERE id = ?", (sugg_id,)).fetchone()
+                if s_r:
+                    ticker = ticker or s_r["ticker"]
+                    side = s_r["side"] or "LONG"
+                    stop = s_r["stop"]
+                    t1 = s_r["target_1"]
+                    t2 = s_r["target_2"]
+                    if fill_price <= 0:
+                        fill_price = float(s_r["entry_high"] or s_r["entry_low"] or 0.0)
                 c.execute("""
                     UPDATE suggestions 
                     SET taken = 1, your_fill = ?, notes = COALESCE(?, notes)
                     WHERE id = ?
                 """, (fill_price if fill_price > 0 else None, notes, sugg_id))
-                if not ticker:
-                    s_r = c.execute("SELECT ticker FROM suggestions WHERE id = ?", (sugg_id,)).fetchone()
-                    if s_r:
-                        ticker = s_r[0]
-            if row_id:
+
+            elif row_id:
+                w_r = c.execute("SELECT ticker, side, tactical_stop, target_1, target_2, entry_zone_high, entry_zone_low FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+                if w_r:
+                    ticker = ticker or w_r["ticker"]
+                    side = w_r["side"] or "LONG"
+                    stop = w_r["tactical_stop"]
+                    t1 = w_r["target_1"]
+                    t2 = w_r["target_2"]
+                    if fill_price <= 0:
+                        fill_price = float(w_r["entry_zone_high"] or w_r["entry_zone_low"] or 0.0)
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
                     WHERE rowid = ?
                 """, (fill_price if fill_price > 0 else None, quantity, row_id))
-                if not ticker:
-                    w_r = c.execute("SELECT ticker FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+
+            elif ticker:
+                s_r = c.execute("SELECT id, ticker, side, stop, target_1, target_2, entry_high, entry_low FROM suggestions WHERE LOWER(ticker) = LOWER(?) ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
+                if s_r:
+                    sugg_id = s_r["id"]
+                    side = s_r["side"] or "LONG"
+                    stop = s_r["stop"]
+                    t1 = s_r["target_1"]
+                    t2 = s_r["target_2"]
+                    if fill_price <= 0:
+                        fill_price = float(s_r["entry_high"] or s_r["entry_low"] or 0.0)
+                    c.execute("""
+                        UPDATE suggestions 
+                        SET taken = 1, your_fill = ?, notes = COALESCE(?, notes)
+                        WHERE id = ?
+                    """, (fill_price if fill_price > 0 else None, notes, sugg_id))
+                else:
+                    w_r = c.execute("SELECT rowid, ticker, side, tactical_stop, target_1, target_2, entry_zone_high, entry_zone_low FROM watch_targets WHERE LOWER(ticker) = LOWER(?) ORDER BY rowid DESC LIMIT 1", (ticker,)).fetchone()
                     if w_r:
-                        ticker = w_r[0]
-            if ticker:
-                c.execute("""
-                    UPDATE watch_targets 
-                    SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
-                    WHERE ticker = ?
-                """, (fill_price if fill_price > 0 else None, quantity, ticker))
-                c.execute("""
-                    UPDATE suggestions 
-                    SET taken = 1, your_fill = ?, notes = COALESCE(?, notes)
-                    WHERE ticker = ? AND exit_date IS NULL
-                """, (fill_price if fill_price > 0 else None, notes, ticker))
+                        row_id = w_r["rowid"]
+                        side = w_r["side"] or "LONG"
+                        stop = w_r["tactical_stop"]
+                        t1 = w_r["target_1"]
+                        t2 = w_r["target_2"]
+                        if fill_price <= 0:
+                            fill_price = float(w_r["entry_zone_high"] or w_r["entry_zone_low"] or 0.0)
+                        c.execute("""
+                            UPDATE watch_targets 
+                            SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
+                            WHERE rowid = ?
+                        """, (fill_price if fill_price > 0 else None, quantity, row_id))
+
             conn.commit()
+
+        # If fill price is still 0, fetch live spot
+        if fill_price <= 0 and ticker:
+            try:
+                from src.clients.price_client import get_current_price
+                spot = get_current_price(ticker, context="execution")
+                if spot and float(spot) > 0:
+                    fill_price = float(spot)
+            except Exception:
+                pass
+
+        # Open tracking position in position_state single source of truth
+        if ticker:
+            from src.tracking import position_state
+            position_state.open_position(
+                ticker,
+                side=side,
+                strategy="Swing",
+                entry_price=fill_price if fill_price > 0 else None,
+                stop=stop,
+                target=t1,
+                target_2=t2,
+                quantity=quantity,
+                suggestion_id=sugg_id,
+                watch_target_id=row_id,
+                notes=notes,
+            )
+
         _SUGGESTED_CACHE.clear()
         try:
             from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
@@ -496,44 +561,57 @@ def untake_trade_endpoint(data: dict):
         with get_db() as conn:
             c = conn.cursor()
             if sugg_id:
+                if not ticker:
+                    s_r = c.execute("SELECT ticker FROM suggestions WHERE id = ?", (sugg_id,)).fetchone()
+                    if s_r:
+                        ticker = s_r["ticker"]
                 c.execute("""
                     UPDATE suggestions 
                     SET taken = 0, your_fill = NULL
                     WHERE id = ?
                 """, (sugg_id,))
+
+            elif row_id:
                 if not ticker:
-                    s_r = c.execute("SELECT ticker FROM suggestions WHERE id = ?", (sugg_id,)).fetchone()
-                    if s_r:
-                        ticker = s_r[0]
-            if row_id:
+                    w_r = c.execute("SELECT ticker FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+                    if w_r:
+                        ticker = w_r["ticker"]
                 c.execute("""
                     UPDATE watch_targets 
                     SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
                     WHERE rowid = ?
                 """, (row_id,))
-                if not ticker:
-                    w_r = c.execute("SELECT ticker FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+
+            elif ticker:
+                s_r = c.execute("SELECT id FROM suggestions WHERE LOWER(ticker) = LOWER(?) AND taken = 1 ORDER BY id DESC LIMIT 1", (ticker,)).fetchone()
+                if s_r:
+                    c.execute("""
+                        UPDATE suggestions 
+                        SET taken = 0, your_fill = NULL
+                        WHERE id = ?
+                    """, (s_r["id"],))
+                else:
+                    w_r = c.execute("SELECT rowid FROM watch_targets WHERE LOWER(ticker) = LOWER(?) AND user_taken = 1 ORDER BY rowid DESC LIMIT 1", (ticker,)).fetchone()
                     if w_r:
-                        ticker = w_r[0]
-            if ticker:
-                c.execute("""
-                    UPDATE watch_targets 
-                    SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
-                    WHERE ticker = ?
-                """, (ticker,))
-                c.execute("""
-                    UPDATE suggestions 
-                    SET taken = 0, your_fill = NULL
-                    WHERE ticker = ?
-                """, (ticker,))
+                        c.execute("""
+                            UPDATE watch_targets 
+                            SET user_taken = 0, status = 'WATCH', fill_price = NULL, quantity = NULL, updated_at = datetime('now')
+                            WHERE rowid = ?
+                        """, (w_r["rowid"],))
+
             conn.commit()
+
+        if ticker:
+            from src.tracking import position_state
+            position_state.cancel_position(ticker, reason="Untaken by user")
+
         _SUGGESTED_CACHE.clear()
         try:
             from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
             _WATCH_TARGETS_CACHE.clear()
         except Exception:
             pass
-        return {"success": True, "message": f"Reverted taken status for {ticker or row_id or sugg_id}"}
+        return {"success": True, "message": f"Successfully reverted trade for {ticker or row_id or sugg_id}"}
     except Exception as e:
         logger.error(f"Error in untake_trade_endpoint: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

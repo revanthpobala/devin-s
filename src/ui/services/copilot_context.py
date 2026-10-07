@@ -1053,6 +1053,44 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     top_card.append(f"• **REAL-TIME EXECUTION STATUS:** **{status_badge}**")
     top_card.append(f"• **EXECUTION DETAIL:** {status_desc}")
 
+    # Canonical Actionable Gate Evaluation for ticker
+    try:
+        from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+        raw_root_p = config.BASE_DIR / "data" / "raw"
+        triage_root_p = config.BASE_DIR / "data" / "triage"
+        found_dw = None
+        for cand_d in [raw_root_p / (date_str or calendar_today) / ticker_u, triage_root_p / (date_str or calendar_today) / ticker_u, triage_root_p / (date_str or calendar_today) / "_DEEP_RESEARCH" / ticker_u]:
+            if cand_d.exists():
+                dw_cand = cand_d / f"{ticker_u}_datawindow.json"
+                if dw_cand.exists():
+                    try:
+                        found_dw = json.loads(dw_cand.read_text(encoding="utf-8"))
+                        break
+                    except Exception:
+                        pass
+        if not found_dw and sorted_hist_dates:
+            for od in sorted_hist_dates[:3]:
+                dw_cand = raw_root_p / od / ticker_u / f"{ticker_u}_datawindow.json"
+                if dw_cand.exists():
+                    try:
+                        found_dw = json.loads(dw_cand.read_text(encoding="utf-8"))
+                        break
+                    except Exception:
+                        pass
+
+        if found_dw:
+            gate_in = gate_inputs_from_datawindow(found_dw)
+            price_eval = live_spot or gate_in.get("price") or (float(found_dw.get("close") or found_dw.get("Close") or 0.0) if found_dw.get("close") or found_dw.get("Close") else None)
+            is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": price_eval})
+            if is_act:
+                top_card.append("• **CANONICAL ACTIONABLE GATE:** 🟢 **PASS (ACTIONABLE NOW)** — All 8 mathematical gates cleared.")
+            else:
+                top_card.append(f"• **CANONICAL ACTIONABLE GATE:** 🔴 **BLOCKED / NOT ACTIONABLE** — Blocker(s): **{'; '.join(gate_fails)}**")
+        else:
+            top_card.append("• **CANONICAL ACTIONABLE GATE:** ⏳ **AWAITING_MEASUREMENT** — No Data Window snapshot on disk.")
+    except Exception as ge:
+        logger.debug(f"Actionable gate eval error in copilot for {ticker_u}: {ge}")
+
     if quote_str:
         top_card.append(f"\n```\n{quote_str}\n```")
 
@@ -1750,6 +1788,48 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                     watch_sections.append("🏁 **TARGET HIT / INVALIDATED:**\n" + "\n".join(other_targets))
 
                 parts.append("### 🎯 ACTIVE WATCHLIST & TACTICAL TRIGGERS (Live SQLite Tracking):\n" + "\n\n".join(watch_sections))
+
+                # Canonical Actionable Gate Summary & Closest to Gate
+                try:
+                    s_rows = c.execute("""
+                        SELECT ticker, status, gate_status, last_price, action_long, signal_pack, fade, atr_at_signal, ext_z, rr_at_market_at_signal, notes
+                        FROM suggestions
+                        WHERE date >= date('now', '-21 days')
+                        ORDER BY id DESC
+                    """).fetchall()
+                    from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
+                    act_now = []
+                    closest_list = []
+                    for sr in s_rows:
+                        s_ticker = sr["ticker"].upper()
+                        dw_map = {
+                            "long_in_zone": 1.0 if sr["status"] in ("IN_ZONE", "IN_TRADE") else 0.0,
+                            "long_rr_at_market": sr["rr_at_market_at_signal"],
+                            "atr14": sr["atr_at_signal"],
+                            "price": sr["last_price"],
+                            "signal_pack": sr["signal_pack"],
+                            "fade_long": sr["fade"],
+                            "action_long": sr["action_long"],
+                            "ext_z_self": sr["ext_z"],
+                        }
+                        g_in = gate_inputs_from_datawindow(dw_map)
+                        is_a, g_fails = is_actionable(g_in, {"side": "long", "entry": sr["last_price"]})
+                        if is_a and s_ticker not in act_now:
+                            act_now.append(s_ticker)
+                        elif len(g_fails) == 1 and not any(c.startswith(f"• **{s_ticker}**") for c in closest_list):
+                            closest_list.append(f"• **{s_ticker}**: Missing condition -> `{g_fails[0]}`")
+
+                    gate_summary_lines = []
+                    if act_now:
+                        gate_summary_lines.append(f"🟢 **Actionable Now (Passes All Gate Criteria):** {', '.join(act_now)}")
+                    else:
+                        gate_summary_lines.append("🟢 **Actionable Now:** None currently passing all 8 gate conditions.")
+                    if closest_list:
+                        gate_summary_lines.append("⏳ **Closest to Gate (Missing Exactly 1 Condition):**\n" + "\n".join(closest_list[:8]))
+
+                    parts.append("### ⚡ CANONICAL ACTIONABLE GATE STATE (Desk Overview):\n" + "\n\n".join(gate_summary_lines))
+                except Exception as gse:
+                    logger.debug(f"Gate summary error in copilot context: {gse}")
     except Exception as we:
         logger.debug(f"Error querying watch targets: {we}")
 

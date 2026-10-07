@@ -353,6 +353,38 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
             notify_push(exit_push)
         except Exception as e_epush:
             logger.debug(f"Failed to emit exit push for {ticker}: {e_epush}")
+
+        # Sync realized R to suggestions and watch_targets tables if linked
+        sugg_id = rec.get("suggestion_id")
+        wt_id = rec.get("watch_target_id")
+        try:
+            import sqlite3
+            watch_db_p = config.research_watch_db_path()
+            if watch_db_p.exists():
+                with sqlite3.connect(str(watch_db_p), timeout=10.0) as wconn:
+                    wcur = wconn.cursor()
+                    if sugg_id:
+                        wcur.execute(
+                            """
+                            UPDATE suggestions
+                            SET exit_date = ?, exit_price = ?, r_realized = ?
+                            WHERE id = ?
+                            """,
+                            (str(now)[:10], px, exit_r, sugg_id),
+                        )
+                    if wt_id:
+                        wcur.execute(
+                            """
+                            UPDATE watch_targets
+                            SET status = 'COMPLETED', exit_price = ?, r_realized = ?, updated_at = ?
+                            WHERE rowid = ?
+                            """,
+                            (px, exit_r, now, wt_id),
+                        )
+                    wconn.commit()
+        except Exception as e_sugg_sync:
+            logger.debug(f"Failed syncing suggestion/watch_target exit_r: {e_sugg_sync}")
+
     except Exception as e:
         logger.debug(f"Failed syncing closed position / event to alert_db: {e}")
 
@@ -361,6 +393,7 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
         f"Reason: {rec.get('exit_reason')}, was open since {rec.get('opened_at')})"
     )
     return rec
+
 
 
 def cancel_position(ticker: str, reason: str = "CANCELLED") -> dict | None:
@@ -499,7 +532,3 @@ def flatten_eod_intraday_positions(force: bool = False) -> list[dict]:
             _save_state(state)
             logger.info(f"[state] EOD Flattened {len(closed_list)} intraday position(s): {tickers_to_close}")
     return closed_list
-
-
-def list_open() -> dict:
-    return load_state()

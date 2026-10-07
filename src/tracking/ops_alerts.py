@@ -41,7 +41,7 @@ CORE_SYMBOLS = ("SPY", "QQQ", "AMZN", "WMT", "HOOD", "CRM")
 CORE_COVERAGE_WINDOW_DAYS = 21
 
 # Synthetic tickers that exist only in tests and fixtures. They are not coverage gaps.
-_TEST_TICKER_MARKERS = ("GOODTICKER", "TEST", "ZZTEST", "FOO", "BAR", "DUMMY", "MOCK", "SAMPLE")
+_TEST_TICKER_MARKERS = ("GOODTICKER", "BADTICKER", "ACME", "TEST", "ZZTEST", "FOO", "BAR", "DUMMY", "MOCK", "SAMPLE")
 
 # How stale a daily artifact may be before it is called out. One session, per the spec.
 STALE_ARTIFACT_SESSIONS = 1

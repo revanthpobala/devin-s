@@ -201,8 +201,8 @@ def is_actionable(dw: Dict[str, Any], plan: Optional[Dict[str, Any]] = None) -> 
 
     # Stop width (entry - stop) / ATR >= STOP_ATR_MIN.
     entry = plan_dict.get("entry") if plan_dict.get("entry") is not None else g.get("price")
-    stop = g.get("long_stop_loss")
-    atr = g.get("atr14")
+    stop = plan_dict.get("stop") if plan_dict.get("stop") is not None else (plan_dict.get("tactical_stop") if plan_dict.get("tactical_stop") is not None else g.get("long_stop_loss"))
+    atr = plan_dict.get("atr") if plan_dict.get("atr") is not None else (plan_dict.get("atr14") if plan_dict.get("atr14") is not None else g.get("atr14"))
 
     if entry is None:
         fails.append("price missing for stop-width check")

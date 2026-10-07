@@ -106,6 +106,11 @@ def test_evaluate_watch_cycle_state_transitions(tmp_path):
             "options_plan": {"structure": "NONE", "summary": "None"},
             "invalidation": {"condition": "DAILY_CLOSE_BELOW", "price_level": 47.0, "rationale": "Floor break"},
             "status": "STALKING",
+            "signal_pack": 36,
+            "fade": 0.0,
+            "action_long": 20,
+            "ext_z": 1.0,
+            "atr_at_signal": 2.0,
         }
         watch_manager.upsert_watch_target(target_payload)
 
@@ -298,6 +303,11 @@ def test_floor_proximity_buffer(tmp_path):
             },
             "invalidation": {"condition": "DAILY_CLOSE_BELOW", "price_level": 298.0, "rationale": "Floor break"},
             "status": "STALKING",
+            "signal_pack": 36,
+            "fade": 0.0,
+            "action_long": 20,
+            "ext_z": 1.0,
+            "atr_at_signal": 3.0,
         }
         watch_manager.upsert_watch_target(aapl_payload)
 

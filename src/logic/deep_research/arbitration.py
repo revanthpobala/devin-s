@@ -456,6 +456,28 @@ def run_arbitration(
                 computed_rr = None
         except Exception:
             computed_rr = None
+
+        # When R:R at spot is below active floor, compute exact limit price where R:R reaches floor
+        from src.tracking import rr_config
+        active_floor = rr_config.min_rr()
+        limit_price = None
+        curr_spot = spot_num or spot_at_signal or 0.0
+        if st > 0 and t1 > st:
+            spot_rr = ((t1 - curr_spot) / (curr_spot - st)) if (curr_spot > st) else 0.0
+            if spot_rr < active_floor:
+                try:
+                    atr_chk = float(atr_at_signal or (atr14_val if atr14_val and atr14_val != "N/A" else 1.0))
+                except Exception:
+                    atr_chk = 1.0
+                if (calc_limit - st) / max(0.01, atr_chk) >= 0.7:
+                    limit_price = calc_limit
+                    sp["limit_price"] = limit_price
+                    sp["trigger_price"] = limit_price
+                    sp["wait_for"] = f"wait for ${limit_price:.2f}"
+                    watch_data["trigger_price"] = limit_price
+                    watch_data["wait_for_price"] = limit_price
+                    watch_data["wait_for"] = f"wait for ${limit_price:.2f}"
+
         planned_rr = computed_rr if computed_rr is not None else sp.get("rr_ratio")
         real_gate_status = "PASS" if (gate_ok and _ok) else "REJECTED_BY_GATE"
 
@@ -483,7 +505,7 @@ def run_arbitration(
             "lane_prior_ev": lane_prior_ev,
             "pb_funnel": pb_funnel,
             "_datawindow": dw_dict,
-            "notes": f"Judge directive: {watch_data.get('verdict')}",
+            "notes": f"Judge directive: {watch_data.get('verdict')}" + (f" | {sp.get('wait_for')}" if sp.get('wait_for') else ""),
         })
         if sugg_id and sugg_id > 0:
             watch_data["suggestion_id"] = sugg_id

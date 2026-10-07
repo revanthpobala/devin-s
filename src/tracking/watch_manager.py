@@ -632,16 +632,18 @@ def backfill_watch_targets_gate_inputs() -> int:
                     except Exception:
                         raw = {}
 
-                # Look for datawindow in raw_json or on disk
+                # Look for datawindow in raw_json or on disk using config.BASE_DIR
                 dw = raw.get("datawindow") or raw.get("_datawindow")
                 if not dw:
                     # Check disk
-                    candidates = (
-                        glob.glob(f"data/triage/{date_str}/*/{ticker}*datawindow*.json")
-                        + glob.glob(f"data/triage/{date_str}/{ticker}/*datawindow*.json")
-                        + glob.glob(f"data/raw/{date_str}/{ticker}/*datawindow*.json")
-                        + glob.glob(f"data/triage/*/{ticker}*datawindow*.json")
-                        + glob.glob(f"data/raw/*/{ticker}/*datawindow*.json")
+                    candidates = list(
+                        (config.BASE_DIR / "data" / "triage" / str(date_str)).glob(f"**/{ticker}*datawindow*.json")
+                    ) + list(
+                        (config.BASE_DIR / "data" / "raw" / str(date_str) / ticker).glob(f"*datawindow*.json")
+                    ) + list(
+                        (config.BASE_DIR / "data" / "triage").glob(f"**/{ticker}*datawindow*.json")
+                    ) + list(
+                        (config.BASE_DIR / "data" / "raw").glob(f"**/{ticker}/*datawindow*.json")
                     )
                     if candidates:
                         try:
@@ -652,20 +654,20 @@ def backfill_watch_targets_gate_inputs() -> int:
 
                 gw = gate_inputs_from_datawindow(dw) if dw else {}
 
-                # Re-derive or keep existing
-                sig_pack = r["signal_pack"] if r["signal_pack"] is not None else gw.get("signal_pack")
-                fade_val = r["fade"] if r["fade"] is not None else gw.get("fade_long")
-                act_long = r["action_long"] if r["action_long"] is not None else gw.get("action_long")
-                ext_z_val = r["ext_z"] if r["ext_z"] is not None else gw.get("ext_z_self")
-                atr_sig = r["atr_at_signal"] if r["atr_at_signal"] is not None else gw.get("atr14")
+                # Re-derive or keep existing (never default a missing value)
+                sig_pack = gw.get("signal_pack") if gw.get("signal_pack") is not None else r["signal_pack"]
+                fade_val = gw.get("fade_long") if gw.get("fade_long") is not None else r["fade"]
+                act_long = gw.get("action_long") if gw.get("action_long") is not None else r["action_long"]
+                ext_z_val = gw.get("ext_z_self") if gw.get("ext_z_self") is not None else r["ext_z"]
+                atr_sig = gw.get("atr14") if gw.get("atr14") is not None else r["atr_at_signal"]
                 z_flags = r["zone_rr_flags"]
-                if z_flags is None and dw:
+                if dw:
                     try:
                         z_raw = dw.get("Zone RR Flags Pack") or dw.get("zone_rr_flags")
-                        z_flags = int(round(float(z_raw))) if z_raw is not None else None
+                        z_flags = int(round(float(z_raw))) if z_raw is not None else z_flags
                     except Exception:
                         pass
-                rr_mkt = r["rr_at_market_at_signal"] if r["rr_at_market_at_signal"] is not None else gw.get("long_rr_at_market")
+                rr_mkt = gw.get("long_rr_at_market") if gw.get("long_rr_at_market") is not None else r["rr_at_market_at_signal"]
 
                 # Single shared gate evaluation
                 side = str(r["side"] or "LONG").upper()
@@ -691,6 +693,10 @@ def backfill_watch_targets_gate_inputs() -> int:
                 if not gate_ok and last_alert == "ENTRY_ACTIONABLE_BUY":
                     last_alert = "ENTRY_TRIGGERED"
 
+                curr_status = r["status"]
+                if not dw and curr_status in ("STALKING", "WATCH", "UNMEASURED"):
+                    curr_status = "AWAITING_MEASUREMENT"
+
                 # Update raw_json
                 raw["signal_pack"] = sig_pack
                 raw["fade"] = fade_val
@@ -699,7 +705,7 @@ def backfill_watch_targets_gate_inputs() -> int:
                 raw["atr_at_signal"] = atr_sig
                 raw["zone_rr_flags"] = z_flags
                 raw["rr_at_market_at_signal"] = rr_mkt
-                if "datawindow" not in raw:
+                if dw:
                     raw["datawindow"] = {
                         "signal_pack": sig_pack,
                         "fade_long": fade_val,
@@ -722,14 +728,30 @@ def backfill_watch_targets_gate_inputs() -> int:
                         zone_rr_flags = ?,
                         rr_at_market_at_signal = ?,
                         actionable = ?,
+                        status = ?,
                         last_alert_type = ?,
                         raw_json = ?
                     WHERE ticker = ?
                     """,
                     (
                         sig_pack, fade_val, act_long, ext_z_val, atr_sig, z_flags,
-                        rr_mkt, target_act, last_alert, json.dumps(raw, default=str), ticker
+                        rr_mkt, target_act, curr_status, last_alert, json.dumps(raw, default=str), ticker
                     )
+                )
+
+                # Also sync gate inputs into suggestions table if row exists
+                cursor.execute(
+                    """
+                    UPDATE suggestions SET
+                        signal_pack = ?,
+                        fade = ?,
+                        action_long = ?,
+                        ext_z = ?,
+                        atr_at_signal = ?,
+                        rr_at_market_at_signal = ?
+                    WHERE ticker = ? AND (date = ? OR date IS NULL)
+                    """,
+                    (sig_pack, fade_val, act_long, ext_z_val, atr_sig, rr_mkt, ticker, str(date_str)[:10])
                 )
                 updated += 1
             conn.commit()

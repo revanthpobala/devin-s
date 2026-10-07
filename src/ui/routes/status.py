@@ -203,11 +203,10 @@ def get_system_status():
             with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
                 pos_data = json.load(f)
                 pos_dict = pos_data.get("positions", pos_data) if isinstance(pos_data, dict) else {}
-                today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
                 open_pos_count = sum(
                     1 for sym, p in pos_dict.items()
                     if isinstance(p, dict)
-                    and p.get("opened_at", "")[:10] == today_str
+                    and not p.get("closed_at")
                     and str(p.get("raw_alert", {}).get("subject", "")).lower() != "alert: screener"
                 )
         except Exception:
