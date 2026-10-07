@@ -449,12 +449,9 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         # Dedicated Branch: mode == "local_only" (Fast Alert Triage Gate)
         if mode == "local_only":
             t_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
-            raw_ticker_dir = config.BASE_DIR / "data" / "raw" / t_date / ticker_u
-            dw_check = (
-                (raw_ticker_dir / f"{ticker_u}_datawindow.json").exists()
-                or (config.BASE_DIR / "data" / "raw" / t_date / f"{ticker_u}_datawindow.json").exists()
-                or (config.BASE_DIR / "data" / "triage" / t_date / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_datawindow.json").exists()
-            )
+            from src.data.datawindow_loader import find_datawindow_paths
+            dw_cands = find_datawindow_paths(ticker_u, t_date)
+            dw_check = any(p.exists() for p in dw_cands)
             if not dw_check or force:
                 with get_db() as conn:
                     conn.cursor().execute(
@@ -584,13 +581,15 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
         # Step 2: Deep Research (Model A & Model B Parallel + PM Arbitration)
         date_to_use = date.strip() if (date and date.strip()) else None
         if not date_to_use:
-            raw_base = config.BASE_DIR / "data" / "raw"
-            if raw_base.exists():
-                for d_cand in sorted(raw_base.iterdir(), reverse=True):
-                    if d_cand.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d_cand.name):
-                        if (d_cand / ticker_u).exists() or (d_cand / f"{ticker_u}_datawindow.json").exists():
-                            date_to_use = d_cand.name
+            from src.data.datawindow_loader import find_datawindow_paths
+            for cand_p in find_datawindow_paths(ticker_u):
+                if cand_p.exists():
+                    for part in cand_p.parts:
+                        if re.match(r"^\d{4}-\d{2}-\d{2}$", part):
+                            date_to_use = part
                             break
+                    if date_to_use:
+                        break
         if not date_to_use:
             date_to_use = datetime.now().strftime("%Y-%m-%d")
 

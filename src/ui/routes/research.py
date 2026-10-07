@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src import config
+from src.data.datawindow_loader import load_datawindow, find_datawindow_paths
 from src.ui.services.research_queue import (
     MAX_CONCURRENT_DEEP,
     MAX_CONCURRENT_LOCAL,
@@ -345,6 +346,33 @@ def get_research_queue(date: Optional[str] = None):
                     elif has_report:
                         seen.add(sym)
 
+        # Also inspect triage subdirectories (_DEEP_RESEARCH and force)
+        for sub_name in ["_DEEP_RESEARCH", "force"]:
+            t_sub = triage_dir / sub_name
+            if t_sub.exists():
+                for item in t_sub.iterdir():
+                    if item.is_dir():
+                        sym = item.name.upper()
+                        if sym in seen:
+                            continue
+                        has_dw = (item / f"{sym}_datawindow.json").exists() or (item / f"{sym}_datawindow.csv").exists()
+                        has_chart = (item / f"{sym}_chart.png").exists() or (item / f"{sym}_chart_zoom.png").exists()
+                        has_report = rep_root.exists() and (rep_root / f"{sym}_arbitration.md").exists()
+                        if has_dw and not has_report:
+                            queue.append({
+                                "ticker": sym,
+                                "date": target_date,
+                                "status": "READY_FOR_RESEARCH",
+                                "action": "deep_only",
+                                "action_label": "⚡ Run Deep Research",
+                                "reason": f"Triage {sub_name} candidate",
+                                "has_chart": has_chart,
+                                "has_report": False,
+                            })
+                            seen.add(sym)
+                        elif has_report:
+                            seen.add(sym)
+
         # 2. Check survivors.json for target_date
         surv_file = raw_root / "survivors.json" if raw_root.exists() else None
         if surv_file and surv_file.exists():
@@ -605,19 +633,16 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
 
     spot_price = (alert_row.get("alert_price") if alert_row else None) or (alert_row.get("market_price") if alert_row else None) or (suggestion_row.get("last_price") if suggestion_row else None)
     if not spot_price:
-        # Check datawindow.json in raw artifacts
-        for dw_cand in [raw_base / f"{ticker_u}_datawindow.json", config.BASE_DIR / "data" / "raw" / target_date / ticker_u / f"{ticker_u}_datawindow.json"]:
-            if dw_cand.exists():
-                try:
-                    dw = json.loads(dw_cand.read_text(encoding="utf-8"))
-                    for k in ["close", "Close", "last", "Last", "bar_close"]:
-                        if k in dw and dw[k] is not None:
-                            spot_price = float(dw[k])
-                            break
-                except Exception:
-                    pass
-            if spot_price:
-                break
+        # Check datawindow in raw/triage artifacts
+        dw = load_datawindow(ticker_u, target_date)
+        if dw:
+            for k in ["close", "Close", "last", "Last", "bar_close", "price"]:
+                if k in dw and dw[k] is not None:
+                    try:
+                        spot_price = float(dw[k])
+                        break
+                    except Exception:
+                        pass
     if not spot_price and entry_low and entry_high:
         try:
             spot_price = (float(entry_low) + float(entry_high)) / 2.0
@@ -836,6 +861,8 @@ def get_report_bundle(date: str, ticker: str):
                     md_dates_set.add(d.name)
                 elif list(d.glob(f"**/{ticker_u}_thesis.json")) or list(d.glob(f"**/{ticker_u}_triage.json")):
                     other_dates_set.add(d.name)
+                if list(d.glob(f"**/{ticker_u}*datawindow*")):
+                    scrape_dates_set.add(d.name)
 
     # 4. Alert & suggestions DB
     try:
@@ -1061,18 +1088,15 @@ def get_report_bundle(date: str, ticker: str):
         txt = chosen_doc.read_text(encoding="utf-8")
 
         spot_val = None
-        for dw_cand in [t_raw / f"{ticker_u}_datawindow.json", t_raw_date / f"{ticker_u}_datawindow.json"]:
-            if dw_cand.exists():
-                try:
-                    dw = json.loads(dw_cand.read_text(encoding="utf-8"))
-                    for k in ["close", "Close", "last", "Last", "bar_close"]:
-                        if k in dw and dw[k]:
-                            spot_val = float(dw[k])
-                            break
-                except Exception:
-                    pass
-            if spot_val:
-                break
+        dw_val = load_datawindow(ticker_u, d_str)
+        if dw_val:
+            for k in ["close", "Close", "last", "Last", "bar_close", "price"]:
+                if k in dw_val and dw_val[k]:
+                    try:
+                        spot_val = float(dw_val[k])
+                        break
+                    except Exception:
+                        pass
 
         if not spot_val:
             m_spot = re.search(r'(?:Spot Price|Bar close|\bSpot\b|\bClose\b)[\s\*:]+\$?([0-9]+\.[0-9]+)', txt, re.IGNORECASE)

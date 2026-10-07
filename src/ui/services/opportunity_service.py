@@ -349,6 +349,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
 
     # Evaluate gate for each setup
     from src.logic.actionable_gate import is_actionable as check_is_actionable, gate_inputs_from_datawindow
+    from src.data.datawindow_loader import load_datawindow
     processed: List[Dict[str, Any]] = []
 
     for s in raw_setups:
@@ -363,23 +364,8 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         side = s["side"]
         d_str = s.get("report_date") or today_mt_str
 
-        # 1. Comprehensive Data Window Search across triage, raw, _DEEP_RESEARCH, and force dirs
-        dw = None
-        if s.get("stage") != "SCREENER_COIL":
-            dw_cands = (
-                list((config.BASE_DIR / "data" / "triage" / str(d_str)).glob(f"**/{sym}*datawindow*.json"))
-                + list((config.BASE_DIR / "data" / "raw" / str(d_str) / sym).glob(f"*datawindow*.json"))
-                + list((config.BASE_DIR / "data" / "raw" / str(d_str)).glob(f"{sym}*datawindow*.json"))
-                + list((config.BASE_DIR / "data" / "triage").glob(f"**/{sym}*datawindow*.json"))
-                + list((config.BASE_DIR / "data" / "raw").glob(f"**/{sym}/*datawindow*.json"))
-            )
-            for dwp in dw_cands:
-                if dwp.exists():
-                    try:
-                        dw = json.loads(dwp.read_text(encoding="utf-8"))
-                        break
-                    except Exception:
-                        pass
+        # 1. Authoritative Data Window Search across triage, raw, _DEEP_RESEARCH, and force dirs
+        dw = load_datawindow(sym, str(d_str))
 
         # 2. Calculate distance and in-zone status
         in_zone = False
@@ -467,7 +453,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             gate_in = gate_inputs_from_datawindow(dw)
             gate_in["price"] = spot if spot > 0 else gate_in.get("price")
             gate_in["long_in_zone"] = 1.0 if in_zone else (0.0 if spot > 0 else gate_in.get("long_in_zone"))
-            if live_rr > 0:
+            if live_rr is not None:
                 gate_in["long_rr_at_market"] = live_rr
             if stop and stop > 0:
                 gate_in["long_stop_loss"] = stop
@@ -479,7 +465,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                     "entry": e_high or spot,
                     "stop": stop,
                     "t1": t1,
-                    "rr": live_rr if live_rr > 0 else None,
+                    "rr": live_rr if live_rr is not None else None,
                     "in_zone": 1.0 if in_zone else 0.0,
                 }
             )

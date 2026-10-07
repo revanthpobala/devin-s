@@ -1056,32 +1056,45 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     # Canonical Actionable Gate Evaluation for ticker
     try:
         from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
-        raw_root_p = config.BASE_DIR / "data" / "raw"
-        triage_root_p = config.BASE_DIR / "data" / "triage"
-        found_dw = None
-        for cand_d in [raw_root_p / (date_str or calendar_today) / ticker_u, triage_root_p / (date_str or calendar_today) / ticker_u, triage_root_p / (date_str or calendar_today) / "_DEEP_RESEARCH" / ticker_u]:
-            if cand_d.exists():
-                dw_cand = cand_d / f"{ticker_u}_datawindow.json"
-                if dw_cand.exists():
-                    try:
-                        found_dw = json.loads(dw_cand.read_text(encoding="utf-8"))
-                        break
-                    except Exception:
-                        pass
-        if not found_dw and sorted_hist_dates:
-            for od in sorted_hist_dates[:3]:
-                dw_cand = raw_root_p / od / ticker_u / f"{ticker_u}_datawindow.json"
-                if dw_cand.exists():
-                    try:
-                        found_dw = json.loads(dw_cand.read_text(encoding="utf-8"))
-                        break
-                    except Exception:
-                        pass
+        from src.data.datawindow_loader import load_datawindow
+        found_dw = load_datawindow(ticker_u, str(date_str or calendar_today))
+
+        # Compute live in-zone & live R:R
+        in_zone_flag = 0.0
+        if live_spot and ez_low and ez_high and ez_low > 0 and ez_high > 0:
+            if ez_low <= live_spot <= (ez_high * 1.004):
+                in_zone_flag = 1.0
+
+        live_rr_val = None
+        if live_spot and stop_p and stop_p > 0 and t1_p and t1_p > stop_p:
+            if live_spot <= stop_p:
+                live_rr_val = 0.0
+            else:
+                risk = live_spot - stop_p
+                if risk > (0.005 * live_spot):
+                    live_rr_val = round((t1_p - live_spot) / risk, 2)
 
         if found_dw:
             gate_in = gate_inputs_from_datawindow(found_dw)
             price_eval = live_spot or gate_in.get("price") or (float(found_dw.get("close") or found_dw.get("Close") or 0.0) if found_dw.get("close") or found_dw.get("Close") else None)
-            is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": price_eval})
+            gate_in["price"] = price_eval
+            gate_in["long_in_zone"] = in_zone_flag
+            if live_rr_val is not None:
+                gate_in["long_rr_at_market"] = live_rr_val
+            if stop_p and stop_p > 0:
+                gate_in["long_stop_loss"] = stop_p
+
+            is_act, gate_fails = is_actionable(
+                gate_in,
+                {
+                    "side": "long",
+                    "entry": price_eval,
+                    "stop": stop_p,
+                    "t1": t1_p,
+                    "rr": live_rr_val,
+                    "in_zone": in_zone_flag,
+                }
+            )
             if is_act:
                 top_card.append("• **CANONICAL ACTIONABLE GATE:** 🟢 **PASS (ACTIONABLE NOW)** — All 8 mathematical gates cleared.")
             else:

@@ -185,6 +185,12 @@ def is_actionable(dw: Dict[str, Any], plan: Optional[Dict[str, Any]] = None) -> 
 
     # in-zone bit.
     in_zone = g.get("long_in_zone")
+    if in_zone is None and plan_dict.get("in_zone") is not None:
+        try:
+            in_zone = float(plan_dict.get("in_zone"))
+        except (ValueError, TypeError):
+            in_zone = None
+
     if in_zone is None:
         fails.append("long_in_zone missing")
     elif in_zone != 1 and in_zone != 1.0:
@@ -192,6 +198,24 @@ def is_actionable(dw: Dict[str, Any], plan: Optional[Dict[str, Any]] = None) -> 
 
     # Long RR At Market >= min_rr (unrounded).
     rr_at_market = g.get("long_rr_at_market")
+    if rr_at_market is None and plan_dict.get("rr") is not None:
+        try:
+            rr_at_market = float(plan_dict.get("rr"))
+        except (ValueError, TypeError):
+            rr_at_market = None
+
+    if rr_at_market is None:
+        px = plan_dict.get("entry") if plan_dict.get("entry") is not None else g.get("price")
+        st = plan_dict.get("stop") if plan_dict.get("stop") is not None else (plan_dict.get("tactical_stop") if plan_dict.get("tactical_stop") is not None else g.get("long_stop_loss"))
+        tgt = plan_dict.get("t1") if plan_dict.get("t1") is not None else (plan_dict.get("target_1") if plan_dict.get("target_1") is not None else (plan_dict.get("target") if plan_dict.get("target") is not None else None))
+        if px is not None and st is not None and tgt is not None:
+            try:
+                px_f, st_f, tgt_f = float(px), float(st), float(tgt)
+                if px_f > st_f and tgt_f > px_f:
+                    rr_at_market = round((tgt_f - px_f) / (px_f - st_f), 2)
+            except (ValueError, TypeError):
+                pass
+
     if rr_at_market is None:
         fails.append("long_rr_at_market missing")
     else:
