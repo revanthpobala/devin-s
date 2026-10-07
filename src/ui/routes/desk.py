@@ -382,11 +382,6 @@ def get_today():
                     r["measured_actionable"] = is_act
                     r["gate_reasons"] = gate_fails
 
-                    if not is_act and gate_fails and len(gate_fails) == 1:
-                        r_close = dict(r)
-                        r_close["missing_condition"] = gate_fails[0]
-                        closest_to_gate.append(r_close)
-
                     # setup_lane is PERSISTED at triage time by the Pine's own thresholds, so it
                     # does not follow a UI change to the R:R floor. Re-tier the R:R lanes from the
                     # live number so the badge agrees with the bucket the row just landed in;
@@ -408,12 +403,25 @@ def get_today():
                     # Calculate wait-for limit price if RR < min_rr_floor (Task d6)
                     r["limit_price"] = None
                     r["wait_for"] = None
-                    if stop and target and target > stop and (rr_at_market is None or rr_at_market < min_rr_floor):
+                    entry_l = float(r.get("entry_low") or 0.0)
+                    entry_h = float(r.get("entry_high") or 0.0)
+                    is_geo_valid = (
+                        stop and target and target > stop
+                        and (entry_h == 0.0 or entry_h > stop)
+                        and (entry_l == 0.0 or entry_l > stop)
+                    )
+                    is_terminal_row = (last_px and stop and last_px <= stop) or (last_px and target and last_px >= target)
+                    if not is_terminal_row and is_geo_valid and (rr_at_market is None or rr_at_market < min_rr_floor):
                         calc_limit = round((target + min_rr_floor * stop) / (1.0 + min_rr_floor), 2)
                         atr_chk = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else 1.0
-                        if (calc_limit - stop) / max(0.01, atr_chk) >= 0.7:
+                        if calc_limit > stop and (not last_px or calc_limit < last_px) and (calc_limit - stop) / max(0.01, atr_chk) >= 0.7:
                             r["limit_price"] = calc_limit
                             r["wait_for"] = f"wait for ${calc_limit:.2f}"
+
+                    if not is_act and gate_fails and len(gate_fails) == 1:
+                        r_close = dict(r)
+                        r_close["missing_condition"] = gate_fails[0]
+                        closest_to_gate.append(r_close)
 
                     live_rr = None
                     flag = None

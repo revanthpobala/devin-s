@@ -436,17 +436,38 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         from src.tracking import rr_config
         active_floor = rr_config.min_rr()
         limit_price = None
-        if stop is not None and stop > 0 and t1 is not None and t1 > stop:
+        s["limit_price"] = None
+        s["wait_for"] = None
+        
+        # Only compute stalk limit for active, non-breached, geometrically valid stalking setups
+        is_terminal = is_target_hit or is_stop_breached or (spot > 0 and stop is not None and spot <= stop)
+        is_geo_valid = (
+            stop is not None and stop > 0 
+            and t1 is not None and t1 > stop 
+            and (e_high is None or e_high > stop)
+            and (e_low is None or e_low > stop)
+        )
+        
+        atr_val = 0.0
+        if dw:
+            try:
+                atr_val = float(dw.get("atr14") or dw.get("ATR") or dw.get("rsi2_atr14") or 0.0)
+            except Exception:
+                atr_val = 0.0
+        if atr_val <= 0.0:
+            try:
+                atr_val = float(s.get("atr") or s.get("atr14") or 0.0)
+            except Exception:
+                atr_val = 0.0
+
+        if not is_terminal and is_geo_valid and (live_rr < active_floor):
             calc_limit = round((t1 + active_floor * stop) / (1.0 + active_floor), 2)
-            atr_val = float(s.get("atr") or s.get("atr14") or 1.0)
-            if dw:
-                atr_raw = dw.get("atr14") or dw.get("rsi2_atr14") or dw.get("RSI2 ATR14")
-                if atr_raw is not None and str(atr_raw).replace(".", "", 1).isdigit():
-                    atr_val = float(atr_raw)
-            if (calc_limit - stop) / max(0.01, atr_val) >= 0.7:
-                limit_price = calc_limit
-                s["limit_price"] = limit_price
-                s["wait_for"] = f"wait for ${limit_price:.2f}"
+            # Limit buy must be below current spot price and above stop, and stop width >= 0.7 ATR
+            if calc_limit > stop and (spot <= 0 or calc_limit < spot):
+                if atr_val <= 0.0 or ((calc_limit - stop) / atr_val) >= 0.7:
+                    limit_price = calc_limit
+                    s["limit_price"] = limit_price
+                    s["wait_for"] = f"wait for ${limit_price:.2f}"
 
         # 6. Evaluate Canonical Gate with Live Inputs
         if dw:

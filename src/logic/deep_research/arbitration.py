@@ -462,14 +462,21 @@ def run_arbitration(
         active_floor = rr_config.min_rr()
         limit_price = None
         curr_spot = spot_num or spot_at_signal or 0.0
-        if st > 0 and t1 > st:
+        is_geo_valid = (
+            st > 0 and t1 > st 
+            and (eh == 0.0 or eh > st)
+            and (el == 0.0 or el > st)
+        )
+        is_terminal = (curr_spot > 0 and st > 0 and curr_spot <= st) or (curr_spot > 0 and t1 > 0 and curr_spot >= t1)
+        if not is_terminal and is_geo_valid:
             spot_rr = ((t1 - curr_spot) / (curr_spot - st)) if (curr_spot > st) else 0.0
             if spot_rr < active_floor:
+                calc_limit = round((t1 + active_floor * st) / (1.0 + active_floor), 2)
                 try:
                     atr_chk = float(atr_at_signal or (atr14_val if atr14_val and atr14_val != "N/A" else 1.0))
                 except Exception:
                     atr_chk = 1.0
-                if (calc_limit - st) / max(0.01, atr_chk) >= 0.7:
+                if calc_limit > st and (curr_spot <= 0 or calc_limit < curr_spot) and (calc_limit - st) / max(0.01, atr_chk) >= 0.7:
                     limit_price = calc_limit
                     sp["limit_price"] = limit_price
                     sp["trigger_price"] = limit_price
