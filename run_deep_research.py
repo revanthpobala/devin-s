@@ -99,17 +99,25 @@ def _mark_job_complete(job_id: str | None, success: bool = True, error_msg: str 
 
 
 def run_deep_research_pipeline(
-    target_date: str = None, target_ticker: str = None, force_tickers: set = None, job_id: str = None, force: bool = False
+    target_date: str = None,
+    target_ticker: str = None,
+    force_tickers: set = None,
+    job_id: str = None,
+    force: bool = False,
+    tier: str = "MID",
 ):
     logger.info("=" * 60)
-    logger.info("STARTING DEEP RESEARCH PIPELINE (Paid Validation Phase)")
+    logger.info(f"STARTING DEEP RESEARCH PIPELINE [Tier: {tier}]")
     logger.info("=" * 60)
 
     date_str = target_date or datetime.now().strftime("%Y-%m-%d")
     final_job_id = _ensure_job_registered(target_ticker, date_str, job_id=job_id)
 
     try:
-        run_deep_research(date_str, target_ticker, force=force or bool(force_tickers))
+        run_deep_research(
+            date_str, target_ticker, force=force or bool(force_tickers),
+            tier=tier, job_id=final_job_id,
+        )
         
         # Automatically sync watch levels to SQLite, Tastytrade mobile push alerts, and audit ledgers
         try:
@@ -121,7 +129,7 @@ def run_deep_research_pipeline(
 
         _mark_job_complete(final_job_id, success=True)
         logger.info("=" * 60)
-        logger.info("DEEP RESEARCH PHASE COMPLETE.")
+        logger.info(f"DEEP RESEARCH PHASE COMPLETE [{tier}].")
         logger.info("=" * 60)
     except Exception as exc:
         _mark_job_complete(final_job_id, success=False, error_msg=str(exc))
@@ -147,6 +155,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ticker", type=str, help="Run only on a specific ticker")
     parser.add_argument(
+        "--tier",
+        type=str,
+        default="MID",
+        choices=["LITE", "MID", "FULL", "lite", "mid", "full"],
+        help="Deep research depth tier (default: MID). LITE = Model A only (1 tool round); MID = Model A only (3 tool rounds) + conditional Model B veto; FULL = Debate + Models A & B + Arbitration.",
+    )
+    parser.add_argument(
         "--force",
         type=str,
         default="",
@@ -164,6 +179,7 @@ if __name__ == "__main__":
 
     target_date = args.date
     target_ticker = args.ticker
+    tier = args.tier.upper()
 
     # Smart positional: a token that doesn't look like YYYY-MM-DD is a ticker.
     if target_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date) and not target_ticker:
@@ -180,4 +196,7 @@ if __name__ == "__main__":
 
         run_local_research(target_date, target_ticker, force_tickers)
 
-    run_deep_research_pipeline(target_date, target_ticker, force_tickers=force_tickers, job_id=args.job_id, force=bool(force_tickers))
+    run_deep_research_pipeline(
+        target_date, target_ticker, force_tickers=force_tickers,
+        job_id=args.job_id, force=bool(force_tickers), tier=tier,
+    )

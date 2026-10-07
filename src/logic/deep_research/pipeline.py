@@ -85,14 +85,29 @@ def run_ponytail_pm_review(
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_local: bool = False, force: bool = False):
+def run_deep_research(
+    date_str: str,
+    target_ticker: Optional[str] = None,
+    force_local: bool = False,
+    force: bool = False,
+    tier: str = "MID",
+    job_id: Optional[str] = None,
+):
     """
     Automates the Deep Research validation phase using OpenAI-compatible tool calling.
 
-    COST GATE: the paid Minimax passes (Pass 1 + Pass 2) run ONLY for tickers the
-    free local Qwen triage flagged via send_for_deep_research == true. Batch mode enforces
-    this; a manually-specified target_ticker is an explicit request and is always run.
+    Tiers:
+      - LITE: Model A only (tool rounds capped at 1), no debate, no Model B.
+      - MID (default): Model A only (tool rounds capped at MID_MAX_TOOL_ROUNDS=3), no debate.
+                       Model B runs as a veto only if Model A says GO/BUY and setup is near gate.
+      - FULL: Full multi-pass flow (Bull/Bear Debate, Model A, Model B, PM Arbitration).
     """
+    tier = str(tier or os.getenv("DEEP_RESEARCH_TIER", "MID")).upper().strip()
+    if tier not in ("LITE", "MID", "FULL"):
+        tier = "MID"
+
+    import time
+    from src.tracking.watch_manager import record_research_timing
     from src.logic.deep_research.artifact_loader import (
         load_data_window,
         load_news_dossier,
@@ -122,7 +137,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         save_deep_context,
     )
     from src.logic.deep_research.output_writer import save_model_a_report, save_model_b_report
-    from src.logic.deep_research.pass2 import run_pass2
+    from src.logic.deep_research.pass2 import run_pass2, _call_model, _detect_provider
     from src.logic.deep_research.tv_strategies import load_tv_strategies
 
     triage_dir = config.BASE_DIR / "data" / "triage" / date_str
@@ -403,7 +418,8 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             continue
         seen_tickers.add(ticker)
 
-        logger.info(f"[{ticker}] Initiating Deep Research (2-pass flow)...")
+        t_ticker_start = time.time()
+        logger.info(f"[{ticker}] Initiating Deep Research (Tier: {tier})...")
 
         ticker_raw_dir = raw_dir / ticker
         ticker_raw_dir.mkdir(parents=True, exist_ok=True)
@@ -450,7 +466,7 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             ).upper()
             if is_held:
                 kind = "MANAGE"
-            elif triage_val == "CUT":
+            elif triage_val == "CUT" and not force:
                 logger.info(f"[{ticker}] Explicit ticker resolved to CUT triage and is not held in portfolio. Skipping deep research.")
                 continue
             elif triage_val == "WATCH":
@@ -461,15 +477,66 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             logger.info(f"[{ticker}] Already researched within 3 trading days with unchanged key levels. Skipping deep research.")
             continue
 
+        from src.logic.data_window_filter import parse_data_window
+        f_parsed = parse_data_window(dw_dict) if dw_dict else {}
+
+        # ------------------------------------------------------------------
+        # Pre-gate Evaluation: Far-from-gate shortcut (GATE_ONLY)
+        # ------------------------------------------------------------------
+        active_floor = 1.0
+        try:
+            from src.logic.actionable_gate import RR_GATE_FLOOR_ACTIVE
+            active_floor = float(RR_GATE_FLOOR_ACTIVE)
+        except Exception:
+            pass
+
+        rr_val = None
+        for k in ("Long RR At Market", "long_rr_at_market", "rr_at_market"):
+            if dw_dict.get(k) is not None:
+                try:
+                    rr_val = float(dw_dict[k])
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        is_far_from_gate = False
+        far_gate_reason = ""
+        if not force and not is_held:
+            if rr_val is not None and rr_val < (active_floor * 0.5):
+                is_far_from_gate = True
+                far_gate_reason = f"R:R at market ({rr_val:.2f}) is below half the active floor ({active_floor*0.5:.2f})"
+            elif f_parsed.get("action_long") in (17, 18):
+                is_far_from_gate = True
+                far_gate_reason = f"Hard-blocked action code {f_parsed.get('action_long')} (EXHAUSTION / EXTENDED)"
+
+        if is_far_from_gate and not force:
+            logger.info(f"[{ticker}] Pre-gate: Far from gate ({far_gate_reason}). Writing GATE_ONLY report (no LLM GPU time burned).")
+            reports_dir = config.BASE_DIR / "reports" / date_str
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            gate_only_md = (
+                f"# {ticker} | GATE_ONLY PRE-FILTER ({date_str})\n\n"
+                f"> **Verdict**: **CASH_SKIP / GATE_ONLY** | **Reason**: {far_gate_reason}\n\n"
+                f"Candidate is far from the actionable execution gate. Deep research LLM inference skipped to preserve GPU slots."
+            )
+            (reports_dir / f"{ticker}_summary.md").write_text(gate_only_md, encoding="utf-8")
+            (reports_dir / f"{ticker}_arbitration.md").write_text(gate_only_md, encoding="utf-8")
+            elapsed_gate = round(time.time() - t_ticker_start, 3)
+            record_research_timing(
+                ticker=ticker, target_date=date_str, stage="GATE_ONLY", seconds=elapsed_gate,
+                tier=tier, job_id=job_id, details=far_gate_reason,
+            )
+            record_research_timing(
+                ticker=ticker, target_date=date_str, stage="TOTAL", seconds=elapsed_gate,
+                tier=tier, job_id=job_id, details="GATE_ONLY complete",
+            )
+            continue
+
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
 
         # 3. Format deterministic blocks
         flags_block = format_flags_block(flags)
         engine_math_block = format_engine_math_block(verdict_record)
         data_window_str = json.dumps(dw_dict, indent=2)
-
-        from src.logic.data_window_filter import parse_data_window
-        f_parsed = parse_data_window(dw_dict) if dw_dict else {}
 
         triggers_src = verdict_record
         if not (isinstance(verdict_record, dict) and verdict_record.get("triggers")) and f_parsed:
@@ -511,9 +578,12 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         state_response_block = format_state_response_block(f_parsed, scenarios)
         unmasked_recency_block = format_unmasked_recency_block(dw_dict)
 
+        # ------------------------------------------------------------------
+        # Stage 1: PREFETCH
+        # ------------------------------------------------------------------
+        t_prefetch_start = time.time()
         # 4. Load news dossier
         news_dossier = load_news_dossier(ticker, paths["dossier"], paths["thesis"])
-
         from src.logic.deep_research.artifact_loader import _dossier_stale_check
         stale = _dossier_stale_check(paths["dossier"], date_str)
 
@@ -523,7 +593,6 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         # 6. TV strategies
         tv_strat_block = load_tv_strategies(ticker, tdir, raw_dir, dw_dict)
         options_block = f"{ctx.gex_block}\n\n{tv_strat_block}".strip()
-
         save_deep_context(tdir, ticker, date_str, ctx, tv_strat_block)
 
         # 7. Prefetch quant context
@@ -531,23 +600,33 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
         from src.plugins.schwab_plugin import format_active_position_block
         pre_ctx = prefetch_deep_research_context(ticker, date_str)
         preloaded_block = build_preloaded_block(pre_ctx)
-
-        # Active broker position (Schwab / tracked portfolio)
         active_pos_block = format_active_position_block(ticker)
 
-        # 8. Multi-agent debate
-        debate_payload = build_debate_payload(
-            ticker=ticker, date_str=date_str,
-            data_window_str=data_window_str, live_quote_block=ctx.live_quote_block,
-            unmasked_recency_block=unmasked_recency_block, news_dossier=news_dossier,
-            fresh_news=ctx.fresh_news, macro_news=macro_news, av_block=ctx.av_block,
-            grounded_block=ctx.grounded_block, macro_grounded_block=ctx.macro_grounded_block,
-            gex_block=ctx.gex_block, flags_block=flags_block, engine_math_block=engine_math_block,
-            earnings_fact_block=ctx.earnings_fact_block, preloaded_block=preloaded_block,
-            active_pos_block=active_pos_block,
-        )
-        debate_result = run_debate(ticker, date_str, debate_payload, tdir, dw_str=data_window_str)
-        debate_block = format_debate_block(debate_result)
+        prefetch_sec = round(time.time() - t_prefetch_start, 3)
+        record_research_timing(ticker=ticker, target_date=date_str, stage="PREFETCH", seconds=prefetch_sec, tier=tier, job_id=job_id)
+
+        # ------------------------------------------------------------------
+        # Stage 2: DEBATE (FULL tier only)
+        # ------------------------------------------------------------------
+        if tier == "FULL":
+            t_debate_start = time.time()
+            debate_payload = build_debate_payload(
+                ticker=ticker, date_str=date_str,
+                data_window_str=data_window_str, live_quote_block=ctx.live_quote_block,
+                unmasked_recency_block=unmasked_recency_block, news_dossier=news_dossier,
+                fresh_news=ctx.fresh_news, macro_news=macro_news, av_block=ctx.av_block,
+                grounded_block=ctx.grounded_block, macro_grounded_block=ctx.macro_grounded_block,
+                gex_block=ctx.gex_block, flags_block=flags_block, engine_math_block=engine_math_block,
+                earnings_fact_block=ctx.earnings_fact_block, preloaded_block=preloaded_block,
+                active_pos_block=active_pos_block,
+            )
+            debate_result = run_debate(ticker, date_str, debate_payload, tdir, dw_str=data_window_str)
+            debate_block = format_debate_block(debate_result)
+            debate_sec = round(time.time() - t_debate_start, 3)
+            record_research_timing(ticker=ticker, target_date=date_str, stage="DEBATE", seconds=debate_sec, tier=tier, job_id=job_id)
+        else:
+            debate_block = "(Debate skipped for MID/LITE tier to optimize throughput)"
+            record_research_timing(ticker=ticker, target_date=date_str, stage="DEBATE", seconds=0.0, tier=tier, job_id=job_id, details=f"Skipped in {tier}")
 
         # 9. Daily alerts + Pine benchmark
         daily_alerts_block, alerts_list = build_daily_alerts_block(ticker, raw_dir)
@@ -617,16 +696,53 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             else ([str(paths["chart_wide"])] if paths["chart_wide"].exists() else [])
         )
 
-        # 12. Pass 2 inference
+        # ------------------------------------------------------------------
+        # Stage 3 & 4: MODEL_A and MODEL_B
+        # ------------------------------------------------------------------
         try:
-            p2 = run_pass2(
-                ticker=ticker, date_str=date_str,
-                system_prompt=system_prompt, user_prompt=user_prompt,
-                system_prompt_independent=system_prompt_independent,
-                independent_user_prompt=independent_user_prompt,
-                image_paths_model_a=image_paths_model_a,
-                image_paths_model_b=image_paths_model_b,
-                force_local=force_local,
+            mid_tool_limit = int(os.getenv("MID_MAX_TOOL_ROUNDS", "3"))
+            max_tools_a = 1 if tier == "LITE" else (mid_tool_limit if tier == "MID" else 8)
+            max_tools_b = 1 if tier == "LITE" else (mid_tool_limit if tier == "MID" else 8)
+
+            stats_a = {}
+            stats_b = {}
+
+            if tier == "FULL":
+                p2 = run_pass2(
+                    ticker=ticker, date_str=date_str,
+                    system_prompt=system_prompt, user_prompt=user_prompt,
+                    system_prompt_independent=system_prompt_independent,
+                    independent_user_prompt=independent_user_prompt,
+                    image_paths_model_a=image_paths_model_a,
+                    image_paths_model_b=image_paths_model_b,
+                    force_local=force_local,
+                    skip_model_b=False,
+                    max_tool_batches_a=max_tools_a,
+                    max_tool_batches_b=max_tools_b,
+                    stats_a=stats_a,
+                    stats_b=stats_b,
+                )
+            else:
+                p2 = run_pass2(
+                    ticker=ticker, date_str=date_str,
+                    system_prompt=system_prompt, user_prompt=user_prompt,
+                    system_prompt_independent=system_prompt_independent,
+                    independent_user_prompt=independent_user_prompt,
+                    image_paths_model_a=image_paths_model_a,
+                    image_paths_model_b=image_paths_model_b,
+                    force_local=force_local,
+                    skip_model_b=True,
+                    max_tool_batches_a=max_tools_a,
+                    stats_a=stats_a,
+                )
+
+            record_research_timing(
+                ticker=ticker, target_date=date_str, stage="MODEL_A",
+                seconds=stats_a.get("seconds", 0.0),
+                tool_rounds=stats_a.get("tool_rounds", 0),
+                tool_calls=stats_a.get("tool_calls", 0),
+                tokens=stats_a.get("tokens", 0),
+                tier=tier, job_id=job_id,
             )
 
             reports_dir = config.BASE_DIR / "reports" / date_str
@@ -635,6 +751,58 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             clean_response, _ = save_model_a_report(
                 ticker, date_str, p2.response, tdir, out_path, reports_dir, _drift_checker, dw_dict=dw_dict
             )
+
+            # Model B Veto logic for MID tier:
+            # In MID, Model B runs only when Model A says GO and setup is near-gate
+            if tier == "MID":
+                is_model_a_go = bool(re.search(r'\b(ENTER|BUY|GO|ACTIONABLE)\b', clean_response, re.IGNORECASE))
+                is_near_gate = False
+                try:
+                    from src.logic.actionable_gate import eval_actionable_setup
+                    gate_eval = eval_actionable_setup(dw_dict)
+                    is_near_gate = gate_eval.is_actionable or len(gate_eval.failing_reasons) <= 1
+                except Exception:
+                    pass
+
+                if is_model_a_go and is_near_gate:
+                    logger.info(f"[{ticker}] Model A emitted GO and setup is near-gate. Launching Model B as independent veto...")
+                    will_use_remote, provider_label = _detect_provider(not force_local)
+                    ind_resp = _call_model(
+                        system_prompt_independent, independent_user_prompt, image_paths_model_b,
+                        date_str, will_use_remote, "Model B (Independent Veto)", ticker, True,
+                        max_tool_batches=max_tools_b, stats_out=stats_b,
+                    )
+                    p2.ind_response = ind_resp
+                    record_research_timing(
+                        ticker=ticker, target_date=date_str, stage="MODEL_B",
+                        seconds=stats_b.get("seconds", 0.0),
+                        tool_rounds=stats_b.get("tool_rounds", 0),
+                        tool_calls=stats_b.get("tool_calls", 0),
+                        tokens=stats_b.get("tokens", 0),
+                        tier=tier, job_id=job_id, details="Veto executed",
+                    )
+                else:
+                    p2.ind_response = "(Model B independent pass skipped for MID tier / non-GO or non-near-gate posture)"
+                    record_research_timing(
+                        ticker=ticker, target_date=date_str, stage="MODEL_B",
+                        seconds=0.0, tier=tier, job_id=job_id, details="Veto skipped in MID",
+                    )
+            elif tier == "FULL":
+                record_research_timing(
+                    ticker=ticker, target_date=date_str, stage="MODEL_B",
+                    seconds=stats_b.get("seconds", 0.0),
+                    tool_rounds=stats_b.get("tool_rounds", 0),
+                    tool_calls=stats_b.get("tool_calls", 0),
+                    tokens=stats_b.get("tokens", 0),
+                    tier=tier, job_id=job_id,
+                )
+            else:  # LITE
+                p2.ind_response = "(Model B independent pass skipped for LITE tier)"
+                record_research_timing(
+                    ticker=ticker, target_date=date_str, stage="MODEL_B",
+                    seconds=0.0, tier=tier, job_id=job_id, details="Skipped in LITE",
+                )
+
             clean_ind_response = save_model_b_report(
                 ticker, date_str, p2.ind_response, tdir, reports_dir, dw_dict=dw_dict
             )
@@ -647,8 +815,6 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
             )
             from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior
             _pb = triage_record.get("pb_funnel") if isinstance(triage_record, dict) else None
-            # PB-split prior when the triage record carries the Signal Pack bit; otherwise fall
-            # back to the lane name, since old rows and non-R:R lanes were never PB-split.
             _reason = triage_reason or next(
                 (r for r, lane in LANE_TO_SETUP_LANE.items() if lane == resolved_lane), None
             )
@@ -658,6 +824,10 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 lane_prior_win = triage_record.get("lane_prior_win")
                 lane_prior_ev = triage_record.get("lane_prior_ev")
 
+            # ------------------------------------------------------------------
+            # Stage 5: ARBITRATION
+            # ------------------------------------------------------------------
+            t_arb_start = time.time()
             run_arbitration(
                 ticker=ticker, date_str=date_str,
                 clean_response=clean_response, clean_ind_response=clean_ind_response,
@@ -673,6 +843,17 @@ def run_deep_research(date_str: str, target_ticker: Optional[str] = None, force_
                 triage_reason=triage_reason,
                 lane_prior_win=lane_prior_win,
                 lane_prior_ev=lane_prior_ev,
+            )
+            arb_sec = round(time.time() - t_arb_start, 3)
+            record_research_timing(
+                ticker=ticker, target_date=date_str, stage="ARBITRATION",
+                seconds=arb_sec, tier=tier, job_id=job_id,
+            )
+
+            total_ticker_sec = round(time.time() - t_ticker_start, 3)
+            record_research_timing(
+                ticker=ticker, target_date=date_str, stage="TOTAL",
+                seconds=total_ticker_sec, tier=tier, job_id=job_id, details=f"{tier} deep research completed",
             )
 
         except Exception as e:

@@ -249,4 +249,16 @@ def test_api_report_bundle_markdown_loading(client):
     assert len(data.get("arbitration_md") or "") > 100
 
 
+def test_api_research_timings(client):
+    """Verify /api/research/timings returns structured timing records."""
+    response = client.get("/api/research/timings?ticker=GOOGL")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert "count" in data
+    assert "timings" in data
+    assert isinstance(data["timings"], list)
+
+
+
 

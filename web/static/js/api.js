@@ -303,11 +303,11 @@ window.AppApi = {
     return await res.json();
   },
 
-  async triggerResearch(ticker, mode = 'full', date = null, force = false) {
+  async triggerResearch(ticker, mode = 'full', date = null, force = false, tier = 'MID') {
     const res = await fetch('/api/research/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker, mode, date, force })
+      body: JSON.stringify({ ticker, mode, date, force, tier })
     });
     if (!res.ok) {
       let msg = `Failed to run research (${res.status})`;

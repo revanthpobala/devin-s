@@ -252,8 +252,13 @@ def dispatch_next_queued_job():
         if deep_slots_available > 0:
             with get_db() as conn:
                 c = conn.cursor()
+                # Ensure tier column exists
+                try:
+                    c.execute("ALTER TABLE active_research_jobs ADD COLUMN tier TEXT DEFAULT 'MID'")
+                except Exception:
+                    pass
                 queued_deep = c.execute(
-                    "SELECT job_id, ticker, mode, target_date FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' ORDER BY started_at ASC LIMIT ?",
+                    "SELECT job_id, ticker, mode, target_date, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' ORDER BY started_at ASC LIMIT ?",
                     (deep_slots_available,)
                 ).fetchall()
                 for job in queued_deep:
@@ -261,6 +266,7 @@ def dispatch_next_queued_job():
                     tkr = job["ticker"]
                     m = job["mode"]
                     dt = job["target_date"]
+                    t_tier = job["tier"] or "MID"
                     c.execute(
                         "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', started_at = ? WHERE job_id = ?",
                         (datetime.now(timezone.utc).isoformat(), jid)
@@ -269,12 +275,12 @@ def dispatch_next_queued_job():
 
                     worker_thread = threading.Thread(
                         target=run_research_worker,
-                        args=(jid, tkr, m, dt, True),
+                        args=(jid, tkr, m, dt, True, t_tier),
                         daemon=True
                     )
                     ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
                     worker_thread.start()
-                    append_log(f"🔬 [Deep Queue] Dispatched deep research for {tkr} to open slot (Job ID: {jid}).")
+                    append_log(f"🔬 [Deep Queue] Dispatched deep research ({t_tier}) for {tkr} to open slot (Job ID: {jid}).")
 
 
 _STAGE_MARKERS = [
@@ -293,10 +299,18 @@ def _detect_stage_detail(line: str) -> Optional[str]:
     return None
 
 
-def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str] = None, force: bool = False):
+def run_research_worker(
+    job_id: str,
+    ticker: str,
+    mode: str,
+    date: Optional[str] = None,
+    force: bool = False,
+    tier: str = "MID",
+):
     """Worker thread running sequential research pipeline with SQLite persistence and memory-leak protection."""
     init_db()
     ticker_u = ticker.strip().upper()
+    tier_u = str(tier or "MID").upper()
     if not re.match(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$", ticker_u):
         logger.warning(f"Rejecting invalid or traversal ticker in research worker: {ticker_u}")
         with get_db() as conn:
@@ -600,14 +614,14 @@ def run_research_worker(job_id: str, ticker: str, mode: str, date: Optional[str]
                     (job_id,),
                 )
                 conn.commit()
-            _log_both(f"🔬 [2/3] Running Agentic Deep Research (Pine Gem + Independent Gem + PM Arbitration)...")
+            _log_both(f"🔬 [2/3] Running Agentic Deep Research [{tier_u}] (Pine Gem + Independent Gem + PM Arbitration)...")
             cmd = [py_exe, "run_deep_research.py"]
             if date_to_use:
                 cmd.append(date_to_use)
-            cmd.extend(["--ticker", ticker_u, "--job-id", job_id])
+            cmd.extend(["--ticker", ticker_u, "--job-id", job_id, "--tier", tier_u])
             if force:
                 cmd.extend(["--force", ticker_u])
-            _run_subproc(cmd, "Deep research phase")
+            _run_subproc(cmd, f"Deep research phase [{tier_u}]")
 
             # Verify reports exist before declaring success
             rep_chk_date = date_to_use or datetime.now().strftime("%Y-%m-%d")

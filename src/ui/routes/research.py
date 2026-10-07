@@ -1937,9 +1937,10 @@ def get_research_jobs(date: Optional[str] = None):
 class ResearchRequest(BaseModel):
     ticker: Optional[str] = None
     tickers: Optional[List[str]] = None
-    mode: str = "full"  # "full" | "scrape_only" | "deep_only"
+    mode: str = "full"  # "full" | "scrape_only" | "deep_only" | "local_only"
     date: Optional[str] = None
     force: bool = False
+    tier: str = "MID"  # "LITE" | "MID" | "FULL"
 
 
 @router.post("/api/research/run")
@@ -1963,10 +1964,14 @@ def trigger_research(req: ResearchRequest):
         if not re.match(r'^\d{4}-\d{2}-\d{2}$', req.date.strip()):
             raise HTTPException(status_code=400, detail=f"Invalid date format: {req.date}")
 
+    req_tier = str(req.tier or "MID").upper().strip()
+    if req_tier not in ("LITE", "MID", "FULL"):
+        req_tier = "MID"
+
     if len(tickers) > 1:
         results = []
         for t in tickers:
-            sub_req = ResearchRequest(ticker=t, mode=req.mode, date=req.date, force=req.force)
+            sub_req = ResearchRequest(ticker=t, mode=req.mode, date=req.date, force=req.force, tier=req_tier)
             results.append(trigger_research(sub_req))
         started = sum(1 for r in results if r.get("status") == "started")
         queued = sum(1 for r in results if r.get("status") == "queued")
@@ -1983,6 +1988,11 @@ def trigger_research(req: ResearchRequest):
     # Prevent duplicate active or queued jobs for the same ticker
     with get_db() as conn:
         c = conn.cursor()
+        # Ensure tier column exists
+        try:
+            c.execute("ALTER TABLE active_research_jobs ADD COLUMN tier TEXT DEFAULT 'MID'")
+        except Exception:
+            pass
         existing = c.execute(
             "SELECT job_id, status, pid FROM active_research_jobs WHERE ticker = ? AND status IN ('RUNNING', 'QUEUED')",
             (ticker_u,)
@@ -2011,6 +2021,7 @@ def trigger_research(req: ResearchRequest):
                     "job_id": jid,
                     "ticker": ticker_u,
                     "mode": req.mode,
+                    "tier": req_tier,
                 }
             else:
                 c.execute(
@@ -2030,6 +2041,7 @@ def trigger_research(req: ResearchRequest):
                 "job_id": None,
                 "ticker": ticker_u,
                 "mode": req.mode,
+                "tier": req_tier,
                 "target_date": target_date,
                 "message": f"{ticker_u} already researched for {target_date}",
             }
@@ -2045,11 +2057,11 @@ def trigger_research(req: ResearchRequest):
         try:
             with get_db() as conn:
                 start_stage = "LOCAL_TRIAGE" if is_local_job else "STARTING"
-                start_detail = "Starting Local Triage" if is_local_job else "Starting Deep Research"
+                start_detail = "Starting Local Triage" if is_local_job else f"Starting Deep Research ({req_tier})"
                 conn.cursor().execute("""
-                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail)
-                    VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, req.date, start_detail))
+                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
+                    VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)
+                """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, req.date, start_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             # Duplicate active job for this ticker — return the existing one
@@ -2059,23 +2071,23 @@ def trigger_research(req: ResearchRequest):
                     (ticker_u,),
                 ).fetchone()
             if row:
-                return {"status": "running", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode}
+                return {"status": "running", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode, "tier": req_tier}
             raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
-        worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force), daemon=True)
+        worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force, req_tier), daemon=True)
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
         q_label = "Local Queue" if is_local_job else "Deep Queue"
-        append_log(f"🚀 Started research for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
-        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": start_stage, "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+        append_log(f"🚀 Started research [{req_tier}] for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
+        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "tier": req_tier, "stage": start_stage, "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
     else:
         try:
             with get_db() as conn:
-                q_detail = "Queued for Local Triage" if is_local_job else "Queued for Deep Research"
+                q_detail = "Queued for Local Triage" if is_local_job else f"Queued for Deep Research ({req_tier})"
                 conn.cursor().execute("""
-                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail)
-                    VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date, q_detail))
+                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
+                    VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?, ?)
+                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date, q_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             with get_db() as conn:
@@ -2084,12 +2096,27 @@ def trigger_research(req: ResearchRequest):
                     (ticker_u,),
                 ).fetchone()
             if row:
-                return {"status": "queued", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode}
+                return {"status": "queued", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode, "tier": req_tier}
             raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
         q_label = "Local Queue" if is_local_job else "Deep Queue"
-        append_log(f"📥 [{q_label}] Concurrency slots full ({active_slot_count}/{max_slots}). Queued {ticker_u} for research.")
-        return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "stage": "QUEUED", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+        append_log(f"📥 [{q_label}] Concurrency slots full ({active_slot_count}/{max_slots}). Queued {ticker_u} [{req_tier}] for research.")
+        return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "tier": req_tier, "stage": "QUEUED", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+
+
+@router.get("/api/research/timings")
+def get_research_timings_endpoint(
+    ticker: Optional[str] = None,
+    job_id: Optional[str] = None,
+    target_date: Optional[str] = None,
+    date: Optional[str] = None,
+    limit: int = 100,
+):
+    """Retrieve stage timings recorded for deep research jobs."""
+    from src.tracking.watch_manager import get_research_timings
+    d = target_date or date
+    timings = get_research_timings(ticker=ticker, job_id=job_id, target_date=d, limit=limit)
+    return {"status": "ok", "count": len(timings), "timings": timings}
 
 
 @router.post("/api/jobs/{job_id}/kill")
@@ -2139,3 +2166,4 @@ def kill_research_job_endpoint(job_id: str):
 
     dispatch_next_queued_job()
     return {"status": "killed", "job_id": job_id}
+

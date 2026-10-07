@@ -172,6 +172,8 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name):
             try:
                 dt = datetime.strptime(d.name, "%Y-%m-%d")
+                if dt.date() > now_mt.date() or d.name in {"2029-01-01", "2099-12-31"}:
+                    continue
                 date_dirs.append((dt, d))
             except Exception:
                 continue
@@ -492,12 +494,25 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             )
             s["is_actionable"] = is_act
             s["gate_reasons"] = fails
+
+            # Honest PB messaging (Task f3): limit price only when RR/zone is sole blocker
+            has_pb_fail = any("PB funnel" in f for f in fails)
+            only_rr_or_zone_fail = all(("RR" in f or "floor" in f or "zone" in f) for f in fails) if fails else False
+            
+            if has_pb_fail:
+                s["pb_message"] = "needs PB; waiting for price will not fix it"
+                s["limit_price"] = None
+                s["wait_for"] = None
+            elif not only_rr_or_zone_fail and not is_act:
+                s["wait_for"] = None
         elif s.get("stage") == "SCREENER_COIL":
             s["is_actionable"] = False
             s["gate_reasons"] = ["Awaiting Data Window measurement"]
+            s["wait_for"] = None
         else:
             s["is_actionable"] = False
             s["gate_reasons"] = s.get("gate_reasons") or ["No Data Window available to evaluate gate"]
+            s["wait_for"] = None
 
         # Opportunity State classification
         if is_target_hit:

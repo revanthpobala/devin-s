@@ -138,14 +138,22 @@ def open_position(
         state = load_state()
         rec = state.get(ticker, {})
 
-        # Validate side-correct stop
+        # Validate side-correct stop or auto-derive if missing
         if stop is not None and entry_price is not None:
-            if "LONG" in side and float(stop) >= float(entry_price):
-                logger.warning(f"[state] Invalid stop {stop} >= entry {entry_price} for LONG {ticker}; ignoring invalid stop.")
+            if "LONG" in side.upper() and float(stop) >= float(entry_price):
+                logger.warning(f"[state] Invalid stop {stop} >= entry {entry_price} for LONG {ticker}; resetting stop.")
                 stop = rec.get("stop")
-            elif "SHORT" in side and float(stop) <= float(entry_price):
-                logger.warning(f"[state] Invalid stop {stop} <= entry {entry_price} for SHORT {ticker}; ignoring invalid stop.")
+            elif "SHORT" in side.upper() and float(stop) <= float(entry_price):
+                logger.warning(f"[state] Invalid stop {stop} <= entry {entry_price} for SHORT {ticker}; resetting stop.")
                 stop = rec.get("stop")
+
+        if (stop is None or float(stop) <= 0) and entry_price is not None and float(entry_price) > 0:
+            atr_val = float(extra.get("atr") or extra.get("atr14") or 0.0)
+            if atr_val > 0:
+                stop = round(float(entry_price) - 1.0 * atr_val, 2) if "LONG" in side.upper() else round(float(entry_price) + 1.0 * atr_val, 2)
+            else:
+                stop = round(float(entry_price) * 0.985, 2) if "LONG" in side.upper() else round(float(entry_price) * 1.015, 2)
+            logger.info(f"[state] Auto-derived initial stop {stop} for {ticker} (entry={entry_price}, side={side})")
 
         rec.update(
             {

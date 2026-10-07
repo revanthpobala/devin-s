@@ -13,13 +13,13 @@ if (typeof pbBadge !== 'function') {
 window.AppDesk = {
   _activeRecordScope: 'gated',
 
-  async triggerDeep(ticker, btn) {
+  async triggerDeep(ticker, btn, tier = 'MID') {
     try {
       if (btn) {
         btn.disabled = true;
         btn.innerText = '⏳ Queued...';
       }
-      await window.AppApi.triggerResearch(ticker, 'full', null, true);
+      await window.AppApi.triggerResearch(ticker, 'full', null, true, tier);
       setTimeout(() => { window.AppDesk.loadToday(); }, 1200);
     } catch (e) {
       alert('Failed to trigger research: ' + e);
@@ -753,11 +753,14 @@ window.AppDesk = {
                     ${opp.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
                   </div>` : ''}
 
-                  <!-- Stalk Limit Price Target (Task d6) -->
+                  <!-- Stalk Limit Price Target or Honest PB Note (Task f3) -->
                   ${opp.wait_for ? `
                   <div style="margin-top:8px; font-size:11px; color:var(--cyan); background:rgba(6,182,212,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(6,182,212,0.25); font-family:var(--font-mono); font-weight:700;">
                     🎯 <b>Stalk Target Limit:</b> ${opp.wait_for} <span style="font-weight:400; font-size:10px; color:var(--text-muted);">(to achieve measured R:R floor)</span>
-                  </div>` : ''}
+                  </div>` : (opp.pb_message ? `
+                  <div style="margin-top:8px; font-size:10.5px; color:var(--amber); background:rgba(245,158,11,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(245,158,11,0.25); font-weight:700;">
+                    ⏳ <b>Structure Note:</b> ${opp.pb_message}
+                  </div>` : '')}
 
                   <!-- Gate Reasons / Blocker -->
                   ${opp.gate_reasons && opp.gate_reasons.length > 0 ? `

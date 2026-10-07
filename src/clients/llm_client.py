@@ -1556,6 +1556,8 @@ def query_local_llm(
     json_schema: dict | None = None,
     summarize_tool_context: str | None = None,
     messages: list | None = None,
+    max_tool_batches: int | None = None,
+    stats_out: dict | None = None,
 ) -> str:
     """
     Run inference via local FastAPI Unsloth server, Meta AI, NVIDIA NIM (free), or OpenRouter,
@@ -1680,14 +1682,23 @@ def query_local_llm(
                     kwargs["response_format"] = {"type": "json_object"}
 
         # Tool execution loop with native parallel execution support
+        t_start = time.time()
         MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "50"))
         tool_call_count = 0
+        total_individual_tool_calls = 0
 
         # Per-request output timeout (seconds): kill a single hung completion instead of
         # blocking the whole run for an unbounded time. A healthy local-GPU generation from a
         # ~550k-char prompt can take 15+ min to emit its first token, so default is generous;
         # only set lower if you confirm the model is actually wedged.
         _REQ_TIMEOUT_SEC = float(os.getenv("LLM_REQUEST_TIMEOUT_SEC", "2400"))
+
+        def _populate_stats(res_text: str):
+            if isinstance(stats_out, dict):
+                stats_out["seconds"] = round(time.time() - t_start, 3)
+                stats_out["tool_rounds"] = tool_call_count
+                stats_out["tool_calls"] = total_individual_tool_calls
+                stats_out["tokens"] = len(res_text) // 4
 
         while tool_call_count < MAX_TOOL_CALLS:
             try:
@@ -1795,11 +1806,12 @@ def query_local_llm(
                         messages.append(future.result())
 
                 tool_call_count += 1
+                total_individual_tool_calls += len(effective_tool_calls)
                 logger.info(
                     f"Parallel tool batch {tool_call_count} ({len(effective_tool_calls)} calls) complete. Requesting next action from LLM..."
                 )
 
-                MAX_ALLOWED_TOOL_BATCHES = int(os.getenv("MAX_TOOL_BATCHES", "8"))
+                MAX_ALLOWED_TOOL_BATCHES = max_tool_batches if max_tool_batches is not None else int(os.getenv("MAX_TOOL_BATCHES", "8"))
                 MAX_TOTAL_MSG_CHARS = int(os.getenv("MAX_TOTAL_MSG_CHARS", "450000"))
                 
                 # Check accumulated message character length to prevent context explosion
@@ -1889,6 +1901,7 @@ def query_local_llm(
                 if "<thinking>" in final_text and "</thinking>" not in final_text:
                     final_text = final_text.split("<thinking>")[0].strip()
                     
+                _populate_stats(final_text)
                 return final_text
 
         logger.warning("Max tool calls reached. Forcing LLM to finish.")
@@ -1905,6 +1918,7 @@ def query_local_llm(
             final_text = final_text.split("<think>")[0].strip()
         if "<thinking>" in final_text and "</thinking>" not in final_text:
             final_text = final_text.split("<thinking>")[0].strip()
+        _populate_stats(final_text)
         return final_text
 
     except Exception as e:

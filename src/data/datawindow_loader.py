@@ -25,11 +25,18 @@ from src import config
 logger = logging.getLogger(__name__)
 
 
+from datetime import datetime
+
+FIXTURE_DATES = {"2029-01-01", "2099-12-31"}
+TEST_TICKERS = {"ACME", "SHORTY", "TEST", "FOO", "BAR", "SAMPLE"}
+
+
 def find_datawindow_paths(ticker: str, target_date: Optional[str] = None) -> List[Path]:
     """Find all candidate Data Window paths for a ticker, prioritized from newest/most specific to oldest."""
     ticker_u = ticker.upper()
     candidates: List[Path] = []
     seen: set = set()
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
     def _add(p: Path):
         p_resolved = p.resolve() if p.exists() else p
@@ -41,6 +48,7 @@ def find_datawindow_paths(ticker: str, target_date: Optional[str] = None) -> Lis
     # 1. If target_date is given, search that specific date first
     if target_date and re.match(r"^\d{4}-\d{2}-\d{2}$", target_date.strip()):
         d_str = target_date.strip()
+        # If real ticker and date is a known fixture date not matching target_date, skip
         specific_dirs = [
             config.BASE_DIR / "data" / "triage" / d_str / "_DEEP_RESEARCH" / ticker_u,
             config.BASE_DIR / "data" / "triage" / d_str / "force" / ticker_u,
@@ -69,13 +77,22 @@ def find_datawindow_paths(ticker: str, target_date: Optional[str] = None) -> Lis
             for p in raw_date_dir.glob(f"**/{ticker_u}*data*window*.csv"):
                 _add(p)
 
-    # 2. Search all recent dates (newest first)
+    # 2. Search all recent dates (newest first, excluding future/fixture dates for production)
     for root_name in ["triage", "raw", "artifacts"]:
         root_dir = config.BASE_DIR / "data" / root_name
         if not root_dir.exists():
             continue
         try:
-            date_dirs = [d for d in root_dir.iterdir() if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)]
+            date_dirs = [
+                d for d in root_dir.iterdir()
+                if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)
+            ]
+            # Exclude future dates & fixture dates if not explicitly requesting test ticker/date
+            if ticker_u not in TEST_TICKERS:
+                date_dirs = [
+                    d for d in date_dirs
+                    if d.name not in FIXTURE_DATES and d.name <= today_str
+                ]
             date_dirs.sort(key=lambda d: d.name, reverse=True)
             for d in date_dirs:
                 if target_date and d.name == target_date:

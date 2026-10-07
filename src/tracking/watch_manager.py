@@ -268,7 +268,106 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE suggested_trades_audit ADD COLUMN is_primary INTEGER DEFAULT 1")
             if "r_multiple" not in existing_audit_cols:
                 cursor.execute("ALTER TABLE suggested_trades_audit ADD COLUMN r_multiple REAL")
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS research_timings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT,
+                    ticker TEXT NOT NULL,
+                    target_date TEXT NOT NULL,
+                    tier TEXT NOT NULL DEFAULT 'MID',
+                    stage TEXT NOT NULL,
+                    seconds REAL NOT NULL DEFAULT 0.0,
+                    tool_rounds INTEGER DEFAULT 0,
+                    tool_calls INTEGER DEFAULT 0,
+                    tokens INTEGER DEFAULT 0,
+                    details TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_research_timings_ticker ON research_timings(ticker, target_date)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_research_timings_job_id ON research_timings(job_id)"
+            )
             conn.commit()
+
+
+def record_research_timing(
+    ticker: str,
+    target_date: str,
+    stage: str,
+    seconds: float,
+    tier: str = "MID",
+    job_id: Optional[str] = None,
+    tool_rounds: int = 0,
+    tool_calls: int = 0,
+    tokens: int = 0,
+    details: str = "",
+) -> None:
+    """Record stage duration and LLM tool/token metrics into SQLite research_timings table."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    ticker_u = (ticker or "").strip().upper()
+    try:
+        with _db_lock:
+            with _get_connection() as conn:
+                conn.cursor().execute(
+                    """
+                    INSERT INTO research_timings (
+                        job_id, ticker, target_date, tier, stage, seconds, tool_rounds, tool_calls, tokens, details, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        ticker_u,
+                        target_date,
+                        tier.upper(),
+                        stage.upper(),
+                        round(float(seconds), 3),
+                        int(tool_rounds),
+                        int(tool_calls),
+                        int(tokens),
+                        details,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+    except Exception as e:
+        logger.debug(f"Failed to record research timing for {ticker_u} [{stage}]: {e}")
+
+
+def get_research_timings(
+    ticker: Optional[str] = None,
+    job_id: Optional[str] = None,
+    target_date: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Retrieve stage timings recorded for deep research jobs."""
+    try:
+        with _db_lock:
+            with _get_connection() as conn:
+                cur = conn.cursor()
+                query = "SELECT * FROM research_timings WHERE 1=1"
+                params: list = []
+                if ticker:
+                    query += " AND ticker = ?"
+                    params.append(ticker.strip().upper())
+                if job_id:
+                    query += " AND job_id = ?"
+                    params.append(job_id.strip())
+                if target_date:
+                    query += " AND target_date = ?"
+                    params.append(target_date.strip())
+                query += " ORDER BY id DESC LIMIT ?"
+                params.append(int(limit))
+                rows = cur.execute(query, params).fetchall()
+                return [dict(r) for r in rows]
+    except Exception as e:
+        logger.debug(f"Failed to retrieve research timings: {e}")
+        return []
 
 
 # Auto-initialize on import

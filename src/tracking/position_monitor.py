@@ -293,6 +293,14 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
     # Only genuine stop events ("stopped", "runner stop", or unclassified stop exits) undergo intra-bar wick veto.
     if stop is not None:
         if side == "LONG":
+            if entry is not None and price >= entry:
+                return {
+                    "action": "CONFIRM_EXIT",
+                    "reason": f"Confirmed market/strategy exit. Live price ${price:.2f} >= entry ${entry:.2f}.",
+                    "current_price": price,
+                    "stop": stop,
+                    "target": target,
+                }
             if price > stop:
                 try:
                     from src.plugins.order_flow_plugin import read_tape
@@ -320,6 +328,14 @@ def review_tv_exit(symbol: str, alert: dict) -> dict:
                     "stop": stop,
                 }
         elif side == "SHORT":
+            if entry is not None and price <= entry:
+                return {
+                    "action": "CONFIRM_EXIT",
+                    "reason": f"Confirmed market/strategy exit. Live price ${price:.2f} <= entry ${entry:.2f}.",
+                    "current_price": price,
+                    "stop": stop,
+                    "target": target,
+                }
             if price < stop:
                 try:
                     from src.plugins.order_flow_plugin import read_tape
