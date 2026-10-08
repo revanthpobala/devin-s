@@ -323,37 +323,69 @@ def run_deep_research(
                 )
     else:
         # Batch mode: discover from _DEEP_RESEARCH and force folders
+        flagged_map = {}
         flagged = []
         for sub in ("_DEEP_RESEARCH", "force"):
             sd = triage_dir / sub
             if not sd.exists():
                 continue
             for thesis_file in glob.glob(str(sd / "**" / "*_thesis.json"), recursive=True):
-                t = Path(thesis_file).name.replace("_thesis.json", "")
-                t_parent = Path(thesis_file).parent
-                from src.logic.deep_research.artifact_loader import load_triage_record
-                flagged.append((t, load_triage_record(raw_dir, deep_dir, t, tdir=t_parent)))
+                t = Path(thesis_file).name.replace("_thesis.json", "").upper()
+                if t not in flagged_map:
+                    t_parent = Path(thesis_file).parent
+                    from src.logic.deep_research.artifact_loader import load_triage_record
+                    rec = load_triage_record(raw_dir, deep_dir, t, tdir=t_parent)
+                    if isinstance(rec, dict):
+                        if not rec.get("ticker"):
+                            rec["ticker"] = t
+                    else:
+                        rec = {"ticker": t}
+                    flagged_map[t] = rec
+                    flagged.append((t, rec))
 
         from src.logic.data_window_filter import rank_pass_tickers
-        cap = int(os.getenv("DEEP_RESEARCH_CAP", "35"))
-        ranked = rank_pass_tickers([r for _, r in flagged if r])
-        kept_recs = ranked if cap <= 0 else ranked[:cap]
-        keep = {str(r.get("ticker", "")).upper() for r in kept_recs}
+        cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
+        ranked_recs = rank_pass_tickers([r for _, r in flagged if r])
+        
+        # Build ordered list of ranked tickers
+        ranked_tickers = []
+        for r in ranked_recs:
+            sym = str(r.get("ticker", "")).upper()
+            if sym and sym not in ranked_tickers:
+                ranked_tickers.append(sym)
+        for t, _ in flagged:
+            if t.upper() not in ranked_tickers:
+                ranked_tickers.append(t.upper())
+
+        kept_tickers = ranked_tickers if cap <= 0 else ranked_tickers[:cap]
+        keep = set(kept_tickers)
         logger.info(
             f"Deep-research cap {cap or 'uncapped'}: {len(flagged)} flagged -> "
-            f"{len(keep)} kept ({sorted(keep)})."
+            f"{len(keep)} kept ({kept_tickers})."
         )
 
         for t, rec in flagged:
             if rec and cap > 0 and t.upper() not in keep:
                 logger.info(f"[{t}] Below deep-research cap ({cap}) - deferred.")
-                continue
+
+        # Build chart_files strictly in prioritized ranked order
+        for t in kept_tickers:
             tdir = _triage_subdir_for(t) or (raw_dir / t) or raw_dir
             matches = glob.glob(str(tdir / f"{t}_*.png")) or glob.glob(str(raw_dir / f"{t}_*.png"))
             if matches:
                 chart_files.append(matches[0])
+            else:
+                target_file = tdir / f"{t}_chart.png"
+                if target_file.exists():
+                    chart_files.append(str(target_file))
+                else:
+                    raw_target = raw_dir / f"{t}_chart.png"
+                    if raw_target.exists():
+                        chart_files.append(str(raw_target))
 
-        chart_files = list(dict.fromkeys(chart_files))
+        # Deduplicate while strictly preserving ranked priority order
+        seen_charts = set()
+        chart_files = [cf for cf in chart_files if not (cf in seen_charts or seen_charts.add(cf))]
 
     if not chart_files:
         logger.warning("No charts found for deep research.")

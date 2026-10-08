@@ -367,15 +367,13 @@ def run_local_research(
     # Determine the full set of tickers that SHOULD be in each folder this run,
     # then drop any stale artifacts left over from a previous --regenerate run so
     # the folder never shows names the current run did not flag.
-    # The deep-research folder is CAPPED at DEEP_RESEARCH_CAP (default 35): only
-    # the top-N candidates by deep_research_sort_key are kept. The gate's
-    # send_for_deep_research flag is the ELIGIBILITY filter; the cap is the
-    # PRIORITISATION filter and must run here too, or the folder balloons.
-    # Full deep runs are additionally capped by DEEP_RESEARCH_FULL_CAP, routing
-    # remaining candidates to MID tier to prevent GPU burnout.
+    # The deep-research folder is uncapped by default (DEEP_RESEARCH_CAP=0) so all
+    # eligible names are processed. In the deep research runner, the top-N (by
+    # deep_research_sort_key) run in FULL tier (DEEP_RESEARCH_FULL_CAP=3), and all
+    # remaining candidates run in MID tier (MID_MAX_TOOL_ROUNDS=4) without deferrals.
     from src.logic.data_window_filter import rank_pass_tickers
 
-    cap = int(os.getenv("DEEP_RESEARCH_CAP", "35"))
+    cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
     deep_candidates, force_candidates = [], []
     for rec in all_thesis.values():
         ticker = rec.get("ticker")
