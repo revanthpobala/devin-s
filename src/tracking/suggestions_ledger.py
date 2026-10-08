@@ -148,6 +148,8 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
                 fade REAL,
                 ext_z REAL,
                 stop_width_atr REAL,
+                live_spot REAL,
+                move_since_bar_pct REAL,
                 scorer_version INTEGER DEFAULT 1,
                 fill_date TEXT,
                 fill_price REAL,
@@ -171,6 +173,7 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
             "gate_status", "gate_reasons", "verdict", "setup_lane", "kind",
             "rr_at_market_at_signal", "spot_at_signal", "lane_prior_win", "lane_prior_ev",
             "pb_funnel", "signal_pack", "fade", "ext_z", "stop_width_atr",
+            "live_spot", "move_since_bar_pct",
             "scorer_version", "fill_date", "fill_price", "exit_date", "exit_price",
             "exit_reason", "bars_held", "gross_r", "r_net", "mae_r", "scored_at", "created_at"
         ]
@@ -234,6 +237,8 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
                 action_long INTEGER,
                 ext_z REAL,
                 stop_width_atr REAL,
+                live_spot REAL,
+                move_since_bar_pct REAL,
                 scorer_version INTEGER DEFAULT 1,
                 fill_date TEXT,
                 fill_price REAL,
@@ -469,7 +474,8 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                         verdict, setup_lane, kind,
                         rr_at_market_at_signal, spot_at_signal,
                         lane_prior_win, lane_prior_ev, pb_funnel,
-                        signal_pack, fade, ext_z, stop_width_atr, _now_iso(),
+                        signal_pack, fade, ext_z, stop_width_atr,
+                        live_spot, move_since_bar_pct, _now_iso(),
                     ),
                 )
                 conn.commit()

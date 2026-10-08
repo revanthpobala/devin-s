@@ -265,3 +265,41 @@ def test_missed_moves_scorecard():
     assert nrg is not None
     assert nrg["root_cause_reason"] == "stale_data"
     assert nrg["last_verdict"] == "WATCH"
+
+
+def test_append_suggestion_live_spot_and_move_since_bar_pct(tmp_path):
+    """Verify append_suggestion stores live_spot and move_since_bar_pct with correct bindings."""
+    import sqlite3
+    from src.tracking.suggestions_ledger import append_suggestion, ensure_suggestions_schema
+    db_file = tmp_path / "test_sugg.db"
+    with patch("src.tracking.watch_manager.DB_PATH", db_file):
+        conn = sqlite3.connect(str(db_file))
+        ensure_suggestions_schema(conn)
+        conn.close()
+
+        row_id = append_suggestion({
+            "ticker": "VST",
+            "date": "2026-10-07",
+            "source": "triage",
+            "side": "LONG",
+            "entry_type": "LIMIT",
+            "entry_low": 138.0,
+            "entry_high": 142.0,
+            "stop": 135.0,
+            "target_1": 170.0,
+            "live_spot": 166.66,
+            "move_since_bar_pct": 18.7,
+            "setup_lane": "COIL",
+            "gate_status": "WATCH",
+        })
+        assert row_id > 0
+
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        row = cur.execute("SELECT * FROM suggestions WHERE ticker = 'VST'").fetchone()
+        assert row is not None
+        assert row["live_spot"] == 166.66
+        assert row["move_since_bar_pct"] == 18.7
+        assert row["setup_lane"] == "COIL"
+        conn.close()
