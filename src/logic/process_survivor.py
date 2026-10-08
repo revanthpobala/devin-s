@@ -602,14 +602,31 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             triage["flags"] = flags_list
 
     # A1: If Data Window bar is older than last completed daily bar or spot equals prior dossier spot,
-    # mark stale_data and do NOT CUT or score on it.
+    # mark stale_data and do NOT CUT or score on it. Run local triage on the live quote if available.
     if stale_data:
         flags_list = list(triage.get("flags") or [])
         if "stale_data" not in flags_list:
             flags_list.append("stale_data")
         triage["flags"] = flags_list
-        if triage.get("triage") == "CUT":
-            triage["triage"] = "WATCH"
+
+        # If live quote has moved, re-run local triage on the live quote
+        if live_spot is not None and live_spot > 0 and bar_spot is not None and abs(live_spot - bar_spot) > 1e-2:
+            logger.info(f"[Prefilter-{worker_id}] Stale spot ${bar_spot:.2f} for {ticker} (age {spot_age}d), running local triage on live quote ${live_spot:.2f}")
+            dw_live = dict(data_window)
+            dw_live["close"] = live_spot
+            dw_live["price"] = live_spot
+            triage = triage_ticker(ticker, dw_live, realvol_10d=realvol_10d, ret_10d=ret_10d)
+            triage["dw_bar_date"] = dw_bar_date
+            triage["spot_age"] = spot_age
+            triage["stale_data"] = stale_data
+            triage["live_spot"] = live_spot
+            triage["move_since_bar_pct"] = move_since_bar_pct
+            if "stale_data" not in (triage.get("flags") or []):
+                triage["flags"] = list(triage.get("flags") or []) + ["stale_data"]
+        else:
+            # Spot hasn't moved at all: don't score or cut names whose spot hasn't moved
+            if triage.get("triage") == "CUT":
+                triage["triage"] = "WATCH"
             triage["reason"] = "stale_data"
             triage["conviction"] = None
 
@@ -1184,14 +1201,31 @@ def generate_thesis_task(
             triage["flags"] = flags_list
 
     # A1: If Data Window bar is older than last completed daily bar or spot equals prior dossier spot,
-    # mark stale_data and do NOT CUT or score on it.
+    # mark stale_data and do NOT CUT or score on it. Run local triage on the live quote if available.
     if stale_data:
         flags_list = list(triage.get("flags") or [])
         if "stale_data" not in flags_list:
             flags_list.append("stale_data")
         triage["flags"] = flags_list
-        if triage.get("triage") == "CUT":
-            triage["triage"] = "WATCH"
+
+        # If live quote has moved, re-run local triage on the live quote
+        if live_spot is not None and live_spot > 0 and bar_spot is not None and abs(live_spot - bar_spot) > 1e-2:
+            logger.info(f"[ThesisWorker-{worker_id}] Stale spot ${bar_spot:.2f} for {ticker} (age {spot_age}d), running local triage on live quote ${live_spot:.2f}")
+            dw_live = dict(data_window)
+            dw_live["close"] = live_spot
+            dw_live["price"] = live_spot
+            triage = triage_ticker(ticker, dw_live, realvol_10d=realvol_10d, ret_10d=ret_10d)
+            triage["dw_bar_date"] = dw_bar_date
+            triage["spot_age"] = spot_age
+            triage["stale_data"] = stale_data
+            triage["live_spot"] = live_spot
+            triage["move_since_bar_pct"] = move_since_bar_pct
+            if "stale_data" not in (triage.get("flags") or []):
+                triage["flags"] = list(triage.get("flags") or []) + ["stale_data"]
+        else:
+            # Spot hasn't moved at all: don't score or cut names whose spot hasn't moved
+            if triage.get("triage") == "CUT":
+                triage["triage"] = "WATCH"
             triage["reason"] = "stale_data"
             triage["conviction"] = None
 

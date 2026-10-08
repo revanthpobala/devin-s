@@ -770,6 +770,27 @@ class ContinuousScreenerDaemon(threading.Thread):
                 or record.get("bar_spot")
                 or record.get("live_spot")
             )
+            if dossier_spot is None and isinstance(long_p, dict):
+                z = long_p.get("zone")
+                if isinstance(z, (list, tuple)) and len(z) >= 2 and z[0] is not None and z[1] is not None:
+                    try:
+                        dossier_spot = (float(z[0]) + float(z[1])) / 2.0
+                    except (ValueError, TypeError):
+                        pass
+
+            if dossier_spot is None:
+                # Check for sibling datawindow.json
+                th_p = d_info.get("path")
+                if th_p:
+                    dw_p = th_p.parent / f"{sym}_datawindow.json"
+                    if dw_p.exists():
+                        try:
+                            with open(dw_p, "r", encoding="utf-8") as f_dw:
+                                dw_data = json.load(f_dw)
+                            dossier_spot = dw_data.get("close") or dw_data.get("price")
+                        except Exception:
+                            pass
+
             if dossier_spot is None:
                 continue
             try:
@@ -789,12 +810,12 @@ class ContinuousScreenerDaemon(threading.Thread):
             setup_lane = triage.get("setup_lane") or llm_d.get("setup_lane") or "MOMENTUM_BREAKOUT"
             lane_label = "MEASURED" if setup_lane in ("CODE20", "RR_SETUP", "RSI2") else "UNMEASURED"
 
-            # Check mover conditions:
-            # 1. Price moved >= 3.0% from dossier spot
+            # Check mover conditions (Plan task B):
+            # 1. Price moved >= 5.0% from dossier spot (5% placeholder until measurement run)
             # 2. Or price broke above zone top
             is_mover = False
             mover_reason = ""
-            if move_pct >= 3.0:
+            if move_pct >= 5.0:
                 is_mover = True
                 mover_reason = f"+{move_pct:.1f}% from dossier spot (${dossier_spot:.2f})"
             elif e_high is not None and live_p > float(e_high):
@@ -818,8 +839,8 @@ class ContinuousScreenerDaemon(threading.Thread):
                     levels_str = f" | stop ${float(stop):.2f} | T1 ${float(target_1):.2f} | R:R at live price {rr_str}"
 
                 msg = (
-                    f"MOVING: {sym} +{move_pct:.1f}% since dossier, now ${live_p:.2f}{levels_str} "
-                    f"| BUY 100 at market | lane {setup_lane} [{lane_label}]"
+                    f"MOVING: {sym} +{move_pct:.1f}% since dossier, BUY 100 at market "
+                    f"| now ${live_p:.2f}{levels_str} | lane {setup_lane} [{lane_label}]"
                 )
 
                 # Deduplicate push alerts per ticker per session

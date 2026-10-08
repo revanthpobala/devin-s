@@ -1225,11 +1225,16 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, i
     # already excluded from the paid pass upstream (_deep_research_gate), so this
     # is a belt-and-braces guard: if one ever reaches here, sort it last.
     if rec.get("no_fresh_long"):
-        return (0, 0, 0, -1e9, 0, -1e9, 0.0, 0.0)
+        return (0, 0, 0.0, 0, 0, -1e9, 0, -1e9, 0.0, 0.0)
 
     is_pass = 1 if rec.get("triage") == "PASS" else 0
     is_rev_buy = 1 if rec.get("action") == "REVERSAL BUY" else 0
     is_rsi2 = 1 if rec.get("mode") == "RSI2_LONG" else 0
+
+    # closest_to_gate: 1 if in entry zone or momentum breakout
+    closest_to_gate = 1 if (rec.get("in_zone") or rec.get("setup_lane") == "MOMENTUM_BREAKOUT") else 0
+    # mover_score: live move since bar date
+    mover_score = float(rec.get("move_since_bar_pct") or rec.get("mover_score") or 0.0)
 
     # pb_rank: 1 only for an R:R-lane record whose PB-funnel bit is set. Scoped to the R:R
     # lanes because PB was not measured on code 20 / RSI2 / OVERSOLD — it must not reorder them.
@@ -1263,7 +1268,7 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, i
 
     conviction = float(rec.get("conviction") or 0.0)
 
-    return (is_pass, pb_rank, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
+    return (is_pass, closest_to_gate, mover_score, pb_rank, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
 
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort candidates via `deep_research_sort_key`."""
@@ -1389,6 +1394,103 @@ def triage_ticker(
     ret_10d: Optional[float] = None,
 ) -> Dict[str, Any]:
     verdict = run_data_window_filter(ticker, data_window, realvol_10d=realvol_10d, ret_10d=ret_10d)
+
+    # Momentum Breakout Lane (Plan task C, UNMEASURED):
+    # In triage_ticker, add a lane for stage 2 names above their zone.
+    # Use existing momentum_rr and tight stop with momentum_rr >= 2.0 and not faded.
+    # Return real stop and target. Label it unmeasured and add a forward log rule.
+    raw_stage = data_window.get("stage") or data_window.get("context stage age pack")
+    stage_val = None
+    if raw_stage is not None:
+        try:
+            stage_val = int(round(float(raw_stage))) % 8
+        except Exception:
+            pass
+
+    price = data_window.get("price") or data_window.get("close")
+    if price is None and verdict.get("long_plan"):
+        price = verdict["long_plan"].get("entry")
+
+    ztop = verdict.get("long_top")
+    if ztop is None and verdict.get("long_plan", {}).get("zone"):
+        z = verdict["long_plan"]["zone"]
+        if isinstance(z, (list, tuple)) and len(z) > 1 and z[1] is not None:
+            ztop = float(z[1])
+
+    is_above_zone = (
+        (price is not None and ztop is not None and float(price) > float(ztop))
+        or bool(verdict.get("chased"))
+        or bool(verdict.get("missed"))
+        or ("chased" in (verdict.get("flags") or []))
+    )
+    not_faded = verdict.get("fade_long") != 1.0 and ("fade_do_not_chase" not in (verdict.get("flags") or []))
+
+    m_rr = data_window.get("momentum_rr") or verdict.get("momentum_rr")
+    t_stop = data_window.get("tight_stop") or verdict.get("tight_stop")
+    target_val = verdict.get("long_plan", {}).get("target") or data_window.get("long_target") or data_window.get("target_1")
+
+    if (m_rr is None or t_stop is None) and price is not None:
+        zbot = verdict.get("long_bot") or (verdict.get("long_plan", {}).get("zone", [None])[0])
+        ma20 = data_window.get("ma20") or data_window.get("ma 20 fast") or data_window.get("ma 20")
+        try:
+            price_flt = float(price)
+            zbot_flt = float(zbot) if zbot is not None else 0.0
+            ma20_flt = float(ma20) if ma20 is not None else 0.0
+            t_stop = max(zbot_flt, ma20_flt, price_flt * 0.96)
+            if target_val is not None and float(target_val) > price_flt and 0 < t_stop < price_flt:
+                m_risk = price_flt - t_stop
+                m_reward = float(target_val) - price_flt
+                if m_risk > 0:
+                    m_rr = round(m_reward / m_risk, 3)
+        except Exception:
+            pass
+
+    if (
+        (verdict.get("chosen_side") in ("long", None) or verdict.get("triage") in ("WATCH", "CUT", None))
+        and (stage_val == 2 or (stage_val is None and data_window.get("ma50") and price and float(price) > float(data_window["ma50"])))
+        and is_above_zone
+        and not_faded
+        and m_rr is not None
+        and m_rr >= 2.0
+        and t_stop is not None
+        and price is not None
+        and 0 < t_stop < float(price)
+    ):
+        verdict["setup_lane"] = "MOMENTUM_BREAKOUT"
+        verdict["lane_label"] = "UNMEASURED"
+        verdict["reason"] = "momentum_breakout_lane"
+        verdict["triage"] = "PASS"
+        verdict["chosen_side"] = "long"
+        verdict["pursue"] = True
+        verdict["momentum_rr"] = m_rr
+        verdict["tight_stop"] = t_stop
+        verdict["rr"] = m_rr
+
+        real_target = float(target_val) if target_val is not None else round(float(price) + (float(price) - t_stop) * m_rr, 2)
+        if not verdict.get("long_plan"):
+            verdict["long_plan"] = {}
+        verdict["long_plan"]["stop"] = round(t_stop, 2)
+        verdict["long_plan"]["target"] = real_target
+        verdict["long_plan"]["entry"] = round(float(price), 2)
+        verdict["long_plan"]["zone"] = [round(t_stop, 2), round(float(price), 2)]
+        verdict["long_plan"]["rr"] = m_rr
+
+        try:
+            from src.tracking.forward_log import record_forward_observation
+            record_forward_observation(
+                "MOMENTUM_BREAKOUT",
+                ticker,
+                {
+                    "price": round(float(price), 2),
+                    "tight_stop": round(t_stop, 2),
+                    "target": real_target,
+                    "momentum_rr": m_rr,
+                    "stage": stage_val,
+                },
+            )
+        except Exception as e_fwd:
+            logger.debug(f"Failed to record forward observation for {ticker}: {e_fwd}")
+
     sentiment: Dict[str, Any] = {"label": "neutral", "summary": "", "headlines": []}
     if fetch_news:
         headlines = fetch_alpaca_news(ticker)
@@ -1400,12 +1502,6 @@ def triage_ticker(
     technical_pass = verdict["triage"] == "PASS"
     sentiment_negative = sentiment.get("label") == "negative"
     verdict["news_negative"] = sentiment_negative
-    # Anything not CUT is worth pursuing. This used to be PASS-only, which made the
-    # WATCH branch of process_survivor._deep_research_gate's `quality_pass`
-    # unreachable: `send` ANDs quality_pass with `pursue`, so a WATCH could satisfy
-    # WATCH_MIN_CONVICTION and still never be promoted. PASS is only the code-20
-    # REVERSAL BUY lane (~0.9 names/day across 490), so deep research was being fed
-    # from <1% of the pool while 300-380 WATCH names/day were discarded unexamined.
     pursue = verdict["triage"] in ("PASS", "WATCH")
     if technical_pass and sentiment_negative:
         pursue_reason = "data_window_pass_with_negative_news"

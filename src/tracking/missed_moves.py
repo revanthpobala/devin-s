@@ -243,7 +243,10 @@ def get_missed_moves(
             is_stale = bool(triage.get("stale_data") or c_data.get("stale_data"))
             no_levels = bool(triage.get("no_levels") or ("no_levels" in (triage.get("flags") or [])))
 
-            # Classify root cause reason
+            # Classify root cause reason with real dossier diagnostics (no setup, constructible watch, chased, stale data, etc.)
+            flags_list = list(triage.get("flags") or [])
+            is_chased = bool(triage.get("chased") or "chased" in flags_list)
+
             root_cause = "other"
             if is_stale:
                 root_cause = "stale_data"
@@ -251,10 +254,16 @@ def get_missed_moves(
                 root_cause = "CUT"
             elif no_levels:
                 root_cause = "no_levels"
+            elif is_chased:
+                root_cause = "chased"
             elif triage.get("pb_funnel") in (0, 0.0, False):
                 root_cause = "no-PB"
             elif llm_d.get("send_for_deep_research") is False:
                 root_cause = "cap"
+            elif cut_reas in ("no_setup", "constructible_watch", "structure_only_no_fresh_long", "stale_data", "chased"):
+                root_cause = str(cut_reas)
+            elif cut_reas:
+                root_cause = str(cut_reas)
 
             records.append({
                 "ticker": sym,
@@ -267,7 +276,7 @@ def get_missed_moves(
                 "cut_reason": str(cut_reas) if cut_reas else None,
                 "age_days": age_days,
                 "root_cause_reason": root_cause,
-                "details": f"Moved +{best_move_pct:.1f}% from ${d_spot:.2f} to ${live_p:.2f} (verdict: {verdict})",
+                "details": f"Moved +{best_move_pct:.1f}% from ${d_spot:.2f} to ${live_p:.2f} ({verdict}: {root_cause})",
                 "is_backfill": False,
             })
             seen_tickers.add(sym)
@@ -285,21 +294,21 @@ def get_missed_moves(
     # Sort all records by move percentage descending
     records.sort(key=lambda x: x.get("move_pct", 0.0), reverse=True)
 
-    # Calculate weekly rollup by root cause
-    rollup = {
+    # Calculate weekly rollup by root cause dynamically
+    rollup: Dict[str, int] = {
         "stale_data": 0,
         "CUT": 0,
         "no-PB": 0,
         "cap": 0,
         "no_levels": 0,
+        "chased": 0,
+        "no_setup": 0,
+        "constructible_watch": 0,
         "other": 0,
     }
     for r in records:
         rc = r.get("root_cause_reason", "other")
-        if rc in rollup:
-            rollup[rc] += 1
-        else:
-            rollup["other"] += 1
+        rollup[rc] = rollup.get(rc, 0) + 1
 
     return {
         "missed_moves": records,

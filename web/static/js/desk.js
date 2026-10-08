@@ -1303,16 +1303,16 @@ window.AppDesk = {
               </div>
 
               <!-- Weekly Rollup Strip -->
-              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:18px;">
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:18px;">
                 <div style="background:var(--bg-main); border:1px solid rgba(239,68,68,0.3); border-radius:8px; padding:10px 14px;">
-                  <div style="font-size:10px; color:var(--rose-light); font-weight:800; text-transform:uppercase;">🕒 Stale Data / Frozen</div>
+                  <div style="font-size:10px; color:var(--rose-light); font-weight:800; text-transform:uppercase;">🕒 Stale Data</div>
                   <div style="font-size:18px; font-weight:900; color:var(--rose-light); margin-top:4px;">${rollup.stale_data || 0}</div>
                   <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Old bar / frozen spot</div>
                 </div>
                 <div style="background:var(--bg-main); border:1px solid rgba(245,158,11,0.3); border-radius:8px; padding:10px 14px;">
-                  <div style="font-size:10px; color:var(--amber); font-weight:800; text-transform:uppercase;">✂️ CUT Without Edge</div>
-                  <div style="font-size:18px; font-weight:900; color:var(--amber); margin-top:4px;">${rollup.CUT || 0}</div>
-                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Killed on stagnation</div>
+                  <div style="font-size:10px; color:var(--amber); font-weight:800; text-transform:uppercase;">🏃 Chased / Breakout</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--amber); margin-top:4px;">${rollup.chased || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Above zone / extended</div>
                 </div>
                 <div style="background:var(--bg-main); border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:10px 14px;">
                   <div style="font-size:10px; color:var(--purple-light); font-weight:800; text-transform:uppercase;">🚫 Filtered (No-PB)</div>
@@ -1324,10 +1324,15 @@ window.AppDesk = {
                   <div style="font-size:18px; font-weight:900; color:var(--cyan); margin-top:4px;">${rollup.cap || 0}</div>
                   <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Passed but cap reached</div>
                 </div>
+                <div style="background:var(--bg-main); border:1px solid rgba(16,185,129,0.3); border-radius:8px; padding:10px 14px;">
+                  <div style="font-size:10px; color:var(--green); font-weight:800; text-transform:uppercase;">⏳ No Setup / Watch</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--green); margin-top:4px;">${rollup.no_setup || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Held in shadow watch</div>
+                </div>
                 <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">⚠️ Degenerate / No Levels</div>
-                  <div style="font-size:18px; font-weight:900; color:var(--text-main); margin-top:4px;">${rollup.no_levels || 0}</div>
-                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Zone equaled spot</div>
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">⚠️ No Levels / Other</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--text-main); margin-top:4px;">${(rollup.no_levels || 0) + (rollup.other || 0)}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Degenerate / uncaught</div>
                 </div>
               </div>
 

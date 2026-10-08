@@ -307,12 +307,47 @@ def test_append_suggestion_live_spot_and_move_since_bar_pct(tmp_path):
 
 def test_missed_moves_live_scan_without_backfill():
     """Verify live scan without backfill records returns real moves tagged is_backfill=False."""
-    res = get_missed_moves(min_move_pct=5.0, include_backfill=False)
-    assert "missed_moves" in res
-    assert "weekly_rollup" in res
-    assert len(res["missed_moves"]) > 0
-    assert all(r.get("is_backfill") is False for r in res["missed_moves"])
-    # Real tickers should be present
-    tickers = {r["ticker"] for r in res["missed_moves"]}
-    assert "CIEN" in tickers or "VST" in tickers or "ZS" in tickers
+    with patch("src.clients.price_client.get_current_prices_batch", return_value={"VST": 166.66, "CIEN": 446.30, "ZS": 213.62}):
+        res = get_missed_moves(min_move_pct=5.0, include_backfill=False)
+        assert "missed_moves" in res
+        assert "weekly_rollup" in res
+        assert len(res["missed_moves"]) > 0
+        assert all(r.get("is_backfill") is False for r in res["missed_moves"])
+        # Real tickers should be present
+        tickers = {r["ticker"] for r in res["missed_moves"]}
+        assert "CIEN" in tickers or "VST" in tickers or "ZS" in tickers
+
+
+def test_momentum_breakout_lane_and_forward_logging():
+    """Verify Stage 2 name above zone with momentum_rr >= 2.0 qualifies for MOMENTUM_BREAKOUT lane."""
+    dw = {
+        "price": 105.0,
+        "ma20": 100.0,
+        "ma50": 95.0,
+        "ma200": 90.0,
+        "weinstein": 92.0,
+        "buy": 60.0,
+        "sell": 40.0,
+        "stage": 2,
+        "regime": 1,
+        "long_zbot": 95.0,
+        "long_ztop": 100.0,
+        "long_stop_loss": 92.0,
+        "long_target": 125.0,
+        "exhaustion": 0.0,
+        "ext_pct": 5.0,
+        "tight_stop": 101.0,
+        "momentum_rr": 2.5,
+    }
+    res = triage_ticker("PWR", dw, fetch_news=False)
+    assert res["setup_lane"] == "MOMENTUM_BREAKOUT"
+    assert res["triage"] == "PASS"
+    assert res["lane_label"] == "UNMEASURED"
+    assert res["long_plan"]["stop"] == 101.0
+    assert res["long_plan"]["target"] == 125.0
+
+    summary = get_forward_summary()
+    assert "MOMENTUM_BREAKOUT" in summary["rules"]
+    assert summary["rules"]["MOMENTUM_BREAKOUT"]["status"] == "UNMEASURED"
+
 
