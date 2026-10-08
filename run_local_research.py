@@ -368,9 +368,8 @@ def run_local_research(
     # then drop any stale artifacts left over from a previous --regenerate run so
     # the folder never shows names the current run did not flag.
     # The deep-research folder is uncapped by default (DEEP_RESEARCH_CAP=0) so all
-    # eligible names are processed. In the deep research runner, the top-N (by
-    # deep_research_sort_key) run in FULL tier (DEEP_RESEARCH_FULL_CAP=3), and all
-    # remaining candidates run in MID tier (MID_MAX_TOOL_ROUNDS=4) without deferrals.
+    # eligible names are processed. Full tier runs for every eligible name in rank order
+    # (DEEP_RESEARCH_FULL_CAP=0), dispatched sequentially via dedicated queue slots.
     from src.logic.data_window_filter import rank_pass_tickers
 
     cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
