@@ -1350,6 +1350,7 @@ window.AppDesk = {
                       <tr style="border-top:1px solid var(--border);">
                         <td style="padding:10px 12px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal(null, '${item.ticker}', 'plan')">
                           ${item.ticker}
+                          ${item.is_backfill ? `<span class="badge amber" style="font-size:9px; padding:1px 5px; margin-left:6px; font-weight:800;">BACKFILL</span>` : `<span class="badge cyan" style="font-size:9px; padding:1px 5px; margin-left:6px; font-weight:800;">LIVE</span>`}
                         </td>
                         <td style="padding:10px 12px; font-weight:900; color:var(--green);">
                           +${item.move_pct}%

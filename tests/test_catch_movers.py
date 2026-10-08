@@ -303,3 +303,16 @@ def test_append_suggestion_live_spot_and_move_since_bar_pct(tmp_path):
         assert row["move_since_bar_pct"] == 18.7
         assert row["setup_lane"] == "COIL"
         conn.close()
+
+
+def test_missed_moves_live_scan_without_backfill():
+    """Verify live scan without backfill records returns real moves tagged is_backfill=False."""
+    res = get_missed_moves(min_move_pct=5.0, include_backfill=False)
+    assert "missed_moves" in res
+    assert "weekly_rollup" in res
+    assert len(res["missed_moves"]) > 0
+    assert all(r.get("is_backfill") is False for r in res["missed_moves"])
+    # Real tickers should be present
+    tickers = {r["ticker"] for r in res["missed_moves"]}
+    assert "CIEN" in tickers or "VST" in tickers or "ZS" in tickers
+

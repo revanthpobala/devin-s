@@ -1460,11 +1460,11 @@ def get_coverage():
 
 
 @router.get("/missed-moves")
-def get_desk_missed_moves(min_move: float = 8.0, lookback: int = 5):
+def get_desk_missed_moves(min_move: float = 8.0, lookback: int = 5, include_backfill: bool = True):
     """G2: Endpoint for missed-moves scorecard and weekly rollup by root cause."""
     try:
         from src.tracking.missed_moves import get_missed_moves
-        return get_missed_moves(min_move_pct=min_move, lookback_days=lookback)
+        return get_missed_moves(min_move_pct=min_move, lookback_days=lookback, include_backfill=include_backfill)
     except Exception as e:
         import traceback
         return {"error": str(e), "traceback": traceback.format_exc()}

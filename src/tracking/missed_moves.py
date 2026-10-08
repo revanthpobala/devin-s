@@ -31,6 +31,7 @@ BACKFILL_MISSED_MOVES: List[Dict[str, Any]] = [
         "age_days": 5,
         "root_cause_reason": "stale_data",
         "details": "Frozen spot 140.44 across 3 dates, degenerate zone 140.44-140.44, CUT on stagnation despite IV rank 7.2 coil",
+        "is_backfill": True,
     },
     {
         "ticker": "NRG",
@@ -44,6 +45,7 @@ BACKFILL_MISSED_MOVES: List[Dict[str, Any]] = [
         "age_days": 2,
         "root_cause_reason": "stale_data",
         "details": "Spot frozen at 102.75 across five dates, chased flag routed to plain WATCH without deep research",
+        "is_backfill": True,
     },
 ]
 
@@ -80,48 +82,117 @@ def _find_latest_dossier_for_ticker(ticker: str) -> Optional[Dict[str, Any]]:
 def get_missed_moves(
     min_move_pct: float = 8.0,
     lookback_days: int = 5,
+    include_backfill: bool = True,
 ) -> Dict[str, Any]:
     """Scan and compile missed moves across the screening universe.
     
-    Joins large recent movers (>= min_move_pct in 5 sessions) against our last
+    Joins large recent movers (>= min_move_pct in trailing sessions) against our last
     triage verdict, spot, lane, cut reason, and dossier age.
     """
-    records: List[Dict[str, Any]] = list(BACKFILL_MISSED_MOVES)
+    records: List[Dict[str, Any]] = []
+    seen_tickers: set = set()
 
-    # Check recent dossiers in trailing sessions to detect live price jumps
+    # Discover candidate dossiers across recent trailing sessions
     base_dir = config.BASE_DIR / "data"
-    recent_dates = []
-    for d in (base_dir / "raw", base_dir / "triage"):
+    today_dt = datetime.now().date()
+    today_str = today_dt.strftime("%Y-%m-%d")
+
+    dates_set = set()
+    for d in (base_dir / "triage", base_dir / "raw"):
         if not d.exists():
             continue
         for dt_dir in d.iterdir():
-            if dt_dir.is_dir() and len(dt_dir.name) == 10:
-                if dt_dir.name not in recent_dates:
-                    recent_dates.append(dt_dir.name)
-    recent_dates = sorted(recent_dates, reverse=True)[:10]
+            if dt_dir.is_dir() and len(dt_dir.name) == 10 and dt_dir.name <= today_str:
+                dates_set.add(dt_dir.name)
+    recent_dates = sorted(list(dates_set), reverse=True)[: max(10, lookback_days * 2)]
 
-    seen_tickers = {r["ticker"] for r in records}
-
-    # Discover candidate dossiers
     from src.clients.price_client import get_current_prices_batch, get_current_price
 
-    candidate_dossiers: Dict[str, Dict[str, Any]] = {}
+    candidate_entries: Dict[str, List[Dict[str, Any]]] = {}
+
     for dt_str in recent_dates:
-        for sub in (base_dir / "raw" / dt_str, base_dir / "triage" / dt_str):
+        for sub in (base_dir / "triage" / dt_str, base_dir / "raw" / dt_str):
             if not sub.exists():
                 continue
-            for th_p in sub.glob("**/*_thesis.json"):
-                sym = th_p.name.replace("_thesis.json", "").upper()
-                if sym not in candidate_dossiers:
+
+            # 1. Read survivors manifests (pre-move scan universe)
+            for surv_name in ("survivors.json", "schwab_survivors.json"):
+                s_file = sub / surv_name
+                if s_file.exists():
                     try:
-                        with open(th_p, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        candidate_dossiers[sym] = {"date": dt_str, "data": data}
+                        with open(s_file, "r", encoding="utf-8") as f:
+                            for item in json.load(f):
+                                sym = (item.get("symbol") or item.get("Ticker") or "").upper().strip()
+                                pr = item.get("price")
+                                if sym and pr:
+                                    candidate_entries.setdefault(sym, []).append({
+                                        "date": dt_str,
+                                        "spot": float(pr),
+                                        "triage": item,
+                                        "llm_d": {},
+                                        "c_data": item,
+                                        "source": surv_name,
+                                    })
                     except Exception:
                         pass
 
-    # Batch fetch prices
-    syms_to_check = [s for s in candidate_dossiers.keys() if s not in seen_tickers]
+            # 2. Read all *_thesis.json and *_triage.json files
+            file_candidates = list(sub.glob("**/*_thesis.json")) + list(sub.glob("**/*_triage.json")) + list(sub.glob("*_triage.json"))
+            for th_p in file_candidates:
+                sym = th_p.name.replace("_thesis.json", "").replace("_triage.json", "").upper().strip()
+                if not sym:
+                    continue
+                try:
+                    with open(th_p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    triage = data["triage"] if isinstance(data.get("triage"), dict) else data
+                    llm_d = data.get("llm_data", {}) if isinstance(data.get("llm_data"), dict) else {}
+
+                    d_spot = (
+                        triage.get("spot")
+                        or triage.get("price")
+                        or llm_d.get("live_spot")
+                        or llm_d.get("spot")
+                        or llm_d.get("price")
+                        or data.get("live_spot")
+                        or data.get("bar_spot")
+                        or data.get("price")
+                    )
+
+                    if not d_spot:
+                        for cand_dw in (
+                            th_p.parent / f"{sym}_datawindow.json",
+                            th_p.parent / sym / f"{sym}_datawindow.json",
+                        ):
+                            if cand_dw.exists():
+                                try:
+                                    with open(cand_dw, "r", encoding="utf-8") as dw_fp:
+                                        dw = json.load(dw_fp)
+                                    d_spot = dw.get("close") or dw.get("Close") or dw.get("price")
+                                    if d_spot:
+                                        break
+                                except Exception:
+                                    pass
+
+                    if not d_spot and triage.get("long_plan", {}).get("zone"):
+                        z = triage["long_plan"]["zone"]
+                        if isinstance(z, (list, tuple)) and len(z) == 2 and z[0] is not None and z[1] is not None:
+                            d_spot = (float(z[0]) + float(z[1])) / 2.0
+
+                    if d_spot and float(d_spot) > 0:
+                        candidate_entries.setdefault(sym, []).append({
+                            "date": dt_str,
+                            "spot": float(d_spot),
+                            "triage": triage,
+                            "llm_d": llm_d,
+                            "c_data": data,
+                            "source": th_p.name,
+                        })
+                except Exception:
+                    pass
+
+    # Batch fetch live market prices
+    syms_to_check = list(candidate_entries.keys())
     live_prices: Dict[str, float] = {}
     if syms_to_check:
         try:
@@ -129,11 +200,7 @@ def get_missed_moves(
         except Exception:
             pass
 
-    today_dt = datetime.now().date()
-
-    for sym, c_info in candidate_dossiers.items():
-        if sym in seen_tickers:
-            continue
+    for sym, entries in candidate_entries.items():
         live_p = live_prices.get(sym)
         if live_p is None or live_p <= 0:
             try:
@@ -143,29 +210,21 @@ def get_missed_moves(
         if live_p is None or live_p <= 0:
             continue
 
-        c_data = c_info["data"]
-        triage = c_data.get("triage", {}) if isinstance(c_data, dict) else {}
-        llm_d = c_data.get("llm_data", {}) if isinstance(c_data, dict) else {}
+        # Find the entry maximizing the move percentage across historical entries in lookback
+        best_entry = None
+        best_move_pct = -999.0
+        for e in entries:
+            d_spot = e["spot"]
+            if d_spot <= 0:
+                continue
+            pct = ((live_p - d_spot) / d_spot) * 100.0
+            if pct > best_move_pct:
+                best_move_pct = pct
+                best_entry = e
 
-        d_spot = (
-            triage.get("spot")
-            or triage.get("price")
-            or llm_d.get("price")
-            or c_data.get("bar_spot")
-            or c_data.get("live_spot")
-        )
-        if d_spot is None:
-            continue
-        try:
-            d_spot = float(d_spot)
-        except (ValueError, TypeError):
-            continue
-        if d_spot <= 0:
-            continue
-
-        move_pct = ((live_p - d_spot) / d_spot) * 100.0
-        if move_pct >= min_move_pct:
-            d_date_str = c_info["date"]
+        if best_entry and best_move_pct >= min_move_pct:
+            d_spot = best_entry["spot"]
+            d_date_str = best_entry["date"]
             age_days = 0
             try:
                 d_dt = datetime.strptime(d_date_str, "%Y-%m-%d").date()
@@ -173,8 +232,13 @@ def get_missed_moves(
             except Exception:
                 pass
 
-            verdict = str(triage.get("triage") or llm_d.get("triage") or "WATCH").upper()
-            lane = triage.get("setup_lane") or llm_d.get("setup_lane") or "None"
+            triage = best_entry["triage"]
+            llm_d = best_entry["llm_d"]
+            c_data = best_entry["c_data"]
+
+            raw_v = c_data.get("triage") if isinstance(c_data.get("triage"), str) else (triage.get("triage") or llm_d.get("triage") or triage.get("priority_tier") or "WATCH")
+            verdict = str(raw_v).upper()
+            lane = triage.get("setup_lane") or llm_d.get("setup_lane") or triage.get("lane") or triage.get("setup_posture") or "None"
             cut_reas = triage.get("cut_reason") or llm_d.get("cut_reason") or triage.get("reason")
             is_stale = bool(triage.get("stale_data") or c_data.get("stale_data"))
             no_levels = bool(triage.get("no_levels") or ("no_levels" in (triage.get("flags") or [])))
@@ -183,18 +247,18 @@ def get_missed_moves(
             root_cause = "other"
             if is_stale:
                 root_cause = "stale_data"
-            elif verdict == "CUT":
+            elif "CUT" in verdict:
                 root_cause = "CUT"
             elif no_levels:
                 root_cause = "no_levels"
-            elif not triage.get("pb_funnel"):
+            elif triage.get("pb_funnel") in (0, 0.0, False):
                 root_cause = "no-PB"
             elif llm_d.get("send_for_deep_research") is False:
                 root_cause = "cap"
 
             records.append({
                 "ticker": sym,
-                "move_pct": round(move_pct, 1),
+                "move_pct": round(best_move_pct, 1),
                 "dossier_date": d_date_str,
                 "dossier_spot": round(d_spot, 2),
                 "live_spot": round(live_p, 2),
@@ -203,9 +267,23 @@ def get_missed_moves(
                 "cut_reason": str(cut_reas) if cut_reas else None,
                 "age_days": age_days,
                 "root_cause_reason": root_cause,
-                "details": f"Moved +{move_pct:.1f}% from ${d_spot:.2f} to ${live_p:.2f} (verdict: {verdict})",
+                "details": f"Moved +{best_move_pct:.1f}% from ${d_spot:.2f} to ${live_p:.2f} (verdict: {verdict})",
+                "is_backfill": False,
             })
             seen_tickers.add(sym)
+
+    # If backfill is requested, include historical diagnostic benchmarks
+    if include_backfill:
+        for b in BACKFILL_MISSED_MOVES:
+            b_row = dict(b)
+            b_row["is_backfill"] = True
+            if b["ticker"] in seen_tickers:
+                records = [r for r in records if r["ticker"] != b["ticker"]]
+            records.append(b_row)
+            seen_tickers.add(b["ticker"])
+
+    # Sort all records by move percentage descending
+    records.sort(key=lambda x: x.get("move_pct", 0.0), reverse=True)
 
     # Calculate weekly rollup by root cause
     rollup = {
