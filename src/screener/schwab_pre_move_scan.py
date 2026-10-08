@@ -595,31 +595,31 @@ def evaluate_technical_coiling(
     # 2. Gate 2: Relative Strength vs SPY over 20 days
     ticker_20d_return = (last_close - float(closes.iloc[-21])) / float(closes.iloc[-21]) if len(closes) >= 21 else 0.0
     relative_strength = ticker_20d_return - spy_20d_return  # Excess return vs SPY
-    min_rs = 0.0 if lane in ("CONTINUATION", "UNMEASURED") else -0.05
+    min_rs = 0.0 if lane in ("CONTINUATION", "UNMEASURED") else -0.10
     if relative_strength < min_rs:
         return None
 
     # 3. Support Proximity or Unmeasured Mover Breakout Gate
     dist_ema20_pct = abs(last_close - ema20) / last_close * 100
     dist_sma50_pct = abs(last_close - sma50) / last_close * 100
-    near_ema20 = dist_ema20_pct <= 3.5 and last_close >= (ema20 * 0.985)
-    near_sma50 = dist_sma50_pct <= 3.5 and last_close >= (sma50 * 0.985)
+    near_ema20 = dist_ema20_pct <= 4.5 and last_close >= (ema20 * 0.985)
+    near_sma50 = dist_sma50_pct <= 4.5 and last_close >= (sma50 * 0.985)
 
     if lane == "UNMEASURED":
-        # Unmeasured Mover & Breakout: High relative volume, break of 20d high, 1-to-3 day move >= 3% above zone
+        # Unmeasured Mover & Breakout: Volume expansion, break of 20d high, 1-to-3 day move >= 2.5% above zone
         high_20d_prior = float(highs.iloc[-21:-1].max()) if len(highs) >= 21 else float(highs.iloc[:-1].max())
-        break_20d = (last_high >= high_20d_prior * 0.995) or (last_close >= high_20d_prior * 0.99)
+        break_20d = (last_high >= high_20d_prior * 0.99) or (last_close >= high_20d_prior * 0.985)
         avg_vol_20 = float(vols.rolling(20).mean().iloc[-1])
         rvol = (last_vol / avg_vol_20) if avg_vol_20 > 0 else 1.0
-        rvol_ok = (rvol >= 1.15)
+        rvol_ok = (rvol >= 1.0) or (last_vol >= 400_000)
         move_above_ema20 = (last_close - ema20) / ema20 * 100
         move_3d_pct = (last_close - float(closes.iloc[-4])) / float(closes.iloc[-4]) * 100 if len(closes) >= 4 else move_above_ema20
-        move_ok = (move_above_ema20 >= 3.0 or move_3d_pct >= 3.0)
+        move_ok = (move_above_ema20 >= 2.5 or move_3d_pct >= 2.5)
 
         if not (break_20d and rvol_ok and move_ok):
             return None
     else:
-        max_dist = 3.5 if lane == "CONTINUATION" else 2.5
+        max_dist = 4.5 if lane == "CONTINUATION" else 3.5
         near_ema20_lane = dist_ema20_pct <= max_dist and last_close >= (ema20 * 0.985)
         near_sma50_lane = dist_sma50_pct <= max_dist and last_close >= (sma50 * 0.985)
         if not (near_ema20_lane or near_sma50_lane):
@@ -847,7 +847,7 @@ def run_stage2_technical_scan(
                             funnel_tracker["stage2_rejections"]["technical_filter_failed"] = (
                                 funnel_tracker["stage2_rejections"].get("technical_filter_failed", 0) + 1
                             )
-                    break
+                        return None
             except Exception as e:
                 logger.debug(f"Error fetching candles for {schwab_sym}: {e}")
                 time.sleep(0.5)
@@ -1795,7 +1795,8 @@ def run_schwab_pre_move_scan(
         # Quality Gate: Never pad with junk or declining tickers
         qualified_longs = [
             s for s in final_survivors
-            if float(s.get("priority_score", 0.0)) >= 50.0 and s.get("weinstein_stage") not in (3, 4)
+            if (s.get("lane") == "UNMEASURED" or float(s.get("priority_score", 0.0)) >= 50.0)
+            and s.get("weinstein_stage") not in (3, 4)
         ]
         seen_syms = set()
         deduped_longs = []

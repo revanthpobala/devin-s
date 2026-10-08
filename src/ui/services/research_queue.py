@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import psutil
+
 from src import config
 from src.tracking.alert_db import update_research_status
 from src.ui.state import (

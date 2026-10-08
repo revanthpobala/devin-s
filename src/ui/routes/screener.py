@@ -165,7 +165,7 @@ def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str 
                             continue
                         if req_side == "short" and stg == 2 and not c.get("is_extreme_reversal"):
                             continue
-                        if score > 0 and score < 50.0:
+                        if c.get("lane") != "UNMEASURED" and score > 0 and score < 50.0:
                             continue
                         filtered.append(c)
 

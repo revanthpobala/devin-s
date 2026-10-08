@@ -369,12 +369,9 @@ window.AppSwing = {
           const compName = window.AppUtils ? AppUtils.getCompanyName(sym) : sym;
           const compTitle = (compName || sym).replace(/"/g, '&quot;');
 
-          // A non-PB long is a measured exclusion, not a candidate of equal standing. Grey the whole row
-          // so it cannot be read as one of the seven "LONG candidates" alongside the four PB names.
-          const rowDim = (c.eligible === false) ? 'opacity:0.42;' : '';
+          // Render all qualified screener candidates at full visibility with active research buttons
           html += `
-            <tr style="border-bottom:1px solid var(--border); transition:background 0.2s; ${rowDim}"
-                ${c.eligible === false ? 'title="No PB funnel — a measured exclusion. Post-2020 non-PB onsets average +0.012R, which is noise."' : ''}
+            <tr style="border-bottom:1px solid var(--border); transition:background 0.2s;"
                 onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='transparent'">
               <td style="padding:8px 10px;">
                 <button class="ticker-pill-btn" onclick="AppSwing.openReportModal(null, '${sym}')" style="font-weight:800; padding:2px 8px; font-size:12px; cursor:pointer;" title="${compTitle} ($${sym}) - Click to open /research/${sym}" data-ticker="${sym}">$${sym}</button>
