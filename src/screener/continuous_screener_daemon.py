@@ -815,28 +815,45 @@ class ContinuousScreenerDaemon(threading.Thread):
             # 2. Or price broke above zone top
             is_mover = False
             mover_reason = ""
+            e_high_flt = None
+            if e_high is not None:
+                try:
+                    e_high_flt = float(e_high)
+                except (ValueError, TypeError):
+                    pass
+
             if move_pct >= 5.0:
                 is_mover = True
                 mover_reason = f"+{move_pct:.1f}% from dossier spot (${dossier_spot:.2f})"
-            elif e_high is not None and live_p > float(e_high):
+            elif e_high_flt is not None and live_p > e_high_flt:
                 is_mover = True
-                mover_reason = f"broke zone top (${float(e_high):.2f})"
+                mover_reason = f"broke zone top (${e_high_flt:.2f})"
 
             if is_mover:
                 triggered_movers.append({"symbol": sym, "move_pct": move_pct, "live_price": live_p, "reason": mover_reason})
 
                 # Compute tactical R:R at live price
                 rr_str = "N/A"
-                if stop and target_1 and live_p > float(stop):
+                stop_flt = None
+                target_flt = None
+                try:
+                    if stop is not None:
+                        stop_flt = float(stop)
+                    if target_1 is not None:
+                        target_flt = float(target_1)
+                except (ValueError, TypeError):
+                    pass
+
+                if stop_flt is not None and target_flt is not None and live_p > stop_flt:
                     try:
-                        live_rr = (float(target_1) - live_p) / (live_p - float(stop))
+                        live_rr = (target_flt - live_p) / (live_p - stop_flt)
                         rr_str = f"{live_rr:.2f}@mkt"
                     except Exception:
                         pass
 
                 levels_str = ""
-                if stop and target_1:
-                    levels_str = f" | stop ${float(stop):.2f} | T1 ${float(target_1):.2f} | R:R at live price {rr_str}"
+                if stop_flt is not None and target_flt is not None:
+                    levels_str = f" | stop ${stop_flt:.2f} | T1 ${target_flt:.2f} | R:R at live price {rr_str}"
 
                 msg = (
                     f"MOVING: {sym} +{move_pct:.1f}% since dossier, BUY 100 at market "

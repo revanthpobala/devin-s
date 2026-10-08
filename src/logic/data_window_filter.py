@@ -1412,8 +1412,9 @@ def triage_ticker(
         price = verdict["long_plan"].get("entry")
 
     ztop = verdict.get("long_top")
-    if ztop is None and verdict.get("long_plan", {}).get("zone"):
-        z = verdict["long_plan"]["zone"]
+    long_p = verdict.get("long_plan") or {}
+    if ztop is None and long_p.get("zone"):
+        z = long_p["zone"]
         if isinstance(z, (list, tuple)) and len(z) > 1 and z[1] is not None:
             ztop = float(z[1])
 
@@ -1427,10 +1428,10 @@ def triage_ticker(
 
     m_rr = data_window.get("momentum_rr") or verdict.get("momentum_rr")
     t_stop = data_window.get("tight_stop") or verdict.get("tight_stop")
-    target_val = verdict.get("long_plan", {}).get("target") or data_window.get("long_target") or data_window.get("target_1")
+    target_val = long_p.get("target") or data_window.get("long_target") or data_window.get("target_1")
 
     if (m_rr is None or t_stop is None) and price is not None:
-        zbot = verdict.get("long_bot") or (verdict.get("long_plan", {}).get("zone", [None])[0])
+        zbot = verdict.get("long_bot") or (long_p.get("zone", [None])[0])
         ma20 = data_window.get("ma20") or data_window.get("ma 20 fast") or data_window.get("ma 20")
         try:
             price_flt = float(price)

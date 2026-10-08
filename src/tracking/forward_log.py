@@ -37,7 +37,7 @@ UNMEASURED_RULES = {
     },
     "MOVER_TRIGGER": {
         "ship_date": SHIP_DATE,
-        "description": "Live move >= 3.0% from dossier spot or zone-top break with volume pace > 1.5x avg",
+        "description": "Live move >= 5.0% from dossier spot (placeholder) or zone-top break",
         "status": "UNMEASURED",
         "min_observations": MIN_FORWARD_OBSERVATIONS,
     },
