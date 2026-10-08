@@ -26,10 +26,14 @@ from src import config
 from src.data.datawindow_loader import load_datawindow, find_datawindow_paths
 from src.ui.services.research_queue import (
     MAX_CONCURRENT_DEEP,
+    MAX_CONCURRENT_FULL,
+    MAX_CONCURRENT_MID,
     MAX_CONCURRENT_LOCAL,
     dispatch_next_queued_job,
     find_live_research_pid,
     get_active_deep_research_count,
+    get_active_full_research_count,
+    get_active_mid_research_count,
     get_active_local_research_count,
     get_active_research_count,
     run_research_worker,
@@ -1992,6 +1996,8 @@ def get_research_jobs(date: Optional[str] = None):
         local_queue = [j for j in jobs_list if j.get("mode") == "local_only"]
         deep_queue = [j for j in jobs_list if j.get("mode") != "local_only"]
         active_local_count = get_active_local_research_count()
+        active_full_count = get_active_full_research_count()
+        active_mid_count = get_active_mid_research_count()
         active_deep_count = get_active_deep_research_count()
         return {
             "jobs": jobs_list,
@@ -2001,6 +2007,10 @@ def get_research_jobs(date: Optional[str] = None):
             # to another day, so showing a per-date count would under-report real occupancy.
             "local_slots_used": active_local_count,
             "local_slots_max": MAX_CONCURRENT_LOCAL,
+            "full_slots_used": active_full_count,
+            "full_slots_max": MAX_CONCURRENT_FULL,
+            "mid_slots_used": active_mid_count,
+            "mid_slots_max": MAX_CONCURRENT_MID,
             "deep_slots_used": active_deep_count,
             "deep_slots_max": MAX_CONCURRENT_DEEP,
             "max_concurrent": MAX_CONCURRENT_RESEARCH,
@@ -2125,8 +2135,18 @@ def trigger_research(req: ResearchRequest):
     log_file = str(LOGS_DIR / f"{job_id}.log")
 
     is_local_job = (req.mode == "local_only")
-    active_slot_count = get_active_local_research_count() if is_local_job else get_active_deep_research_count()
-    max_slots = MAX_CONCURRENT_LOCAL if is_local_job else MAX_CONCURRENT_DEEP
+    if is_local_job:
+        active_slot_count = get_active_local_research_count()
+        max_slots = MAX_CONCURRENT_LOCAL
+        q_label = "Local Queue"
+    elif req_tier == "FULL":
+        active_slot_count = get_active_full_research_count()
+        max_slots = MAX_CONCURRENT_FULL
+        q_label = "Full Deep Slot"
+    else:
+        active_slot_count = get_active_mid_research_count()
+        max_slots = MAX_CONCURRENT_MID
+        q_label = "Mid Deep Slot"
 
     if active_slot_count < max_slots:
         try:
@@ -2152,7 +2172,6 @@ def trigger_research(req: ResearchRequest):
         worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force, req_tier), daemon=True)
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
-        q_label = "Local Queue" if is_local_job else "Deep Queue"
         append_log(f"🚀 Started research [{req_tier}] for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
         return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "tier": req_tier, "stage": start_stage, "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
     else:

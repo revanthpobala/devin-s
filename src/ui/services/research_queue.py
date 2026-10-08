@@ -163,20 +163,35 @@ def rehydrate_active_jobs():
         logger.warning(f"Error rehydrating jobs from DB: {e}")
 
 
-MAX_CONCURRENT_DEEP = 2
-MAX_CONCURRENT_LOCAL = 2
+MAX_CONCURRENT_FULL = 1
+MAX_CONCURRENT_MID = 1
+MAX_CONCURRENT_LOCAL = 1
+MAX_CONCURRENT_DEEP = MAX_CONCURRENT_FULL + MAX_CONCURRENT_MID
 
 
-def get_active_deep_research_count() -> int:
-    """Accurately count active DEEP research jobs."""
+def get_active_full_research_count() -> int:
+    """Accurately count active FULL deep research jobs."""
     import psutil
     count = 0
     with get_db() as conn:
         c = conn.cursor()
-        running_rows = c.execute(
-            "SELECT job_id, ticker, pid FROM active_research_jobs WHERE status = 'RUNNING' AND mode != 'local_only'"
-        ).fetchall()
+        try:
+            running_rows = c.execute(
+                "SELECT job_id, ticker, pid, tier FROM active_research_jobs WHERE status = 'RUNNING' AND mode != 'local_only'"
+            ).fetchall()
+        except Exception:
+            try:
+                c.execute("ALTER TABLE active_research_jobs ADD COLUMN tier TEXT DEFAULT 'MID'")
+                conn.commit()
+                running_rows = c.execute(
+                    "SELECT job_id, ticker, pid, tier FROM active_research_jobs WHERE status = 'RUNNING' AND mode != 'local_only'"
+                ).fetchall()
+            except Exception:
+                running_rows = []
         for r in running_rows:
+            tier_val = str((r["tier"] if "tier" in r.keys() else "FULL") or "FULL").upper()
+            if tier_val != "FULL":
+                continue
             jid = r["job_id"]
             thread = ACTIVE_RESEARCH_WORKERS.get(jid)
             if thread is not None and thread.is_alive():
@@ -188,6 +203,47 @@ def get_active_deep_research_count() -> int:
             elif find_live_research_pid(r["ticker"], jid):
                 count += 1
     return count
+
+
+def get_active_mid_research_count() -> int:
+    """Accurately count active MID deep research jobs."""
+    import psutil
+    count = 0
+    with get_db() as conn:
+        c = conn.cursor()
+        try:
+            running_rows = c.execute(
+                "SELECT job_id, ticker, pid, tier FROM active_research_jobs WHERE status = 'RUNNING' AND mode != 'local_only'"
+            ).fetchall()
+        except Exception:
+            try:
+                c.execute("ALTER TABLE active_research_jobs ADD COLUMN tier TEXT DEFAULT 'MID'")
+                conn.commit()
+                running_rows = c.execute(
+                    "SELECT job_id, ticker, pid, tier FROM active_research_jobs WHERE status = 'RUNNING' AND mode != 'local_only'"
+                ).fetchall()
+            except Exception:
+                running_rows = []
+        for r in running_rows:
+            tier_val = str((r["tier"] if "tier" in r.keys() else "FULL") or "FULL").upper()
+            if tier_val not in ("MID", "LITE"):
+                continue
+            jid = r["job_id"]
+            thread = ACTIVE_RESEARCH_WORKERS.get(jid)
+            if thread is not None and thread.is_alive():
+                count += 1
+            elif jid in ACTIVE_RESEARCH_SUBPROCS and ACTIVE_RESEARCH_SUBPROCS[jid].poll() is None:
+                count += 1
+            elif r["pid"] and psutil.pid_exists(r["pid"]):
+                count += 1
+            elif find_live_research_pid(r["ticker"], jid):
+                count += 1
+    return count
+
+
+def get_active_deep_research_count() -> int:
+    """Accurately count total active deep research jobs across both FULL and MID slots."""
+    return get_active_full_research_count() + get_active_mid_research_count()
 
 
 def get_active_local_research_count() -> int:
@@ -205,6 +261,10 @@ def get_active_local_research_count() -> int:
                 count += 1
             elif jid in ACTIVE_RESEARCH_SUBPROCS and ACTIVE_RESEARCH_SUBPROCS[jid].poll() is None:
                 count += 1
+            elif r["pid"] and psutil.pid_exists(r["pid"]):
+                count += 1
+            elif find_live_research_pid(r["ticker"], jid):
+                count += 1
     return count
 
 
@@ -213,20 +273,68 @@ def get_active_research_count() -> int:
     return get_active_deep_research_count() + get_active_local_research_count()
 
 
+def _score_and_sort_queued_jobs(queued_rows: list) -> list:
+    """Sort queued jobs by deterministic priority rank and live move score (NOT started_at).
+    
+    Uses deep_research_sort_key:
+    (is_pass, closest_to_gate, mover_score, pb_rank, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
+    """
+    if not queued_rows or len(queued_rows) <= 1:
+        return list(queued_rows)
+
+    from src.logic.data_window_filter import deep_research_sort_key
+    from src.logic.deep_research.artifact_loader import load_triage_record
+
+    raw_dir = config.BASE_DIR / "data" / "raw"
+    triage_dir = config.BASE_DIR / "data" / "triage"
+
+    scored_jobs = []
+    for job in queued_rows:
+        tkr = str(job["ticker"]).upper().strip()
+        t_date = job["target_date"] or datetime.now().strftime("%Y-%m-%d")
+        deep_dir = triage_dir / t_date / "_DEEP_RESEARCH"
+        t_parent = deep_dir / tkr
+
+        rec = load_triage_record(raw_dir / t_date, deep_dir, tkr, tdir=t_parent)
+        if not isinstance(rec, dict) or not rec:
+            rec = {"ticker": tkr}
+        else:
+            rec = dict(rec)
+            if not rec.get("ticker"):
+                rec["ticker"] = tkr
+
+        reason = str(job["stage_detail"] or "")
+        if "MOVER" in reason or "Live mover" in reason:
+            rec["closest_to_gate"] = 1
+            if not rec.get("mover_score"):
+                rec["mover_score"] = 5.0
+
+        key = deep_research_sort_key(rec)
+        scored_jobs.append((key, job))
+
+    scored_jobs.sort(key=lambda x: x[0], reverse=True)
+    return [job for _, job in scored_jobs]
+
+
 def dispatch_next_queued_job():
-    """Pick next QUEUED jobs for both Local Research and Deep Research queues."""
+    """Pick next QUEUED jobs for Local Triage, FULL Deep Research, and MID Deep Research."""
     with _QUEUE_DISPATCH_LOCK:
-        # 1. Dispatch Local Research queue
-        active_local = get_active_local_research_count()
-        local_slots_available = MAX_CONCURRENT_LOCAL - active_local
-        if local_slots_available > 0:
-            with get_db() as conn:
-                c = conn.cursor()
+        with get_db() as conn:
+            c = conn.cursor()
+            try:
+                c.execute("ALTER TABLE active_research_jobs ADD COLUMN tier TEXT DEFAULT 'MID'")
+            except Exception:
+                pass
+
+            # 1. Dispatch Local Research queue (MAX 1)
+            active_local = get_active_local_research_count()
+            local_slots_available = MAX_CONCURRENT_LOCAL - active_local
+            if local_slots_available > 0:
                 queued_local = c.execute(
-                    "SELECT job_id, ticker, mode, target_date FROM active_research_jobs WHERE status = 'QUEUED' AND mode = 'local_only' ORDER BY started_at ASC LIMIT ?",
-                    (local_slots_available,)
+                    "SELECT job_id, ticker, mode, target_date, stage_detail, tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode = 'local_only'"
                 ).fetchall()
-                for job in queued_local:
+                sorted_local = _score_and_sort_queued_jobs(queued_local)
+                for job in sorted_local[:local_slots_available]:
                     jid = job["job_id"]
                     tkr = job["ticker"]
                     m = job["mode"]
@@ -246,29 +354,22 @@ def dispatch_next_queued_job():
                     worker_thread.start()
                     append_log(f"⚖️ [Local Queue] Dispatched local triage for {tkr} (Job ID: {jid}).")
 
-        # 2. Dispatch Deep Research queue
-        active_deep = get_active_deep_research_count()
-        deep_slots_available = MAX_CONCURRENT_DEEP - active_deep
-        if deep_slots_available > 0:
-            with get_db() as conn:
-                c = conn.cursor()
-                # Ensure tier column exists
-                try:
-                    c.execute("ALTER TABLE active_research_jobs ADD COLUMN tier TEXT DEFAULT 'MID'")
-                except Exception:
-                    pass
-                queued_deep = c.execute(
-                    "SELECT job_id, ticker, mode, target_date, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' ORDER BY started_at ASC LIMIT ?",
-                    (deep_slots_available,)
+            # 2. Dispatch FULL Deep Research queue (Slot 1: FULL tier in rank order)
+            active_full = get_active_full_research_count()
+            full_slots_available = MAX_CONCURRENT_FULL - active_full
+            if full_slots_available > 0:
+                queued_full = c.execute(
+                    "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'FULL') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' AND UPPER(COALESCE(tier, 'FULL')) = 'FULL'"
                 ).fetchall()
-                for job in queued_deep:
+                sorted_full = _score_and_sort_queued_jobs(queued_full)
+                for job in sorted_full[:full_slots_available]:
                     jid = job["job_id"]
                     tkr = job["ticker"]
                     m = job["mode"]
                     dt = job["target_date"]
-                    t_tier = job["tier"] or "MID"
+                    t_tier = "FULL"
                     c.execute(
-                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', started_at = ? WHERE job_id = ?",
+                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', stage_detail = 'Starting Deep Research (FULL)', started_at = ? WHERE job_id = ?",
                         (datetime.now(timezone.utc).isoformat(), jid)
                     )
                     conn.commit()
@@ -280,7 +381,36 @@ def dispatch_next_queued_job():
                     )
                     ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
                     worker_thread.start()
-                    append_log(f"🔬 [Deep Queue] Dispatched deep research ({t_tier}) for {tkr} to open slot (Job ID: {jid}).")
+                    append_log(f"🔬 [Full Deep Slot] Dispatched FULL deep research for {tkr} (Job ID: {jid}) in rank order.")
+
+            # 3. Dispatch MID Deep Research queue (Slot 2: MID tier for manual clicks & movers)
+            active_mid = get_active_mid_research_count()
+            mid_slots_available = MAX_CONCURRENT_MID - active_mid
+            if mid_slots_available > 0:
+                queued_mid = c.execute(
+                    "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' AND UPPER(COALESCE(tier, 'FULL')) IN ('MID', 'LITE')"
+                ).fetchall()
+                sorted_mid = _score_and_sort_queued_jobs(queued_mid)
+                for job in sorted_mid[:mid_slots_available]:
+                    jid = job["job_id"]
+                    tkr = job["ticker"]
+                    m = job["mode"]
+                    dt = job["target_date"]
+                    t_tier = job["tier"] or "MID"
+                    c.execute(
+                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', stage_detail = f'Starting Deep Research ({t_tier})', started_at = ? WHERE job_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), jid)
+                    )
+                    conn.commit()
+
+                    worker_thread = threading.Thread(
+                        target=run_research_worker,
+                        args=(jid, tkr, m, dt, True, t_tier),
+                        daemon=True
+                    )
+                    ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
+                    worker_thread.start()
+                    append_log(f"⚡ [Mid Deep Slot] Dispatched MID deep research for {tkr} (Job ID: {jid}) in rank/mover order.")
 
 
 _STAGE_MARKERS = [

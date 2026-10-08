@@ -80,7 +80,7 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "8192"))
 # returns HTTP 400 and the ticker falls back to deterministic with no LLM screen.
 # Raise --parallel AND -c AND this together if VRAM headroom allows; if you drop
 # to --parallel 3 you MUST also drop -c to ~24000 (8000/slot) and set this to 3.
-LLM_LOCAL_CONCURRENCY = int(os.getenv("LLM_LOCAL_CONCURRENCY", "2"))
+LLM_LOCAL_CONCURRENCY = int(os.getenv("LLM_LOCAL_CONCURRENCY", "4"))
 # LLM_TRIAGE_MAX_TOKENS: output budget for attempt 1 of the local triage ladder
 # (attempts 2/3 use 2x/4x of this). Small by design — the triage JSON is tiny.
 LLM_TRIAGE_MAX_TOKENS = int(os.getenv("LLM_TRIAGE_MAX_TOKENS", "2048"))
@@ -88,12 +88,10 @@ LLM_TRIAGE_MAX_TOKENS = int(os.getenv("LLM_TRIAGE_MAX_TOKENS", "2048"))
 # Deep-research selection / enrichment tuning.
 # DEEP_RESEARCH_CAP: cap on candidate segregation and research ingestion (0 = UNCAPPED).
 # All eligible candidates are processed rather than deferred.
-# DEEP_RESEARCH_FULL_CAP: maximum number of top-ranked candidates that run in FULL tier
-# per run (default 3, ~30 min each). All remaining candidates in the run are
-# routed to MID tier (Model A only, tool rounds capped at MID_MAX_TOOL_ROUNDS=4)
-# to prevent GPU burnout.
+# DEEP_RESEARCH_FULL_CAP: 0 = UNCAPPED. Full tier runs for every eligible candidate in rank order.
+# Dedicated slots (1 FULL slot, 1 MID slot) govern concurrency safely.
 DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
-DEEP_RESEARCH_FULL_CAP = int(os.getenv("DEEP_RESEARCH_FULL_CAP", "3"))
+DEEP_RESEARCH_FULL_CAP = int(os.getenv("DEEP_RESEARCH_FULL_CAP", "0"))
 MID_MAX_TOOL_ROUNDS = int(os.getenv("MID_MAX_TOOL_ROUNDS", "4"))
 # ENRICH_TOP_N: optional cap on how many send-eligible tickers receive the local
 # Qwen enrichment. 0 (the default) = NO CAP, enrich every eligible name.

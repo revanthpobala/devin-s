@@ -46,7 +46,7 @@ LAUNCH_ARGS = [
     "-a",
     "gpt-4",
     "--parallel",
-    "3",
+    "4",
     "--reasoning",
     "off",
 ]

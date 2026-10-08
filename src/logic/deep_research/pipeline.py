@@ -442,9 +442,6 @@ def run_deep_research(
     # ------------------------------------------------------------------
     # Per-ticker loop
     # ------------------------------------------------------------------
-    full_runs_cap = int(os.getenv("DEEP_RESEARCH_FULL_CAP", "3"))
-    full_runs_count = 0
-
     seen_tickers: set[str] = set()
     for chart_path in chart_files:
         raw_name = Path(chart_path).name.replace("_chart.png", "")
@@ -453,18 +450,8 @@ def run_deep_research(
             continue
         seen_tickers.add(ticker)
 
-        # Determine effective tier for this ticker (respecting FULL cap to prevent GPU burnout)
+        # Full tier runs for every eligible name; or uses explicit tier passed
         chosen_tier = tier
-        if tier == "FULL":
-            if full_runs_count < full_runs_cap or target_ticker:
-                chosen_tier = "FULL"
-                full_runs_count += 1
-            else:
-                chosen_tier = "MID"
-                logger.info(
-                    f"[{ticker}] Full deep research cap ({full_runs_cap}) reached -> "
-                    f"sending to MID tier (tool rounds capped at MID_MAX_TOOL_ROUNDS=4)."
-                )
 
         t_ticker_start = time.time()
         logger.info(f"[{ticker}] Initiating Deep Research (Tier: {chosen_tier})...")

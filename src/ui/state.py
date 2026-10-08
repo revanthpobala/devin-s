@@ -103,10 +103,12 @@ def init_db():
                 completed_at TEXT,
                 log_file TEXT,
                 error_message TEXT,
-                target_date TEXT
+                target_date TEXT,
+                stage_detail TEXT,
+                tier TEXT DEFAULT 'MID'
             )
         """)
-        for col in ("target_date", "stage_detail"):
+        for col in ("target_date", "stage_detail", "tier"):
             try:
                 c.execute(f"ALTER TABLE active_research_jobs ADD COLUMN {col} TEXT")
             except Exception:

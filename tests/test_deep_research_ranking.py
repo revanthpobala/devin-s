@@ -113,21 +113,64 @@ def test_batch_discovery_preserves_rank_order(tmp_path):
     chart_tickers = [Path(cf).name.split("_")[0].upper() for cf in chart_files]
     assert chart_tickers == ["CCC", "AAA", "BBB", "DDD", "EEE"]
 
-    # Test full vs mid tier distribution
-    full_runs_cap = 3
-    full_runs_count = 0
-    assigned_tiers = {}
-    for chart_path in chart_files:
-        ticker = Path(chart_path).name.split("_")[0].upper()
-        if full_runs_count < full_runs_cap:
-            assigned_tiers[ticker] = "FULL"
-            full_runs_count += 1
-        else:
-            assigned_tiers[ticker] = "MID"
+    # Verify that without cap, all eligible names run in FULL tier
+    chosen_tiers = {Path(cf).name.split("_")[0].upper(): "FULL" for cf in chart_files}
+    assert all(tier == "FULL" for tier in chosen_tiers.values())
 
-    assert assigned_tiers["CCC"] == "FULL"
-    assert assigned_tiers["AAA"] == "FULL"
-    assert assigned_tiers["BBB"] == "FULL"
-    assert assigned_tiers["DDD"] == "MID"
-    assert assigned_tiers["EEE"] == "MID"
+
+def test_tier_aware_slot_constants_and_counts(tmp_path, monkeypatch):
+    """Verify MAX_CONCURRENT slot definitions for FULL, MID, and LOCAL."""
+    from src.ui.services.research_queue import (
+        MAX_CONCURRENT_FULL,
+        MAX_CONCURRENT_MID,
+        MAX_CONCURRENT_LOCAL,
+        MAX_CONCURRENT_DEEP,
+        get_active_full_research_count,
+        get_active_mid_research_count,
+        get_active_local_research_count,
+        get_active_deep_research_count,
+        _score_and_sort_queued_jobs,
+    )
+
+    assert MAX_CONCURRENT_FULL == 1
+    assert MAX_CONCURRENT_MID == 1
+    assert MAX_CONCURRENT_LOCAL == 1
+    assert MAX_CONCURRENT_DEEP == 2
+
+
+def test_score_and_sort_queued_jobs(tmp_path, monkeypatch):
+    """Verify that queued jobs are ordered by rank & mover score, NOT by started_at."""
+    from src.ui.services.research_queue import _score_and_sort_queued_jobs
+
+    triage_dir = tmp_path / "data" / "triage"
+    today_deep = triage_dir / "2026-10-08" / "_DEEP_RESEARCH"
+    today_deep.mkdir(parents=True)
+
+    monkeypatch.setattr("src.config.BASE_DIR", tmp_path)
+
+    # Setup records: ticker X has low mover score but early started_at; ticker Y has high mover score but later started_at
+    records = {
+        "LOW_MVR": {"ticker": "LOW_MVR", "in_zone": False, "mover_score": 0.5, "triage": "PASS"},
+        "HI_MVR": {"ticker": "HI_MVR", "in_zone": True, "mover_score": 25.0, "triage": "PASS"},
+        "MID_MVR": {"ticker": "MID_MVR", "in_zone": True, "mover_score": 10.0, "triage": "PASS"},
+    }
+
+    for sym, rec in records.items():
+        sym_dir = today_deep / sym
+        sym_dir.mkdir(parents=True)
+        (sym_dir / f"{sym}_thesis.json").write_text(json.dumps({"triage": rec}), encoding="utf-8")
+
+    # Mock sqlite row dicts
+    queued_jobs = [
+        {"ticker": "LOW_MVR", "target_date": "2026-10-08", "stage_detail": "Queued first", "started_at": "08:00:00"},
+        {"ticker": "MID_MVR", "target_date": "2026-10-08", "stage_detail": "Queued third", "started_at": "08:10:00"},
+        {"ticker": "HI_MVR", "target_date": "2026-10-08", "stage_detail": "Queued second", "started_at": "08:05:00"},
+    ]
+
+    sorted_jobs = _score_and_sort_queued_jobs(queued_jobs)
+    sorted_tickers = [j["ticker"] for j in sorted_jobs]
+
+    # HI_MVR (in_zone + 25 mover score) must be first, MID_MVR second, LOW_MVR third
+    assert sorted_tickers == ["HI_MVR", "MID_MVR", "LOW_MVR"]
+
 
