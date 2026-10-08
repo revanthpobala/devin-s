@@ -596,6 +596,12 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
     setup = (alert_row.get("setup") if alert_row else None) or triage_info.get("mode") or (suggestion_row.get("setup_lane") if suggestion_row else None) or "Technical Coiling"
     mode = triage_info.get("mode") or (suggestion_row.get("setup_lane") if suggestion_row else None) or "REVERSAL / MOMENTUM"
 
+    def _fmt(val):
+        try:
+            return f"{float(val):.2f}"
+        except (ValueError, TypeError):
+            return str(val) if val is not None else "--"
+
     playbook = (alert_row.get("llm_playbook") if alert_row else None) or triage_info.get("reason") or llm_data.get("sentiment_summary") or "Local technical triage completed."
 
     side = str(triage_info.get("chosen_side") or (alert_row.get("side") if alert_row else "") or "long").lower()
@@ -660,8 +666,36 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
             entry_low = round(spot_price * 0.99, 2)
             entry_high = round(spot_price, 2)
         else:
-            entry_low = round(spot_price, 2)
-            entry_high = round(spot_price, 2)
+            entry_low = None
+            entry_high = None
+
+    # A3: Reject degenerate zones: if entry_low == entry_high == spot, set levels to None and tag no_levels
+    no_levels = False
+    if entry_low is not None and entry_high is not None and spot_price is not None:
+        if abs(float(entry_low) - float(entry_high)) < 1e-4 and abs(float(entry_low) - float(spot_price)) < 0.01:
+            entry_low = None
+            entry_high = None
+            stop = None
+            target_1 = None
+            target_2 = None
+            no_levels = True
+
+    # A1/A2: Live spot, move_since_bar_pct, and staleness
+    dw = load_datawindow(ticker_u, target_date) or {}
+    dw_bar_date = triage_info.get("dw_bar_date") or dw.get("dw_bar_date") or target_date
+    spot_age = triage_info.get("spot_age") or dw.get("spot_age") or 0
+    stale_data = bool(triage_info.get("stale_data") or (isinstance(spot_age, (int, float)) and spot_age > 1))
+
+    live_spot = None
+    try:
+        from src.clients.price_client import get_current_price
+        live_spot = get_current_price(ticker_u)
+    except Exception:
+        pass
+
+    move_since_bar_pct = 0.0
+    if spot_price and live_spot:
+        move_since_bar_pct = round(((float(live_spot) - float(spot_price)) / float(spot_price)) * 100, 2)
 
     # Mathematical R:R computation if missing
     rr = triage_info.get("rr") or (suggestion_row.get("rr_at_market_at_signal") if suggestion_row else None)
@@ -700,24 +734,40 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
     headlines = sentiment.get("headlines") or []
     headlines_formatted = "\n".join(f"- {h}" for h in headlines[:5]) if headlines else "- No recent breaking headlines flagged."
 
+    spot_header = f"> **Dossier Spot**: ${_fmt(spot_price)} (Bar: {dw_bar_date}, Age: {spot_age}d)" if spot_price else ""
+    if live_spot is not None:
+        sign = "+" if move_since_bar_pct >= 0 else ""
+        spot_header += f" | **Live Spot**: **${live_spot:.2f}** ({sign}{move_since_bar_pct:.1f}% since bar)"
+    if stale_data:
+        spot_header += f" | ⚠️ **STALE DATA** (not scored)"
+
     lines = [
         f"# {ticker_u} | LOCAL RESEARCH DOSSIER ({target_date})\n",
         f"> **System Decision**: **{raw_dec}** | **Score / Conviction**: **{conv_str}** | **Setup**: **{setup}**\n",
-        f"> **Lane / Mode**: `{mode}` | **Reference Spot**: ${float(spot_price):.2f}" if spot_price else f"> **Lane / Mode**: `{mode}`",
+        f"> **Lane / Mode**: `{mode}`\n",
+    ]
+    if spot_header:
+        lines.append(f"{spot_header}\n")
+    lines.extend([
         "\n---\n",
         "### 🛡️ Tactical Playbook & Evaluation\n",
         playbook.strip(),
         "\n\n---\n",
         "### 🎯 Structured Levels & Mathematical Plan\n",
-    ]
-    if entry_low is not None and entry_high is not None:
-        lines.append(f"- **Entry Zone**: ${float(entry_low):.2f} – ${float(entry_high):.2f}")
-    if stop is not None:
-        lines.append(f"- **Tactical Invalidation Stop**: ${float(stop):.2f}")
-    if target_1 is not None:
-        lines.append(f"- **Target 1 (Scale Out)**: ${float(target_1):.2f}")
-    if target_2 is not None:
-        lines.append(f"- **Target 2 (Runner)**: ${float(target_2):.2f}")
+    ])
+    if no_levels:
+        lines.append("- **Entry Zone**: None (degenerate zone rejected — entry equals spot)")
+        lines.append("- **Tactical Invalidation Stop**: None")
+        lines.append("- **Target 1**: None")
+    else:
+        if entry_low is not None and entry_high is not None:
+            lines.append(f"- **Entry Zone**: ${_fmt(entry_low)} – ${_fmt(entry_high)}")
+        if stop is not None:
+            lines.append(f"- **Tactical Invalidation Stop**: ${_fmt(stop)}")
+        if target_1 is not None:
+            lines.append(f"- **Target 1 (Scale Out)**: ${_fmt(target_1)}")
+        if target_2 is not None:
+            lines.append(f"- **Target 2 (Runner)**: ${_fmt(target_2)}")
     lines.append(f"- **Risk / Reward**: {rr_str} | **Win Probability**: {win_prob_str} | **Expected Value**: {ev_str}")
 
     lines.extend([
@@ -734,25 +784,30 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
     ])
     dossier_md = "\n".join(lines)
 
-    opt_summary = f"Local triage: {clean_verdict}. Vehicle: {vehicle}. Stalk entry zone ${float(entry_low):.2f}-${float(entry_high):.2f} with tactical stop at ${float(stop):.2f}." if (entry_low and stop) else f"Local triage: {vehicle} plan recommended."
+    is_cut_or_skip = clean_verdict in ("CUT", "CASH_SKIP", "NO_TRADE")
+    conv_derived = 0.0 if is_cut_or_skip else (float(conv_val) if isinstance(conv_val, (int, float)) else (5.0 if clean_verdict == "WATCH" else 8.0))
+    opt_actionable = False if is_cut_or_skip else (clean_verdict == "PASS")
+
+    opt_summary = f"Local triage: {clean_verdict}. Vehicle: {vehicle}. Stalk entry zone ${float(entry_low):.2f}-${float(entry_high):.2f} with tactical stop at ${float(stop):.2f}." if (entry_low and stop and not is_cut_or_skip) else (f"Local triage: {clean_verdict}. Execution inactive." if is_cut_or_skip else f"Local triage: {vehicle} plan recommended.")
 
     watch_levels = {
         "ticker": ticker_u,
         "date": target_date,
         "verdict": clean_verdict,
-        "conviction": conv_val if isinstance(conv_val, (int, float)) else 8.0,
-        "status": "IN_ZONE" if (suggestion_row and suggestion_row.get("status") in ("IN_ZONE", "IN_TRADE")) else "STALKING",
+        "conviction": conv_derived,
+        "status": "CUT" if is_cut_or_skip else ("IN_ZONE" if (suggestion_row and suggestion_row.get("status") in ("IN_ZONE", "IN_TRADE")) else "STALKING"),
         "spot_price": spot_price,
+        "spot_price_date": target_date,
         "shares_plan": {
-            "entry_zone_low": entry_low,
-            "entry_zone_high": entry_high,
+            "entry_zone_low": entry_low if not is_cut_or_skip else None,
+            "entry_zone_high": entry_high if not is_cut_or_skip else None,
             "tactical_stop": stop,
-            "target_1": target_1,
-            "target_2": target_2,
+            "target_1": target_1 if not is_cut_or_skip else None,
+            "target_2": target_2 if not is_cut_or_skip else None,
         },
         "options_plan": {
             "structure": vehicle,
-            "actionable": True,
+            "actionable": opt_actionable,
             "summary": opt_summary,
         },
         "invalidation": {
@@ -1449,8 +1504,8 @@ def get_report_bundle(date: str, ticker: str):
 
 @router.get("/api/quote/{ticker}")
 def get_ticker_quote(ticker: str):
-    """Fetch live real-time price and day stats for a ticker directly from Schwab."""
-    from src.clients.price_client import get_current_price
+    """Fetch live real-time price and day stats for a ticker directly from Schwab or QuoteRouter."""
+    from src.clients.price_client import get_current_price, get_realtime_quote_data
 
     sym = validate_ticker(ticker)
     price = None
@@ -1460,20 +1515,38 @@ def get_ticker_quote(ticker: str):
     ask = 0.0
     volume = 0
     source = "SCHWAB"
+    quote_age = 0.0
 
     try:
         from src.clients.schwab_client import get_realtime_quote
 
         sq = get_realtime_quote(sym)
-        if sq and sq.get("last_price"):
+        if sq and sq.get("last_price") and float(sq["last_price"]) > 0:
             price = float(sq["last_price"])
             net_change = float(sq.get("net_change") or 0.0)
             net_pct = float(sq.get("net_percent_change") or 0.0)
             bid = float(sq.get("bid") or 0.0)
             ask = float(sq.get("ask") or 0.0)
             volume = int(sq.get("volume") or 0)
+            source = "SCHWAB_REALTIME"
     except Exception as e:
         logger.debug(f"Schwab quote error for {sym}: {e}")
+
+    if price is None:
+        try:
+            qd = get_realtime_quote_data(sym)
+            if qd and qd.get("last_price") and float(qd["last_price"]) > 0:
+                price = float(qd["last_price"])
+                net_change = float(qd.get("net_change") or 0.0)
+                net_pct = float(qd.get("net_percent_change") or 0.0)
+                bid = float(qd.get("bid") or 0.0)
+                ask = float(qd.get("ask") or 0.0)
+                volume = int(qd.get("volume") or 0)
+                source = qd.get("source") or "FALLBACK"
+                if qd.get("timestamp"):
+                    quote_age = max(0.0, round(time.time() - float(qd["timestamp"]), 1))
+        except Exception:
+            pass
 
     if price is None:
         try:
@@ -1486,7 +1559,7 @@ def get_ticker_quote(ticker: str):
         try:
             with get_db() as conn:
                 r = conn.cursor().execute(
-                    "SELECT last_price FROM watch_targets WHERE ticker = ? ORDER BY date DESC LIMIT 1",
+                    "SELECT last_price, updated_at FROM watch_targets WHERE ticker = ? ORDER BY date DESC LIMIT 1",
                     (sym,)
                 ).fetchone()
                 if r and r["last_price"]:
@@ -1504,8 +1577,10 @@ def get_ticker_quote(ticker: str):
         "ask": ask,
         "volume": volume,
         "source": source,
+        "quote_age_seconds": quote_age,
         "time": datetime.now(timezone.utc).isoformat(),
     }
+
 
 
 @router.get("/api/options-flow/{ticker}")

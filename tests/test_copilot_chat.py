@@ -236,5 +236,73 @@ def test_unified_options_chain_and_memory_cache(monkeypatch):
     assert calls == [], "the second call must be served from memory, not re-fetched"
 
 
+def test_copilot_context_compiles_safe_for_partial_levels_and_unknown_and_empty():
+    """Verify copilot context compiles safely for edge-case tickers: partial levels, unknown, and empty."""
+    # 1. Unknown ticker
+    sys_prompt, messages, user_prompt, ticker_u, date_str = _build_copilot_context_and_tools(
+        question="What is the setup for XYZUNKNOWN?",
+        explicit_ticker="XYZUNKNOWN",
+        date_str="2026-10-07"
+    )
+    assert sys_prompt is not None
+    assert "XYZUNKNOWN" in sys_prompt
+
+    # 2. Empty ticker
+    sys_prompt_empty, _, _, ticker_empty, _ = _build_copilot_context_and_tools(
+        question="Tell me about overall market sentiment",
+        explicit_ticker="",
+        date_str="2026-10-07"
+    )
+    assert sys_prompt_empty is not None
+
+    # 3. Local-only with partial levels (e.g. VST with entry zone but no stop)
+    from run_ui import _build_single_ticker_context
+    parts = _build_single_ticker_context("VST", "2026-10-07", "Analyze VST support levels")
+    assert isinstance(parts, list)
+    full_text = "\n".join(parts)
+    assert "VST" in full_text
+
+
+def test_local_cut_verdict_carries_zero_conviction_and_inactive_options(tmp_path, monkeypatch):
+    """A CUT verdict must never carry high conviction or actionable options."""
+    import json
+    from src.ui.routes.research import _build_local_research_dossier
+    from src import config
+
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    date_str = "2026-10-07"
+    ticker = "TESTCUT"
+    triage_dir = tmp_path / "data" / "triage" / date_str / "cut" / ticker
+    triage_dir.mkdir(parents=True, exist_ok=True)
+    thesis_file = triage_dir / f"{ticker}_thesis.json"
+    
+    thesis_payload = {
+        "ticker": ticker,
+        "date": date_str,
+        "triage": {
+            "triage": "CUT",
+            "decision": "CUT",
+            "reason": "Not in buy zone",
+            "action_code": 0,
+            "action_label": "NO_ACTION",
+            "spot_price": 100.0,
+        },
+        "llm_data": {
+            "conviction": 7.5,  # Raw value that must be zeroed for CUT
+            "decision": "CUT",
+            "options_plan": {"actionable": True, "structure": "Call"}
+        }
+    }
+    with open(thesis_file, "w", encoding="utf-8") as f:
+        json.dump(thesis_payload, f)
+
+    md, wl = _build_local_research_dossier(date_str, ticker)
+    assert wl is not None
+    assert wl.get("conviction") == 0.0
+    options_plan = wl.get("options_plan") or {}
+    assert options_plan.get("actionable") is False
+
+
+
 
 

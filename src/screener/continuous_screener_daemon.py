@@ -239,6 +239,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         self.last_market_tide: Dict[str, Any] = {}
         self._today_date: Optional[str] = None
         self.auto_deep_dispatched_today: set[str] = set()
+        self.movers_alerted_today: set[str] = set()
         self.last_dispatched_ticker: Optional[str] = None
 
     def is_market_hours(self) -> bool:
@@ -342,6 +343,12 @@ class ContinuousScreenerDaemon(threading.Thread):
 
             # Autonomous Deep Research Dispatch (gated, capped, deduplicated)
             dispatched_syms = self.evaluate_and_dispatch_deep_research(long_picks + short_picks, date_str)
+
+            # Live re-score loop (Section B): trailing 10 sessions dossiers re-evaluated at live price
+            try:
+                self.rescore_recent_dossiers(date_str)
+            except Exception as e_rescore:
+                logger.error(f"[ContinuousScreener] Error in rescore_recent_dossiers: {e_rescore}")
 
             # Synchronize Schwab Portfolio & Positions in background
             try:
@@ -670,6 +677,189 @@ class ContinuousScreenerDaemon(threading.Thread):
         self._active_research_threads.append(t)
         t.start()
         return True
+
+    def rescore_recent_dossiers(self, target_date: str) -> List[Dict[str, Any]]:
+        """B1/B2/B3: Re-evaluate dossiers from the trailing 10 sessions against live quotes.
+        
+        Overlays the live quote on stored levels and checks for mover triggers:
+        - Price move >= 3.0% (UNMEASURED default) from dossier spot
+        - Or price breaks above zone top
+        Fires push alerts and re-queues movers for local re-triage / deep research bypassing cap.
+        """
+        logger.info(f"🔎 [ContinuousScreener] Checking trailing 10-session dossiers for movers at live price...")
+        from src.clients.price_client import get_current_prices_batch, get_current_price
+        from src.tracking.watch_manager import log_trigger_alert
+        from src.tracking.alert_db import queue_for_research
+
+        # Reset daily alerted set on date rollover
+        with self._lock:
+            if self._today_date != target_date:
+                self._today_date = target_date
+                self.movers_alerted_today = set()
+
+        # Step 1: Discover recent dossiers across last 10 session dates
+        base_dir = config.BASE_DIR / "data"
+        recent_dates = []
+        for d in (base_dir / "raw", base_dir / "triage"):
+            if not d.exists():
+                continue
+            for dt_dir in d.iterdir():
+                if dt_dir.is_dir() and len(dt_dir.name) == 10 and dt_dir.name <= target_date:
+                    if dt_dir.name not in recent_dates:
+                        recent_dates.append(dt_dir.name)
+        recent_dates = sorted(recent_dates, reverse=True)[:10]
+
+        dossiers_by_ticker: Dict[str, Dict[str, Any]] = {}
+        for dt_str in reversed(recent_dates):  # oldest to newest so newest overwrites
+            # Check raw and triage directories
+            for sub_dir in (base_dir / "raw" / dt_str, base_dir / "triage" / dt_str):
+                if not sub_dir.exists():
+                    continue
+                for th_path in sub_dir.glob("**/*_thesis.json"):
+                    sym = th_path.name.replace("_thesis.json", "").upper()
+                    try:
+                        with open(th_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        dossiers_by_ticker[sym] = {"date": dt_str, "path": th_path, "data": data}
+                    except Exception:
+                        pass
+                for tr_path in sub_dir.glob("**/*_triage.json"):
+                    sym = tr_path.name.replace("_triage.json", "").upper()
+                    if sym not in dossiers_by_ticker:
+                        try:
+                            with open(tr_path, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            dossiers_by_ticker[sym] = {"date": dt_str, "path": tr_path, "data": {"triage": data}}
+                        except Exception:
+                            pass
+
+        if not dossiers_by_ticker:
+            logger.info("ℹ️ [ContinuousScreener] No recent dossiers found in trailing 10 sessions.")
+            return []
+
+        tickers = list(dossiers_by_ticker.keys())
+        logger.info(f"🔎 [ContinuousScreener] Found {len(tickers)} recent candidate dossiers to check.")
+
+        # Batch-fetch live prices
+        live_prices: Dict[str, float] = {}
+        try:
+            live_prices = get_current_prices_batch(tickers)
+        except Exception as e_batch:
+            logger.debug(f"[ContinuousScreener] Batch price fetch failed: {e_batch}")
+
+        triggered_movers = []
+        for sym, d_info in dossiers_by_ticker.items():
+            live_p = live_prices.get(sym)
+            if live_p is None or live_p <= 0:
+                try:
+                    live_p = get_current_price(sym)
+                except Exception:
+                    continue
+            if live_p is None or live_p <= 0:
+                continue
+
+            record = d_info["data"]
+            triage = record.get("triage", {}) if isinstance(record, dict) else {}
+            llm_d = record.get("llm_data", {}) if isinstance(record, dict) else {}
+            long_p = triage.get("long_plan") or {}
+
+            dossier_spot = (
+                triage.get("spot")
+                or triage.get("price")
+                or llm_d.get("price")
+                or record.get("bar_spot")
+                or record.get("live_spot")
+            )
+            if dossier_spot is None:
+                continue
+            try:
+                dossier_spot = float(dossier_spot)
+            except (ValueError, TypeError):
+                continue
+            if dossier_spot <= 0:
+                continue
+
+            move_pct = ((live_p - dossier_spot) / dossier_spot) * 100.0
+
+            # Stored levels
+            z = long_p.get("zone") or [None, None]
+            e_high = z[1] if isinstance(z, (list, tuple)) and len(z) > 1 else long_p.get("entry_high")
+            stop = long_p.get("stop")
+            target_1 = long_p.get("target") or long_p.get("target_1")
+            setup_lane = triage.get("setup_lane") or llm_d.get("setup_lane") or "MOMENTUM_BREAKOUT"
+            lane_label = "MEASURED" if setup_lane in ("CODE20", "RR_SETUP", "RSI2") else "UNMEASURED"
+
+            # Check mover conditions:
+            # 1. Price moved >= 3.0% from dossier spot
+            # 2. Or price broke above zone top
+            is_mover = False
+            mover_reason = ""
+            if move_pct >= 3.0:
+                is_mover = True
+                mover_reason = f"+{move_pct:.1f}% from dossier spot (${dossier_spot:.2f})"
+            elif e_high is not None and live_p > float(e_high):
+                is_mover = True
+                mover_reason = f"broke zone top (${float(e_high):.2f})"
+
+            if is_mover:
+                triggered_movers.append({"symbol": sym, "move_pct": move_pct, "live_price": live_p, "reason": mover_reason})
+
+                # Compute tactical R:R at live price
+                rr_str = "N/A"
+                if stop and target_1 and live_p > float(stop):
+                    try:
+                        live_rr = (float(target_1) - live_p) / (live_p - float(stop))
+                        rr_str = f"{live_rr:.2f}@mkt"
+                    except Exception:
+                        pass
+
+                levels_str = ""
+                if stop and target_1:
+                    levels_str = f" | stop ${float(stop):.2f} | T1 ${float(target_1):.2f} | R:R at live price {rr_str}"
+
+                msg = (
+                    f"MOVING: {sym} +{move_pct:.1f}% since dossier, now ${live_p:.2f}{levels_str} "
+                    f"| BUY 100 at market | lane {setup_lane} [{lane_label}]"
+                )
+
+                # Deduplicate push alerts per ticker per session
+                dedup_key = f"{sym}_{target_date}"
+                if dedup_key not in self.movers_alerted_today:
+                    self.movers_alerted_today.add(dedup_key)
+                    try:
+                        log_trigger_alert(sym, "MOVING", msg, live_p)
+                        logger.info(f"🚨 [ContinuousScreener] {msg}")
+                    except Exception as e_alert:
+                        logger.debug(f"[ContinuousScreener] Failed to log trigger alert: {e_alert}")
+
+                    # B3: Re-queue the name for local re-triage and mid deep research, bypassing the daily cap
+                    try:
+                        queue_for_research(
+                            symbol=sym,
+                            date_str=target_date,
+                            setup=f"MOVER_{setup_lane}",
+                            source="mover_trigger",
+                            reason=f"Live mover: {mover_reason} ({msg})",
+                            force=True,
+                        )
+                        logger.info(f"📥 [ContinuousScreener] Re-queued mover {sym} for research (bypassing daily cap).")
+                        # Dispatch into deep research slot if slot is free
+                        if self.is_slot_available():
+                            self.dispatch_candidate_research(
+                                sym, target_date, candidate_dict={
+                                    "symbol": sym,
+                                    "priority_tier": "HIGH_PRIORITY",
+                                    "priority_score": 85.0,
+                                    "price": live_p,
+                                    "side": "LONG",
+                                    "setup": f"MOVER_{setup_lane}",
+                                    "pb_funnel": True,
+                                }
+                            )
+                    except Exception as e_q:
+                        logger.debug(f"[ContinuousScreener] Failed to queue mover {sym}: {e_q}")
+
+        return triggered_movers
 
     def evaluate_and_dispatch_deep_research(
         self,

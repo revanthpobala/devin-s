@@ -176,4 +176,28 @@ def load_datawindow(ticker: str, target_date: Optional[str] = None) -> Optional[
         except Exception:
             pass
 
+    # Extract dw_bar_date and spot_age
+    dw_bar_date = None
+    for k in ["time", "date", "Date", "Time", "bar_date"]:
+        if k in dw_dict and dw_dict[k]:
+            raw_d = str(dw_dict[k]).strip()
+            if len(raw_d) >= 10 and re.match(r"^\d{4}-\d{2}-\d{2}", raw_d):
+                dw_bar_date = raw_d[:10]
+                break
+    if not dw_bar_date and target_date:
+        dw_bar_date = target_date[:10]
+    dw_dict["dw_bar_date"] = dw_bar_date
+
+    spot_age = 0
+    ref_d_str = target_date or datetime.now().strftime("%Y-%m-%d")
+    if dw_bar_date and re.match(r"^\d{4}-\d{2}-\d{2}$", dw_bar_date) and re.match(r"^\d{4}-\d{2}-\d{2}$", ref_d_str[:10]):
+        try:
+            d_bar = datetime.strptime(dw_bar_date, "%Y-%m-%d")
+            d_ref = datetime.strptime(ref_d_str[:10], "%Y-%m-%d")
+            spot_age = max(0, (d_ref - d_bar).days)
+        except Exception:
+            spot_age = 0
+    dw_dict["spot_age"] = spot_age
+
     return dw_dict
+

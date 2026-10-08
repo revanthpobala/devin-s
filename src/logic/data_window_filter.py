@@ -147,6 +147,8 @@ LANE_TO_SETUP_LANE = {
     "rsi2_setup_lane": "RSI2",
     "rr_lane_no_pb": "RR_NO_PB",
     "rr_lane_tight_stop": "RR_TIGHT_STOP",
+    "momentum_breakout_lane": "MOMENTUM_BREAKOUT",
+    "coil_compression_lane": "COIL",
 }
 
 
@@ -854,6 +856,9 @@ def run_data_window_filter(
             "rank_model_score": None,
             "bad_data": True,
             "triggers": None,
+            "setup_lane": None,
+            "lane_label": "CUT",
+            "is_measured": False,
         }
         _log_data_window_scrape(ticker, raw, verdict)
         return verdict
@@ -887,7 +892,8 @@ def run_data_window_filter(
     elif stage == 0 and not is_rsi2_setup:
         triage, reason = "CUT", "warmup_stage_0"       # no history: nothing is computable
     elif W["target"] is None and W["chased"] and not is_rsi2_setup:
-        triage, reason = "CUT", "chasing_without_target"  # no target: no plan to construct
+        # Per D2: chasing without target is no longer a CUT; clears to WATCH
+        triage, reason = "WATCH", "chasing_without_target"
     # Code 20 (REVERSAL BUY): requires at-market R:R >= 2.0 per Phase 6
     elif act_code == 20 and rr_mkt is not None and rr_mkt >= rr_pass_floor():
         triage = "PASS"
@@ -929,6 +935,47 @@ def run_data_window_filter(
     ):
         triage = "PASS"
         reason = "oversold_lane"
+    # C1/C2: MOMENTUM_BREAKOUT lane (UNMEASURED) for stage-2 names above the zone
+    elif (
+        W["side"] == "long"
+        and stage == 2
+        and price is not None
+        and (
+            (f.get("long_ztop") is not None and price > f["long_ztop"])
+            or bool(W.get("chased"))
+        )
+        and fade_long != 1.0
+        and ext_z_self < EXT_Z_SELF_MAX
+        and W.get("momentum_rr") is not None
+        and W["momentum_rr"] >= 2.0
+        and W.get("tight_stop") is not None
+        and 0 < W["tight_stop"] < price
+        and W.get("target") is not None
+        and W["target"] > price
+    ):
+        triage = "WATCH"
+        reason = "momentum_breakout_lane"
+        # WATCH-plus with real stop/target and live limit price
+        W["stop"] = W["tight_stop"]
+        f["long_stop_loss"] = W["tight_stop"]
+        f["long_entry"] = price
+        f["long_zbot"] = price
+        f["long_ztop"] = price
+        W["rr"] = W["momentum_rr"]
+    # D1: COIL detector (VST-type, UNMEASURED): stage 1/2 base compression with low IV rank + squeeze / tight range
+    elif (
+        W["side"] == "long"
+        and stage in (1, 2)
+        and (
+            (f.get("energy_ivrank") is not None and float(f.get("energy_ivrank") or 0) <= 25.0)
+            or (f.get("energy_state") in (0, 1))
+            or str(raw.get("HV20 Low (Stagnation Flag)", "0")) == "1"
+            or str(raw.get("HV20 Low Causal (Stagnation Flag)", "0")) == "1"
+            or bool(raw.get("_is_active_bb_kc_squeeze"))
+        )
+    ):
+        triage = "WATCH"
+        reason = "coil_compression_lane"
     elif no_fresh_long:
         # Negative for BUYING, but not unbuildable -- and measurably the best premium-SELLING state.
         triage = "WATCH"
@@ -1017,10 +1064,8 @@ def run_data_window_filter(
     else:
         win_prob, ev_r = None, None
 
-    if triage == "WATCH":
-        setup_lane = "WATCH_SHADOW"
-    else:
-        setup_lane = LANE_TO_SETUP_LANE.get(reason)
+    setup_lane = LANE_TO_SETUP_LANE.get(reason) or ("WATCH_SHADOW" if triage == "WATCH" else None)
+
 
     if setup_lane == "RSI2":
         if f.get("rsi2_fixed_stop") is not None:
@@ -1084,6 +1129,10 @@ def run_data_window_filter(
         "rsi2_events_pack": int(f["rsi2_events_pack"]) if f.get("rsi2_events_pack") is not None else None,
         "rsi2_setup_event": f.get("rsi2_setup_event", False),
         "rsi2_armed_event": f.get("rsi2_armed_event", False),
+        "cut_reason": reason if triage == "CUT" else None,
+        "cut_spot": price if triage == "CUT" else None,
+        "is_measured": bool(triage == "PASS"),
+        "lane_label": "MEASURED" if triage == "PASS" else ("UNMEASURED" if setup_lane in ("MOMENTUM_BREAKOUT", "COIL") else "WATCH"),
     }
 
     # Buy-Trigger Gap Engine: compute how far the current bar is from each
@@ -1093,6 +1142,33 @@ def run_data_window_filter(
         verdict["triggers"] = compute_triggers(f)
     except Exception:
         verdict["triggers"] = None
+
+    if reason == "coil_compression_lane":
+        verdict["triggers"] = verdict.get("triggers") or {}
+        verdict["triggers"].update({
+            "range_high_break": f.get("darvas_box_top") or f.get("avwap_resistance") or (round(price * 1.02, 2) if price else None),
+            "volume_pace": "1.5x avg volume",
+            "squeeze_release": True,
+        })
+
+    if reason in ("momentum_breakout_lane", "coil_compression_lane"):
+        try:
+            from src.tracking.forward_log import record_forward_observation
+            if reason == "momentum_breakout_lane":
+                record_forward_observation("MOMENTUM_BREAKOUT", ticker, {
+                    "price": price,
+                    "tight_stop": W.get("tight_stop"),
+                    "target": W.get("target"),
+                    "momentum_rr": W.get("momentum_rr"),
+                })
+            elif reason == "coil_compression_lane":
+                record_forward_observation("COIL", ticker, {
+                    "price": price,
+                    "iv_rank": iv_rank,
+                    "stage": stage,
+                })
+        except Exception:
+            pass
 
     _log_data_window_scrape(ticker, raw, verdict)
     return verdict

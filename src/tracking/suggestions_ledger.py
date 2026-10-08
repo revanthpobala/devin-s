@@ -305,6 +305,8 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
             ("r_net", "REAL"),
             ("mae_r", "REAL"),
             ("scored_at", "TEXT"),
+            ("live_spot", "REAL"),
+            ("move_since_bar_pct", "REAL"),
         ]:
             try:
                 cursor.execute(f"ALTER TABLE suggestions ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -390,6 +392,8 @@ def append_suggestion(data: Dict[str, Any]) -> int:
     gate_reasons = data.get("gate_reasons")
     notes = data.get("notes") or data.get("triage_reason") or ""
 
+    live_spot = _to_num(data.get("live_spot"))
+    move_since_bar_pct = _to_num(data.get("move_since_bar_pct"), allow_negative=True)
     report_hash = data.get("report_hash") or _compute_hash(
         ticker, date_str, source,
         entry_low or 0.0, entry_high or 0.0, stop or 0.0, target_1 or 0.0, target_2 or 0.0
@@ -409,8 +413,8 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     taken, your_fill, notes, is_modeled, gate_status, gate_reasons,
                     verdict, setup_lane, kind, rr_at_market_at_signal, spot_at_signal,
                     lane_prior_win, lane_prior_ev, pb_funnel,
-                    signal_pack, fade, ext_z, stop_width_atr, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    signal_pack, fade, ext_z, stop_width_atr, live_spot, move_since_bar_pct, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ticker, date, source) DO UPDATE SET
                     report_hash=excluded.report_hash,
                     side=excluded.side,
@@ -441,6 +445,8 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                     fade=COALESCE(excluded.fade, suggestions.fade),
                     ext_z=COALESCE(excluded.ext_z, suggestions.ext_z),
                     stop_width_atr=COALESCE(excluded.stop_width_atr, suggestions.stop_width_atr),
+                    live_spot=COALESCE(excluded.live_spot, suggestions.live_spot),
+                    move_since_bar_pct=COALESCE(excluded.move_since_bar_pct, suggestions.move_since_bar_pct),
                     fill_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_date END,
                     fill_price=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.fill_price END,
                     exit_date=CASE WHEN (suggestions.side IS NOT excluded.side OR suggestions.entry_type IS NOT excluded.entry_type OR suggestions.entry_low IS NOT excluded.entry_low OR suggestions.entry_high IS NOT excluded.entry_high OR suggestions.stop IS NOT excluded.stop OR suggestions.target_1 IS NOT excluded.target_1 OR suggestions.target_2 IS NOT excluded.target_2 OR suggestions.breakout_level IS NOT excluded.breakout_level) THEN NULL ELSE suggestions.exit_date END,

@@ -24,6 +24,13 @@ from src.logic.data_window_filter import LANE_PRIORS, _ACTION_CODES
 # `prior` is (win %, R). None means there is no measurement, and the row is tagged accordingly
 # rather than inheriting an unrelated lane's numbers.
 _NAME_MAP: Tuple[Tuple[str, Optional[int], Optional[str], str, Optional[Tuple[float, float]]], ...] = (
+    ("rr_setup_strong", None, "RR_SETUP_STRONG", "measured", LANE_PRIORS.get("rr_at_market_lane_strong")),
+    ("rr_setup", None, "RR_SETUP", "measured", LANE_PRIORS.get("rr_at_market_lane")),
+    ("rr_no_pb", None, "RR_NO_PB", "watch only", None),
+    ("rr_tight_stop", None, "RR_TIGHT_STOP", "watch only", None),
+    ("code20", 20, "CODE20", "measured", LANE_PRIORS.get("reversal_buy_lane")),
+    ("momentum_breakout", None, "MOMENTUM_BREAKOUT", "unmeasured", None),
+    ("coil", None, "COIL", "unmeasured", None),
     ("a+ trend", None, None, "unmeasured", None),
     ("early action", 2, None, "no edge", None),
     ("prime", 1, None, "unmeasured", None),
@@ -47,6 +54,7 @@ _NAME_MAP: Tuple[Tuple[str, Optional[int], Optional[str], str, Optional[Tuple[fl
     ("screen block", 19, None, "excluded", None),
     ("counter-trend", 14, None, "excluded", None),
 )
+
 
 # Codes 1-4 are CONFIRMED actionable entries, but only ACTION (2) has been measured and it
 # measured flat. The badge says so instead of implying an edge.

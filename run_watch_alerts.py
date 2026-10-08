@@ -561,7 +561,9 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                                 opt_line = f"OPTION: {struct} {strikes_str} {exp} {prem_str}".strip()
 
                             rr_val = eval_res.get("live_rr") or 0.0
-                            msg = f"BUY 100 {ticker} at market ~${live_price:.2f} | stop ${eval_res['tactical_stop']:.2f} | T1 ${eval_res['target_1']:.2f} | R:R {rr_val:.2f}@mkt"
+                            lane_val = t.get("setup_lane") or t.get("lane") or "RR_SETUP"
+                            lane_lbl = "MEASURED" if lane_val in ("CODE20", "RR_SETUP", "RSI2") else "UNMEASURED"
+                            msg = f"BUY 100 {ticker} at market ~${live_price:.2f} | stop ${eval_res['tactical_stop']:.2f} | T1 ${eval_res['target_1']:.2f} | R:R {rr_val:.2f}@mkt | lane {lane_val} [{lane_lbl}]"
                             if opt_line:
                                 msg += f"\n{opt_line}"
 

@@ -51,12 +51,14 @@ def check_geometry(
     stop: float,
     t1: float,
     t2: float = 0.0,
+    spot: float = 0.0,
 ) -> List[str]:
     """Return reasons for bad underlying geometry.
 
     LONG only. Effective entry = breakout_level if BREAKOUT else (entry_low, entry_high).
     Required ordering: stop < eff_low <= eff_high < t1 (<= t2 if t2 > 0).
     All required levels must be strictly positive.
+    Rejects degenerate zones where entry_low == entry_high == spot.
     """
     reasons: List[str] = []
     side = (side or "LONG").upper()
@@ -85,6 +87,9 @@ def check_geometry(
         reasons.append(f"target_1 must be > 0, got {t1}")
 
     if not reasons:
+        # A3: Reject degenerate zones where entry_low == entry_high == spot
+        if entry_type != "BREAKOUT" and spot > 0 and abs(eff_low - eff_high) < 1e-4 and abs(eff_low - spot) < 0.01:
+            reasons.append(f"degenerate zone (entry_low == entry_high == spot ${spot:.2f})")
         if not (stop < eff_low <= eff_high < t1):
             if stop >= eff_low:
                 reasons.append(f"stop ${stop:.4f} >= entry_low ${eff_low:.4f}")
@@ -271,7 +276,14 @@ def validate_levels(
         reasons.append("SHORT side rejected — measured edge is long-only post-COVID")
         return False, reasons
 
-    # ── 1. Level ordering ──────────────────────────────────────
+    # ── 1. Level ordering & geometry ───────────────────────────
+    spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
+    if spot <= 0:
+        try:
+            spot = float(plan.get("spot") or plan.get("price") or 0.0)
+        except (ValueError, TypeError):
+            spot = 0.0
+
     geo_reasons = check_geometry(
         side=side,
         entry_type=entry_type,
@@ -281,6 +293,7 @@ def validate_levels(
         stop=stop,
         t1=target_1,
         t2=target_2,
+        spot=spot,
     )
     reasons.extend(geo_reasons)
 
@@ -313,13 +326,6 @@ def validate_levels(
     is_measured_pine = setup_lane in ("RR_SETUP", "RR_SETUP_STRONG", "CODE20", "OVERSOLD")
     is_rsi2 = (setup_lane == "RSI2")
     is_measured_lane = is_measured_pine or is_rsi2
-
-    spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
-    if spot <= 0:
-        try:
-            spot = float(plan.get("spot") or plan.get("price") or 0.0)
-        except (ValueError, TypeError):
-            spot = 0.0
 
     # ── 3. Stop placement & geometry ──────────────────────────
     if has_shares_entry and is_measured_pine:

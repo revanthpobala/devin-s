@@ -4,6 +4,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from src import config
 from src.clients.news_client import get_ticker_news
@@ -125,6 +126,213 @@ def safe_float(val, default=0.0):
 def _next_earnings_days(ticker: str):
     from src.clients.earnings_client import get_next_earnings_days
     return get_next_earnings_days(ticker)
+
+
+def _find_prior_dossier_spot(ticker: str, today_str: str) -> Optional[float]:
+    """Find the most recent spot price from a prior dossier before today_str."""
+    safe_ticker = ticker.replace(":", "_").upper()
+    try:
+        base_dir = config.BASE_DIR / "data"
+        candidates = []
+        for d in (base_dir / "triage", base_dir / "raw"):
+            if not d.exists():
+                continue
+            for date_dir in d.iterdir():
+                if date_dir.is_dir() and date_dir.name < today_str and len(date_dir.name) == 10:
+                    th = date_dir / safe_ticker / f"{safe_ticker}_thesis.json"
+                    if not th.exists():
+                        th = date_dir / f"{safe_ticker}_thesis.json"
+                    if not th.exists():
+                        th = date_dir / f"{safe_ticker}_triage.json"
+                    if th.exists():
+                        candidates.append((date_dir.name, th))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, latest_path = candidates[0]
+        with open(latest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        triage = data.get("triage", {}) if isinstance(data, dict) else {}
+        spot = triage.get("spot") or triage.get("price")
+        if spot is None and isinstance(data, dict) and "llm_data" in data:
+            spot = data["llm_data"].get("price") or data["llm_data"].get("spot")
+        if spot is None and isinstance(data, dict) and "spot_at_signal" in data:
+            spot = data.get("spot_at_signal")
+        return float(spot) if spot is not None else None
+    except Exception as e:
+        logger.debug(f"Error finding prior dossier spot for {ticker}: {e}")
+        return None
+
+
+def _is_bar_older_than_last_daily_bar(bar_date_str: str, today_str: str) -> bool:
+    """Check if the bar date is older than the last completed daily bar."""
+    try:
+        from datetime import date, timedelta
+        b_dt = datetime.strptime(bar_date_str[:10], "%Y-%m-%d").date()
+        t_dt = datetime.strptime(today_str[:10], "%Y-%m-%d").date()
+        if b_dt >= t_dt:
+            return False
+        cur = t_dt - timedelta(days=1)
+        while cur.weekday() >= 5:  # skip weekends
+            cur -= timedelta(days=1)
+        return b_dt < cur
+    except Exception:
+        return False
+
+
+def _check_data_staleness_and_live_quote(ticker: str, data_window: dict, today_str: str) -> dict:
+    """Stamp triage with dw_bar_date and spot_age; detect staleness; fetch live quote."""
+    dw_bar_date = None
+    if data_window:
+        dw_bar_date = (
+            data_window.get("dw_bar_date")
+            or data_window.get("bar_date")
+            or data_window.get("date")
+            or data_window.get("time")
+            or data_window.get("Date")
+        )
+    if dw_bar_date and isinstance(dw_bar_date, str) and len(dw_bar_date) >= 10:
+        dw_bar_date = dw_bar_date[:10]
+    else:
+        dw_bar_date = today_str
+
+    spot_age = 0
+    try:
+        b_dt = datetime.strptime(dw_bar_date, "%Y-%m-%d").date()
+        t_dt = datetime.strptime(today_str, "%Y-%m-%d").date()
+        spot_age = max(0, (t_dt - b_dt).days)
+    except Exception:
+        spot_age = 0
+
+    bar_spot = None
+    if data_window:
+        for k in ("close", "Close", "price", "spot", "C"):
+            if data_window.get(k) is not None:
+                try:
+                    bar_spot = float(data_window[k])
+                    break
+                except Exception:
+                    pass
+
+    prior_spot = _find_prior_dossier_spot(ticker, today_str)
+    spot_equals_prior = (
+        bar_spot is not None
+        and prior_spot is not None
+        and abs(bar_spot - prior_spot) < 1e-3
+    )
+
+    is_older = _is_bar_older_than_last_daily_bar(dw_bar_date, today_str)
+    stale_reasons = []
+    if is_older:
+        stale_reasons.append(f"bar_{dw_bar_date}_older_than_last_daily")
+    if spot_equals_prior:
+        stale_reasons.append(f"spot_{bar_spot}_equals_prior_spot_{prior_spot}")
+
+    stale_data = bool(stale_reasons)
+
+    live_spot = None
+    move_since_bar_pct = None
+    try:
+        from src.clients.price_client import get_current_price
+        live_spot = get_current_price(ticker)
+        if live_spot is not None and bar_spot is not None and bar_spot > 0:
+            move_since_bar_pct = round(((live_spot - bar_spot) / bar_spot) * 100.0, 2)
+    except Exception as e:
+        logger.debug(f"Failed to fetch live quote for {ticker}: {e}")
+
+    return {
+        "dw_bar_date": dw_bar_date,
+        "spot_age": spot_age,
+        "bar_spot": bar_spot,
+        "prior_spot": prior_spot,
+        "stale_data": stale_data,
+        "stale_reasons": stale_reasons,
+        "live_spot": live_spot,
+        "move_since_bar_pct": move_since_bar_pct,
+    }
+
+
+def _sanitize_degenerate_levels(plan: dict, spot: Optional[float]) -> tuple:
+    """Reject degenerate zones: if entry_low == entry_high == spot, set levels to None and tag no_levels."""
+    if not isinstance(plan, dict):
+        return plan, False
+    z = plan.get("zone")
+    low = None
+    high = None
+    if isinstance(z, (list, tuple)) and len(z) >= 2:
+        low, high = z[0], z[1]
+    if low is None:
+        low = plan.get("entry_low") or plan.get("entry_zone_low")
+    if high is None:
+        high = plan.get("entry_high") or plan.get("entry_zone_high")
+
+    if low is not None and high is not None and spot is not None:
+        try:
+            f_low, f_high, f_spot = float(low), float(high), float(spot)
+            if abs(f_low - f_high) < 1e-4 and abs(f_low - f_spot) < 1e-4:
+                sanitized = dict(plan)
+                sanitized["zone"] = [None, None]
+                sanitized["entry_low"] = None
+                sanitized["entry_high"] = None
+                sanitized["entry_zone_low"] = None
+                sanitized["entry_zone_high"] = None
+                sanitized["stop"] = None
+                sanitized["target"] = None
+                sanitized["target_2"] = None
+                sanitized["no_levels"] = True
+                return sanitized, True
+        except (ValueError, TypeError):
+            pass
+    return plan, False
+
+
+def _sanitize_llm_cut_verdict(
+    llm_verdict: str,
+    triage_dict: dict,
+    flags: list,
+    earnings_gate: str,
+    iv_rank: Optional[float] = None,
+    squeeze_on: bool = False,
+) -> tuple:
+    """D2: CUT is reserved for toxic geometry, warmup, delisted/test, and earnings inside blackout.
+    The local LLM may lower conviction but cannot delete/CUT a name on stagnation/no-catalyst.
+    """
+    if str(llm_verdict).upper() != "CUT":
+        return llm_verdict, None
+
+    flags_set = set(str(f).lower() for f in (flags or []))
+    act_code = triage_dict.get("action") or triage_dict.get("act_code")
+    reason = str(triage_dict.get("reason") or "").lower()
+    stage = triage_dict.get("stage")
+
+    is_toxic = (
+        act_code == 18
+        or "toxic_risk_geometry" in reason
+        or "stop_above_entry_long" in reason
+        or "stop_below_entry_short" in reason
+        or "toxic_geometry" in flags_set
+    )
+    is_warmup = (
+        stage == 0
+        or "warmup" in reason
+        or "warmup" in flags_set
+    )
+    is_delisted = "delisted" in flags_set or "test_symbol" in flags_set
+    is_earnings = earnings_gate == "FAIL"
+
+    if is_toxic:
+        return "CUT", "toxic_risk_geometry"
+    if is_warmup:
+        return "CUT", "stage_0_warmup"
+    if is_delisted:
+        return "CUT", "delisted_or_test"
+    if is_earnings:
+        return "CUT", "earnings_inside_blackout"
+
+    # Not a genuine CUT case -> local LLM tried to cut on stagnation / dead chart / no catalyst
+    if (iv_rank is not None and iv_rank <= 25) or squeeze_on or "stagnation" in flags_set or "no_edge" in flags_set:
+        return "WATCH", "coil_compression_not_cut"
+    return "WATCH", "downgraded_from_cut_no_catalyst"
 
 
 def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days: int = 90,
@@ -369,6 +577,42 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     from src.logic.data_window_filter import triage_ticker
 
     triage = triage_ticker(ticker, data_window, realvol_10d=realvol_10d, ret_10d=ret_10d)
+    staleness_info = _check_data_staleness_and_live_quote(ticker, data_window, today_str)
+    dw_bar_date = staleness_info["dw_bar_date"]
+    spot_age = staleness_info["spot_age"]
+    stale_data = staleness_info["stale_data"]
+    live_spot = staleness_info["live_spot"]
+    move_since_bar_pct = staleness_info["move_since_bar_pct"]
+    bar_spot = staleness_info["bar_spot"]
+
+    triage["dw_bar_date"] = dw_bar_date
+    triage["spot_age"] = spot_age
+    triage["stale_data"] = stale_data
+    triage["live_spot"] = live_spot
+    triage["move_since_bar_pct"] = move_since_bar_pct
+
+    # Degenerate zone check
+    if triage.get("long_plan"):
+        triage["long_plan"], degen = _sanitize_degenerate_levels(triage["long_plan"], bar_spot)
+        if degen:
+            triage["no_levels"] = True
+            flags_list = list(triage.get("flags") or [])
+            if "no_levels" not in flags_list:
+                flags_list.append("no_levels")
+            triage["flags"] = flags_list
+
+    # A1: If Data Window bar is older than last completed daily bar or spot equals prior dossier spot,
+    # mark stale_data and do NOT CUT or score on it.
+    if stale_data:
+        flags_list = list(triage.get("flags") or [])
+        if "stale_data" not in flags_list:
+            flags_list.append("stale_data")
+        triage["flags"] = flags_list
+        if triage.get("triage") == "CUT":
+            triage["triage"] = "WATCH"
+            triage["reason"] = "stale_data"
+            triage["conviction"] = None
+
     sentiment = triage.get("sentiment", {})
     # News at prefilter time: we first check the gate using cheap headline sentiment.
     news_negative = bool(triage.get("news_negative"))
@@ -442,6 +686,13 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         "structure_strikes": triage.get("structure_strikes"),
         "iv_rank": triage.get("iv_rank"),
         "triggers": triage.get("triggers"),
+        "dw_bar_date": dw_bar_date,
+        "spot_age": spot_age,
+        "stale_data": stale_data,
+        "live_spot": live_spot,
+        "move_since_bar_pct": move_since_bar_pct,
+        "cut_reason": triage.get("cut_reason"),
+        "cut_spot": triage.get("cut_spot"),
     }
     if quality_pass and not send:
         compact["triage"] = "WATCH"
@@ -461,6 +712,13 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         "triage": triage,
         "social_sentiment": {},
         "thesis_json": str(thesis_json_path),
+        "dw_bar_date": dw_bar_date,
+        "spot_age": spot_age,
+        "stale_data": stale_data,
+        "live_spot": live_spot,
+        "move_since_bar_pct": move_since_bar_pct,
+        "cut_reason": triage.get("cut_reason"),
+        "cut_spot": triage.get("cut_spot"),
     }
     try:
         with open(thesis_json_path, "w", encoding="utf-8") as f:
@@ -553,6 +811,8 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "kind": "NEW",
                 "atr_at_signal": atr_val,
                 "spot_at_signal": spot_val,
+                "live_spot": live_spot,
+                "move_since_bar_pct": move_since_bar_pct,
                 "rr_at_market_at_signal": float(triage["rr_at_market"]) if triage.get("rr_at_market") is not None else None,
                 "lane_prior_win": triage.get("lane_prior_win"),
                 "lane_prior_ev": triage.get("lane_prior_ev"),
@@ -899,6 +1159,42 @@ def generate_thesis_task(
     from src.logic.data_window_filter import triage_ticker
 
     triage = triage_ticker(ticker, data_window, realvol_10d=realvol_10d, ret_10d=ret_10d)
+    staleness_info = _check_data_staleness_and_live_quote(ticker, data_window, today_str)
+    dw_bar_date = staleness_info["dw_bar_date"]
+    spot_age = staleness_info["spot_age"]
+    stale_data = staleness_info["stale_data"]
+    live_spot = staleness_info["live_spot"]
+    move_since_bar_pct = staleness_info["move_since_bar_pct"]
+    bar_spot = staleness_info["bar_spot"]
+
+    triage["dw_bar_date"] = dw_bar_date
+    triage["spot_age"] = spot_age
+    triage["stale_data"] = stale_data
+    triage["live_spot"] = live_spot
+    triage["move_since_bar_pct"] = move_since_bar_pct
+
+    # Degenerate zone check
+    if triage.get("long_plan"):
+        triage["long_plan"], degen = _sanitize_degenerate_levels(triage["long_plan"], bar_spot)
+        if degen:
+            triage["no_levels"] = True
+            flags_list = list(triage.get("flags") or [])
+            if "no_levels" not in flags_list:
+                flags_list.append("no_levels")
+            triage["flags"] = flags_list
+
+    # A1: If Data Window bar is older than last completed daily bar or spot equals prior dossier spot,
+    # mark stale_data and do NOT CUT or score on it.
+    if stale_data:
+        flags_list = list(triage.get("flags") or [])
+        if "stale_data" not in flags_list:
+            flags_list.append("stale_data")
+        triage["flags"] = flags_list
+        if triage.get("triage") == "CUT":
+            triage["triage"] = "WATCH"
+            triage["reason"] = "stale_data"
+            triage["conviction"] = None
+
     sentiment = triage.get("sentiment", {})
     logger.info(
         f"[ThesisWorker-{worker_id}] Pre-filter {ticker}: triage={triage['triage']} "
@@ -936,6 +1232,13 @@ def generate_thesis_task(
             "structure_strikes": triage.get("structure_strikes"),
             "iv_rank": triage.get("iv_rank"),
             "triggers": triage.get("triggers"),
+            "dw_bar_date": dw_bar_date,
+            "spot_age": spot_age,
+            "stale_data": stale_data,
+            "live_spot": live_spot,
+            "move_since_bar_pct": move_since_bar_pct,
+            "cut_reason": triage.get("cut_reason"),
+            "cut_spot": triage.get("cut_spot"),
         }
         # NOTE: no _thesis.md is written (markdown generation removed); the
         # canonical record is the _thesis.json below.
@@ -950,6 +1253,13 @@ def generate_thesis_task(
             "av_earnings": {},
             "triage": triage,
             "thesis_json": str(thesis_json_path),
+            "dw_bar_date": dw_bar_date,
+            "spot_age": spot_age,
+            "stale_data": stale_data,
+            "live_spot": live_spot,
+            "move_since_bar_pct": move_since_bar_pct,
+            "cut_reason": triage.get("cut_reason"),
+            "cut_spot": triage.get("cut_spot"),
         }
         try:
             with open(thesis_json_path, "w", encoding="utf-8") as f:
@@ -1468,6 +1778,41 @@ Output:
     llm_json["structure"] = triage.get("structure")
     llm_json["structure_strikes"] = triage.get("structure_strikes")
     llm_json["iv_rank"] = triage.get("iv_rank")
+
+    # D2: Restrict LLM CUTs: LLM cannot delete/cut on stagnation or no-catalyst
+    raw_llm_triage = llm_json.get("triage")
+    if raw_llm_triage:
+        iv_r = triage.get("iv_rank")
+        sq_on = bool(data_window.get("_is_active_bb_kc_squeeze"))
+        san_triage, cut_reas = _sanitize_llm_cut_verdict(
+            raw_llm_triage,
+            triage,
+            llm_json.get("key_flags") or [],
+            earnings_gate,
+            iv_rank=iv_r,
+            squeeze_on=sq_on,
+        )
+        llm_json["triage"] = san_triage
+        if san_triage == "CUT":
+            triage["cut_reason"] = cut_reas
+            triage["cut_spot"] = current_price or bar_spot
+            llm_json["cut_reason"] = cut_reas
+            llm_json["cut_spot"] = current_price or bar_spot
+        elif raw_llm_triage == "CUT" and san_triage == "WATCH":
+            llm_json["cut_overruled"] = True
+            llm_json["cut_overruled_reason"] = cut_reas
+            if cut_reas == "coil_compression_not_cut":
+                triage["setup_lane"] = "COIL"
+                llm_json["setup_lane"] = "COIL"
+
+    llm_json["dw_bar_date"] = dw_bar_date
+    llm_json["spot_age"] = spot_age
+    llm_json["stale_data"] = stale_data
+    llm_json["live_spot"] = live_spot
+    llm_json["move_since_bar_pct"] = move_since_bar_pct
+    llm_json["cut_reason"] = triage.get("cut_reason")
+    llm_json["cut_spot"] = triage.get("cut_spot")
+
     if quality_pass and not send:
         llm_json["triage"] = "WATCH"
         if earnings_gate == "FAIL":
@@ -1509,6 +1854,13 @@ Output:
         "social_sentiment": social_sentiment,
         "thesis_json": str(thesis_json_path),
         "user_position": None,
+        "dw_bar_date": dw_bar_date,
+        "spot_age": spot_age,
+        "stale_data": stale_data,
+        "live_spot": live_spot,
+        "move_since_bar_pct": move_since_bar_pct,
+        "cut_reason": triage.get("cut_reason"),
+        "cut_spot": triage.get("cut_spot"),
     }
 
     try:

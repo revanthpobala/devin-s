@@ -367,7 +367,7 @@ def run_local_research(
     # Determine the full set of tickers that SHOULD be in each folder this run,
     # then drop any stale artifacts left over from a previous --regenerate run so
     # the folder never shows names the current run did not flag.
-    # The deep-research folder is CAPPED at DEEP_RESEARCH_CAP (default 8): only
+    # The deep-research folder is CAPPED at DEEP_RESEARCH_CAP (default 35): only
     # the top-N candidates by deep_research_sort_key are kept. This matches the
     # cap the PAID pass (deep_research.py) applies before calling Minimax, so the
     # _DEEP_RESEARCH folder holds exactly the tickers that will actually be

@@ -4,8 +4,9 @@ from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import logging
 import sqlite3
-
+import json
 import re
+from src import config
 from src.tracking.watch_manager import _get_connection, _db_lock
 from src.tracking.alert_db import (
     DB_PATH,
@@ -294,19 +295,39 @@ def get_today():
 
                     job = job_map.get(sym)
                     has_real_deep = _has_deep_report(sym, today_str)
+                    local_dec_raw = (local.get("llm_decision") or "").upper()
                     if job:
                         job_st = job.get("job_status", "none")
                         job_stage = job.get("stage", "none")
                         if job_st == "COMPLETED" and (job_stage == "LOCAL_DONE" or not has_real_deep):
-                            r["deep_status"] = "skipped" if job_stage == "LOCAL_DONE" else "none"
+                            if "CUT" in local_dec_raw or "SKIP" in local_dec_raw:
+                                r["deep_status"] = "CUT_BY_LOCAL"
+                            elif "WATCH" in local_dec_raw:
+                                r["deep_status"] = "WATCH_NO_DEEP"
+                            else:
+                                r["deep_status"] = "DEEP_CAP_DEFERRED"
                         else:
                             r["deep_status"] = job_st
                         r["deep_stage"] = job_stage
                         r["deep_stage_detail"] = job.get("stage_detail", "")
                     else:
-                        r["deep_status"] = "COMPLETED" if has_real_deep else "none"
-                        r["deep_stage"] = "DONE" if has_real_deep else "none"
+                        if has_real_deep:
+                            r["deep_status"] = "COMPLETED"
+                            r["deep_stage"] = "DONE"
+                        elif "CUT" in local_dec_raw or "SKIP" in local_dec_raw:
+                            r["deep_status"] = "CUT_BY_LOCAL"
+                            r["deep_stage"] = "LOCAL_DONE"
+                        elif "WATCH" in local_dec_raw:
+                            r["deep_status"] = "WATCH_NO_DEEP"
+                            r["deep_stage"] = "LOCAL_DONE"
+                        elif "PASS" in local_dec_raw:
+                            r["deep_status"] = "AWAITING_QUEUE"
+                            r["deep_stage"] = "LOCAL_DONE"
+                        else:
+                            r["deep_status"] = "none"
+                            r["deep_stage"] = "none"
                         r["deep_stage_detail"] = ""
+
 
                     entry_h = r.get("entry_high") or 0.0
                     entry_l = r.get("entry_low") or 0.0
@@ -444,6 +465,18 @@ def get_today():
                     r["setup"] = local.get("setup") or r.get("setup") or ""
                     r["llm_playbook"] = local.get("llm_playbook") or r.get("llm_playbook") or ""
 
+                    # Task A3: Ran since CUT / WATCH check (>1 ATR move since triage price)
+                    triage_px = float(local.get("alert_price") or local.get("market_price") or r.get("alert_price") or r.get("entry_high") or 0.0)
+                    atr_val = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else None
+                    if last_px and triage_px > 0 and atr_val and atr_val > 0:
+                        delta_p = last_px - triage_px
+                        if abs(delta_p) >= atr_val:
+                            pct_move = (delta_p / triage_px) * 100.0
+                            sign_str = "+" if pct_move >= 0 else ""
+                            dec_label = "CUT" if "CUT" in local_dec else ("WATCH" if "WATCH" in local_dec else "TRIAGE")
+                            r["ran_since_cut"] = f"ran since {dec_label} {sign_str}{pct_move:.1f}%"
+                            r["needs_retriage"] = True
+
                     if "PASS" in local_dec:
                         if not r["measured"]:
                             # Fails actionable gate -> unmeasured group
@@ -476,9 +509,21 @@ def get_today():
                     job_stg = job.get("stage", "none")
                     has_real_deep = _has_deep_report(sym, today_str)
                     if deep_st == "COMPLETED" and (job_stg == "LOCAL_DONE" or not has_real_deep):
-                        deep_st = "skipped" if job_stg == "LOCAL_DONE" else "none"
+                        if "CUT" in local_dec or "SKIP" in local_dec:
+                            deep_st = "CUT_BY_LOCAL"
+                        elif "WATCH" in local_dec:
+                            deep_st = "WATCH_NO_DEEP"
+                        else:
+                            deep_st = "DEEP_CAP_DEFERRED"
                     elif has_real_deep and deep_st == "none":
                         deep_st = "COMPLETED"
+                    elif deep_st == "none":
+                        if "CUT" in local_dec or "SKIP" in local_dec:
+                            deep_st = "CUT_BY_LOCAL"
+                        elif "WATCH" in local_dec:
+                            deep_st = "WATCH_NO_DEEP"
+                        elif "PASS" in local_dec:
+                            deep_st = "AWAITING_QUEUE"
 
                     item = {
                         "ticker": local.get("ticker") or sym.upper(),
@@ -536,13 +581,28 @@ def get_today():
                     j_stg = job.get("stage", "none")
                     has_real_deep = _has_deep_report(sym, today_str)
                     if j_st == "COMPLETED" and (j_stg == "LOCAL_DONE" or not has_real_deep):
-                        ib_deep_status = "skipped" if j_stg == "LOCAL_DONE" else "none"
+                        if "CUT" in (local.get("llm_decision") or "").upper():
+                            ib_deep_status = "CUT_BY_LOCAL"
+                        elif "WATCH" in (local.get("llm_decision") or "").upper():
+                            ib_deep_status = "WATCH_NO_DEEP"
+                        else:
+                            ib_deep_status = "DEEP_CAP_DEFERRED"
                     elif has_real_deep and j_st == "none":
                         ib_deep_status = "COMPLETED"
+                    elif j_st == "none":
+                        if "CUT" in (local.get("llm_decision") or "").upper():
+                            ib_deep_status = "CUT_BY_LOCAL"
+                        elif "WATCH" in (local.get("llm_decision") or "").upper():
+                            ib_deep_status = "WATCH_NO_DEEP"
+                        elif "PASS" in (local.get("llm_decision") or "").upper():
+                            ib_deep_status = "AWAITING_QUEUE"
+                        else:
+                            ib_deep_status = "none"
                     else:
                         ib_deep_status = j_st
-                    setup_name = local.get("setup") or ""
+                    setup_name = (s_match["setup_lane"] if s_match and s_match["setup_lane"] else None) or local.get("setup") or ""
                     lane_map = inbox_row_mapping(setup_name)
+
                     inbox.append({
                         "ticker": local.get("ticker") or sym.upper(),
                         "date": local.get("date") or today_str,
@@ -637,6 +697,15 @@ def get_today():
                     "below_bar_count": sum(
                         1 for r in unmeasured if r.get("unmeasured_reason") == "below_bar"
                     ),
+                    "funnel": {
+                        "alerts": len(alert_map),
+                        "local_done": sum(1 for a in alert_map.values() if a.get("llm_decision")),
+                        "local_pass": sum(1 for a in alert_map.values() if "PASS" in (a.get("llm_decision") or "").upper()),
+                        "measured": len(actionable) + len(stalking) + len(needs_you),
+                        "deep_queued": sum(1 for j in job_map.values() if j.get("job_status") in ("QUEUED", "RUNNING")),
+                        "deep_done": sum(1 for sym in alert_map.keys() if _has_deep_report(sym, today_str)),
+                        "actionable": len(actionable),
+                    },
                     "coverage": {
                         "found_count": len(found_rows) if found_rows else 0,
                         "inbox_count": len(inbox),
@@ -654,6 +723,7 @@ def get_today():
                         "core_symbols_covered": len(core_covered),
                     },
                 }
+
 
     except Exception as e:
         import traceback
@@ -1328,6 +1398,51 @@ def get_coverage():
         deep_missing = sorted(list(local_pass_symbols - deep_done_symbols))
         deep_done_count = len(deep_done_symbols)
 
+        # Collect DEEP_CAP_DEFERRED and WATCH_NO_DEEP with reason
+        deep_cap_deferred: List[Dict[str, str]] = []
+        watch_no_deep: List[Dict[str, str]] = []
+
+        with _alert_db_lock:
+            with _get_alert_conn() as alert_conn:
+                alert_conn.row_factory = sqlite3.Row
+                ac = alert_conn.cursor()
+                ac.execute("""
+                    SELECT symbol, llm_decision, llm_playbook
+                    FROM alerts
+                    WHERE date = ?
+                """, (today_str,))
+                for row in ac.fetchall():
+                    s = (row["symbol"] or "").upper()
+                    dec = (row["llm_decision"] or "").upper()
+                    reas = (row["llm_playbook"] or "").strip()
+                    if len(reas) > 120:
+                        reas = reas[:117] + "..."
+                    has_report = _has_deep_report(s, today_str) or s in done_job_syms
+                    if "PASS" in dec and not has_report and s not in deep_queued:
+                        deep_cap_deferred.append({"ticker": s, "reason": reas or "Deferred by daily research cap"})
+                    elif "WATCH" in dec and not has_report:
+                        watch_no_deep.append({"ticker": s, "reason": reas or "Stalking watch - awaiting zone trigger"})
+
+        triage_dir = config.BASE_DIR / "data" / "triage" / today_str
+        if triage_dir.exists():
+            for th_f in triage_dir.glob("**/*_thesis.json"):
+                sym = th_f.name.replace("_thesis.json", "").upper()
+                if any(x["ticker"] == sym for x in deep_cap_deferred) or any(x["ticker"] == sym for x in watch_no_deep):
+                    continue
+                try:
+                    with open(th_f, "r", encoding="utf-8") as f:
+                        t_data = json.load(f)
+                    t_triage = t_data.get("triage", {})
+                    t_dec = (t_triage.get("triage") or "").upper()
+                    t_reas = t_triage.get("reason") or t_data.get("llm_data", {}).get("reason") or ""
+                    has_report = _has_deep_report(sym, today_str) or sym in done_job_syms
+                    if t_dec == "PASS" and not has_report and sym not in deep_queued:
+                        deep_cap_deferred.append({"ticker": sym, "reason": t_reas or "Deferred by daily research cap"})
+                    elif t_dec == "WATCH" and not has_report:
+                        watch_no_deep.append({"ticker": sym, "reason": t_reas or "Stalking watch - awaiting zone trigger"})
+                except Exception:
+                    pass
+
         return {
             "alerts": alerts_count,
             "local_done": local_done_count,
@@ -1336,10 +1451,23 @@ def get_coverage():
             "deep_queued": deep_queued,
             "deep_missing": deep_missing,
             "local_missing": local_missing,
+            "deep_cap_deferred": deep_cap_deferred,
+            "watch_no_deep": watch_no_deep,
         }
     except Exception as e:
         import traceback
         return {"error": traceback.format_exc()}
+
+
+@router.get("/missed-moves")
+def get_desk_missed_moves(min_move: float = 8.0, lookback: int = 5):
+    """G2: Endpoint for missed-moves scorecard and weekly rollup by root cause."""
+    try:
+        from src.tracking.missed_moves import get_missed_moves
+        return get_missed_moves(min_move_pct=min_move, lookback_days=lookback)
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 class FeedbackNoteUpdate(BaseModel):

@@ -948,6 +948,7 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
 
     # 2. Live Real-Time Market Quote & Exact Numerical Spot Extraction
     quote_str = ""
+    quote_src_label = "live quote"
     try:
         from src.clients.options_client import get_realtime_quote
         quote_str = get_realtime_quote(ticker_u)
@@ -970,50 +971,83 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
 
     if live_spot is None:
         try:
-            live_spot = get_current_price(ticker_u)
+            from src.clients.price_client import get_realtime_quote_data
+            qd = get_realtime_quote_data(ticker_u)
+            if qd and qd.get("last_price") and float(qd["last_price"]) > 0:
+                live_spot = float(qd["last_price"])
+                if qd.get("bid") and qd.get("ask"):
+                    bid_str, ask_str = f"${float(qd['bid']):.2f}", f"${float(qd['ask']):.2f}"
+                src_name = qd.get("source") or "FALLBACK"
+                quote_src_label = f"{src_name.lower()} quote" if "REALTIME" in src_name or "SCHWAB" in src_name else "fallback quote"
         except Exception:
             pass
 
+    if live_spot is None:
+        try:
+            live_spot = get_current_price(ticker_u)
+            quote_src_label = "fallback quote"
+        except Exception:
+            pass
+
+
     # 3. Deterministic Level Evaluation & Status
-    ez_low = shares_plan.get("entry_zone_low")
-    ez_high = shares_plan.get("entry_zone_high")
-    stop_p = shares_plan.get("tactical_stop") or invalidation_rule.get("price_level")
-    t1_p = shares_plan.get("target_1")
-    breakout_p = shares_plan.get("breakout_level")
+    def _to_float(v) -> Optional[float]:
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+    def _fmt(v: Optional[float], prefix: str = "$", default: str = "N/A") -> str:
+        if v is None:
+            return default
+        try:
+            return f"{prefix}{float(v):.2f}"
+        except (ValueError, TypeError):
+            return default
+
+    ez_low = _to_float(shares_plan.get("entry_zone_low"))
+    ez_high = _to_float(shares_plan.get("entry_zone_high"))
+    stop_p = _to_float(shares_plan.get("tactical_stop") or invalidation_rule.get("price_level"))
+    t1_p = _to_float(shares_plan.get("target_1"))
+    breakout_p = _to_float(shares_plan.get("breakout_level"))
 
     calendar_today = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
     status_badge = "📊 ACTIVE LIVE TAPE"
-    status_desc = f"Live spot: ${live_spot:.2f}" if live_spot else "Awaiting live quote"
+    status_desc = f"Live spot: {_fmt(live_spot)}" if live_spot is not None else "Awaiting live quote"
     copilot_instruction = ""
 
-    if live_spot:
-        if stop_p and live_spot <= stop_p:
+    if live_spot is not None:
+        if stop_p is not None and live_spot <= stop_p:
             status_badge = "🛑 STOP BREACHED / THESIS INVALIDATED"
-            status_desc = f"Live spot (${live_spot:.2f}) has breached the tactical stop / invalidation floor (${stop_p:.2f})."
-            copilot_instruction = f"The trade setup is INVALIDATED because live spot (${live_spot:.2f}) is at or below the stop (${stop_p:.2f}). Do not enter long."
-        elif t1_p and live_spot >= t1_p:
+            status_desc = f"Live spot ({_fmt(live_spot)}) has breached the tactical stop / invalidation floor ({_fmt(stop_p)})."
+            copilot_instruction = f"The trade setup is INVALIDATED because live spot ({_fmt(live_spot)}) is at or below the stop ({_fmt(stop_p)}). Do not enter long."
+        elif t1_p is not None and live_spot >= t1_p:
             status_badge = "🏁 TARGET 1 REACHED"
-            status_desc = f"Live spot (${live_spot:.2f}) reached Target 1 (${t1_p:.2f}). Consider taking partial profits."
-            copilot_instruction = f"Live spot (${live_spot:.2f}) is in the profit target zone (T1 ${t1_p:.2f}). Advise locking in gains or trailing stop."
-        elif ez_low and ez_high and ez_low <= live_spot <= ez_high:
+            status_desc = f"Live spot ({_fmt(live_spot)}) reached Target 1 ({_fmt(t1_p)}). Consider taking partial profits."
+            copilot_instruction = f"Live spot ({_fmt(live_spot)}) is in the profit target zone (T1 {_fmt(t1_p)}). Advise locking in gains or trailing stop."
+        elif ez_low is not None and ez_high is not None and ez_low <= live_spot <= ez_high:
             status_badge = "🎯 IN MANDATED ENTRY ZONE RIGHT NOW"
-            status_desc = f"Live spot (${live_spot:.2f}) is INSIDE the suggested entry limit zone [${ez_low:.2f} – ${ez_high:.2f}]. Orders are filling live."
-            copilot_instruction = f"The stock is ACTIVELY IN THE ENTRY ZONE (${ez_low:.2f}–${ez_high:.2f}). The pullback to ${ez_high:.2f} has already occurred. Setup is buyable/executable here with stop at ${stop_p or 'tactical stop'}."
-        elif ez_low and stop_p and stop_p < live_spot < ez_low:
+            status_desc = f"Live spot ({_fmt(live_spot)}) is INSIDE the suggested entry limit zone [{_fmt(ez_low)} – {_fmt(ez_high)}]. Orders are filling live."
+            copilot_instruction = f"The stock is ACTIVELY IN THE ENTRY ZONE ({_fmt(ez_low)}–{_fmt(ez_high)}). The pullback to {_fmt(ez_high)} has already occurred. Setup is buyable/executable here with stop at {_fmt(stop_p, default='tactical stop')}."
+        elif ez_low is not None and stop_p is not None and stop_p < live_spot < ez_low:
             dist_to_stop = ((live_spot - stop_p) / stop_p) * 100
             status_badge = "⚡ TESTING POC STRUCTURAL FLOOR (PULLBACK COMPLETE)"
-            status_desc = f"Live spot (${live_spot:.2f}) pulled back through the limit ceiling (${ez_high:.2f}) down to the structural floor (+{dist_to_stop:.1f}% above ${stop_p:.2f} stop)."
-            copilot_instruction = f"The stock HAS ALREADY PULLED BACK from ${report_spot or 'prior highs'} to ${live_spot:.2f}. It is testing the POC structural floor above the ${stop_p:.2f} stop. DO NOT tell the user to wait for a pullback to ${ez_high:.2f}—the pullback has already completed! Evaluate whether support is defending above ${stop_p:.2f}."
-        elif ez_high and live_spot > ez_high:
+            ceiling_str = _fmt(ez_high, default="entry ceiling")
+            status_desc = f"Live spot ({_fmt(live_spot)}) pulled back through the limit ceiling ({ceiling_str}) down to the structural floor (+{dist_to_stop:.1f}% above {_fmt(stop_p)} stop)."
+            copilot_instruction = f"The stock HAS ALREADY PULLED BACK from {_fmt(report_spot, default='prior highs')} to {_fmt(live_spot)}. It is testing the POC structural floor above the {_fmt(stop_p)} stop. DO NOT tell the user to wait for a pullback to {ceiling_str}—the pullback has already completed! Evaluate whether support is defending above {_fmt(stop_p)}."
+        elif ez_high is not None and live_spot > ez_high:
             dist_above = ((live_spot - ez_high) / ez_high) * 100
             status_badge = f"⏳ STALKING (+{dist_above:.1f}% ABOVE ENTRY ZONE)"
-            status_desc = f"Live spot (${live_spot:.2f}) is trading above the entry zone ceiling (${ez_high:.2f}). Awaiting pullback or breakout above ${breakout_p or 'resistance'}."
-            copilot_instruction = f"Price (${live_spot:.2f}) is currently {dist_above:.1f}% above the top of the entry zone (${ez_high:.2f}). Await pullback to ${ez_high:.2f} or breakout above ${breakout_p or 'resistance'}."
+            res_str = _fmt(breakout_p, default="resistance")
+            status_desc = f"Live spot ({_fmt(live_spot)}) is trading above the entry zone ceiling ({_fmt(ez_high)}). Awaiting pullback or breakout above {res_str}."
+            copilot_instruction = f"Price ({_fmt(live_spot)}) is currently {dist_above:.1f}% above the top of the entry zone ({_fmt(ez_high)}). Await pullback to {_fmt(ez_high)} or breakout above {res_str}."
         else:
             status_badge = "⚡ ON-DEMAND QUANTITATIVE AUDIT (QUICK RESEARCH)"
-            status_desc = f"Live spot: ${live_spot:.2f}. No prior deep research levels recorded. Live quote, options flow, and SEC metrics loaded."
+            status_desc = f"Live spot: {_fmt(live_spot)}. No prior deep research levels recorded. Live quote, options flow, and SEC metrics loaded."
             copilot_instruction = (
-                f"No prior deep research dossier exists yet for ${ticker_u}. Synthesize an immediate institutional Quick Research setup anchored on live spot (${live_spot:.2f}): "
+                f"No prior deep research dossier exists yet for ${ticker_u}. Synthesize an immediate institutional Quick Research setup anchored on live spot ({_fmt(live_spot)}): "
                 f"1) Formulate a decisive quantitative thesis (valuation, options flow, and technical posture). "
                 f"2) Establish a crisp tactical trade plan: Entry Zone, Hard Tactical Stop, and Targets (T1/T2). "
                 f"3) Recommend the highest-edge options vehicle (Bull Put credit spread, Long Call / Debit vertical, or Covered Call) with exact strikes and expiration. "
@@ -1032,22 +1066,34 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
             pass
 
     delta_str = ""
-    if live_spot and report_spot:
+    if live_spot is not None and report_spot is not None:
         d_val = live_spot - report_spot
-        d_pct = (d_val / report_spot) * 100
+        d_pct = (d_val / report_spot) * 100 if report_spot > 0 else 0.0
         sign = "+" if d_val >= 0 else ""
         delta_str = f"• **NET CHANGE SINCE REPORT:** **{sign}${d_val:.2f} ({sign}{d_pct:.2f}%)**"
 
     top_card = [
         f"### 🚨 AUTHORITATIVE LIVE REAL-TIME MARKET QUOTE & EXECUTION STATUS ({ticker_u}):",
-        f"• **CURRENT LIVE SPOT PRICE (NOW):** **${live_spot:.2f}**" if live_spot else f"• **CURRENT LIVE SPOT PRICE (NOW):** Quote Ingesting",
+        f"• **CURRENT LIVE SPOT PRICE (NOW):** **{_fmt(live_spot)}** ({quote_src_label})" if live_spot is not None else f"• **CURRENT LIVE SPOT PRICE (NOW):** Quote Ingesting",
         f"• **REAL-TIME BID / ASK:** {bid_str} / {ask_str}" if (bid_str != "N/A" and ask_str != "N/A") else "",
-        f"• **HISTORICAL REPORT BASELINE:** ${report_spot:.2f} (Compiled on {report_date or 'prior session'} {elapsed_days_str})" if report_spot else "",
+        f"• **HISTORICAL REPORT BASELINE:** {_fmt(report_spot)} (Compiled on {report_date or 'prior session'} {elapsed_days_str})" if report_spot is not None else "",
     ]
+
     if delta_str:
         top_card.append(delta_str)
-    if ez_low and ez_high:
-        top_card.append(f"• **MANDATED ENTRY ZONE:** **${ez_low:.2f} – ${ez_high:.2f}** | **TACTICAL STOP:** **${stop_p:.2f}**" + (f" | **TARGET 1:** **${t1_p:.2f}**" if t1_p else ""))
+
+    # Setup Lane & Measurement status
+    lane_str = shares_plan.get("setup_lane") or "RR_SETUP"
+    lane_label = "MEASURED" if lane_str in ("CODE20", "RR_SETUP", "RSI2") else "UNMEASURED"
+    top_card.append(f"• **SETUP LANE:** **{lane_str}** [{lane_label}]")
+
+    if ez_low is not None and ez_high is not None:
+        stop_str = f" | **TACTICAL STOP:** **{_fmt(stop_p)}**" if stop_p is not None else ""
+        t1_str = f" | **TARGET 1:** **{_fmt(t1_p)}**" if t1_p is not None else ""
+        top_card.append(f"• **MANDATED ENTRY ZONE:** **{_fmt(ez_low)} – {_fmt(ez_high)}**{stop_str}{t1_str}")
+    elif ez_low is not None:
+        stop_str = f" | **TACTICAL STOP:** **{_fmt(stop_p)}**" if stop_p is not None else ""
+        top_card.append(f"• **MANDATED ENTRY ZONE:** **{_fmt(ez_low)}**{stop_str}")
     else:
         top_card.append(f"• **MANDATED ENTRY ZONE:** Formulate On-Demand Quick Research Entry Floor")
     top_card.append(f"• **REAL-TIME EXECUTION STATUS:** **{status_badge}**")
@@ -1107,12 +1153,14 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     if quote_str:
         top_card.append(f"\n```\n{quote_str}\n```")
 
+    live_spot_display = _fmt(live_spot, default="N/A")
+    report_spot_display = _fmt(report_spot, default="historical prices")
     top_card.append(f"""
 > ⚠️ **MANDATORY INSTRUCTION FOR COPILOT / REV CHAT**:
-> 1. The **AUTHORITATIVE LIVE SPOT PRICE** right now is **${live_spot:.2f}** (NOT {f'${report_spot:.2f}' if report_spot else 'historical prices'}).
+> 1. The **AUTHORITATIVE LIVE SPOT PRICE** right now is **{live_spot_display}** (NOT {report_spot_display}).
 > 2. Any prices cited in historical dossiers below were recorded on {report_date or 'earlier dates'}. NEVER repeat historical prices as today's live spot!
 > 3. {copilot_instruction}
-> 4. All trade recommendations, options strikes, delta/gamma risk, and distance to stops MUST be computed from the LIVE SPOT PRICE of **${live_spot:.2f}**.
+> 4. All trade recommendations, options strikes, delta/gamma risk, and distance to stops MUST be computed from the LIVE SPOT PRICE of **{live_spot_display}**.
 """)
     parts.append("\n".join(l for l in top_card if l))
 
@@ -1424,7 +1472,7 @@ if not df.empty:
     # 5. Local Filesystem Research Reports
     try:
         if latest_dt:
-            spot_comp_str = f" (Spot at publication was ${report_spot:.2f} vs LIVE SPOT ${live_spot:.2f} right now)" if (report_spot and live_spot) else ""
+            spot_comp_str = f" (Spot at publication was {_fmt(report_spot)} vs LIVE SPOT {_fmt(live_spot)} right now)" if (report_spot is not None and live_spot is not None) else ""
 
             # Active Local Research Dossier (deterministic pre-filter, action codes, ponytail playbook)
             if local_dossier_md:
@@ -1453,11 +1501,13 @@ if not df.empty:
 
             # Senior PM Arbitration Directive
             if arb_file and arb_file.exists():
+                rep_spot_str = f" ({_fmt(report_spot)})" if report_spot is not None else ""
+                live_spot_str = f"**{_fmt(live_spot)}**" if live_spot is not None else "**live price**"
                 parts.append(
                     f"### ⚖️ SENIOR PM ARBITRATION DIRECTIVE ({ticker_u} — COMPILED ON {report_date}):\n"
                     f"> ⚠️ **HISTORICAL ARBITRATION DIRECTIVE FROM {report_date}**{spot_comp_str}:\n"
-                    f"> Any mention of 'current spot' in the text below refers to {report_date} (${report_spot:.2f}). "
-                    f"Today's live price is **${live_spot:.2f}**. Never quote the historical spot as current price!\n\n"
+                    f"> Any mention of 'current spot' in the text below refers to {report_date}{rep_spot_str}. "
+                    f"Today's live price is {live_spot_str}. Never quote the historical spot as current price!\n\n"
                     + arb_file.read_text(encoding='utf-8')[:3500]
                 )
 
@@ -1740,12 +1790,22 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                         f"• **{s_cand}** ({active_date} · Local Research Dossier) — Decision: **{l_wl.get('verdict', 'WATCH')}** | Conviction: **{l_wl.get('conviction', '--')}/10**",
                     ]
                     sp = l_wl.get("shares_plan") or {}
-                    if sp.get("entry_zone_low") and sp.get("entry_zone_high"):
-                        s_card.append(f"  - **Entry Zone:** ${float(sp['entry_zone_low']):.2f} – ${float(sp['entry_zone_high']):.2f}")
-                    if sp.get("tactical_stop"):
-                        s_card.append(f"  - **Tactical Stop:** ${float(sp['tactical_stop']):.2f}")
-                    if sp.get("target_1"):
-                        s_card.append(f"  - **Target 1:** ${float(sp['target_1']):.2f}")
+                    ez_l, ez_h = sp.get("entry_zone_low"), sp.get("entry_zone_high")
+                    if ez_l is not None and ez_h is not None:
+                        try:
+                            s_card.append(f"  - **Entry Zone:** ${float(ez_l):.2f} – ${float(ez_h):.2f}")
+                        except (ValueError, TypeError):
+                            pass
+                    if sp.get("tactical_stop") is not None:
+                        try:
+                            s_card.append(f"  - **Tactical Stop:** ${float(sp['tactical_stop']):.2f}")
+                        except (ValueError, TypeError):
+                            pass
+                    if sp.get("target_1") is not None:
+                        try:
+                            s_card.append(f"  - **Target 1:** ${float(sp['target_1']):.2f}")
+                        except (ValueError, TypeError):
+                            pass
                     op = l_wl.get("options_plan") or {}
                     if op.get("structure"):
                         s_card.append(f"  - **Structure:** {op['structure']}")

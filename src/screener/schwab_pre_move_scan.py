@@ -1227,7 +1227,7 @@ def _register_slot(t_date: str, selected: List[Dict[str, Any]]) -> str:
     return job_id
 
 
-def _dispatch_eligible(cand: Dict[str, Any]) -> Tuple[bool, str]:
+def _dispatch_eligible(cand: Dict[str, Any], require_pb: bool = False) -> Tuple[bool, str]:
     """(eligible, basis) for one autonomous-dispatch candidate.
 
     SCHWAB_SCREENER (default) uses the PB funnel for long candidates. It was measured by
@@ -1258,12 +1258,24 @@ def _dispatch_eligible(cand: Dict[str, Any]) -> Tuple[bool, str]:
         score = float(cand.get("priority_score") or 0.0)
         is_qual = (tier == "HIGH_PRIORITY" or score >= SCREENER_MIN_CONVICTION)
         return is_qual, f"SCREENER_SHORT_{tier}"
+    if side == "LONG":
+        if bool(cand.get("pb_funnel")):
+            return True, "SCREENER_PB"
+        if require_pb:
+            return False, "SCREENER_PB_MISSING"
+        tier = str(cand.get("priority_tier") or "MONITOR")
+        score = float(cand.get("priority_score") or 0.0)
+        # E1: Non-PB long screener candidates dispatch to free local research with lane tag
+        # (they cannot become ENTRY pushes, but receive full local triage and thesis generation)
+        if tier in ("HIGH_PRIORITY", "MEDIUM_PRIORITY") or score >= 55.0:
+            return True, "SCREENER_LONG_NON_PB"
+        return False, "SCREENER_PB_MISSING"
     return bool(cand.get("pb_funnel")), "SCREENER_PB"
 
 
 def run_autonomous_screener_pipeline(
     candidates: List[Dict[str, Any]],
-    auto_max: int = 3,
+    auto_max: int = 5,
     run_deep: bool = True,
     date_str: Optional[str] = None,
     headless: bool = True,
@@ -1292,7 +1304,7 @@ def run_autonomous_screener_pipeline(
 
     # Quality Gate for Autonomous Dispatch. Same gate as the daemon
     # (continuous_screener_daemon.evaluate_and_dispatch_deep_research) so the two cannot drift.
-    gates = [(c, *_dispatch_eligible(c)) for c in candidates]
+    gates = [(c, *_dispatch_eligible(c, require_pb=run_deep)) for c in candidates]
     high_priority_picks = [c for c, ok, _basis in gates if ok]
     if not high_priority_picks:
         logger.info("🤖 [AUTONOMOUS ENGINE] No candidate cleared its dispatch gate today.")

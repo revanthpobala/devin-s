@@ -503,12 +503,13 @@ window.AppDesk = {
       return;
     }
     try {
-      const [todayData, recordData, coverageData, briefingData, feedbackData] = await Promise.all([
+      const [todayData, recordData, coverageData, briefingData, feedbackData, missedMovesData] = await Promise.all([
         window.AppApi.request('/api/desk/today'),
         window.AppApi.request('/api/desk/record?scope=all').catch(() => null),
         window.AppApi.request('/api/desk/coverage').catch(() => null),
         window.AppApi.request('/api/desk/morning-briefing').catch(() => null),
         window.AppApi.request('/api/desk/feedback-loop').catch(() => null),
+        window.AppApi.request('/api/desk/missed-moves').catch(() => null),
       ]);
 
       this._lastTodayData = todayData;
@@ -582,6 +583,29 @@ window.AppDesk = {
 
         </div>
 
+        <!-- Pipeline Funnel Summary Strip (Task B2) -->
+        ${(todayData && todayData.funnel) ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:12px; padding:8px 14px; background:var(--bg-main); border:1px solid var(--border); border-radius:8px; font-size:11.5px; flex-wrap:wrap;">
+          <div style="font-weight:800; color:var(--text-muted); font-size:10px; text-transform:uppercase; letter-spacing:0.5px; display:flex; align-items:center; gap:5px;">
+            <span>⚡ PIPELINE FUNNEL:</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-family:var(--font-mono); font-size:11px;">
+            <span>Alerts: <b style="color:var(--text-main);">${todayData.funnel.alerts || 0}</b></span>
+            <span style="color:var(--text-muted);">➔</span>
+            <span>Local Done: <b style="color:var(--text-main);">${todayData.funnel.local_done || 0}</b></span>
+            <span style="color:var(--text-muted);">➔</span>
+            <span>Local PASS: <b style="color:var(--cyan);">${todayData.funnel.local_pass || 0}</b></span>
+            <span style="color:var(--text-muted);">➔</span>
+            <span>Measured: <b style="color:var(--purple-light);">${todayData.funnel.measured || 0}</b></span>
+            <span style="color:var(--text-muted);">➔</span>
+            <span>Deep Queued: <b style="color:var(--amber);">${todayData.funnel.deep_queued || 0}</b></span>
+            <span style="color:var(--text-muted);">➔</span>
+            <span>Deep Done: <b style="color:var(--blue-light);">${todayData.funnel.deep_done || 0}</b></span>
+            <span style="color:var(--text-muted);">➔</span>
+            <span>Actionable: <b style="color:var(--green); font-size:12px;">${todayData.funnel.actionable || 0}</b></span>
+          </div>
+        </div>` : ''}
+
         <!-- Cockpit Primary Navigation Tabs -->
         <div style="display:flex; gap:8px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); flex-wrap:wrap;">
           <button id="subtab-today-opps" class="btn ${activeTab === 'opps' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('opps')">
@@ -592,6 +616,12 @@ window.AppDesk = {
           </button>
           <button id="subtab-today-feedback" class="btn ${activeTab === 'positions' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('positions')">
             📊 Positions &amp; Feedback Loop (${openPositions.length} Open · ${closedPositions.length} Evaluated)
+          </button>
+          <button id="subtab-today-coverage" class="btn ${activeTab === 'coverage' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('coverage')">
+            🛡️ Pipeline Coverage &amp; Deferrals (${(coverageData && (coverageData.deep_cap_deferred || []).length) || 0})
+          </button>
+          <button id="subtab-today-missed" class="btn ${activeTab === 'missed_moves' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('missed_moves')">
+            📉 Missed Moves (${(missedMovesData && (missedMovesData.missed_moves || []).length) || 0})
           </button>
         </div>
       </div>
@@ -700,6 +730,7 @@ window.AppDesk = {
                           ? `<span class="badge" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3); font-weight:800; font-size:9.5px;">⚡ SCREENER COIL</span>` 
                           : `<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); font-weight:800; font-size:9.5px;">🔬 DEEP RESEARCH</span>`
                         }
+                        ${opp.ran_since_cut ? `<span class="badge" style="background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(239,68,68,0.3); font-weight:800; font-size:9.5px;" title="Price moved > 1 ATR since triage — candidate needs re-triage">🏃 ${opp.ran_since_cut}</span>` : ''}
                       </div>
                       <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:10.5px; color:var(--text-muted); margin-top:3px;">
                         <span class="pill ${String(opp.vintage || '').includes('TODAY') ? 'green' : 'cyan'}" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
@@ -714,6 +745,7 @@ window.AppDesk = {
                     <div style="text-align:right;">
                       <div style="font-size:18px; font-weight:900; font-family:var(--font-mono); color:var(--text-main);">${spot}</div>
                       <div style="font-size:11px; font-family:var(--font-mono); font-weight:800; color:${distTone};">${distTxt}</div>
+                      ${opp.quote_source ? `<div style="font-size:9px; color:var(--text-muted); font-family:var(--font-mono); margin-top:1px;">${opp.quote_source.toLowerCase().includes('fallback') ? '⚠️ fallback quote' : opp.quote_source.toLowerCase()}</div>` : ''}
                     </div>
                   </div>
 
@@ -1119,6 +1151,239 @@ window.AppDesk = {
           }
 
           html += `</div></div></div>`;
+        }
+
+        else if (activeTab === 'coverage') {
+          const cov = coverageData || {};
+          const capDeferred = cov.deep_cap_deferred || [];
+          const watchNoDeep = cov.watch_no_deep || [];
+
+          html += `
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <div class="station-card" style="padding:16px 20px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+                <div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">🛡️</span>
+                    <span style="font-size:14px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
+                      PIPELINE COVERAGE &amp; DEFERRAL AUDIT
+                    </span>
+                    <span class="pill cyan" style="font-weight:800; font-size:10px;">${capDeferred.length} Deferred · ${watchNoDeep.length} Stalking</span>
+                  </div>
+                  <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
+                    Explicit accounting of all pipeline bottlenecks. No setups are silently dropped.
+                  </div>
+                </div>
+              </div>
+
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:16px;">
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px; text-align:center;">
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Total Ingested</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--text-main); margin-top:4px;">${cov.alerts || 0}</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px; text-align:center;">
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Local Researched</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--cyan); margin-top:4px;">${cov.local_done || 0}</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px; text-align:center;">
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Local PASS</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--green); margin-top:4px;">${cov.local_pass || 0}</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px; text-align:center;">
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Deep Completed</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--blue-light); margin-top:4px;">${cov.deep_done || 0}</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px; text-align:center;">
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">Deep Queued</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--amber); margin-top:4px;">${(cov.deep_queued || []).length}</div>
+                </div>
+              </div>
+
+              <!-- DEEP CAP DEFERRED TABLE -->
+              <div style="margin-bottom:20px;">
+                <div style="font-size:12.5px; font-weight:800; color:var(--amber); margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                  <span>⏳ DEEP_CAP_DEFERRED (${capDeferred.length})</span>
+                  <span style="font-size:10.5px; color:var(--text-muted); font-weight:normal;">– Passed local triage but deferred by daily research cap</span>
+                </div>
+                ${capDeferred.length === 0 ? `
+                  <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:14px; text-align:center; color:var(--text-muted); font-size:11.5px;">
+                    No candidates deferred by daily research cap today.
+                  </div>
+                ` : `
+                  <div style="overflow-x:auto; border:1px solid var(--border); border-radius:8px;">
+                    <table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+                      <thead>
+                        <tr style="background:var(--bg-main); text-align:left; color:var(--text-muted);">
+                          <th style="padding:8px 12px;">Ticker</th>
+                          <th style="padding:8px 12px;">Deferral Reason</th>
+                          <th style="padding:8px 12px; text-align:right;">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${capDeferred.map(item => `
+                          <tr style="border-top:1px solid var(--border);">
+                            <td style="padding:8px 12px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal(null, '${item.ticker}', 'plan')">
+                              ${item.ticker}
+                            </td>
+                            <td style="padding:8px 12px; color:var(--text-main);">
+                              ${item.reason || 'Deferred by daily GPU / deep research slot cap'}
+                            </td>
+                            <td style="padding:8px 12px; text-align:right;">
+                              <button class="btn secondary" style="padding:3px 8px; font-size:10px;" onclick="AppDesk.triggerResearch('${item.ticker}')">Run Research</button>
+                            </td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                `}
+              </div>
+
+              <!-- WATCH NO DEEP TABLE -->
+              <div>
+                <div style="font-size:12.5px; font-weight:800; color:var(--text-main); margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                  <span>⏳ WATCH_NO_DEEP (${watchNoDeep.length})</span>
+                  <span style="font-size:10.5px; color:var(--text-muted); font-weight:normal;">– Free local triage assigned WATCH; stalking trigger levels</span>
+                </div>
+                ${watchNoDeep.length === 0 ? `
+                  <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:14px; text-align:center; color:var(--text-muted); font-size:11.5px;">
+                    No candidates stalking in WATCH_NO_DEEP today.
+                  </div>
+                ` : `
+                  <div style="overflow-x:auto; border:1px solid var(--border); border-radius:8px;">
+                    <table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+                      <thead>
+                        <tr style="background:var(--bg-main); text-align:left; color:var(--text-muted);">
+                          <th style="padding:8px 12px;">Ticker</th>
+                          <th style="padding:8px 12px;">Stalking Reason &amp; Setup Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${watchNoDeep.map(item => `
+                          <tr style="border-top:1px solid var(--border);">
+                            <td style="padding:8px 12px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal(null, '${item.ticker}', 'plan')">
+                              ${item.ticker}
+                            </td>
+                            <td style="padding:8px 12px; color:var(--text-muted);">
+                              ${item.reason || 'Awaiting entry zone / price compression trigger'}
+                            </td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                `}
+              </div>
+            </div>
+          </div>
+          `;
+        }
+
+        else if (activeTab === 'missed_moves') {
+          const mm = missedMovesData || {};
+          const missedList = mm.missed_moves || [];
+          const rollup = mm.weekly_rollup || {};
+
+          html += `
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <div class="station-card" style="padding:16px 20px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+                <div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:18px;">📉</span>
+                    <span style="font-size:14px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
+                      MISSED-MOVE SCORECARD &amp; ROOT CAUSE ROLLUP
+                    </span>
+                    <span class="pill amber" style="font-weight:800; font-size:10px;">${missedList.length} Moves Analyzed</span>
+                  </div>
+                  <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
+                    Tuning signal to eliminate history-writing: tracks universe names up ≥8% in 5 sessions joined to our last verdict and failure mode.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Weekly Rollup Strip -->
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:18px;">
+                <div style="background:var(--bg-main); border:1px solid rgba(239,68,68,0.3); border-radius:8px; padding:10px 14px;">
+                  <div style="font-size:10px; color:var(--rose-light); font-weight:800; text-transform:uppercase;">🕒 Stale Data / Frozen</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--rose-light); margin-top:4px;">${rollup.stale_data || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Old bar / frozen spot</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid rgba(245,158,11,0.3); border-radius:8px; padding:10px 14px;">
+                  <div style="font-size:10px; color:var(--amber); font-weight:800; text-transform:uppercase;">✂️ CUT Without Edge</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--amber); margin-top:4px;">${rollup.CUT || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Killed on stagnation</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:10px 14px;">
+                  <div style="font-size:10px; color:var(--purple-light); font-weight:800; text-transform:uppercase;">🚫 Filtered (No-PB)</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--purple-light); margin-top:4px;">${rollup['no-PB'] || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Filtered before research</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid rgba(6,182,212,0.3); border-radius:8px; padding:10px 14px;">
+                  <div style="font-size:10px; color:var(--cyan); font-weight:800; text-transform:uppercase;">🛑 Cap Deferred</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--cyan); margin-top:4px;">${rollup.cap || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Passed but cap reached</div>
+                </div>
+                <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+                  <div style="font-size:10px; color:var(--text-muted); font-weight:800; text-transform:uppercase;">⚠️ Degenerate / No Levels</div>
+                  <div style="font-size:18px; font-weight:900; color:var(--text-main); margin-top:4px;">${rollup.no_levels || 0}</div>
+                  <div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Zone equaled spot</div>
+                </div>
+              </div>
+
+              <!-- MISSED MOVES TABLE -->
+              <div style="overflow-x:auto; border:1px solid var(--border); border-radius:8px;">
+                <table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+                  <thead>
+                    <tr style="background:var(--bg-main); text-align:left; color:var(--text-muted);">
+                      <th style="padding:10px 12px;">Ticker</th>
+                      <th style="padding:10px 12px;">5-Day Move</th>
+                      <th style="padding:10px 12px;">Dossier Spot</th>
+                      <th style="padding:10px 12px;">Live Spot</th>
+                      <th style="padding:10px 12px;">Last Verdict</th>
+                      <th style="padding:10px 12px;">Lane</th>
+                      <th style="padding:10px 12px;">Root Cause Diagnosis</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${missedList.map(item => `
+                      <tr style="border-top:1px solid var(--border);">
+                        <td style="padding:10px 12px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal(null, '${item.ticker}', 'plan')">
+                          ${item.ticker}
+                        </td>
+                        <td style="padding:10px 12px; font-weight:900; color:var(--green);">
+                          +${item.move_pct}%
+                        </td>
+                        <td style="padding:10px 12px; font-family:var(--font-mono);">
+                          $${item.dossier_spot}
+                        </td>
+                        <td style="padding:10px 12px; font-family:var(--font-mono); font-weight:800; color:var(--text-main);">
+                          $${item.live_spot}
+                        </td>
+                        <td style="padding:10px 12px;">
+                          <span class="badge ${item.last_verdict === 'PASS' ? 'green' : (item.last_verdict === 'CUT' ? 'red' : 'amber')}">
+                            ${item.last_verdict}
+                          </span>
+                        </td>
+                        <td style="padding:10px 12px; font-family:var(--font-mono); font-size:10.5px;">
+                          ${item.lane || '–'}
+                        </td>
+                        <td style="padding:10px 12px;">
+                          <div style="font-weight:800; color:${item.root_cause_reason === 'stale_data' ? 'var(--rose-light)' : 'var(--amber)'};">
+                            ${item.root_cause_reason}
+                          </div>
+                          <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">
+                            ${item.details || item.cut_reason || ''}
+                          </div>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          `;
         }
 
         html += `</div>`;
