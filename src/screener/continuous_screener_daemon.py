@@ -201,7 +201,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         auto_alerts: bool = False,
         market_hours_only: Optional[bool] = None,
         auto_deep_research: Optional[bool] = None,
-        max_concurrent_slots: int = 3,
+        max_concurrent_slots: int = 2,
     ):
         super().__init__(name="ContinuousScreenerDaemon", daemon=True)
         self.poll_interval = max(60, poll_interval)
@@ -1032,7 +1032,7 @@ def start_continuous_screener_daemon(
     auto_alerts: bool = False,
     market_hours_only: bool = False,
     auto_deep_research: Optional[bool] = None,
-    max_concurrent_slots: int = 3,
+    max_concurrent_slots: int = 2,
 ) -> ContinuousScreenerDaemon:
     """Start or retrieve the singleton continuous screener daemon."""
     global _daemon_instance

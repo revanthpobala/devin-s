@@ -57,7 +57,7 @@ class TVScraper:
             self.plain_chart_url = "https://www.tradingview.com/chart/92oElFWJ/"
         else:
             self.plain_chart_url = env_plain if env_plain.endswith("/") else (env_plain + "/")
-        self.headless = bool(headless if headless is not None else os.getenv("HEADLESS_SCRAPE", "1").lower() in ("1", "true", "yes"))
+        self.headless = headless if headless is not None else os.getenv("HEADLESS_SCRAPE", "1").lower() in ("1", "true", "yes")
         # Store Chrome profile locally or read from TV_CHROME_PROFILE_DIR
         env_profile = os.getenv("TV_CHROME_PROFILE_DIR")
         if env_profile and os.path.exists(env_profile):

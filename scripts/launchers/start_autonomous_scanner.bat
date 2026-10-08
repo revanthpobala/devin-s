@@ -7,7 +7,7 @@ echo =======================================================================
 echo.
 echo Universe         : Schwab 1000 (SCHK ETF - 983 stocks)
 echo Scan Interval    : 600s (10 min)
-echo Autonomous Deep  : 1 in slot when qualified (Score ^>= 60)
+echo Autonomous Deep  : 2 in slots when qualified (Score ^>= 60)
 echo Logging to       : D:\My-Projects\Stock\logs\continuous_screener.log
 echo.
 
@@ -21,7 +21,7 @@ echo Starting Continuous Autonomous Scanner...
 echo [Press Ctrl+C at any time to stop the service]
 echo.
 
-.venv\Scripts\python.exe run_continuous_screener.py --interval 600 --auto-deep --headless
+.venv\Scripts\python.exe run_continuous_screener.py --interval 600 --auto-deep --max-slots 2 --headless
 
 echo.
 echo Autonomous scanner stopped.

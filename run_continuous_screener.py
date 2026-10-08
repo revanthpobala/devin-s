@@ -127,8 +127,8 @@ def main():
     parser.add_argument(
         "--max-slots",
         type=int,
-        default=3,
-        help="Max concurrent deep research slots (default: 3)",
+        default=2,
+        help="Max concurrent deep research slots (default: 2)",
     )
 
     args = parser.parse_args()
