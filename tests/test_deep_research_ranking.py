@@ -174,3 +174,47 @@ def test_score_and_sort_queued_jobs(tmp_path, monkeypatch):
     assert sorted_tickers == ["HI_MVR", "MID_MVR", "LOW_MVR"]
 
 
+def test_dispatch_mid_job_success(tmp_path, monkeypatch):
+    """Verify that dispatch_next_queued_job successfully dispatches a MID job without SQLite syntax errors."""
+    import sqlite3
+    from src.ui.state import get_db, init_db, ACTIVE_RESEARCH_WORKERS
+    from src.ui.services.research_queue import dispatch_next_queued_job
+
+    db_file = tmp_path / "test_research.db"
+    monkeypatch.setenv("STOCK_DB_PATH", str(db_file))
+    init_db()
+
+    # Insert a queued MID job
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date, tier, stage_detail)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("job_mid_test_1", "AAPL", "deep_only", "QUEUED", "QUEUED", "2026-10-08T10:00:00Z", "2026-10-08", "MID", "Queued via Manual Click"))
+        conn.commit()
+
+    # Mock run_research_worker to verify it was called without executing real subprocess
+    mock_worker = MagicMock()
+    monkeypatch.setattr("src.ui.services.research_queue.run_research_worker", mock_worker)
+
+    # Execute dispatch
+    dispatch_next_queued_job()
+
+    # Verify job status in SQLite
+    with get_db() as conn:
+        c = conn.cursor()
+        row = c.execute("SELECT status, stage, stage_detail, tier FROM active_research_jobs WHERE job_id = 'job_mid_test_1'").fetchone()
+        assert row is not None
+        assert row["status"] == "RUNNING"
+        assert row["stage"] == "STARTING"
+        assert row["stage_detail"] == "Starting Deep Research (MID)"
+        assert row["tier"] == "MID"
+
+    # Verify worker thread was created
+    assert "job_mid_test_1" in ACTIVE_RESEARCH_WORKERS
+
+    # Clean up active workers
+    ACTIVE_RESEARCH_WORKERS.pop("job_mid_test_1", None)
+
+
+

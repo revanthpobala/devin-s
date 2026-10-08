@@ -398,8 +398,8 @@ def dispatch_next_queued_job():
                     dt = job["target_date"]
                     t_tier = job["tier"] or "MID"
                     c.execute(
-                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', stage_detail = f'Starting Deep Research ({t_tier})', started_at = ? WHERE job_id = ?",
-                        (datetime.now(timezone.utc).isoformat(), jid)
+                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', stage_detail = ?, started_at = ? WHERE job_id = ?",
+                        (f"Starting Deep Research ({t_tier})", datetime.now(timezone.utc).isoformat(), jid)
                     )
                     conn.commit()
 
