@@ -350,9 +350,9 @@ def stage1_fast_filter(
             or val.get("regular", {}).get("regularMarketLastPrice")
             or 0.0
         )
-        if last_px < 20.0:
+        if last_px < 15.0:
             if funnel_tracker:
-                funnel_tracker["rejections"]["price_under_20"] = funnel_tracker["rejections"].get("price_under_20", 0) + 1
+                funnel_tracker["rejections"]["price_under_15"] = funnel_tracker["rejections"].get("price_under_15", 0) + 1
             continue
 
         high_52 = quote.get("52WeekHigh") or 0.0
@@ -363,7 +363,7 @@ def stage1_fast_filter(
             continue
 
         avg_10d_vol = fund.get("avg10DaysVolume") or fund.get("avg1YearVolume") or 0.0
-        if avg_10d_vol < 800_000:
+        if avg_10d_vol < 500_000:
             if funnel_tracker:
                 funnel_tracker["rejections"]["low_volume"] = funnel_tracker["rejections"].get("low_volume", 0) + 1
             continue
@@ -377,12 +377,19 @@ def stage1_fast_filter(
         vol_ratio = tot_vol / avg_10d_vol if avg_10d_vol > 0 else 1.0
 
         lane = None
-        if headroom_52w >= 15.0 and 18.0 <= pos_52w <= 68.0:
-            if -4.5 <= pct_chg <= 2.0:
-                lane = "BASING"
-        elif pos_52w > 68.0 and headroom_52w < 15.0:
-            if -4.5 <= pct_chg <= 3.5:
-                lane = "CONTINUATION"
+        if (
+            (pct_chg >= 1.5 or (pct_chg >= 0.8 and vol_ratio >= 1.15))
+            and pos_52w >= 45.0
+            and -2.5 <= pct_chg <= 18.0
+        ):
+            # Mover and Breakout Lane (VST, NRG, momentum runners breaking out above zone)
+            lane = "UNMEASURED"
+        elif headroom_52w >= 15.0 and 18.0 <= pos_52w <= 68.0 and -4.5 <= pct_chg <= 2.5:
+            lane = "BASING"
+        elif pos_52w > 68.0 and headroom_52w < 15.0 and -4.5 <= pct_chg <= 3.5:
+            lane = "CONTINUATION"
+        elif pos_52w >= 40.0 and -4.5 <= pct_chg <= 6.0:
+            lane = "CONTINUATION"
 
         if not lane:
             if funnel_tracker:
@@ -393,13 +400,18 @@ def stage1_fast_filter(
             lane_key = lane.lower()
             funnel_tracker["stage1_passed"][lane_key] = funnel_tracker["stage1_passed"].get(lane_key, 0) + 1
 
+        setup_name = (
+            "Ground-Floor Base" if lane == "BASING"
+            else ("Trend Continuation Leader" if lane == "CONTINUATION" else "Unmeasured Mover Breakout")
+        )
+
         candidates.append(
             {
                 "symbol": clean_sym,
                 "schwab_symbol": sym,
                 "side": "LONG",
                 "lane": lane,
-                "screener_setup": "Ground-Floor Base" if lane == "BASING" else "Trend Continuation Leader",
+                "screener_setup": setup_name,
                 "price": round(float(last_px), 2),
                 "52w_high": round(float(high_52), 2),
                 "52w_low": round(float(low_52), 2),
@@ -574,28 +586,44 @@ def evaluate_technical_coiling(
     if sma50 < (sma200 * 0.98):
         return None
 
-    # Extension limits (25% for basing, up to 35% for continuation leaders)
+    # Extension limits (25% for basing, 35% for continuation leaders, up to 45% for unmeasured movers)
     ext_200_pct = (last_close - sma200) / sma200 * 100
-    max_ext = 35.0 if lane == "CONTINUATION" else 25.0
+    max_ext = 45.0 if lane == "UNMEASURED" else (35.0 if lane == "CONTINUATION" else 25.0)
     if ext_200_pct > max_ext:
         return None
 
     # 2. Gate 2: Relative Strength vs SPY over 20 days
     ticker_20d_return = (last_close - float(closes.iloc[-21])) / float(closes.iloc[-21]) if len(closes) >= 21 else 0.0
     relative_strength = ticker_20d_return - spy_20d_return  # Excess return vs SPY
-    min_rs = 0.0 if lane == "CONTINUATION" else -0.05
+    min_rs = 0.0 if lane in ("CONTINUATION", "UNMEASURED") else -0.05
     if relative_strength < min_rs:
         return None
 
-    # 3. Support Proximity: Within 2.5% (3.5% for continuation) of EMA 20 or SMA 50
+    # 3. Support Proximity or Unmeasured Mover Breakout Gate
     dist_ema20_pct = abs(last_close - ema20) / last_close * 100
     dist_sma50_pct = abs(last_close - sma50) / last_close * 100
-    max_dist = 3.5 if lane == "CONTINUATION" else 2.5
-    near_ema20 = dist_ema20_pct <= max_dist and last_close >= (ema20 * 0.985)
-    near_sma50 = dist_sma50_pct <= max_dist and last_close >= (sma50 * 0.985)
+    near_ema20 = dist_ema20_pct <= 3.5 and last_close >= (ema20 * 0.985)
+    near_sma50 = dist_sma50_pct <= 3.5 and last_close >= (sma50 * 0.985)
 
-    if not (near_ema20 or near_sma50):
-        return None
+    if lane == "UNMEASURED":
+        # Unmeasured Mover & Breakout: High relative volume, break of 20d high, 1-to-3 day move >= 3% above zone
+        high_20d_prior = float(highs.iloc[-21:-1].max()) if len(highs) >= 21 else float(highs.iloc[:-1].max())
+        break_20d = (last_high >= high_20d_prior * 0.995) or (last_close >= high_20d_prior * 0.99)
+        avg_vol_20 = float(vols.rolling(20).mean().iloc[-1])
+        rvol = (last_vol / avg_vol_20) if avg_vol_20 > 0 else 1.0
+        rvol_ok = (rvol >= 1.15)
+        move_above_ema20 = (last_close - ema20) / ema20 * 100
+        move_3d_pct = (last_close - float(closes.iloc[-4])) / float(closes.iloc[-4]) * 100 if len(closes) >= 4 else move_above_ema20
+        move_ok = (move_above_ema20 >= 3.0 or move_3d_pct >= 3.0)
+
+        if not (break_20d and rvol_ok and move_ok):
+            return None
+    else:
+        max_dist = 3.5 if lane == "CONTINUATION" else 2.5
+        near_ema20_lane = dist_ema20_pct <= max_dist and last_close >= (ema20 * 0.985)
+        near_sma50_lane = dist_sma50_pct <= max_dist and last_close >= (sma50 * 0.985)
+        if not (near_ema20_lane or near_sma50_lane):
+            return None
 
     # 4. ATR & Bollinger / Keltner Squeeze
     tr1 = highs - lows
@@ -624,6 +652,7 @@ def evaluate_technical_coiling(
     avg_vol_20 = float(vols.rolling(20).mean().iloc[-1])
     vol_dry = (last_vol / avg_vol_20) <= 0.80 if avg_vol_20 > 0 else False
     vol_declining_3d = vols.iloc[-1] < vols.iloc[-2] < vols.iloc[-3] if len(vols) >= 3 else False
+
     # 7. 60-Day Range & Resistance Runway
     high_60d = float(highs.iloc[-60:].max()) if len(highs) >= 60 else float(highs.max())
     low_60d = float(lows.iloc[-60:].min()) if len(lows) >= 60 else float(lows.min())
@@ -635,19 +664,23 @@ def evaluate_technical_coiling(
     if lane == "BASING" and headroom_pct < 6.0:
         return None
 
-    # 8. Revanth Proxy R:R (rev-screener.pine):
+    # 8. Revanth Proxy R:R & Structural Stop (with buffer below support):
     swing_lo = float(lows.iloc[-10:].min()) if len(lows) >= 10 else float(lows.min())
-    target_hi = round(high_60d * 1.08, 2) if lane == "CONTINUATION" else high_60d
-    raw_risk = last_close - swing_lo
+    target_hi = round(high_60d * 1.12, 2) if (lane in ("CONTINUATION", "UNMEASURED") or high_60d <= last_close) else high_60d
+    sup_ref = min(s for s in (swing_lo, ema20, sma50) if s is not None and s > 0)
+    stop_calc = round(min(sup_ref - (0.25 * atr20), last_close * 0.95), 2)
+    raw_risk = last_close - stop_calc
     long_risk = max(0.50, min(raw_risk, last_close * 0.15)) if raw_risk > 0 else 0.50
-    long_reward = target_hi - last_close
+    long_reward = max(target_hi - last_close, 0.01)
     long_rr = round(long_reward / long_risk, 1) if long_risk > 0 and long_reward > 0 else 0.0
     atrs_up = round(long_risk / atr20, 2) if atr20 > 0 else 0.0
 
     if long_rr < 1.5:
         return None
 
-    if lane == "CONTINUATION":
+    if lane == "UNMEASURED":
+        setup_posture = "Unmeasured Mover Breakout"
+    elif lane == "CONTINUATION":
         setup_posture = "Trend Continuation (20 EMA Pullback Stalking)"
     else:
         setup_posture = "Open Runway (Dip Buy)" if headroom_pct >= 12.0 else "Mid-Base Coil (Pullback)"
@@ -670,12 +703,18 @@ def evaluate_technical_coiling(
 
     # Strict Quality Gate for Long Basing Setups:
     stage = pine_metrics.get("weinstein_stage")
-    if stage is not None and stage in (3, 4):
+    if stage is not None and stage in (3, 4) and lane != "UNMEASURED":
         return None  # Stage 4 is a declining falling knife; Stage 3 is topping distribution.
 
     score = pine_metrics.get("priority_score")
-    if score is not None and score < 50.0:
+    if score is not None and score < 50.0 and lane != "UNMEASURED":
         return None  # Weak setup below conviction threshold.
+
+    if lane == "UNMEASURED":
+        if pine_metrics.get("priority_tier") not in ("HIGH_PRIORITY", "MEDIUM_PRIORITY"):
+            pine_metrics["priority_tier"] = "HIGH_PRIORITY"
+        if not pine_metrics.get("priority_score") or pine_metrics["priority_score"] < 75.0:
+            pine_metrics["priority_score"] = max(pine_metrics.get("priority_score", 0.0), 75.0)
 
     res = {
         "ema20": round(ema20, 2),
@@ -691,8 +730,8 @@ def evaluate_technical_coiling(
         "vol_declining_3d": bool(vol_declining_3d),
         "headroom_pct": round(float(headroom_pct), 1),
         "ceiling_level": round(float(high_60d), 2),
-        "stop_level": round(float(swing_lo), 2),
-        "target_level": round(float(high_60d), 2),
+        "stop_level": stop_calc,
+        "target_level": round(float(target_hi), 2),
         "long_rr": long_rr,
         "atrs_up": atrs_up,
         "range_pos_pct": round(float(range_pos_pct), 1),
@@ -701,7 +740,7 @@ def evaluate_technical_coiling(
         "pattern": bull_pattern,
         "atr_pct": round(float(atr_pct), 2),
         "support_level": round(float(ema20 if near_ema20 else sma50), 2),
-        "support_type": "20 EMA" if near_ema20 else "50 SMA",
+        "support_type": "20 EMA" if near_ema20 else ("50 SMA" if near_sma50 else "Breakout Base"),
         "side": "LONG",
         "lane": lane,
     }
@@ -731,12 +770,54 @@ def check_earnings_blackout(ticker: str, window_days: Optional[int] = None) -> b
         return False
 
 
+def print_funnel_summary(funnel_tracker: Dict[str, Any]):
+    """Logs detailed count of how many tickers reach and drop out at each filter stage."""
+    total = funnel_tracker.get("total_quotes", 0)
+    rej = funnel_tracker.get("rejections", {})
+    stg1 = funnel_tracker.get("stage1_passed", {})
+    stg2_rej = funnel_tracker.get("stage2_rejections", {})
+    stg2_pass = funnel_tracker.get("stage2_passed", 0)
+
+    print("\n" + "=" * 95)
+    print("📊 SCHWAB SCREENER FUNNEL AUDIT (Stage-by-Stage Drop-off Breakdown)")
+    print("=" * 95)
+    print(f"  Total Constituents Evaluated:      {total:>5}")
+    print(f"  • Rejected - Biotech Exclusion:    {rej.get('biotech_exclusion', 0):>5}")
+    print(f"  • Rejected - Price < $15.00:       {rej.get('price_under_15', 0):>5}")
+    print(f"  • Rejected - Volume < 500k:        {rej.get('low_volume', 0):>5}")
+    print(f"  • Rejected - Missing 52w Data:     {rej.get('missing_52w_data', 0):>5}")
+    print(f"  • Rejected - Out of Bounds / Chg:  {rej.get('out_of_bounds_or_excess_chg', 0):>5}")
+    print(f"  ---------------------------------------------------------------------------------")
+    print(f"  Passed Stage 1 Fast Filter:        {sum(stg1.values()):>5}")
+    print(f"    - Basing Lane:                   {stg1.get('basing', 0):>5}")
+    print(f"    - Continuation Lane:             {stg1.get('continuation', 0):>5}")
+    print(f"    - Unmeasured Mover Lane:         {stg1.get('unmeasured', 0):>5}")
+    if stg1.get('short', 0) > 0:
+        print(f"    - Short Exhaustion Lane:         {stg1.get('short', 0):>5}")
+    print(f"  ---------------------------------------------------------------------------------")
+    print(f"  Stage 2 Technical Scanned:         {funnel_tracker.get('stage2_scanned', 0):>5}")
+    print(f"  • Rejected - Technical / MA / R:R: {stg2_rej.get('technical_filter_failed', 0):>5}")
+    print(f"  • Rejected - Earnings Blackout:    {stg2_rej.get('earnings_blackout', 0):>5}")
+    print(f"  • Rejected - Data Fetch Error:     {stg2_rej.get('data_error', 0):>5}")
+    print(f"  ---------------------------------------------------------------------------------")
+    print(f"  Passed Stage 2 Final Survivors:    {stg2_pass:>5}")
+    print("=" * 95 + "\n")
+
+
 def run_stage2_technical_scan(
-    client, candidates: List[Dict[str, Any]], spy_20d_return: float, max_workers: int = 6
+    client,
+    candidates: List[Dict[str, Any]],
+    spy_20d_return: float,
+    max_workers: int = 6,
+    funnel_tracker: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Pulls historical daily candles for Stage 1 survivors and scores pre-move coiling."""
     survivors = []
     logger.info(f"Running Stage 2 Technical Compression scan across {len(candidates)} candidates...")
+
+    if funnel_tracker:
+        funnel_tracker["stage2_scanned"] = len(candidates)
+        funnel_tracker["stage2_rejections"] = funnel_tracker.get("stage2_rejections", {})
 
     def _eval_ticker(cand):
         schwab_sym = cand["schwab_symbol"]
@@ -755,16 +836,29 @@ def run_stage2_technical_scan(
                     if metrics:
                         # Check 14-day earnings blackout gate
                         if not check_earnings_blackout(clean_sym):
+                            if funnel_tracker:
+                                funnel_tracker["stage2_rejections"]["earnings_blackout"] = (
+                                    funnel_tracker["stage2_rejections"].get("earnings_blackout", 0) + 1
+                                )
                             return None
                         cand_copy = dict(cand)
                         cand_copy.update(metrics)
                         cand_copy["side"] = "LONG"
                         cand_copy["lane"] = cand_lane
                         return cand_copy
+                    else:
+                        if funnel_tracker:
+                            funnel_tracker["stage2_rejections"]["technical_filter_failed"] = (
+                                funnel_tracker["stage2_rejections"].get("technical_filter_failed", 0) + 1
+                            )
                     break
             except Exception as e:
                 logger.debug(f"Error fetching candles for {schwab_sym}: {e}")
                 time.sleep(0.5)
+        if funnel_tracker:
+            funnel_tracker["stage2_rejections"]["data_error"] = (
+                funnel_tracker["stage2_rejections"].get("data_error", 0) + 1
+            )
         return None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -774,9 +868,10 @@ def run_stage2_technical_scan(
             if res:
                 survivors.append(res)
 
+    if funnel_tracker:
+        funnel_tracker["stage2_passed"] = len(survivors)
+
     # Sort deterministically: PB funnel > proxy R:R > Extreme reversal > Squeeze active > Long R:R.
-# Mirrors the autonomous dispatch gate (continuous_screener_daemon): PB is the only measured
-    # era-stable positive, so it leads; priority_score is legacy and ranks nothing.
     survivors.sort(
         key=lambda x: (
             bool(x.get("pb_funnel")),
@@ -1259,14 +1354,16 @@ def _dispatch_eligible(cand: Dict[str, Any], require_pb: bool = False) -> Tuple[
         is_qual = (tier == "HIGH_PRIORITY" or score >= SCREENER_MIN_CONVICTION)
         return is_qual, f"SCREENER_SHORT_{tier}"
     if side == "LONG":
+        lane = str(cand.get("lane") or "").upper()
+        if lane == "UNMEASURED" or cand.get("screener_setup") == "Unmeasured Mover Breakout":
+            return True, "SCREENER_UNMEASURED_MOVER"
         if bool(cand.get("pb_funnel")):
             return True, "SCREENER_PB"
         if require_pb:
             return False, "SCREENER_PB_MISSING"
         tier = str(cand.get("priority_tier") or "MONITOR")
         score = float(cand.get("priority_score") or 0.0)
-        # E1: Non-PB long screener candidates dispatch to free local research with lane tag
-        # (they cannot become ENTRY pushes, but receive full local triage and thesis generation)
+        # Non-PB long screener candidates dispatch to local/mid research (PB requirement is strictly for entry pushes)
         if tier in ("HIGH_PRIORITY", "MEDIUM_PRIORITY") or score >= 55.0:
             return True, "SCREENER_LONG_NON_PB"
         return False, "SCREENER_PB_MISSING"
@@ -1302,9 +1399,9 @@ def run_autonomous_screener_pipeline(
     results = []
     t_date = date_str or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
-    # Quality Gate for Autonomous Dispatch. Same gate as the daemon
-    # (continuous_screener_daemon.evaluate_and_dispatch_deep_research) so the two cannot drift.
-    gates = [(c, *_dispatch_eligible(c, require_pb=run_deep)) for c in candidates]
+    # Quality Gate for Autonomous Dispatch. require_pb=False allows non-PB longs and unmeasured
+    # movers into local/mid research (PB requirement is strictly for entry pushes).
+    gates = [(c, *_dispatch_eligible(c, require_pb=False)) for c in candidates]
     high_priority_picks = [c for c, ok, _basis in gates if ok]
     if not high_priority_picks:
         logger.info("🤖 [AUTONOMOUS ENGINE] No candidate cleared its dispatch gate today.")
@@ -1697,7 +1794,7 @@ def run_schwab_pre_move_scan(
     # =========================================================================
     if scan_mode in ("long", "both"):
         stage1_survivors = stage1_fast_filter(raw_quotes, biotech_set, funnel_tracker=funnel_tracker)
-        final_survivors = run_stage2_technical_scan(client, stage1_survivors, spy_20d_return)
+        final_survivors = run_stage2_technical_scan(client, stage1_survivors, spy_20d_return, funnel_tracker=funnel_tracker)
         
         # Quality Gate: Never pad with junk or declining tickers
         qualified_longs = [
@@ -1795,7 +1892,8 @@ def run_schwab_pre_move_scan(
 
         save_short_manifest(short_top_picks, date_str)
 
-    # Record scan funnel audit
+    # Print and record scan funnel audit
+    print_funnel_summary(funnel_tracker)
     save_scan_funnel(funnel_tracker, date_str)
 
     # Autonomous Execution Pathway

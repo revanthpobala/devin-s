@@ -390,16 +390,13 @@ def test_dispatch_gate_is_scoped_to_the_screener_intake():
 
 
 def test_autonomous_pipeline_gate_refuses_without_pb():
-    """The pipeline gate must refuse a no-PB / unmeasured screener candidate instead of researching it.
-
-    Callers read `count` to decide whether research actually happened -- several used to mark the
-    job COMPLETED unconditionally, which turned a refusal into a silent no-op.
+    """The pipeline gate refuses weak/unqualified candidates, while non-PB longs and UNMEASURED movers
+    can reach local/mid research (PB requirement is strictly for entry pushes).
     """
     from src.screener.schwab_pre_move_scan import run_autonomous_screener_pipeline
 
     for cand in (
-        {"symbol": "NOPB", "side": "LONG", "pb_funnel": False, "proxy_rr": 9.0, "priority_score": 99.0},
-        {"symbol": "UNMEASURED", "side": "LONG", "pb_funnel": None, "proxy_rr": 9.0, "priority_score": 99.0},
+        {"symbol": "WEAK_LONG", "side": "LONG", "pb_funnel": False, "priority_score": 40.0, "priority_tier": "MONITOR"},
         {"symbol": "SHORT_WEAK", "side": "SHORT", "proxy_rr": 1.5, "priority_score": 40.0, "priority_tier": "MONITOR"},
     ):
         res = run_autonomous_screener_pipeline([cand], auto_max=1, run_deep=True, date_str="2029-01-01")
