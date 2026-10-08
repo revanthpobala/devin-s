@@ -368,15 +368,14 @@ def run_local_research(
     # then drop any stale artifacts left over from a previous --regenerate run so
     # the folder never shows names the current run did not flag.
     # The deep-research folder is CAPPED at DEEP_RESEARCH_CAP (default 35): only
-    # the top-N candidates by deep_research_sort_key are kept. This matches the
-    # cap the PAID pass (deep_research.py) applies before calling Minimax, so the
-    # _DEEP_RESEARCH folder holds exactly the tickers that will actually be
-    # processed — not the full (often 50-75) broad gate set. The gate's
+    # the top-N candidates by deep_research_sort_key are kept. The gate's
     # send_for_deep_research flag is the ELIGIBILITY filter; the cap is the
     # PRIORITISATION filter and must run here too, or the folder balloons.
+    # Full deep runs are additionally capped by DEEP_RESEARCH_FULL_CAP, routing
+    # remaining candidates to MID tier to prevent GPU burnout.
     from src.logic.data_window_filter import rank_pass_tickers
 
-    cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
+    cap = int(os.getenv("DEEP_RESEARCH_CAP", "35"))
     deep_candidates, force_candidates = [], []
     for rec in all_thesis.values():
         ticker = rec.get("ticker")

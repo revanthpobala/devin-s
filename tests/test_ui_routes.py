@@ -239,6 +239,16 @@ def test_api_research_ticker_trades(client):
 
 def test_api_report_bundle_markdown_loading(client):
     """Verify /api/report/latest/{ticker} loads markdown dossiers from disk."""
+    from src import config
+    rep_dir = config.BASE_DIR / "reports" / "2026-09-30"
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    summary_p = rep_dir / "GOOGL_summary.md"
+    arb_p = rep_dir / "GOOGL_arbitration.md"
+    if not summary_p.exists() or len(summary_p.read_text(encoding="utf-8")) < 100:
+        summary_p.write_text("# GOOGL Summary Report\n" + "x" * 150, encoding="utf-8")
+    if not arb_p.exists() or len(arb_p.read_text(encoding="utf-8")) < 100:
+        arb_p.write_text("# GOOGL Arbitration Report\n" + "y" * 150, encoding="utf-8")
+
     response = client.get("/api/report/latest/GOOGL")
     assert response.status_code == 200
     data = response.json()

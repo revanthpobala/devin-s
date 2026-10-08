@@ -98,7 +98,7 @@ def run_deep_research(
 
     Tiers:
       - LITE: Model A only (tool rounds capped at 1), no debate, no Model B.
-      - MID (default): Model A only (tool rounds capped at MID_MAX_TOOL_ROUNDS=3), no debate.
+      - MID (default): Model A only (tool rounds capped at MID_MAX_TOOL_ROUNDS=4), no debate.
                        Model B runs as a veto only if Model A says GO/BUY and setup is near gate.
       - FULL: Full multi-pass flow (Bull/Bear Debate, Model A, Model B, PM Arbitration).
     """
@@ -335,7 +335,7 @@ def run_deep_research(
                 flagged.append((t, load_triage_record(raw_dir, deep_dir, t, tdir=t_parent)))
 
         from src.logic.data_window_filter import rank_pass_tickers
-        cap = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
+        cap = int(os.getenv("DEEP_RESEARCH_CAP", "35"))
         ranked = rank_pass_tickers([r for _, r in flagged if r])
         kept_recs = ranked if cap <= 0 else ranked[:cap]
         keep = {str(r.get("ticker", "")).upper() for r in kept_recs}
@@ -410,6 +410,9 @@ def run_deep_research(
     # ------------------------------------------------------------------
     # Per-ticker loop
     # ------------------------------------------------------------------
+    full_runs_cap = int(os.getenv("DEEP_RESEARCH_FULL_CAP", "3"))
+    full_runs_count = 0
+
     seen_tickers: set[str] = set()
     for chart_path in chart_files:
         raw_name = Path(chart_path).name.replace("_chart.png", "")
@@ -418,8 +421,21 @@ def run_deep_research(
             continue
         seen_tickers.add(ticker)
 
+        # Determine effective tier for this ticker (respecting FULL cap to prevent GPU burnout)
+        chosen_tier = tier
+        if tier == "FULL":
+            if full_runs_count < full_runs_cap or target_ticker:
+                chosen_tier = "FULL"
+                full_runs_count += 1
+            else:
+                chosen_tier = "MID"
+                logger.info(
+                    f"[{ticker}] Full deep research cap ({full_runs_cap}) reached -> "
+                    f"sending to MID tier (tool rounds capped at MID_MAX_TOOL_ROUNDS=4)."
+                )
+
         t_ticker_start = time.time()
-        logger.info(f"[{ticker}] Initiating Deep Research (Tier: {tier})...")
+        logger.info(f"[{ticker}] Initiating Deep Research (Tier: {chosen_tier})...")
 
         ticker_raw_dir = raw_dir / ticker
         ticker_raw_dir.mkdir(parents=True, exist_ok=True)
@@ -523,11 +539,11 @@ def run_deep_research(
             elapsed_gate = round(time.time() - t_ticker_start, 3)
             record_research_timing(
                 ticker=ticker, target_date=date_str, stage="GATE_ONLY", seconds=elapsed_gate,
-                tier=tier, job_id=job_id, details=far_gate_reason,
+                tier=chosen_tier, job_id=job_id, details=far_gate_reason,
             )
             record_research_timing(
                 ticker=ticker, target_date=date_str, stage="TOTAL", seconds=elapsed_gate,
-                tier=tier, job_id=job_id, details="GATE_ONLY complete",
+                tier=chosen_tier, job_id=job_id, details="GATE_ONLY complete",
             )
             continue
 
@@ -603,12 +619,12 @@ def run_deep_research(
         active_pos_block = format_active_position_block(ticker)
 
         prefetch_sec = round(time.time() - t_prefetch_start, 3)
-        record_research_timing(ticker=ticker, target_date=date_str, stage="PREFETCH", seconds=prefetch_sec, tier=tier, job_id=job_id)
+        record_research_timing(ticker=ticker, target_date=date_str, stage="PREFETCH", seconds=prefetch_sec, tier=chosen_tier, job_id=job_id)
 
         # ------------------------------------------------------------------
         # Stage 2: DEBATE (FULL tier only)
         # ------------------------------------------------------------------
-        if tier == "FULL":
+        if chosen_tier == "FULL":
             t_debate_start = time.time()
             debate_payload = build_debate_payload(
                 ticker=ticker, date_str=date_str,
@@ -623,10 +639,10 @@ def run_deep_research(
             debate_result = run_debate(ticker, date_str, debate_payload, tdir, dw_str=data_window_str)
             debate_block = format_debate_block(debate_result)
             debate_sec = round(time.time() - t_debate_start, 3)
-            record_research_timing(ticker=ticker, target_date=date_str, stage="DEBATE", seconds=debate_sec, tier=tier, job_id=job_id)
+            record_research_timing(ticker=ticker, target_date=date_str, stage="DEBATE", seconds=debate_sec, tier=chosen_tier, job_id=job_id)
         else:
             debate_block = "(Debate skipped for MID/LITE tier to optimize throughput)"
-            record_research_timing(ticker=ticker, target_date=date_str, stage="DEBATE", seconds=0.0, tier=tier, job_id=job_id, details=f"Skipped in {tier}")
+            record_research_timing(ticker=ticker, target_date=date_str, stage="DEBATE", seconds=0.0, tier=chosen_tier, job_id=job_id, details=f"Skipped in {chosen_tier}")
 
         # 9. Daily alerts + Pine benchmark
         daily_alerts_block, alerts_list = build_daily_alerts_block(ticker, raw_dir)
@@ -700,14 +716,14 @@ def run_deep_research(
         # Stage 3 & 4: MODEL_A and MODEL_B
         # ------------------------------------------------------------------
         try:
-            mid_tool_limit = int(os.getenv("MID_MAX_TOOL_ROUNDS", "3"))
-            max_tools_a = 1 if tier == "LITE" else (mid_tool_limit if tier == "MID" else 8)
-            max_tools_b = 1 if tier == "LITE" else (mid_tool_limit if tier == "MID" else 8)
+            mid_tool_limit = int(os.getenv("MID_MAX_TOOL_ROUNDS", "4"))
+            max_tools_a = 1 if chosen_tier == "LITE" else (mid_tool_limit if chosen_tier == "MID" else 8)
+            max_tools_b = 1 if chosen_tier == "LITE" else (mid_tool_limit if chosen_tier == "MID" else 8)
 
             stats_a = {}
             stats_b = {}
 
-            if tier == "FULL":
+            if chosen_tier == "FULL":
                 p2 = run_pass2(
                     ticker=ticker, date_str=date_str,
                     system_prompt=system_prompt, user_prompt=user_prompt,
@@ -742,7 +758,7 @@ def run_deep_research(
                 tool_rounds=stats_a.get("tool_rounds", 0),
                 tool_calls=stats_a.get("tool_calls", 0),
                 tokens=stats_a.get("tokens", 0),
-                tier=tier, job_id=job_id,
+                tier=chosen_tier, job_id=job_id,
             )
 
             reports_dir = config.BASE_DIR / "reports" / date_str
@@ -754,7 +770,7 @@ def run_deep_research(
 
             # Model B Veto logic for MID tier:
             # In MID, Model B runs only when Model A says GO and setup is near-gate
-            if tier == "MID":
+            if chosen_tier == "MID":
                 is_model_a_go = bool(re.search(r'\b(ENTER|BUY|GO|ACTIONABLE)\b', clean_response, re.IGNORECASE))
                 is_near_gate = False
                 try:
@@ -779,28 +795,28 @@ def run_deep_research(
                         tool_rounds=stats_b.get("tool_rounds", 0),
                         tool_calls=stats_b.get("tool_calls", 0),
                         tokens=stats_b.get("tokens", 0),
-                        tier=tier, job_id=job_id, details="Veto executed",
+                        tier=chosen_tier, job_id=job_id, details="Veto executed",
                     )
                 else:
                     p2.ind_response = "(Model B independent pass skipped for MID tier / non-GO or non-near-gate posture)"
                     record_research_timing(
                         ticker=ticker, target_date=date_str, stage="MODEL_B",
-                        seconds=0.0, tier=tier, job_id=job_id, details="Veto skipped in MID",
+                        seconds=0.0, tier=chosen_tier, job_id=job_id, details="Veto skipped in MID",
                     )
-            elif tier == "FULL":
+            elif chosen_tier == "FULL":
                 record_research_timing(
                     ticker=ticker, target_date=date_str, stage="MODEL_B",
                     seconds=stats_b.get("seconds", 0.0),
                     tool_rounds=stats_b.get("tool_rounds", 0),
                     tool_calls=stats_b.get("tool_calls", 0),
                     tokens=stats_b.get("tokens", 0),
-                    tier=tier, job_id=job_id,
+                    tier=chosen_tier, job_id=job_id,
                 )
             else:  # LITE
                 p2.ind_response = "(Model B independent pass skipped for LITE tier)"
                 record_research_timing(
                     ticker=ticker, target_date=date_str, stage="MODEL_B",
-                    seconds=0.0, tier=tier, job_id=job_id, details="Skipped in LITE",
+                    seconds=0.0, tier=chosen_tier, job_id=job_id, details="Skipped in LITE",
                 )
 
             clean_ind_response = save_model_b_report(
@@ -847,13 +863,13 @@ def run_deep_research(
             arb_sec = round(time.time() - t_arb_start, 3)
             record_research_timing(
                 ticker=ticker, target_date=date_str, stage="ARBITRATION",
-                seconds=arb_sec, tier=tier, job_id=job_id,
+                seconds=arb_sec, tier=chosen_tier, job_id=job_id,
             )
 
             total_ticker_sec = round(time.time() - t_ticker_start, 3)
             record_research_timing(
                 ticker=ticker, target_date=date_str, stage="TOTAL",
-                seconds=total_ticker_sec, tier=tier, job_id=job_id, details=f"{tier} deep research completed",
+                seconds=total_ticker_sec, tier=chosen_tier, job_id=job_id, details=f"{chosen_tier} deep research completed",
             )
 
         except Exception as e:

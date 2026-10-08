@@ -959,8 +959,6 @@ def run_data_window_filter(
         W["stop"] = W["tight_stop"]
         f["long_stop_loss"] = W["tight_stop"]
         f["long_entry"] = price
-        f["long_zbot"] = price
-        f["long_ztop"] = price
         W["rr"] = W["momentum_rr"]
     # D1: COIL detector (VST-type, UNMEASURED): stage 1/2 base compression with low IV rank + squeeze / tight range
     elif (
@@ -1460,7 +1458,8 @@ def triage_ticker(
         verdict["setup_lane"] = "MOMENTUM_BREAKOUT"
         verdict["lane_label"] = "UNMEASURED"
         verdict["reason"] = "momentum_breakout_lane"
-        verdict["triage"] = "PASS"
+        verdict["triage"] = "WATCH"
+        verdict["is_measured"] = False
         verdict["chosen_side"] = "long"
         verdict["pursue"] = True
         verdict["momentum_rr"] = m_rr
@@ -1473,7 +1472,7 @@ def triage_ticker(
         verdict["long_plan"]["stop"] = round(t_stop, 2)
         verdict["long_plan"]["target"] = real_target
         verdict["long_plan"]["entry"] = round(float(price), 2)
-        verdict["long_plan"]["zone"] = [round(t_stop, 2), round(float(price), 2)]
+        # Preserve original zone (do not overwrite with [tight_stop, price])
         verdict["long_plan"]["rr"] = m_rr
 
         try:

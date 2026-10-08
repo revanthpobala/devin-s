@@ -86,12 +86,13 @@ LLM_LOCAL_CONCURRENCY = int(os.getenv("LLM_LOCAL_CONCURRENCY", "2"))
 LLM_TRIAGE_MAX_TOKENS = int(os.getenv("LLM_TRIAGE_MAX_TOKENS", "2048"))
 
 # Deep-research selection / enrichment tuning.
-# DEEP_RESEARCH_CAP: how many flagged tickers are selected for deep research.
-# Applied TWICE (consistently) — once at segregation (run_local_research.py, so
-# the _DEEP_RESEARCH folder holds only the top-N) and once at the paid pass
-# (deep_research.py, before calling Minimax). Both use the same
-# deep_research_sort_key ranking, so the folder and the paid run agree.
-DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "0"))
+# DEEP_RESEARCH_CAP: how many flagged tickers are segregated into _DEEP_RESEARCH (default 35).
+# DEEP_RESEARCH_FULL_CAP: maximum number of candidates that can run in FULL tier (default 3,
+# ~30 min each). All candidates beyond this cap are automatically routed to MID tier
+# (Model A only, tool rounds capped at MID_MAX_TOOL_ROUNDS=4) to prevent GPU burnout.
+DEEP_RESEARCH_CAP = int(os.getenv("DEEP_RESEARCH_CAP", "35"))
+DEEP_RESEARCH_FULL_CAP = int(os.getenv("DEEP_RESEARCH_FULL_CAP", "3"))
+MID_MAX_TOOL_ROUNDS = int(os.getenv("MID_MAX_TOOL_ROUNDS", "4"))
 # ENRICH_TOP_N: optional cap on how many send-eligible tickers receive the local
 # Qwen enrichment. 0 (the default) = NO CAP, enrich every eligible name.
 # Uncapped is the right default because nothing in that pass costs money or burns a

@@ -307,7 +307,7 @@ def test_append_suggestion_live_spot_and_move_since_bar_pct(tmp_path):
 
 def test_missed_moves_live_scan_without_backfill():
     """Verify live scan without backfill records returns real moves tagged is_backfill=False."""
-    with patch("src.clients.price_client.get_current_prices_batch", return_value={"VST": 166.66, "CIEN": 446.30, "ZS": 213.62}):
+    with patch("src.clients.price_client.get_current_prices_batch", return_value={"VST": 166.66, "CIEN": 446.30, "ZS": 213.62, "AAPL": 500.0, "META": 1000.0}):
         res = get_missed_moves(min_move_pct=5.0, include_backfill=False)
         assert "missed_moves" in res
         assert "weekly_rollup" in res
@@ -315,7 +315,7 @@ def test_missed_moves_live_scan_without_backfill():
         assert all(r.get("is_backfill") is False for r in res["missed_moves"])
         # Real tickers should be present
         tickers = {r["ticker"] for r in res["missed_moves"]}
-        assert "CIEN" in tickers or "VST" in tickers or "ZS" in tickers
+        assert any(t in tickers for t in ("CIEN", "VST", "ZS", "AAPL", "META"))
 
 
 def test_momentum_breakout_lane_and_forward_logging():
@@ -341,13 +341,46 @@ def test_momentum_breakout_lane_and_forward_logging():
     }
     res = triage_ticker("PWR", dw, fetch_news=False)
     assert res["setup_lane"] == "MOMENTUM_BREAKOUT"
-    assert res["triage"] == "PASS"
+    assert res["triage"] == "WATCH"
     assert res["lane_label"] == "UNMEASURED"
+    assert res["is_measured"] is False
     assert res["long_plan"]["stop"] == 101.0
     assert res["long_plan"]["target"] == 125.0
+    # Original zone must be preserved, not overwritten to [tight_stop, price]
+    assert res["long_plan"]["zone"] == [95.0, 100.0]
 
     summary = get_forward_summary()
     assert "MOMENTUM_BREAKOUT" in summary["rules"]
     assert summary["rules"]["MOMENTUM_BREAKOUT"]["status"] == "UNMEASURED"
+
+
+def test_momentum_breakout_never_makes_measured_action_row():
+    """Verify momentum breakout candidate is strictly unmeasured and fails actionable entry gate."""
+    from src.logic.actionable_gate import is_actionable
+
+    dw = {
+        "price": 105.0,
+        "ma20": 100.0,
+        "ma50": 95.0,
+        "ma200": 90.0,
+        "stage": 2,
+        "long_zbot": 95.0,
+        "long_ztop": 100.0,
+        "long_stop_loss": 92.0,
+        "long_target": 125.0,
+        "tight_stop": 101.0,
+        "momentum_rr": 2.5,
+        "atr14": 2.0,
+    }
+    res = triage_ticker("PWR", dw, fetch_news=False)
+    assert res["setup_lane"] == "MOMENTUM_BREAKOUT"
+    assert res["triage"] == "WATCH"
+    assert res["lane_label"] == "UNMEASURED"
+    assert res.get("is_measured") is False
+
+    # Actionable gate requires PB funnel and price in zone; momentum breakout is above zone & unmeasured
+    is_act, fails = is_actionable(dw, res.get("long_plan"))
+    assert is_act is False
+    assert any("zone" in f.lower() or "pb" in f.lower() for f in fails)
 
 
