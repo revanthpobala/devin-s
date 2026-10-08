@@ -710,11 +710,7 @@ def evaluate_technical_coiling(
     if score is not None and score < 50.0 and lane != "UNMEASURED":
         return None  # Weak setup below conviction threshold.
 
-    if lane == "UNMEASURED":
-        if pine_metrics.get("priority_tier") not in ("HIGH_PRIORITY", "MEDIUM_PRIORITY"):
-            pine_metrics["priority_tier"] = "HIGH_PRIORITY"
-        if not pine_metrics.get("priority_score") or pine_metrics["priority_score"] < 75.0:
-            pine_metrics["priority_score"] = max(pine_metrics.get("priority_score", 0.0), 75.0)
+
 
     res = {
         "ema20": round(ema20, 2),

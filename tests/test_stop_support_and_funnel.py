@@ -178,7 +178,7 @@ def test_unmeasured_mover_stage2_technical_coiling():
     metrics = evaluate_technical_coiling(candles, 0.02, lane="UNMEASURED")
     assert metrics is not None
     assert metrics["setup_posture"] == "Unmeasured Mover Breakout"
-    assert metrics["priority_tier"] == "HIGH_PRIORITY"
+    assert metrics["lane"] == "UNMEASURED"
     assert metrics["stop_level"] < 110.0
     # Stop loss should be below 20 EMA / swing low
     assert metrics["stop_level"] <= metrics["ema20"]

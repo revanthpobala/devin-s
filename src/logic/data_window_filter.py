@@ -639,15 +639,23 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
     momentum_rr = None
     if side == "long" and tgt is not None and price is not None and tgt > price:
         zbot_val = zbot if (zbot is not None and zbot > 0) else None
+        ztop_val = ztop if (ztop is not None and ztop > 0) else None
         ma20_val = f.get("ma20") if (f.get("ma20") is not None and f["ma20"] > 0) else None
         ma50_val = f.get("ma50") if (f.get("ma50") is not None and f["ma50"] > 0) else None
         atr_val = f.get("atr") or (price * 0.02)
-        sups_below = [s for s in (zbot_val, ma20_val, ma50_val) if s is not None and s < price]
-        if sups_below:
-            sup_floor = min(sups_below)
-            tight_stop = round(min(sup_floor - (0.25 * atr_val), price * 0.95), 2)
+
+        # Breakout dynamic support (e.g. PWR above zone with rising 20 EMA)
+        if ma20_val is not None and ma20_val < price and (ztop_val is None or ma20_val > ztop_val):
+            tight_stop = round(ma20_val, 2)
+        elif zbot_val is not None and zbot_val < price:
+            # Safely below support zone floor (never inside [zbot, ztop], e.g. META, QCOM)
+            tight_stop = round(min(zbot_val - (0.25 * atr_val), price * 0.95), 2)
         else:
-            tight_stop = round(price * 0.94, 2)
+            sups_below = [s for s in (zbot_val, ma20_val, ma50_val) if s is not None and s < price]
+            if sups_below:
+                tight_stop = round(min(max(sups_below) - (0.25 * atr_val), price * 0.95), 2)
+            else:
+                tight_stop = round(price * 0.94, 2)
         if 0 < tight_stop < price:
             m_risk = price - tight_stop
             m_reward = tgt - price
@@ -1439,21 +1447,30 @@ def triage_ticker(
 
     if (m_rr is None or t_stop is None) and price is not None:
         zbot = verdict.get("long_bot") or (long_p.get("zone", [None])[0])
+        ztop = verdict.get("long_top") or (long_p.get("zone", [None, None])[1] if len(long_p.get("zone", [])) > 1 else None)
         ma20 = data_window.get("ma20") or data_window.get("ma 20 fast") or data_window.get("ma 20")
         ma50 = data_window.get("ma50") or data_window.get("ma 50")
         atr_val = data_window.get("atr") or (float(price) * 0.02)
         try:
             price_flt = float(price)
             zbot_flt = float(zbot) if (zbot is not None and float(zbot) > 0) else None
+            ztop_flt = float(ztop) if (ztop is not None and float(ztop) > 0) else None
             ma20_flt = float(ma20) if (ma20 is not None and float(ma20) > 0) else None
             ma50_flt = float(ma50) if (ma50 is not None and float(ma50) > 0) else None
             atr_flt = float(atr_val) if atr_val is not None else (price_flt * 0.02)
-            sups_below = [s for s in (zbot_flt, ma20_flt, ma50_flt) if s is not None and s < price_flt]
-            if sups_below:
-                sup_floor = min(sups_below)
-                t_stop = round(min(sup_floor - (0.25 * atr_flt), price_flt * 0.95), 2)
+
+            # Breakout dynamic support (e.g. PWR above zone with rising 20 EMA)
+            if ma20_flt is not None and ma20_flt < price_flt and (ztop_flt is None or ma20_flt > ztop_flt):
+                t_stop = round(ma20_flt, 2)
+            elif zbot_flt is not None and zbot_flt < price_flt:
+                # Safely below support zone floor (never inside [zbot, ztop], e.g. META, QCOM)
+                t_stop = round(min(zbot_flt - (0.25 * atr_flt), price_flt * 0.95), 2)
             else:
-                t_stop = round(price_flt * 0.94, 2)
+                sups_below = [s for s in (zbot_flt, ma20_flt, ma50_flt) if s is not None and s < price_flt]
+                if sups_below:
+                    t_stop = round(min(max(sups_below) - (0.25 * atr_flt), price_flt * 0.95), 2)
+                else:
+                    t_stop = round(price_flt * 0.94, 2)
             if target_val is not None and float(target_val) > price_flt and 0 < t_stop < price_flt:
                 m_risk = price_flt - t_stop
                 m_reward = float(target_val) - price_flt
