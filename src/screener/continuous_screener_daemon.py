@@ -214,7 +214,7 @@ class ContinuousScreenerDaemon(threading.Thread):
         self.auto_deep_research = auto_deep_research if auto_deep_research is not None else (
             os.getenv("CONTINUOUS_AUTO_DEEP_RESEARCH", "1").lower() in ("1", "true", "yes")
         )
-        self.max_auto_deep_per_day = int(os.getenv("CONTINUOUS_MAX_AUTO_DEEP", "3"))
+        self.max_auto_deep_per_day = int(os.getenv("CONTINUOUS_MAX_AUTO_DEEP", "0"))
         # Display-only. The dispatch gate is pb_funnel (long side); see
         # evaluate_and_dispatch_deep_research and config.SCREENER_MIN_CONVICTION.
         self.min_conviction_score = config.SCREENER_MIN_CONVICTION
@@ -928,10 +928,13 @@ class ContinuousScreenerDaemon(threading.Thread):
                     t = f.name.replace("_summary.md", "").upper()
                     already_completed_recent.add(t)
 
-        slots_left = self.max_auto_deep_per_day - len(dispatched_today_snap)
-        if slots_left <= 0:
-            logger.info(f"🤖 [ContinuousScreener] Auto Deep Research daily cap ({self.max_auto_deep_per_day}) reached for {target_date}.")
-            return []
+        if self.max_auto_deep_per_day > 0:
+            slots_left = self.max_auto_deep_per_day - len(dispatched_today_snap)
+            if slots_left <= 0:
+                logger.info(f"🤖 [ContinuousScreener] Auto Deep Research daily cap ({self.max_auto_deep_per_day}) reached for {target_date}.")
+                return []
+        else:
+            slots_left = 999999
 
         eligible = []
         for c in candidates:
@@ -1112,7 +1115,7 @@ if __name__ == "__main__":
     parser.add_argument("--top", type=int, default=10, help="Top N candidates to track per side")
     parser.add_argument("--auto-deep", action="store_true", default=True, help="Automatically dispatch 1 qualified candidate into deep research when slot is free")
     parser.add_argument("--no-auto-deep", dest="auto_deep", action="store_false", help="Disable autonomous deep research")
-    parser.add_argument("--max-deep", type=int, default=3, help="Max deep research runs per day")
+    parser.add_argument("--max-deep", type=int, default=0, help="Max deep research runs per day (default: 0 = uncapped)")
     parser.add_argument("--max-slots", type=int, default=3, help="Max concurrent deep research slots (default 3)")
     parser.add_argument("--min-score", type=float, default=60.0, help="Minimum priority score for deep research")
     parser.add_argument("--market-hours-only", action="store_true", help="Only scan during market hours")

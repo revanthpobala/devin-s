@@ -87,8 +87,8 @@ def main():
     parser.add_argument(
         "--max-deep",
         type=int,
-        default=3,
-        help="Max deep research dispatches allowed per day (default: 3)",
+        default=0,
+        help="Max deep research dispatches allowed per day (default: 0 = uncapped, slot-governed)",
     )
     parser.add_argument(
         "--min-score",
@@ -145,7 +145,7 @@ def main():
     logger.info(f"   Scan Interval:      {args.interval}s ({args.interval / 60:.1f}m)")
     logger.info(f"   Autonomous Deep:    {'ENABLED' if args.auto_deep else 'DISABLED'} (max {args.max_slots} in slot)")
     logger.info(f"   Conviction Gate:    Score >= {args.min_score}")
-    logger.info(f"   Daily Deep Cap:     {args.max_deep} setups / day")
+    logger.info(f"   Daily Deep Cap:     {args.max_deep or 'UNCAPPED'} setups / day")
     logger.info(f"   Market Hours Only:  {args.market_hours_only}")
     logger.info(f"   Mode:               {'Single Cycle (--once)' if args.once else 'Continuous Autonomous Loop'}")
     logger.info("=" * 85)

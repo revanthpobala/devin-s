@@ -154,7 +154,7 @@ def _fan_out_to_subscribers(alert: Dict[str, Any]) -> None:
         _WS_SUBSCRIBERS.difference_update(dead)
 
 
-def start_bridge_daemon(min_score: float = 75.0, auto_deep: bool = True, max_deep: int = 3):
+def start_bridge_daemon(min_score: float = 75.0, auto_deep: bool = True, max_deep: int = 0):
     """Start EdgeScannerBridge in a background thread + its own asyncio loop.
 
     Safe to call multiple times — no-ops if already running."""
@@ -191,7 +191,7 @@ class EdgeScannerBridge:
         ws_url: str = DEFAULT_WS_URL,
         min_score: float = 75.0,
         auto_deep: bool = True,
-        max_deep_per_day: int = 3,
+        max_deep_per_day: int = 0,
         dry_run: bool = False,
     ):
         self.ws_url = ws_url
@@ -348,7 +348,7 @@ class EdgeScannerBridge:
 
     def _fits_budget(self) -> bool:
         """True if there is room to dispatch another candidate right now (cap + slot)."""
-        if len(self.dispatched_today) >= self.max_deep_per_day:
+        if self.max_deep_per_day > 0 and len(self.dispatched_today) >= self.max_deep_per_day:
             return False
         return self.is_slot_available()
 
@@ -551,7 +551,7 @@ def main():
     parser.add_argument("--min-score", type=float, default=75.0, help="Min priority score to dispatch (default: 75.0)")
     parser.add_argument("--auto-deep", action="store_true", default=True, help="Enable automatic deep research dispatch")
     parser.add_argument("--no-auto-deep", dest="auto_deep", action="store_false", help="Disable automatic deep research")
-    parser.add_argument("--max-deep", type=int, default=3, help="Max deep research dispatches per day (default: 3)")
+    parser.add_argument("--max-deep", type=int, default=0, help="Max deep research dispatches per day (default: 0 = uncapped)")
     parser.add_argument("--dry-run", action="store_true", help="Simulate alerts without dispatching deep research")
     args = parser.parse_args()
 
