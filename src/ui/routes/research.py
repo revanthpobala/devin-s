@@ -19,7 +19,7 @@ import sqlite3
 
 import psutil
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from src import config
@@ -1992,6 +1992,9 @@ def get_research_jobs(date: Optional[str] = None):
                     is_alive = False
 
             item["is_alive"] = is_alive
+            if job_id:
+                item["log_url"] = f"/api/jobs/{job_id}/logs"
+                item["raw_log_url"] = f"/api/jobs/{job_id}/logs?raw=true"
             jobs_list.append(item)
         local_queue = [j for j in jobs_list if j.get("mode") == "local_only"]
         deep_queue = [j for j in jobs_list if j.get("mode") != "local_only"]
@@ -2260,4 +2263,237 @@ def kill_research_job_endpoint(job_id: str):
 
     dispatch_next_queued_job()
     return {"status": "killed", "job_id": job_id}
+
+
+def _resolve_job_record_and_log(job_id: str) -> tuple[Optional[dict], Optional[Path]]:
+    """Resolve database job record and log file path for a given job_id or ticker symbol."""
+    raw_str = (job_id or "").strip()
+    if not raw_str:
+        return None, None
+    clean_id = Path(raw_str).name
+    if clean_id.endswith(".log"):
+        clean_id = clean_id[:-4]
+
+    job_row = None
+    with get_db() as conn:
+        c = conn.cursor()
+        r = c.execute("SELECT * FROM active_research_jobs WHERE job_id = ?", (clean_id,)).fetchone()
+        if r:
+            job_row = dict(r)
+        else:
+            r = c.execute(
+                "SELECT * FROM active_research_jobs WHERE UPPER(ticker) = ? ORDER BY started_at DESC LIMIT 1",
+                (clean_id.upper(),),
+            ).fetchone()
+            if r:
+                job_row = dict(r)
+
+    candidates: list[Path] = []
+    if job_row and job_row.get("log_file"):
+        candidates.append(Path(job_row["log_file"]))
+    candidates.append(LOGS_DIR / f"{clean_id}.log")
+    if job_row:
+        candidates.append(LOGS_DIR / f"{job_row['job_id']}.log")
+        ticker = job_row.get("ticker")
+        if ticker:
+            for p in sorted(LOGS_DIR.glob(f"job_*_{ticker}.log"), reverse=True):
+                candidates.append(p)
+            for p in sorted(LOGS_DIR.glob(f"*{ticker}*.log"), reverse=True):
+                candidates.append(p)
+
+    resolved_path = None
+    for cand in candidates:
+        if cand and cand.exists():
+            resolved_path = cand.resolve()
+            break
+
+    # Security check: prevent directory traversal outside workspace
+    if resolved_path:
+        base_res = str(config.BASE_DIR.resolve())
+        logs_res = str(LOGS_DIR.resolve())
+        p_res = str(resolved_path)
+        if not (p_res.startswith(logs_res) or p_res.startswith(base_res)):
+            return job_row, None
+
+    if not resolved_path:
+        target_id = job_row["job_id"] if job_row else clean_id
+        resolved_path = (LOGS_DIR / f"{target_id}.log").resolve()
+
+    return job_row, resolved_path
+
+
+@router.get("/api/jobs/{job_id}")
+def get_research_job_endpoint(job_id: str):
+    """Retrieve metadata, execution status, and log endpoints for a specific research job or ticker."""
+    job_row, log_path = _resolve_job_record_and_log(job_id)
+    if not job_row and (not log_path or not log_path.exists()):
+        raise HTTPException(status_code=404, detail=f"No job or log file found for '{job_id}'")
+
+    jid = job_row["job_id"] if job_row else Path(job_id).name
+    is_alive = False
+    if job_row:
+        thread = ACTIVE_RESEARCH_WORKERS.get(jid)
+        subproc = ACTIVE_RESEARCH_SUBPROCS.get(jid)
+        if thread is not None and thread.is_alive():
+            is_alive = True
+        elif subproc is not None and subproc.poll() is None:
+            is_alive = True
+        elif job_row.get("status") == "RUNNING":
+            pid = job_row.get("pid")
+            is_alive = bool(pid and psutil.pid_exists(pid))
+            if not is_alive:
+                ticker_sym = job_row.get("ticker", "")
+                live_pid = find_live_research_pid(ticker_sym, jid)
+                if live_pid:
+                    is_alive = True
+                    job_row["pid"] = live_pid
+
+    has_log = bool(log_path and log_path.exists())
+    log_size = log_path.stat().st_size if has_log else 0
+
+    return {
+        "status": "ok",
+        "job_id": jid,
+        "ticker": job_row.get("ticker") if job_row else None,
+        "is_alive": is_alive,
+        "has_log": has_log,
+        "log_file": str(log_path) if log_path else None,
+        "log_size_bytes": log_size,
+        "log_url": f"/api/jobs/{jid}/logs",
+        "raw_log_url": f"/api/jobs/{jid}/logs?raw=true",
+        "job": job_row,
+    }
+
+
+@router.get("/api/jobs/{job_id}/logs")
+@router.get("/api/jobs/{job_id}/log")
+def get_job_logs_endpoint(
+    job_id: str,
+    lines: int = 500,
+    tail: Optional[int] = None,
+    offset: int = 0,
+    raw: bool = False,
+    format: Optional[str] = None,
+    download: bool = False,
+):
+    """Expose research job logs via the API (JSON lines by default, or plain text / download)."""
+    job_row, log_path = _resolve_job_record_and_log(job_id)
+    jid = job_row["job_id"] if job_row else Path(job_id).name
+    t_sym = job_row.get("ticker") if job_row else None
+
+    # Handle QUEUED state before log file is created
+    if job_row and job_row.get("status") == "QUEUED" and (not log_path or not log_path.exists()):
+        msg = f"Job {jid} ({t_sym or 'unknown'}) is currently QUEUED. Log file will be generated once execution begins."
+        if raw or (format and format.lower() in ("raw", "text", "plain")):
+            return PlainTextResponse(msg)
+        return {
+            "status": "queued",
+            "job_id": jid,
+            "ticker": t_sym,
+            "job_status": "QUEUED",
+            "stage": job_row.get("stage", "QUEUED"),
+            "stage_detail": job_row.get("stage_detail"),
+            "tier": job_row.get("tier"),
+            "mode": job_row.get("mode"),
+            "is_alive": False,
+            "message": msg,
+            "total_lines": 0,
+            "returned_lines": 0,
+            "lines": [],
+            "logs": [],
+            "log_file": str(log_path) if log_path else None,
+            "raw_url": f"/api/jobs/{jid}/logs?raw=true",
+        }
+
+    if not log_path or not log_path.exists():
+        if job_row:
+            err_msg = job_row.get("error_message") or f"No log content recorded yet for job {jid} (status: {job_row.get('status')})."
+            if raw or (format and format.lower() in ("raw", "text", "plain")):
+                return PlainTextResponse(err_msg)
+            return {
+                "status": "ok",
+                "job_id": jid,
+                "ticker": t_sym,
+                "job_status": job_row.get("status", "UNKNOWN"),
+                "stage": job_row.get("stage"),
+                "stage_detail": job_row.get("stage_detail"),
+                "tier": job_row.get("tier"),
+                "mode": job_row.get("mode"),
+                "is_alive": False,
+                "message": err_msg,
+                "total_lines": 0,
+                "returned_lines": 0,
+                "lines": [],
+                "logs": [],
+                "log_file": str(log_path) if log_path else None,
+                "raw_url": f"/api/jobs/{jid}/logs?raw=true",
+            }
+        raise HTTPException(status_code=404, detail=f"No log file found for job '{job_id}'")
+
+    if download:
+        return FileResponse(
+            path=str(log_path),
+            filename=f"{jid}.log",
+            media_type="text/plain",
+        )
+
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read log file: {e}")
+
+    if raw or (format and format.lower() in ("raw", "text", "plain")):
+        return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+
+    all_lines = content.splitlines()
+    limit = tail if tail is not None else lines
+
+    if limit and limit > 0:
+        sliced = all_lines[-limit:]
+    else:
+        sliced = all_lines
+
+    if offset and offset > 0:
+        sliced = sliced[offset:]
+
+    is_alive = False
+    if job_row:
+        thread = ACTIVE_RESEARCH_WORKERS.get(jid)
+        subproc = ACTIVE_RESEARCH_SUBPROCS.get(jid)
+        if thread is not None and thread.is_alive():
+            is_alive = True
+        elif subproc is not None and subproc.poll() is None:
+            is_alive = True
+        elif job_row.get("status") == "RUNNING":
+            pid = job_row.get("pid")
+            is_alive = bool(pid and psutil.pid_exists(pid))
+
+    return {
+        "status": "ok",
+        "job_id": jid,
+        "ticker": t_sym,
+        "job_status": job_row.get("status") if job_row else "COMPLETED",
+        "stage": job_row.get("stage") if job_row else "DONE",
+        "stage_detail": job_row.get("stage_detail") if job_row else None,
+        "tier": job_row.get("tier") if job_row else None,
+        "mode": job_row.get("mode") if job_row else None,
+        "is_alive": is_alive,
+        "error_message": job_row.get("error_message") if job_row else None,
+        "started_at": job_row.get("started_at") if job_row else None,
+        "completed_at": job_row.get("completed_at") if job_row else None,
+        "target_date": job_row.get("target_date") if job_row else None,
+        "log_file": str(log_path),
+        "total_lines": len(all_lines),
+        "returned_lines": len(sliced),
+        "lines": sliced,
+        "logs": sliced,
+        "raw_url": f"/api/jobs/{jid}/logs?raw=true",
+    }
+
+
+@router.get("/api/jobs/{job_id}/raw")
+def get_job_raw_log_endpoint(job_id: str):
+    """Direct plain-text endpoint for a job log."""
+    return get_job_logs_endpoint(job_id=job_id, raw=True)
+
 

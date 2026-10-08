@@ -824,7 +824,7 @@ window.AppDesk = {
                         🔬 Research
                       </button>`
                   }
-                  <a href="https://www.tradingview.com/chart/?symbol=${sym}" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open TradingView Chart">
+                  <a href="https://www.tradingview.com/chart/jPAQSlZC/?symbol=${sym}&interval=D" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open in your logged-in TradingView session with the Rev - Enhanced v2 layout">
                     📈 TV
                   </a>
                 </div>

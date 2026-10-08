@@ -38,7 +38,7 @@ def main():
             args=["--disable-blink-features=AutomationControlled"],
         )
         page = context.new_page()
-        chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/")
+        chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/jPAQSlZC/")
         page.goto(chart_url)
 
         try:

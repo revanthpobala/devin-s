@@ -358,26 +358,47 @@ def get_company_names_endpoint():
 def get_logs(channel: str = "all", job_id: Optional[str] = None):
     """Fetch live log buffer by channel or specific research job log with reconciled job state."""
     if job_id:
-        safe_job_id = Path(job_id).name
+        safe_job_id = Path(job_id.strip()).name
+        if safe_job_id.endswith(".log"):
+            safe_job_id = safe_job_id[:-4]
         if not re.match(r'^[a-zA-Z0-9_\-]+$', safe_job_id):
             raise HTTPException(status_code=400, detail="Invalid job_id format")
-        log_file = (LOGS_DIR / f"{safe_job_id}.log").resolve()
-        if not str(log_file).startswith(str(LOGS_DIR.resolve())):
-            raise HTTPException(status_code=403, detail="Path traversal blocked")
-        logs: list[str] = []
-        if log_file.exists():
-            try:
-                logs = log_file.read_text(encoding="utf-8").splitlines()[-600:]
-            except Exception:
-                pass
 
         # Return reconciled job row so log view and job list never disagree
         job_row = None
         with get_db() as conn:
             c = conn.cursor()
-            row = c.execute("SELECT * FROM active_research_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = c.execute("SELECT * FROM active_research_jobs WHERE job_id = ?", (safe_job_id,)).fetchone()
+            if not row:
+                row = c.execute(
+                    "SELECT * FROM active_research_jobs WHERE UPPER(ticker) = ? ORDER BY started_at DESC LIMIT 1",
+                    (safe_job_id.upper(),),
+                ).fetchone()
             if row:
                 job_row = dict(row)
+
+        target_id = job_row["job_id"] if job_row else safe_job_id
+        log_file = (LOGS_DIR / f"{target_id}.log").resolve()
+        if job_row and job_row.get("log_file"):
+            p_custom = Path(job_row["log_file"]).resolve()
+            if p_custom.exists():
+                log_file = p_custom
+        elif not log_file.exists() and job_row and job_row.get("ticker"):
+            ticker = job_row["ticker"]
+            for cand in sorted(LOGS_DIR.glob(f"job_*_{ticker}.log"), reverse=True):
+                if cand.exists():
+                    log_file = cand.resolve()
+                    break
+
+        if not (str(log_file).startswith(str(LOGS_DIR.resolve())) or str(log_file).startswith(str(config.BASE_DIR.resolve()))):
+            raise HTTPException(status_code=403, detail="Path traversal blocked")
+        logs: list[str] = []
+        if log_file.exists():
+            try:
+                logs = log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-600:]
+            except Exception:
+                pass
+
                 # Liveness reconciliation matching /api/jobs logic
                 thread = ACTIVE_RESEARCH_WORKERS.get(job_id)
                 subproc = ACTIVE_RESEARCH_SUBPROCS.get(job_id)
@@ -451,14 +472,5 @@ def get_logs(channel: str = "all", job_id: Optional[str] = None):
 @router.get("/api/logs/raw/{job_id}")
 def get_raw_job_log(job_id: str):
     """Serve the full raw log file for a research job (plain text, opens in new tab)."""
-    import re as _re
-    if not _re.match(r'^[a-zA-Z0-9_\-]+$', job_id):
-        raise HTTPException(400, "Invalid job ID")
-    log_file = LOGS_DIR / f"{job_id}.log"
-    if not log_file.exists():
-        raise HTTPException(404, f"No log file found for job {job_id}")
-    try:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        raise HTTPException(500, f"Failed to read log: {e}")
-    return PlainTextResponse(content)
+    from src.ui.routes.research import get_job_raw_log_endpoint
+    return get_job_raw_log_endpoint(job_id=job_id)

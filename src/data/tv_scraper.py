@@ -46,8 +46,17 @@ SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 
 class TVScraper:
     def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None, headless: bool = True):
-        self.chart_url = os.getenv("TV_CHART_URL", "https://www.tradingview.com/chart/jPAQSlZC/")
-        self.plain_chart_url = os.getenv("TV_PLAIN_CHART_URL", "https://www.tradingview.com/chart/92oElFWJ/")
+        env_chart = (os.getenv("TV_CHART_URL") or "").strip()
+        if not env_chart or env_chart.rstrip("/") in ("https://www.tradingview.com/chart", "http://www.tradingview.com/chart"):
+            self.chart_url = "https://www.tradingview.com/chart/jPAQSlZC/"
+        else:
+            self.chart_url = env_chart if env_chart.endswith("/") else (env_chart + "/")
+
+        env_plain = (os.getenv("TV_PLAIN_CHART_URL") or "").strip()
+        if not env_plain or env_plain.rstrip("/") in ("https://www.tradingview.com/chart", "http://www.tradingview.com/chart"):
+            self.plain_chart_url = "https://www.tradingview.com/chart/92oElFWJ/"
+        else:
+            self.plain_chart_url = env_plain if env_plain.endswith("/") else (env_plain + "/")
         self.headless = bool(headless if headless is not None else os.getenv("HEADLESS_SCRAPE", "1").lower() in ("1", "true", "yes"))
         # Store Chrome profile locally or read from TV_CHROME_PROFILE_DIR
         env_profile = os.getenv("TV_CHROME_PROFILE_DIR")
@@ -127,8 +136,8 @@ class TVScraper:
 
     def capture_normal_chart(self, symbol: str) -> Dict[str, str]:
         """
-        Scrapes a standard TradingView daily candlestick chart (without private layout dependency)
-        at https://www.tradingview.com/chart/?symbol={symbol}&interval=D
+        Scrapes a standard TradingView daily candlestick chart with the Rev layout
+        at https://www.tradingview.com/chart/jPAQSlZC/?symbol={symbol}&interval=D
         Saves:
         {safe_symbol}_chart.png
         """
@@ -177,7 +186,8 @@ class TVScraper:
                     raise launch_err
 
             page = context.new_page()
-            url = f"https://www.tradingview.com/chart/?symbol={safe_symbol}&interval=D"
+            sep = "&" if "?" in self.chart_url else "?"
+            url = f"{self.chart_url}{sep}symbol={safe_symbol}&interval=D"
             logger.info(f"Navigating to normal chart: {url}")
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_selector("canvas", timeout=25000)
