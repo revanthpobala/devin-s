@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from src import config
 from src.clients.price_client import get_current_prices_batch
 from src.logic.report_level_extractor import extract_watch_levels_from_report
+from src.tracking.ops_alerts import is_test_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         date_str = d_path.name
         for arb_file in d_path.glob("*_arbitration.md"):
             ticker = arb_file.name.replace("_arbitration.md", "").upper()
-            if ticker in seen_tickers:
+            if is_test_ticker(ticker) or ticker in seen_tickers:
                 continue
             seen_tickers.add(ticker)
 
@@ -207,6 +208,10 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             if not watch_data:
                 continue
 
+            verdict_raw = str(watch_data.get("verdict") or "").upper()
+            if any(v in verdict_raw for v in ("CASH_SKIP", "GATE_ONLY", "CUT", "REJECTED_BY_GATE", "STAND_ASIDE")):
+                continue
+
             shares_p = watch_data.get("shares_plan") or {}
             options_p = watch_data.get("options_plan") or {}
             side = str(watch_data.get("side") or shares_p.get("side") or "LONG").upper()
@@ -216,6 +221,9 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             target_1 = float(shares_p.get("target_1") or 0.0)
             target_2 = float(shares_p.get("target_2") or 0.0)
             breakout_lvl = float(shares_p.get("breakout_level") or 0.0)
+
+            if entry_low <= 0 and entry_high <= 0 and breakout_lvl <= 0 and not options_p.get("actionable"):
+                continue
 
             # Determine execution vehicle
             opt_actionable = bool(options_p.get("actionable", False))

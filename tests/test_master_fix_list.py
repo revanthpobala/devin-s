@@ -212,7 +212,7 @@ def test_pipeline_gate_only_shortcut(tmp_path):
     from src.logic.deep_research.pipeline import run_deep_research
 
     date_str = "2026-10-07"
-    ticker = "FARSYM"
+    ticker = "TEST_FARSYM"
     chart_dir = tmp_path / "data" / "raw" / date_str / ticker
     chart_dir.mkdir(parents=True, exist_ok=True)
     chart_file = chart_dir / f"{ticker}_chart.png"
