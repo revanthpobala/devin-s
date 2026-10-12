@@ -553,8 +553,10 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     for tr in tool_results:
                         messages.append({k: v for k, v in tr.items() if not k.startswith("_")})
 
-                    # Live timeline completion (names, durations, ok/err) for the UI
-                    yield f"data: {json.dumps({
+                    # Live timeline completion (names, durations, ok/err) for the UI.
+                    # The payload is hoisted out of the f-string: a replacement field spanning
+                    # multiple lines is PEP 701 syntax (3.12+) and a SyntaxError on 3.10/3.11.
+                    tool_done_payload = {
                         'status': 'tool_done',
                         'tools': [
                             {
@@ -566,7 +568,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             for tr in tool_results
                         ],
                         'total_ms': _tool_ms,
-                    })}\n\n"
+                    }
+                    yield f"data: {json.dumps(tool_done_payload)}\n\n"
 
                 import re
                 raw_full = "".join(full_answer_chunks)

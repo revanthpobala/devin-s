@@ -390,6 +390,19 @@ def run_arbitration(
                 watch_data["verdict"] = capped_verdict
                 verdict = capped_verdict
 
+        # The number follows the verdict's band, capped or not: cap_conviction is the single
+        # rule the alert triage uses, and a "STALK" card that keeps the judge's 8 is the same
+        # absurd badge in a different column.
+        from src.tracking.alert_evaluator import cap_conviction
+
+        _panel_triage = (
+            "PASS" if "ENTER" in verdict.upper()
+            else ("CUT" if "CASH_SKIP" in verdict.upper() else "WATCH")
+        )
+        watch_data["conviction"] = cap_conviction(
+            watch_data.get("conviction"), _panel_triage, [], has_plan=bool(plan)
+        )
+
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
         if not _ok:
             logger.warning(

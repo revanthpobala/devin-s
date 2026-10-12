@@ -474,6 +474,36 @@ def test_the_seed_contains_the_universe_and_alert_tables(client):
     assert row["spot_price"] == 104.25
 
 
+def test_rr_at_market_never_scores_the_planned_entry(client):
+    """A ratio measured at the planned entry is not "at the market" and must not land there.
+
+    The plan fallback also manufactured ratios out of degenerate geometry (a $1-wide risk
+    scored as "RR 29"), and it ranked stop-inside-noise rows above real ones. rr_at_market
+    now holds the signal-time ratio or the live-print ratio, or nothing.
+    """
+    import src.ui.routes.desk as desk_mod
+
+    desk_src = (desk_mod.__file__ and open(desk_mod.__file__, encoding="utf-8").read()) or ""
+    plan_formula = "round((target - entry_h) / (entry_h - stop), 2)"
+    assert plan_formula not in desk_src, "the plan-geometry ratio is back in rr_at_market"
+
+
+def test_local_score_is_published_on_one_scale(client):
+    """alerts.score is the 0-100 card score; the desk's conviction band is 1-10.
+
+    Before the normalization the inbox column served 63 (AAPL card) directly beside 4/10
+    (a swing badge), which reads as two unrelated numbers.
+    """
+    from src.ui.routes.desk import _normalized_local_score
+
+    assert _normalized_local_score("63") == 6.3
+    assert _normalized_local_score("100") == 10.0
+    assert _normalized_local_score("6/10") == 6.0
+    assert _normalized_local_score(9) == 9.0
+    assert _normalized_local_score("") == ""
+    assert _normalized_local_score(None) == ""
+
+
 def monkeypatch_attr(obj, name, value):
     """Tiny stand-in for monkeypatch where a fixture parameter is not in scope."""
     import contextlib

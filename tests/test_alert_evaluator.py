@@ -133,3 +133,32 @@ def test_garbage_conviction_falls_back_to_default():
     assert cap_conviction("high", "WATCH", []) == 4
     assert cap_conviction(None, "WATCH", []) == 4
     assert cap_conviction(99, "WATCH", [], entry_mode="TREND_LONG", has_plan=True) == 10
+
+
+# =====================================================================================
+# The 0DTE card playbook: conviction must land on the same 1-10 band the swing triage uses.
+# The card's own score stays 0-100 -- it is the card's scale, printed as "Card: A(63)".
+# =====================================================================================
+
+def _0dte_playbook(verdict: str, score: str):
+    from src.tracking.alert_evaluator import synthesize_deterministic_triage
+
+    return synthesize_deterministic_triage(
+        "AAPL", "ALERT_CALLS", "Intraday", "10:07 AM ET", 100.0, 15.0,
+        {"verdict": verdict, "grade": "A", "score": score, "why_now": "breakout"},
+        {},
+    )[1]
+
+
+def test_0dte_conviction_uses_the_110_band():
+    pb = _0dte_playbook("BUY CALLS", "63")
+    # Bands are integers: cap_conviction truncates toward the lower band, never rounds up.
+    assert "Conviction: 6/10 (A)" in pb
+    assert "Conviction: 63/100" not in pb
+    # The card score itself stays on its own scale, labelled as the card's.
+    assert "Card: BUY CALLS A(63)" in pb
+
+
+def test_0dte_stand_aside_carries_no_deployment_conviction():
+    pb = _0dte_playbook("STAND ASIDE", "63")
+    assert "Conviction: 4/10" in pb

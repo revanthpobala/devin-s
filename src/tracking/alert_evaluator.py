@@ -515,8 +515,22 @@ def synthesize_deterministic_triage(
         action_call = "⏸️ WAIT"
 
     header = f"[{symbol}] [{current_time_et}] — {action_call}"
+
+    # Conviction is published on ONE scale: the gem's 1-10 bands. The card score is 0-100,
+    # so a "73" card must not sit in the same sentence as a swing triage's "(4/10)". A card
+    # that is not a TAKE carries no deployment conviction at all -- the card's own score is
+    # not permission -- so it routes through the same cap as a CUT.
+    try:
+        card_score = float(score)
+    except (TypeError, ValueError):
+        card_score = 75.0
+    o_triage = "PASS" if "TAKE" in action_call else "CUT"
+    conviction = cap_conviction(
+        round(card_score / 10.0, 1), o_triage, [], entry_mode="MOMENTUM", has_plan=True
+    )
+
     pb = f"""{header}
-Conviction: {score}/100 ({grade}) | Card: {verdict or action} {grade}({score}) | Regime: {context} | VIX: {vix}
+Conviction: {conviction}/10 ({grade}) | Card: {verdict or action} {grade}({card_score:.0f}) | Regime: {context} | VIX: {vix}
 
 THE PLAY:    {symbol} 0DTE {"CALLS" if is_call else "PUTS"} ATM
 PLAN:        {plan}

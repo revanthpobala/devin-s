@@ -23,6 +23,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/desk", tags=["desk"])
 
+
+def _normalized_local_score(raw) -> Any:
+    """One scale for local_score: the 1-10 conviction band the desk speaks everywhere else.
+
+    alerts.score is the 0-100 card score (63, 100 for an intraday card) and the decision
+    badge carries already-band-limited "(4/10)" text, so the same column was serving 63 next
+    to 4/10. Normalize at the boundary: the badge numerator is already on the band, a raw
+    score over 10 is divided by 10. Missing stays as-is.
+    """
+    if raw is None or raw == "":
+        return ""
+    s = str(raw).strip()
+    if "/" in s:
+        try:
+            return float(s.split("/", 1)[0].strip())
+        except ValueError:
+            return ""
+    try:
+        v = float(s)
+    except ValueError:
+        return ""
+    return round(v / 10.0, 1) if v > 10 else round(v, 1)
+
 # Measured and not configurable: the corpus median stop is 0.69 ATR and 65% of stops get hit, so
 # anything narrower is inside daily noise and inflates R:R without adding information.
 STOP_ATR_NOISE_FLOOR = rr_config.STOP_ATR_MIN
@@ -291,7 +314,7 @@ def get_today():
                     r["date"] = (local.get("date") if local else None) or today_str
                     r["llm_decision"] = local.get("llm_decision")
                     r["llm_playbook"] = (local.get("llm_playbook") or "")[:120]
-                    r["local_score"] = local.get("score") or ""
+                    r["local_score"] = _normalized_local_score(local.get("score"))
 
                     job = job_map.get(sym)
                     has_real_deep = _has_deep_report(sym, today_str)
@@ -355,6 +378,11 @@ def get_today():
                     # a spot (7 of 177 rows today), so when it is absent we compute the same ratio
                     # from the live print and the persisted stop/target, and say which one it is.
                     # A row with neither is genuinely unmeasured and must not be ranked.
+                    #
+                    # Deliberately NO plan-geometry fallback: a ratio measured at the planned
+                    # entry is not "at the market". It scored a $1 risk sliver as "RR 29" and
+                    # ranked stop-inside-noise rows above real ones, so it lives nowhere now --
+                    # the planned entry's own view is the gate's job, not this field's.
                     rr_at_signal = r.get("rr_at_market_at_signal") if r.get("rr_at_market_at_signal") is not None else r.get("w_rr_at_market_at_signal")
                     try:
                         rr_at_signal = float(rr_at_signal) if rr_at_signal else None
@@ -366,15 +394,6 @@ def get_today():
                     elif last_px and stop and last_px > stop and target and target > last_px:
                         rr_at_market = round((target - last_px) / (last_px - stop), 2)
                         rr_source = "live"
-                    elif (
-                        # A stop at or through the live price leaves no risk to measure. Without
-                        # this guard the plan branch scores a $1 sliver as "RR 29", the same
-                        # stop-inside-noise artifact stop_tight exists to demote.
-                        (not last_px or last_px > stop)
-                        and entry_h and entry_h > stop and target and target > entry_h
-                    ):
-                        rr_at_market = round((target - entry_h) / (entry_h - stop), 2)
-                        rr_source = "plan"
                     else:
                         rr_at_market, rr_source = None, None
 
@@ -576,7 +595,7 @@ def get_today():
                         "setup": local.get("setup") or "",
                         "llm_decision": local.get("llm_decision"),
                         "llm_playbook": local.get("llm_playbook") or "",
-                        "local_score": local.get("score") or "",
+                        "local_score": _normalized_local_score(local.get("score")),
                         "deep_status": deep_st,
                         "deep_stage": job_stg,
                         "deep_stage_detail": job.get("stage_detail", ""),
@@ -621,7 +640,9 @@ def get_today():
                     job = job_map.get(sym, {})
                     s_match = next((s for s in suggestion_rows if ((s["ticker"] or "").lower() == sym)), None)
                     score_match = re.search(r"\((\d+(?:/\d+)?)\)", local.get("llm_decision") or "")
-                    score_val = score_match.group(1) if score_match else (str(local.get("score")) if local.get("score") else "")
+                    score_val = _normalized_local_score(
+                        score_match.group(1) if score_match else local.get("score")
+                    )
                     j_st = job.get("job_status", "none")
                     j_stg = job.get("stage", "none")
                     has_real_deep = _has_deep_report(sym, today_str)
