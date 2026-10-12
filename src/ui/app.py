@@ -35,7 +35,7 @@ logger = logging.getLogger("ui_server")
 
 def create_app() -> FastAPI:
     """Create and configure the central FastAPI trading cockpit application."""
-    app = FastAPI(title="Stock Trading Cockpit", version="1.0.0")
+    app = FastAPI(title="Stock Trading Cockpit", version="2.5.0")
 
     # 1. CORS Middleware (Explicit origins - no wildcard with credentials)
     app.add_middleware(

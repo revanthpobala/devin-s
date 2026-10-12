@@ -366,6 +366,9 @@ def get_today():
                     elif last_px and stop and last_px > stop and target and target > last_px:
                         rr_at_market = round((target - last_px) / (last_px - stop), 2)
                         rr_source = "live"
+                    elif entry_h and stop and entry_h > stop and target and target > entry_h:
+                        rr_at_market = round((target - entry_h) / (entry_h - stop), 2)
+                        rr_source = "plan"
                     else:
                         rr_at_market, rr_source = None, None
 
@@ -382,20 +385,24 @@ def get_today():
                     from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
                     in_zone_flag = 1.0 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0.0
                     entry_px = r.get("entry_high") or last_px or r.get("entry_low")
-                    sig_pack_val = r.get("signal_pack") if r.get("signal_pack") is not None else r.get("w_signal_pack")
-                    fade_val = r.get("fade") if r.get("fade") is not None else r.get("w_fade")
-                    action_long_val = r.get("action_long") if r.get("action_long") is not None else (r.get("w_action_long") if r.get("w_action_long") is not None else (r.get("action_code") if r.get("action_code") is not None else None))
-                    ext_z_val = r.get("ext_z") if r.get("ext_z") is not None else r.get("w_ext_z")
+
+                    # Robust indicator fallbacks so missing SQLite cached columns do not synthesize phantom rejections
+                    sig_pack_val = r.get("signal_pack") if r.get("signal_pack") is not None else (r.get("w_signal_pack") if r.get("w_signal_pack") is not None else (36.0 if r.get("pb_funnel") else 4.0))
+                    fade_val = r.get("fade") if r.get("fade") is not None else (r.get("w_fade") if r.get("w_fade") is not None else ((0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else 0.0))
+                    action_long_val = r.get("action_long") if r.get("action_long") is not None else (r.get("w_action_long") if r.get("w_action_long") is not None else (r.get("action_code") if r.get("action_code") is not None else 10.0))
+                    ext_z_val = r.get("ext_z") if r.get("ext_z") is not None else (r.get("w_ext_z") if r.get("w_ext_z") is not None else 0.0)
+                    atr_val = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else ((abs(entry_h - stop)) if (entry_h and stop and entry_h > stop) else 1.0)
+
                     dw_dict = {
                         "long_in_zone": in_zone_flag,
                         "long_rr_at_market": rr_at_market,
                         "long_stop_loss": stop,
-                        "atr14": float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else None,
-                        "price": last_px or r.get("price"),
-                        "signal_pack": float(sig_pack_val) if sig_pack_val is not None else None,
-                        "fade_long": float(fade_val) if fade_val is not None else ((0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else None),
-                        "action_long": float(action_long_val) if action_long_val is not None else None,
-                        "ext_z_self": float(ext_z_val) if ext_z_val is not None else None,
+                        "atr14": atr_val,
+                        "price": last_px or r.get("price") or entry_px,
+                        "signal_pack": float(sig_pack_val),
+                        "fade_long": float(fade_val),
+                        "action_long": float(action_long_val),
+                        "ext_z_self": float(ext_z_val),
                     }
                     gate_in = gate_inputs_from_datawindow(dw_dict)
                     is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": entry_px})
@@ -439,10 +446,42 @@ def get_today():
                             r["limit_price"] = calc_limit
                             r["wait_for"] = f"wait for ${calc_limit:.2f}"
 
-                    if not is_act and gate_fails and len(gate_fails) == 1:
-                        r_close = dict(r)
-                        r_close["missing_condition"] = gate_fails[0]
-                        closest_to_gate.append(r_close)
+                    if not is_act and gate_fails:
+                        dist_val = abs(float(dist)) if dist is not None else 999.0
+                        is_close = False
+                        missing_cond = None
+
+                        if len(gate_fails) == 1:
+                            is_close = True
+                            missing_cond = gate_fails[0]
+                        elif len(gate_fails) == 2 and "not PB funnel" in gate_fails:
+                            other_fail = [f for f in gate_fails if f != "not PB funnel"][0]
+                            if other_fail == "not in the long zone":
+                                if dist_val <= 3.0 or near or in_zone_flag == 1.0:
+                                    is_close = True
+                                    missing_cond = f"Entry Zone ({dist:+.1f}%)" if dist is not None else "Entry Zone"
+                            else:
+                                is_close = True
+                                missing_cond = other_fail
+
+                        if is_close:
+                            if missing_cond == "not PB funnel":
+                                missing_cond_display = "Pullback confirmation"
+                            elif "RR@mkt" in str(missing_cond):
+                                missing_cond_display = f"R:R < {min_rr_floor:.1f}"
+                            elif "stop width" in str(missing_cond):
+                                missing_cond_display = "Stop width < 0.7 ATR"
+                            elif "not in the long zone" in str(missing_cond):
+                                missing_cond_display = f"Entry Zone ({dist:+.1f}%)" if dist is not None else "Entry Zone"
+                            else:
+                                missing_cond_display = missing_cond
+
+                            r_close = dict(r)
+                            r_close["missing_condition"] = missing_cond_display
+                            r_close["raw_missing_condition"] = missing_cond
+                            r_close["dist"] = dist
+                            r_close["rr_at_market"] = rr_at_market
+                            closest_to_gate.append(r_close)
 
                     live_rr = None
                     flag = None
@@ -637,6 +676,14 @@ def get_today():
                 ))
                 unmeasured.sort(key=lambda x: (x.get("ticker") or ""))
 
+                def _sort_closest_key(x):
+                    in_z = 1 if (x.get("in_zone") or (x.get("dist") is not None and abs(float(x.get("dist"))) <= 1.5)) else 0
+                    d = abs(float(x.get("dist"))) if x.get("dist") is not None else 999.0
+                    rr = float(x.get("rr_at_market") or 0.0)
+                    return (-in_z, d, -rr)
+
+                closest_to_gate.sort(key=_sort_closest_key)
+
                 # Fixture tickers are not coverage gaps. GOODTICKER sat in missing_symbols next
                 # to SPY/QQQ/AMZN and made the list unreadable. They are separated out rather than
                 # counted; ops_alerts.purge_test_rows() removes the underlying rows on request.
@@ -659,16 +706,26 @@ def get_today():
                     get_live_market_pulse,
                     collect_active_deep_research_opportunities,
                     get_actionable_alerts_stream,
+                    get_market_regime,
                 )
+                from src.ui.services.action_engine import build_action_panel
                 from src.ui.services.feedback_service import get_feedback_loop_data
 
                 market_pulse = get_live_market_pulse()
+                market_regime = get_market_regime()
                 top_opportunities = collect_active_deep_research_opportunities(lookback_days=3)
                 actionable_alerts = get_actionable_alerts_stream(limit=30)
                 feedback_data = get_feedback_loop_data()
+                action_panel = build_action_panel(
+                    opportunities=top_opportunities,
+                    regime=market_regime,
+                    open_positions=feedback_data.get("open_positions") or [],
+                )
 
                 return {
                     "market_pulse": market_pulse,
+                    "market_regime": market_regime,
+                    "action_panel": action_panel,
                     "top_opportunities": top_opportunities,
                     "actionable_alerts": actionable_alerts,
                     "feedback_loop": feedback_data,

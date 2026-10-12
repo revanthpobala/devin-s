@@ -2,8 +2,8 @@
  * Status and Hardware Operations Controller
  */
 window.AppStatus = {
-  // Session filter for the research-queue panels. Empty means "all dates" (the live view).
-  _queueDate: '',
+  // Session filter for the research-queue panels. Defaults to today's date so queue strictly shows today's work.
+  _queueDate: null,
   _queueDates: [],
   setQueueDate(d) {
     this._queueDate = d || '';
@@ -364,13 +364,13 @@ window.AppStatus = {
       const mTxt = document.getElementById('txt-market');
       if (mPill && mTxt) {
         if (data.market_open) {
-          mPill.className = 'pill green';
+          mPill.className = 'pill sys-pill green';
           mTxt.innerText = data.market_status_text || `🟢 REGULAR MARKET OPEN (${(data.time_mt || '').split(' ')[1] || ''} MT)`;
         } else if (data.market_phase === 'AFTER_HOURS' || data.market_phase === 'PRE_MARKET') {
-          mPill.className = 'pill amber';
+          mPill.className = 'pill sys-pill amber';
           mTxt.innerText = data.market_status_text || '🟡 EXTENDED HOURS';
         } else {
-          mPill.className = 'pill red';
+          mPill.className = 'pill sys-pill red';
           mTxt.innerText = data.market_status_text || '🔴 MARKET CLOSED';
         }
       }
@@ -380,10 +380,10 @@ window.AppStatus = {
       const llmTxt = document.getElementById('txt-llm');
       if (llmPill && llmTxt) {
         if (data.llm_online) {
-          llmPill.className = 'pill green';
+          llmPill.className = 'pill sys-pill green';
           llmTxt.innerText = '🟢 LLM Online (Port 8000)';
         } else {
-          llmPill.className = 'pill red';
+          llmPill.className = 'pill sys-pill red';
           llmTxt.innerText = '🔴 LLM Offline';
         }
       }
@@ -403,12 +403,12 @@ window.AppStatus = {
         const s = data.schwab_status;
         window._lastSchwabStatus = s;
         if (!s.configured) {
-          schwabPill.className = 'pill';
+          schwabPill.className = 'pill sys-pill';
           schwabTxt.innerText = '⚪ Schwab Unset';
           if (schwabBanner) schwabBanner.style.display = 'none';
         } else if (s.valid) {
           if (s.status === 'EXPIRING_SOON') {
-            schwabPill.className = 'pill amber pulse';
+            schwabPill.className = 'pill sys-pill amber pulse';
             schwabTxt.innerText = `⚠️ Schwab (${s.hours_remaining}h left)`;
             if (schwabBanner) {
               schwabBanner.style.display = 'flex';
@@ -417,12 +417,12 @@ window.AppStatus = {
               }
             }
           } else {
-            schwabPill.className = 'pill green';
+            schwabPill.className = 'pill sys-pill green';
             schwabTxt.innerText = `🟢 Schwab (${s.days_remaining}d)`;
             if (schwabBanner) schwabBanner.style.display = 'none';
           }
         } else {
-          schwabPill.className = 'pill red';
+          schwabPill.className = 'pill sys-pill red';
           schwabTxt.innerText = '🔴 Schwab Expired';
           if (schwabBanner) {
             schwabBanner.style.display = 'flex';
@@ -441,7 +441,7 @@ window.AppStatus = {
       const trTxtIntraday = document.getElementById('val-ingestor-txt');
 
       if (data.tracker_running) {
-        if (trPill) trPill.className = 'pill green';
+        if (trPill) trPill.className = 'pill sys-pill green';
         if (trTxt) trTxt.innerText = `🟢 Ingestor (PID ${data.tracker_pid})`;
         if (trBtn) {
           trBtn.className = 'btn danger';
@@ -454,7 +454,7 @@ window.AppStatus = {
         }
         if (trTxtIntraday) trTxtIntraday.innerText = `Running (PID ${data.tracker_pid})`;
       } else {
-        if (trPill) trPill.className = 'pill';
+        if (trPill) trPill.className = 'pill sys-pill';
         if (trTxt) trTxt.innerText = '⚪ Ingestor: Stopped';
         if (trBtn) {
           trBtn.className = 'btn';
@@ -549,22 +549,27 @@ window.AppStatus = {
           }).join('');
 
           if (maxPct > 90) {
-            vramPill.className = 'pill red';
+            vramPill.className = 'pill sys-pill red';
             vramPill.innerText = `⚠️ VRAM HEAVY (${maxPct}%)`;
           } else {
-            vramPill.className = 'pill green';
+            vramPill.className = 'pill sys-pill green';
             vramPill.innerText = `🟢 VRAM STABLE (${maxPct}%)`;
           }
         } else {
           gpuContainer.innerHTML = '<div style="color:var(--text-muted); font-size:12px;">No NVIDIA GPUs detected. Running in CPU mode.</div>';
           vramPill.innerText = 'CPU Mode';
-          vramPill.className = 'pill';
+          vramPill.className = 'pill sys-pill';
         }
       }
 
       // 8. Active Research Tasks + per-session ledger
       await this.loadSessions();
       await this.loadJobs();
+
+      // 9. Keep the Settings modal's status grid in sync with the ribbon pills
+      if (window.AppSettings && typeof window.AppSettings._mirrorStatus === 'function') {
+        window.AppSettings._mirrorStatus();
+      }
 
     } catch (e) {
       console.error('Status update error', e);
@@ -577,7 +582,12 @@ window.AppStatus = {
       const escHtml = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
       const escJsAttr = (s) => String(s ?? '').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-      const data = await window.AppApi.getJobs(this._queueDate);
+      if (!this._queueDate && this._queueDate !== 'all') {
+        this._queueDate = this._todayStr();
+      }
+      const fetchDate = this._queueDate === 'all' ? 'all' : (this._queueDate || this._todayStr());
+      const data = await window.AppApi.getJobs(fetchDate);
+      this._lastJobs = data;
       this._queueDates = data.available_dates || [];
       const targets = [
         document.getElementById('active-procs-container')
@@ -587,20 +597,45 @@ window.AppStatus = {
       const localJobs = data.local_queue || (data.jobs || []).filter(j => j.mode === 'local_only');
       const deepJobs = data.deep_queue || (data.jobs || []).filter(j => j.mode !== 'local_only');
 
-      // Cap the finished/filtered rows. This was 6, which is why only a handful of tickers were ever
-      // visible. The full totals are shown in each header, so a cap is never mistaken for
-      // "that is all of them".
-      const RECENT_CAP = 25;
+      // Show up to 50 recent jobs so all candidates fit in view
+      const RECENT_CAP = 50;
 
-      const activeLocal = localJobs.filter(j => j.status === 'RUNNING');
-      const queuedLocal = localJobs.filter(j => j.status === 'QUEUED');
-      const finishedLocal = localJobs.filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED');
-      const recentLocal = finishedLocal.slice(0, RECENT_CAP);
+      // Deduplicate strictly: each ticker appears EXACTLY ONCE across active, queued, and finished
+      const seenDeepTickers = new Set();
+      const activeDeep = [];
+      deepJobs.filter(j => j.status === 'RUNNING').forEach(j => {
+        const sym = (j.ticker || '').toUpperCase();
+        if (sym && !seenDeepTickers.has(sym)) { seenDeepTickers.add(sym); activeDeep.push(j); }
+      });
+      const queuedDeep = [];
+      deepJobs.filter(j => j.status === 'QUEUED').forEach(j => {
+        const sym = (j.ticker || '').toUpperCase();
+        if (sym && !seenDeepTickers.has(sym)) { seenDeepTickers.add(sym); queuedDeep.push(j); }
+      });
+      const finishedDeep = [];
+      deepJobs.filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED').forEach(j => {
+        const sym = (j.ticker || '').toUpperCase();
+        if (sym && !seenDeepTickers.has(sym)) { seenDeepTickers.add(sym); finishedDeep.push(j); }
+      });
+      const recentDeep = finishedDeep;
 
-      const activeDeep = deepJobs.filter(j => j.status === 'RUNNING');
-      const queuedDeep = deepJobs.filter(j => j.status === 'QUEUED');
-      const finishedDeep = deepJobs.filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED');
-      const recentDeep = finishedDeep.slice(0, RECENT_CAP);
+      const seenLocalTickers = new Set();
+      const activeLocal = [];
+      localJobs.filter(j => j.status === 'RUNNING').forEach(j => {
+        const sym = (j.ticker || '').toUpperCase();
+        if (sym && !seenLocalTickers.has(sym)) { seenLocalTickers.add(sym); activeLocal.push(j); }
+      });
+      const queuedLocal = [];
+      localJobs.filter(j => j.status === 'QUEUED').forEach(j => {
+        const sym = (j.ticker || '').toUpperCase();
+        if (sym && !seenLocalTickers.has(sym)) { seenLocalTickers.add(sym); queuedLocal.push(j); }
+      });
+      const finishedLocal = [];
+      localJobs.filter(j => j.status !== 'RUNNING' && j.status !== 'QUEUED').forEach(j => {
+        const sym = (j.ticker || '').toUpperCase();
+        if (sym && !seenLocalTickers.has(sym)) { seenLocalTickers.add(sym); finishedLocal.push(j); }
+      });
+      const recentLocal = finishedLocal;
 
       const localMax = data.local_slots_max || 2;
       const deepMax = data.deep_slots_max || 2;
@@ -624,9 +659,9 @@ window.AppStatus = {
 
             rowsHtml += `
               <tr style="border-bottom:1px solid var(--border); background:rgba(16, 185, 129, 0.05);">
-                <td style="padding:6px 8px;">
+                <td style="padding:6px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:1;">
                   <span class="pill green pulse" style="font-size:9px; padding:1px 5px;">ACTIVE</span>
-                  <strong style="color:var(--blue); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                  <strong style="color:var(--blue); cursor:pointer; margin-left:4px;" onclick="if(window.AppSwing){ AppSwing.openReportModal(null, '${escJsAttr(j.ticker)}', null, event); }" title="${escHtml(comp)} · Click for modal · Ctrl/Cmd+Click for new tab" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
                 </td>
                 <td style="padding:6px 8px; color:var(--text-main); font-size:11px;">${escHtml(stageLabel)}</td>
                 <td style="padding:6px 8px; color:var(--amber); font-size:11px; white-space:nowrap;">⏳ ${timeStr}</td>
@@ -644,9 +679,9 @@ window.AppStatus = {
             const comp = (window.AppUtils ? AppUtils.getCompanyName(q.ticker) : q.ticker) || q.ticker || '';
             rowsHtml += `
               <tr style="border-bottom:1px solid var(--border); opacity:0.85;">
-                <td style="padding:5px 8px;">
+                <td style="padding:5px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:1;">
                   <span class="pill amber" style="font-size:9px; padding:1px 5px;">#${idx + 1} QUEUE</span>
-                  <strong style="color:var(--text-main); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(q.ticker)}">$${escHtml(q.ticker)}</strong>
+                  <strong style="color:var(--text-main); cursor:pointer; margin-left:4px;" onclick="if(window.AppSwing){ AppSwing.openReportModal(null, '${escJsAttr(q.ticker)}', null, event); }" title="${escHtml(comp)} · Click for modal · Ctrl/Cmd+Click for new tab" data-ticker="${escHtml(q.ticker)}">$${escHtml(q.ticker)}</strong>
                 </td>
                 <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">${escHtml(q.stage_detail || 'Waiting for local slot')}</td>
                 <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">Pending</td>
@@ -664,12 +699,16 @@ window.AppStatus = {
             const timeDisplay = AppStatus.formatJobTime(j.completed_at || j.started_at);
             const comp = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
             const detailStr = j.stage_detail || '';
+            const dUpper = detailStr.toUpperCase();
             let verdictBadge = '';
-            if (detailStr.includes('PASS') || j.stage === 'DONE') {
+            if (dUpper.includes('ENQUEUED') || dUpper.includes('SATISFIED')) {
+              const lbl = dUpper.includes('PASS') ? '🎯 PASS → Enqueued Deep' : '🎯 WATCH → Enqueued Deep';
+              verdictBadge = `<span class="pill green" style="font-size:9px; padding:1px 6px; font-weight:700;">${lbl}</span>`;
+            } else if (dUpper.includes('PASS') || j.stage === 'DONE') {
               verdictBadge = `<span class="pill green" style="font-size:9px; padding:1px 6px; font-weight:700;">🎯 PASS → Enqueued Deep</span>`;
-            } else if (detailStr.includes('WATCH')) {
-              verdictBadge = `<span class="pill amber" style="font-size:9px; padding:1px 6px;">⏹️ WATCH (Filtered Out)</span>`;
-            } else if (detailStr.includes('CUT')) {
+            } else if (dUpper.includes('WATCH')) {
+              verdictBadge = `<span class="pill amber" style="font-size:9px; padding:1px 6px; font-weight:600;">👁️ WATCH</span>`;
+            } else if (dUpper.includes('CUT')) {
               verdictBadge = `<span class="pill red" style="font-size:9px; padding:1px 6px;">⏹️ CUT (Filtered Out)</span>`;
             } else if (isFailed) {
               verdictBadge = `<span class="pill red" style="font-size:9px; padding:1px 6px;">❌ FAILED</span>`;
@@ -679,14 +718,17 @@ window.AppStatus = {
 
             rowsHtml += `
               <tr style="border-bottom:1px solid var(--border);">
-                <td style="padding:5px 8px;">
-                  <strong style="color:var(--text-main); cursor:pointer;" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}')" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                <td style="padding:4px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:1;">
+                  <strong style="color:var(--text-main); cursor:pointer;" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}', event)" title="${escHtml(comp)} · Click for modal · Ctrl/Cmd+Click for new tab" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
                 </td>
-                <td style="padding:5px 8px;">${verdictBadge}</td>
-                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px; white-space:nowrap;">${timeDisplay}</td>
-                <td style="padding:5px 8px; text-align:right; white-space:nowrap;">
-                  <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" style="padding:1px 6px; font-size:10px;">📋 Log</button>
-                  <button class="btn primary" onclick="AppStatus.restartResearch('${escJsAttr(j.ticker)}', 'deep_only', '${escJsAttr(j.target_date || '')}')" title="Force into Deep Research" style="padding:1px 6px; font-size:10px; background:linear-gradient(135deg, #2563eb, #1d4ed8); color:#fff; border:none; border-radius:3px;">⚡ Deep</button>
+                <td style="padding:4px 8px;">${verdictBadge}</td>
+                <td style="padding:4px 8px; color:var(--text-muted); font-size:10.5px; white-space:nowrap;">${timeDisplay}</td>
+                <td style="padding:4px 8px; text-align:right; white-space:nowrap;">
+                    <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" title="View job execution log" style="padding:2px 5px; font-size:9px;">📋 Log</button>
+                    <button class="btn secondary btn-run-menu" onclick="AppStatus.openRunMenu(this, '${escJsAttr(j.ticker)}', '${escJsAttr(j.target_date || '')}', event)" title="Run research on $${escJsAttr(j.ticker)}" style="padding:2px 7px; font-size:9.5px; background:linear-gradient(135deg, rgba(30,58,138,0.35), rgba(15,23,42,0.6)); border:1px solid rgba(59,130,246,0.4); color:#93c5fd; border-radius:3px; font-weight:700; cursor:pointer; height:20px; line-height:1; display:inline-flex; align-items:center; gap:3px;">
+                      <span>⚡ Run</span><span style="font-size:8px; opacity:0.8;">▾</span>
+                    </button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -705,21 +747,22 @@ window.AppStatus = {
                   <span>⚖️ LOCAL RESEARCH QUEUE</span>
                   <span class="pill cyan" style="font-size:9.5px; padding:1px 5px;">Alert Triage Gate</span>
                 </div>
-<div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Fast filter & Qwen news. Only SATISFIED setups enter Deep Research.</div>
-                </div>
-                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
-                  <span style="font-size:9.5px; color:var(--text-muted); font-weight:700;"
-                        title="Active / queued / finished${this._queueDate ? ' — ' + escHtml(this._queueDate) : ' — all dates'}">
-                    ${activeLocal.length}A · ${queuedLocal.length}Q · ${finishedLocal.length} done
-                    ${finishedLocal.length > recentLocal.length ? ` (showing ${recentLocal.length})` : ''}</span>
-                  <span class="pill ${localSlotColor}" style="font-size:10px; padding:2px 6px; font-weight:700;">${localUsed} / ${localMax} Slots${queuedLocal.length > 0 ? ` (${queuedLocal.length} Q)` : ''}</span>
-                </div>
+                <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Fast filter & Qwen news. Only SATISFIED setups enter Deep Research.</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                <button class="btn" onclick="AppStatus.rerunAllBotchedLocal()" title="Batch re-run Local Research & fresh scrape for all CUT or failed tickers" style="padding:2px 8px; font-size:9.5px; background:linear-gradient(135deg, #d97706, #b45309); color:#fff; border:none; border-radius:4px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">🔄 Re-run Botched</button>
+                <span style="font-size:9.5px; color:var(--text-muted); font-weight:700;"
+                      title="Active / queued / finished${this._queueDate ? ' — ' + escHtml(this._queueDate) : ' — all dates'}">
+                  ${activeLocal.length}A · ${queuedLocal.length}Q · ${finishedLocal.length} done
+                  ${finishedLocal.length > recentLocal.length ? ` (showing ${recentLocal.length})` : ''}</span>
+                <span class="pill ${localSlotColor}" style="font-size:10px; padding:2px 6px; font-weight:700;">${localUsed} / ${localMax} Slots${queuedLocal.length > 0 ? ` (${queuedLocal.length} Q)` : ''}</span>
+              </div>
             </div>
             <div style="overflow-x:auto;">
               <table style="width:100%; border-collapse:collapse; font-size:11px; font-family:'JetBrains Mono', monospace;">
                 <thead>
                   <tr style="color:var(--text-muted); font-size:9.5px; text-transform:uppercase; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
-                    <th style="text-align:left; padding:4px 8px;">Ticker</th>
+                    <th style="text-align:left; padding:4px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:2;">Ticker</th>
                     <th style="text-align:left; padding:4px 8px;">Stage / Verdict</th>
                     <th style="text-align:left; padding:4px 8px;">Time</th>
                     <th style="text-align:right; padding:4px 8px;">Actions</th>
@@ -748,9 +791,9 @@ window.AppStatus = {
 
             rowsHtml += `
               <tr style="border-bottom:1px solid var(--border); background:rgba(168, 85, 247, 0.05);">
-                <td style="padding:6px 8px;">
+                <td style="padding:6px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:1;">
                   <span class="pill purple pulse" style="font-size:9px; padding:1px 5px;">ACTIVE</span>
-                  <strong style="color:var(--blue); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                  <strong style="color:var(--blue); cursor:pointer; margin-left:4px;" onclick="if(window.AppSwing){ AppSwing.openReportModal(null, '${escJsAttr(j.ticker)}', null, event); }" title="${escHtml(comp)} · Click for modal · Ctrl/Cmd+Click for new tab" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
                 </td>
                 <td style="padding:6px 8px; color:var(--text-main); font-size:11px;">${escHtml(stageLabel)}</td>
                 <td style="padding:6px 8px; color:var(--amber); font-size:11px; white-space:nowrap;">⏳ ${timeStr}</td>
@@ -769,9 +812,9 @@ window.AppStatus = {
             const qStage = q.stage_detail || 'Waiting for GPU slot';
             rowsHtml += `
               <tr style="border-bottom:1px solid var(--border); opacity:0.85;">
-                <td style="padding:5px 8px;">
+                <td style="padding:5px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:1;">
                   <span class="pill purple" style="font-size:9px; padding:1px 5px;">#${idx + 1} QUEUE</span>
-                  <strong style="color:var(--text-main); cursor:help; margin-left:4px;" title="${escHtml(comp)}" data-ticker="${escHtml(q.ticker)}">$${escHtml(q.ticker)}</strong>
+                  <strong style="color:var(--text-main); cursor:pointer; margin-left:4px;" onclick="if(window.AppSwing){ AppSwing.openReportModal(null, '${escJsAttr(q.ticker)}', null, event); }" title="${escHtml(comp)} · Click for modal · Ctrl/Cmd+Click for new tab" data-ticker="${escHtml(q.ticker)}">$${escHtml(q.ticker)}</strong>
                 </td>
                 <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">${escHtml(qStage)}</td>
                 <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px;">Pending</td>
@@ -788,26 +831,41 @@ window.AppStatus = {
             const isFailed = (j.status === 'FAILED' || j.status === 'KILLED');
             const timeDisplay = AppStatus.formatJobTime(j.completed_at || j.started_at);
             const comp = (window.AppUtils ? AppUtils.getCompanyName(j.ticker) : j.ticker) || j.ticker || '';
+            const hasReport = Boolean(j.has_report || j.has_arbitration);
             let stBadge = '';
-            if (j.stage === 'DONE' || j.status === 'COMPLETED') {
+            if (j.stage === 'DONE' || (j.status === 'COMPLETED' && j.stage !== 'LOCAL_DONE' && hasReport)) {
               stBadge = `<span class="pill purple" style="font-size:9px; padding:1px 6px; font-weight:700;">✅ ARBITRATION DONE</span>`;
+            } else if (j.stage === 'LOCAL_DONE' || (j.stage_detail && j.stage_detail.includes('skipped by triage gate'))) {
+              stBadge = `<span class="pill amber" style="font-size:9px; padding:1px 6px; font-weight:700;" title="${escHtml(j.stage_detail || 'Deep research skipped by triage gate')}">⚠️ SKIPPED (Triage Cut)</span>`;
             } else if (isFailed) {
               stBadge = `<span class="pill red" style="font-size:9px; padding:1px 6px; font-weight:700;">❌ FAILED</span>`;
+            } else if (j.status === 'COMPLETED') {
+              stBadge = hasReport
+                ? `<span class="pill purple" style="font-size:9px; padding:1px 6px; font-weight:700;">✅ REPORT READY</span>`
+                : `<span class="pill gray" style="font-size:9px; padding:1px 6px;">[COMPLETED]</span>`;
             } else {
               stBadge = `<span class="pill gray" style="font-size:9px; padding:1px 6px;">[${escHtml(j.stage || j.status)}]</span>`;
             }
 
             rowsHtml += `
               <tr style="border-bottom:1px solid var(--border);">
-                <td style="padding:5px 8px;">
-                  <strong style="color:var(--text-main); cursor:pointer;" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}')" title="${escHtml(comp)}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
+                <td style="padding:4px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:1;">
+                  <strong style="color:var(--text-main); cursor:pointer;" onclick="${hasReport ? `if(window.AppSwing && typeof window.AppSwing.openReportModal === 'function'){ window.AppSwing.openReportModal('${escJsAttr(j.target_date || '')}', '${escJsAttr(j.ticker)}', 'plan', event); } else { window.open('/research/${escJsAttr(j.ticker)}', '_blank'); }` : `AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}', event)`}" title="${hasReport ? 'Open Deep Research Report & PM Arbitration · Ctrl/Cmd+Click for new tab' : `${escHtml(comp)} · Click for modal · Ctrl/Cmd+Click for new tab`}" data-ticker="${escHtml(j.ticker)}">$${escHtml(j.ticker)}</strong>
                 </td>
-                <td style="padding:5px 8px;">${stBadge}</td>
-                <td style="padding:5px 8px; color:var(--text-muted); font-size:10.5px; white-space:nowrap;">${timeDisplay}</td>
-                <td style="padding:5px 8px; text-align:right; white-space:nowrap;">
-                  <button class="btn secondary" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}')" style="padding:1px 6px; font-size:10px; color:var(--blue);">📖 Dossier ↗</button>
-                  <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" style="padding:1px 6px; font-size:10px;">📋 Log</button>
-                  ${isFailed ? `<button class="btn primary" onclick="AppStatus.restartResearch('${escJsAttr(j.ticker)}', 'deep_only', '${escJsAttr(j.target_date || '')}')" style="padding:1px 6px; font-size:10px; background:linear-gradient(135deg, #2563eb, #1d4ed8); color:#fff; border:none; border-radius:3px;">🔄 Retry</button>` : ''}
+                <td style="padding:4px 8px;">${stBadge}</td>
+                <td style="padding:4px 8px; color:var(--text-muted); font-size:10.5px; white-space:nowrap;">${timeDisplay}</td>
+                <td style="padding:4px 8px; text-align:right; white-space:nowrap;">
+                  <div style="display:inline-flex; gap:4px; justify-content:flex-end; align-items:center;">
+                    ${hasReport ? `
+                      <button class="btn" onclick="if(window.AppSwing && typeof window.AppSwing.openReportModal === 'function'){ window.AppSwing.openReportModal('${escJsAttr(j.target_date || '')}', '${escJsAttr(j.ticker)}', 'plan', event); } else { window.open('/research/${escJsAttr(j.ticker)}', '_blank'); }" title="Open Deep Research Report & PM Arbitration · Ctrl/Cmd+Click for new tab" style="padding:2px 6px; font-size:9.5px; background:linear-gradient(135deg, #10b981, #059669); color:#fff; border:none; border-radius:3px; font-weight:800; cursor:pointer;">📊 Report ↗</button>
+                    ` : `
+                      <button class="btn secondary" onclick="AppStatus.openResearchDossier('${escJsAttr(j.ticker)}', '${escJsAttr(j.completed_at || j.started_at || '')}', event)" title="Open Research Dossier · Ctrl/Cmd+Click for new tab" style="padding:2px 5px; font-size:9px; color:var(--blue);">📖 Dossier ↗</button>
+                    `}
+                    <button class="btn secondary" onclick="AppStatus.showJobLogModal('${escJsAttr(j.job_id)}', '${escJsAttr(j.ticker)}', null)" title="View job execution log" style="padding:2px 5px; font-size:9px;">📋 Log</button>
+                    <button class="btn secondary btn-run-menu" onclick="AppStatus.openRunMenu(this, '${escJsAttr(j.ticker)}', '${escJsAttr(j.target_date || '')}', event)" title="Run research on $${escJsAttr(j.ticker)}" style="padding:2px 7px; font-size:9.5px; background:linear-gradient(135deg, rgba(30,58,138,0.35), rgba(15,23,42,0.6)); border:1px solid rgba(59,130,246,0.4); color:#93c5fd; border-radius:3px; font-weight:700; cursor:pointer; height:20px; line-height:1; display:inline-flex; align-items:center; gap:3px;">
+                      <span>⚡ Run</span><span style="font-size:8px; opacity:0.8;">▾</span>
+                    </button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -826,13 +884,12 @@ window.AppStatus = {
                   <span>🔬 DEEP RESEARCH QUEUE</span>
                   <span class="pill purple" style="font-size:9.5px; padding:1px 5px;">Arbitration & Options</span>
                 </div>
-                <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Debate + Vision Synthesis + PM Arbitration (Capped at 35).</div>
+                <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Debate + Vision Synthesis + PM Arbitration.</div>
               </div>
               <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
                 <span style="font-size:9.5px; color:var(--text-muted); font-weight:700;"
                       title="Active / queued / finished${this._queueDate ? ' — ' + escHtml(this._queueDate) : ' — all dates'}">
-                  ${activeDeep.length}A · ${queuedDeep.length}Q · ${finishedDeep.length} done
-                  ${finishedDeep.length > recentDeep.length ? ` (showing ${recentDeep.length})` : ''}</span>
+                  ${activeDeep.length}A · ${queuedDeep.length}Q · ${finishedDeep.length} done</span>
                 <span class="pill ${deepSlotColor}" style="font-size:10px; padding:2px 6px; font-weight:700;">${deepUsed} / ${deepMax} Slots${queuedDeep.length > 0 ? ` (${queuedDeep.length} Q)` : ''}</span>
               </div>
             </div>
@@ -840,7 +897,7 @@ window.AppStatus = {
               <table style="width:100%; border-collapse:collapse; font-size:11px; font-family:'JetBrains Mono', monospace;">
                 <thead>
                   <tr style="color:var(--text-muted); font-size:9.5px; text-transform:uppercase; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.02);">
-                    <th style="text-align:left; padding:4px 8px;">Ticker</th>
+                    <th style="text-align:left; padding:4px 8px; position:sticky; left:0; background:var(--bg-card, #121722); z-index:2;">Ticker</th>
                     <th style="text-align:left; padding:4px 8px;">Stage / Detail</th>
                     <th style="text-align:left; padding:4px 8px;">Time</th>
                     <th style="text-align:right; padding:4px 8px;">Actions</th>
@@ -865,8 +922,9 @@ window.AppStatus = {
             <select id="queue-date-select" onchange="AppStatus.setQueueDate(this.value)"
                     style="background:var(--bg-input, #0b0f16); color:var(--text-main); border:1px solid var(--border);
                            border-radius:4px; padding:3px 6px; font-size:11px; font-weight:700; font-family:var(--font-mono);">
-              <option value="">All dates</option>
-              ${(this._queueDates || []).map(d => `<option value="${escHtml(d)}"${d === this._queueDate ? ' selected' : ''}>${escHtml(d)}</option>`).join('')}
+              <option value="${this._todayStr()}"${(!this._queueDate || this._queueDate === this._todayStr()) ? ' selected' : ''}>⚡ Today (${this._todayStr()})</option>
+              ${(this._queueDates || []).filter(d => d !== this._todayStr()).map(d => `<option value="${escHtml(d)}"${d === this._queueDate ? ' selected' : ''}>${escHtml(d)}</option>`).join('')}
+              <option value="all"${this._queueDate === 'all' ? ' selected' : ''}>📅 All dates</option>
             </select>
           </label>
         </div>
@@ -887,13 +945,14 @@ window.AppStatus = {
     }
   },
 
-  async restartResearch(ticker, mode = 'full', date = '') {
+  async restartResearch(ticker, mode = 'full', date = '', tier = 'FULL') {
     try {
-      const res = await window.AppApi.triggerResearch(ticker, mode, date, true);
+      const res = await window.AppApi.triggerResearch(ticker, mode, date, true, tier);
+      const stageName = mode === 'local_only' ? 'Local Research' : (tier === 'MID' ? 'Mid Research' : 'Deep Research');
       if (res.status === 'started') {
-        alert(`🚀 Restarted deep research for ${ticker} in open slot!`);
+        alert(`🚀 Started ${stageName} for ${ticker} in open slot!`);
       } else if (res.status === 'queued') {
-        alert(`📥 Slots full. ${ticker} queued for research and will auto-dispatch when a slot opens.`);
+        alert(`📥 Slots full. ${ticker} queued for ${stageName} and will auto-dispatch when a slot opens.`);
       } else {
         alert(`Research status for ${ticker}: ${res.status}`);
       }
@@ -901,6 +960,167 @@ window.AppStatus = {
       await this.updateStatus();
     } catch (e) {
       alert(`Restart Error: ${e.message}`);
+    }
+  },
+
+  openRunMenu(btnEl, ticker, targetDate, e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const existing = document.getElementById('active-run-popup-menu');
+    if (existing) {
+      const wasSame = existing._sourceBtn === btnEl;
+      existing.remove();
+      if (wasSame) return;
+    }
+
+    const rect = btnEl.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = 'active-run-popup-menu';
+    menu._sourceBtn = btnEl;
+    const menuWidth = 220;
+    const menuHeight = 155;
+    const top = (rect.bottom + menuHeight > window.innerHeight && rect.top > menuHeight)
+      ? (rect.top - menuHeight - 4)
+      : (rect.bottom + 4);
+    const left = Math.max(10, Math.min(window.innerWidth - menuWidth - 10, rect.right - menuWidth));
+
+    menu.style.cssText = `
+      position: fixed;
+      top: ${top}px;
+      left: ${left}px;
+      width: ${menuWidth}px;
+      background: #0f172a;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.8), 0 0 1px 1px rgba(59, 130, 246, 0.3);
+      border-radius: 6px;
+      padding: 5px;
+      z-index: 999999;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: inherit;
+    `;
+
+    const items = [
+      {
+        tier: 'LITE',
+        mode: 'local_only',
+        icon: '⚖️',
+        title: 'Local Triage',
+        desc: 'Fast pre-filter & data window',
+        color: '#f59e0b',
+        hoverBg: 'rgba(245, 158, 11, 0.15)'
+      },
+      {
+        tier: 'MID',
+        mode: 'full',
+        icon: '🔬',
+        title: 'Mid Deep (Dual Model)',
+        desc: 'Fast debate, skip vision chart',
+        color: '#a855f7',
+        hoverBg: 'rgba(168, 85, 247, 0.15)'
+      },
+      {
+        tier: 'FULL',
+        mode: 'full',
+        icon: '⚡',
+        title: 'Full Deep Research',
+        desc: 'Debate + Vision + PM Arb',
+        color: '#60a5fa',
+        hoverBg: 'rgba(96, 165, 250, 0.15)'
+      }
+    ];
+
+    items.forEach(it => {
+      const itemEl = document.createElement('div');
+      itemEl.style.cssText = `
+        padding: 6px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: background 0.12s ease;
+        user-select: none;
+      `;
+      itemEl.innerHTML = `
+        <span style="font-size:15px; flex-shrink:0;">${it.icon}</span>
+        <div style="display:flex; flex-direction:column; line-height:1.2;">
+          <span style="color:${it.color}; font-weight:700; font-size:11px;">${it.title}</span>
+          <span style="color:#94a3b8; font-size:9px;">${it.desc}</span>
+        </div>
+      `;
+      itemEl.onmouseenter = () => { itemEl.style.background = it.hoverBg; };
+      itemEl.onmouseleave = () => { itemEl.style.background = 'transparent'; };
+      itemEl.onclick = (ev) => {
+        ev.stopPropagation();
+        menu.remove();
+        cleanup();
+        AppStatus.restartResearch(ticker, it.mode, targetDate, it.tier);
+      };
+      menu.appendChild(itemEl);
+    });
+
+    document.body.appendChild(menu);
+
+    const closeHandler = (ev) => {
+      if (!menu.contains(ev.target) && ev.target !== btnEl && !btnEl.contains(ev.target)) {
+        menu.remove();
+        cleanup();
+      }
+    };
+    const keyHandler = (ev) => {
+      if (ev.key === 'Escape') {
+        menu.remove();
+        cleanup();
+      }
+    };
+    const scrollHandler = () => {
+      menu.remove();
+      cleanup();
+    };
+
+    function cleanup() {
+      document.removeEventListener('click', closeHandler);
+      document.removeEventListener('keydown', keyHandler);
+      window.removeEventListener('scroll', scrollHandler, true);
+    }
+
+    setTimeout(() => {
+      document.addEventListener('click', closeHandler);
+      document.addEventListener('keydown', keyHandler);
+      window.addEventListener('scroll', scrollHandler, true);
+    }, 10);
+  },
+
+  async rerunAllBotchedLocal() {
+    const botched = [];
+    const list = (this._lastJobs && this._lastJobs.local_queue) || (this._lastJobs && this._lastJobs.jobs) || [];
+    list.forEach(j => {
+      const d = (j.stage_detail || '').toUpperCase();
+      const s = (j.status || '').toUpperCase();
+      if (d.includes('CUT') || d.includes('FILTERED') || d.includes('BAD_DATA') || s === 'FAILED' || s === 'KILLED') {
+        if (j.ticker && !botched.includes(j.ticker)) {
+          botched.push(j.ticker);
+        }
+      }
+    });
+    if (botched.length === 0) {
+      alert("No botched or CUT local research jobs found in the queue.");
+      return;
+    }
+    if (!confirm(`Re-run Local Research & fresh scrape for ${botched.length} tickers?\n\nTickers: ${botched.join(', ')}`)) {
+      return;
+    }
+    try {
+      const res = await window.AppApi.triggerResearch(botched.join(','), 'local_only', this._queueDate || null, true);
+      alert(`🚀 Dispatched local research for ${botched.length} tickers!\n(${res.started || 0} started, ${res.queued || 0} queued)`);
+      await this.loadJobs();
+      await this.updateStatus();
+    } catch (e) {
+      alert(`Re-run error: ${e.message}`);
     }
   },
 
@@ -1104,8 +1324,11 @@ window.AppStatus = {
     }
   },
 
-  openResearchDossier(ticker, dateStr) {
+  openResearchDossier(ticker, dateStr, evt = null) {
     if (!ticker) return;
+    if (!evt && typeof window !== 'undefined' && window.event) {
+      evt = window.event;
+    }
     let reportDate = window.AppState.currentArchiveDate;
     if (dateStr) {
       try {
@@ -1122,7 +1345,7 @@ window.AppStatus = {
     }
 
     if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
-      window.AppSwing.openReportModal(reportDate || null, ticker);
+      window.AppSwing.openReportModal(reportDate || null, ticker, null, evt);
     }
   },
 

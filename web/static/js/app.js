@@ -112,7 +112,7 @@ window.App = {
   },
 
   init() {
-    console.log('🚀 Initializing Stock Trading Operations Cockpit...');
+    console.log('🚀 REV TERMINAL booting...');
 
     // 0. Initialize theme (defaults to clean Light)
     this.initTheme();
@@ -190,7 +190,15 @@ window.App = {
       }
     }, 60000);
 
-    // 6. Deep Link Handler for Tickers & Research URLs
+    // 6. Default REV CHAT focus is ALWAYS broad market on a fresh page load.
+    //    A ticker may only be focused by an explicit action (deep link below, opening a dossier,
+    //    the focus box, or a position query). Without this reset a stale deep link / last-opened
+    //    report left the chat pinned to one symbol indefinitely.
+    if (window.AppChat && typeof window.AppChat.clearRevChatFocus === 'function') {
+      window.AppChat.clearRevChatFocus();
+    }
+
+    // 7. Deep Link Handler for Tickers & Research URLs (runs last so an explicit link can re-focus)
     this.handleDeepLinks();
   },
 
@@ -222,6 +230,13 @@ window.App = {
 
       // Check desk routing parameter (e.g. ?desk=trades, ?desk=radar, ?desk=screener, ?desk=portfolio, ?desk=watchlist)
       let directDesk = urlParams.get('desk') || (window.location.hash.startsWith('#desk-') ? window.location.hash.replace('#desk-', '') : (window.location.hash.startsWith('#') ? window.location.hash.slice(1) : null));
+      if (!directDesk && pathParts.length >= 1) {
+        const potentialDesk = pathParts[0].toLowerCase();
+        if (['today', 'swing', 'radar', 'alerts', 'screener', 'watchlist', 'trades', 'portfolio', 'intraday', 'journal', 'record', 'logs'].includes(potentialDesk)) {
+          directDesk = potentialDesk;
+        }
+      }
+
       if (directDesk) {
         directDesk = directDesk.toLowerCase().trim();
         if (directDesk === 'radar') directDesk = 'swing';
@@ -243,6 +258,70 @@ window.App = {
     } catch (e) {
       console.warn('[DeepLink] Error parsing deep link:', e);
     }
+  }
+};
+
+// ============================================================================
+// Settings & System Status modal — one home for services, appearance, and diagnostics.
+// The top ribbon stays compact: status is visible at a glance, actions live here.
+// ============================================================================
+window.AppSettings = {
+  _clockTimer: null,
+
+  open() {
+    const m = document.getElementById('settings-modal');
+    if (!m) return;
+    m.style.display = 'flex';
+    this._mirrorStatus();
+    this._startClock();
+  },
+
+  close() {
+    const m = document.getElementById('settings-modal');
+    if (m) m.style.display = 'none';
+    this._stopClock();
+  },
+
+  toggle() {
+    const m = document.getElementById('settings-modal');
+    if (m && m.style.display !== 'none') this.close();
+    else this.open();
+  },
+
+  _startClock() {
+    if (this._clockTimer) return;
+    const tick = () => {
+      const el = document.getElementById('st-clock');
+      if (el) {
+        const now = new Date();
+        el.innerText = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      }
+    };
+    tick();
+    this._clockTimer = setInterval(tick, 1000);
+  },
+
+  _stopClock() {
+    if (this._clockTimer) {
+      clearInterval(this._clockTimer);
+      this._clockTimer = null;
+    }
+  },
+
+  // Mirror the ribbon pills into the modal's status grid so one place shows everything.
+  _mirrorStatus() {
+    const map = [
+      ['txt-market', 'st-market'],
+      ['txt-llm', 'st-llm'],
+      ['txt-tasty', 'st-tasty'],
+      ['txt-schwab-modal', 'st-schwab'],
+      ['txt-tracker', 'st-tracker'],
+    ];
+    map.forEach(([from, to]) => {
+      const a = document.getElementById(from);
+      const b = document.getElementById(to);
+      if (a && b) b.innerText = a.innerText;
+    });
   }
 };
 

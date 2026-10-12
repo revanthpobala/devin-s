@@ -858,7 +858,82 @@ def backfill_watch_targets_gate_inputs() -> int:
     return updated
 
 
-def sweep_expired_watch_targets(days: int = 5, as_of_date: Optional[str] = None) -> int:
+def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
+    """Automatically ensure all active PASS suggestions from the screener/cascade are registered in watch_targets
+
+    so the background WatchAlerts daemon continuously pulls live data, distances, and trigger states for them.
+    """
+    now = _now_iso()
+    synced_count = 0
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT s.ticker, s.date, s.side, s.entry_low, s.entry_high, s.stop, s.target_1, s.target_2,
+                       s.signal_pack, s.fade, s.action_long, s.ext_z, s.atr_at_signal, s.rr_at_market_at_signal,
+                       s.verdict, s.setup_lane
+                FROM suggestions s
+                WHERE s.gate_status = 'PASS'
+                  AND s.date >= date('now', '-' || ? || ' days')
+                GROUP BY LOWER(s.ticker)
+                ORDER BY s.id DESC
+                """,
+                (lookback_days,),
+            )
+            suggestions = [dict(r) for r in cursor.fetchall()]
+
+            for s in suggestions:
+                t = s["ticker"].upper().strip()
+                if not t:
+                    continue
+                verdict = s.get("verdict") or "PASS"
+                side = str(s.get("side") or "LONG").upper()
+                e_low = s.get("entry_low")
+                e_high = s.get("entry_high")
+                stop_val = s.get("stop")
+                t1 = s.get("target_1")
+                t2 = s.get("target_2")
+
+                cursor.execute(
+                    """
+                    INSERT INTO watch_targets (
+                        ticker, date, verdict, side, entry_zone_low, entry_zone_high, tactical_stop,
+                        target_1, target_2, status, updated_at,
+                        signal_pack, fade, action_long, ext_z, atr_at_signal, rr_at_market_at_signal
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'STALKING', ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(ticker) DO UPDATE SET
+                        verdict = CASE WHEN watch_targets.verdict IS NULL OR watch_targets.verdict IN ('UNRESEARCHED', 'EXPIRED') THEN excluded.verdict ELSE watch_targets.verdict END,
+                        entry_zone_low = COALESCE(excluded.entry_zone_low, watch_targets.entry_zone_low),
+                        entry_zone_high = COALESCE(excluded.entry_zone_high, watch_targets.entry_zone_high),
+                        tactical_stop = COALESCE(excluded.tactical_stop, watch_targets.tactical_stop),
+                        target_1 = COALESCE(excluded.target_1, watch_targets.target_1),
+                        target_2 = COALESCE(excluded.target_2, watch_targets.target_2),
+                        status = CASE 
+                            WHEN watch_targets.status IN ('UNRESEARCHED', 'EXPIRED', 'WATCH') OR watch_targets.status IS NULL THEN 'STALKING'
+                            WHEN watch_targets.status = 'INVALIDATED' AND (watch_targets.last_price IS NULL OR watch_targets.last_price > excluded.tactical_stop) THEN 'STALKING'
+                            ELSE watch_targets.status 
+                        END,
+                        signal_pack = COALESCE(excluded.signal_pack, watch_targets.signal_pack),
+                        fade = COALESCE(excluded.fade, watch_targets.fade),
+                        action_long = COALESCE(excluded.action_long, watch_targets.action_long),
+                        ext_z = COALESCE(excluded.ext_z, watch_targets.ext_z),
+                        atr_at_signal = COALESCE(excluded.atr_at_signal, watch_targets.atr_at_signal),
+                        rr_at_market_at_signal = COALESCE(excluded.rr_at_market_at_signal, watch_targets.rr_at_market_at_signal),
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        t, s.get("date"), verdict, side, e_low, e_high, stop_val,
+                        t1, t2, now,
+                        s.get("signal_pack"), s.get("fade"), s.get("action_long"), s.get("ext_z"), s.get("atr_at_signal"), s.get("rr_at_market_at_signal")
+                    ),
+                )
+                synced_count += 1
+            conn.commit()
+    return synced_count
+
+
+def sweep_expired_watch_targets(days: int = 21, as_of_date: Optional[str] = None) -> int:
     """Expire STALKING and IN_ZONE targets older than `days` trading days or past `expires_on`."""
     now = _now_iso()
     today_dt = datetime.strptime(as_of_date[:10], "%Y-%m-%d").date() if as_of_date else datetime.now().date()

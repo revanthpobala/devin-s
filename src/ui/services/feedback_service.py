@@ -177,7 +177,11 @@ def get_feedback_loop_data() -> Dict[str, Any]:
                     LIMIT 50
                 """)
                 for r in cur.fetchall():
-                    closed_positions.append(dict(r))
+                    row = dict(r)
+                    # POOL TAG: these came from the live positions table, i.e. trades the
+                    # tracker actually opened/closed (or reconciled against the broker).
+                    row["pool"] = "real"
+                    closed_positions.append(row)
         except Exception as e:
             logger.debug(f"Error querying closed positions: {e}")
 
@@ -201,6 +205,10 @@ def get_feedback_loop_data() -> Dict[str, Any]:
                     item = dict(r)
                     item["trade_id"] = f"sugg_{item.get('suggestion_id')}"
                     item["strategy"] = "Swing"
+                    # POOL TAG: these are model/backtest outcomes from the bar-walk lifecycle
+                    # simulator, NOT the user's executed fills. Mixing them into a headline
+                    # "win rate" makes that number describe the model, not the trading.
+                    item["pool"] = "model"
                     closed_positions.append(item)
         except Exception as e:
             logger.debug(f"Error querying closed suggestions: {e}")
@@ -221,16 +229,25 @@ def get_feedback_loop_data() -> Dict[str, Any]:
         ticker = str(c.get("ticker", "")).upper()
         side = str(c.get("side", "LONG")).upper()
         entry_px = float(c.get("entry_price") or 0.0)
-        exit_px = float(c.get("exit_price") or entry_px)
+        # CAPTURE BUG FIX: never substitute `entry_px` for a missing exit price. Doing that
+        # manufactured an exact 0.00R, which bucketed 57 trades with no recorded exit as
+        # SCRATCHES and silently inflated the sample. A missing exit must read as unmeasured.
+        raw_exit = c.get("exit_price")
+        exit_px = float(raw_exit) if raw_exit not in (None, "", 0) else None
         stop_px = float(c.get("initial_stop") or c.get("stop") or 0.0)
         t1_px = float(c.get("target") or c.get("target_1") or 0.0)
         exit_why = c.get("exit_reason")  # Keep NULL exit_reason as None
+        pool = str(c.get("pool") or "real")
 
         # Determine realized R via unified compute_r
         unit = "option" if c.get("instrument_type") == "OPTION" or "option" in str(c.get("strategy", "")).lower() else "share"
+        broker_pnl = c.get("realized_broker_pnl")
         r_val = c.get("r_net") if c.get("r_net") is not None else c.get("gross_r")
         if r_val is not None and abs(float(r_val)) <= 20.0:
             realized_r = round(float(r_val), 4)
+        elif exit_px is None and pool == "real":
+            # No recorded exit price -> the outcome is unmeasured, not breakeven.
+            realized_r = None
         else:
             realized_r = compute_r(
                 unit=unit,
@@ -240,7 +257,7 @@ def get_feedback_loop_data() -> Dict[str, Any]:
                 side=side,
                 atr=c.get("atr"),
                 debit=c.get("debit"),
-                dollar_pnl=c.get("realized_broker_pnl"),
+                dollar_pnl=broker_pnl if broker_pnl not in (None, "") else None,
             )
 
         # Outcome bucketing: scratch (|R| < 0.1) is its own bucket
@@ -291,8 +308,9 @@ def get_feedback_loop_data() -> Dict[str, Any]:
             "ticker": ticker,
             "side": side,
             "strategy": c.get("strategy", "Intraday"),
+            "pool": pool,
             "entry_price": round(entry_px, 2),
-            "exit_price": round(exit_px, 2),
+            "exit_price": round(exit_px, 2) if exit_px is not None else None,
             "stop_loss": round(stop_px, 2),
             "target": round(t1_px, 2),
             "realized_r": realized_r,

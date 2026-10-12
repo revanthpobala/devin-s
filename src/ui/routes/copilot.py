@@ -519,30 +519,54 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     }
                     messages.append(asst_msg)
 
-                    # Inform UI of active tool execution
+                    # Inform UI of active tool execution (live timeline start)
                     tool_names = [tc["name"] for tc in tool_calls_acc.values() if tc.get("name")]
                     if tool_names:
-                        status_badge = f"\n\n⚙️ *Executing live tool(s): `{', '.join(tool_names)}`...*\n\n"
-                        yield f"data: {json.dumps({'token': status_badge})}\n\n"
+                        yield f"data: {json.dumps({'status': 'tool_start', 'tools': tool_names})}\n\n"
 
                     # Execute all tools concurrently in parallel threadpool
+                    _tool_t0 = asyncio.get_event_loop().time()
+
                     async def _run_single_tool(tc_dict):
                         mock_tc = _MockToolCall(tc_dict["id"], tc_dict["name"], tc_dict["arguments"])
+                        _t0 = asyncio.get_event_loop().time()
                         try:
                             tool_res = await asyncio.to_thread(execute_tool_call, mock_tc, date_str)
                             res_str = str(tool_res) if tool_res is not None else "No output."
+                            ok, err = True, None
                         except Exception as ex_tool:
                             res_str = f"Tool execution error: {ex_tool}"
+                            ok, err = False, str(ex_tool)
                         return {
                             "role": "tool",
                             "tool_call_id": tc_dict["id"],
                             "name": tc_dict["name"],
-                            "content": res_str
+                            "content": res_str,
+                            "_ms": int((asyncio.get_event_loop().time() - _t0) * 1000),
+                            "_ok": ok,
+                            "_err": err,
+                            "_chars": len(res_str),
                         }
 
                     tool_results = await asyncio.gather(*[_run_single_tool(tc) for tc in tool_calls_acc.values()])
+                    _tool_ms = int((asyncio.get_event_loop().time() - _tool_t0) * 1000)
                     for tr in tool_results:
-                        messages.append(tr)
+                        messages.append({k: v for k, v in tr.items() if not k.startswith("_")})
+
+                    # Live timeline completion (names, durations, ok/err) for the UI
+                    yield f"data: {json.dumps({
+                        'status': 'tool_done',
+                        'tools': [
+                            {
+                                'name': tr.get('name', ''),
+                                'ms': tr.get('_ms', 0),
+                                'ok': tr.get('_ok', True),
+                                'chars': tr.get('_chars', 0),
+                            }
+                            for tr in tool_results
+                        ],
+                        'total_ms': _tool_ms,
+                    })}\n\n"
 
                 import re
                 raw_full = "".join(full_answer_chunks)

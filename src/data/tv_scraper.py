@@ -525,7 +525,28 @@ class TVScraper:
             dl.save_as(str(csv_path))
             logger.info(f"Saved chart CSV to {csv_path}")
 
-            from src.data.csv_adapter import csv_to_datawindow
+            from src.data.csv_adapter import csv_to_datawindow, MIN_COLS
+            import pandas as pd
+
+            # Validate column count; if indicators didn't finish compiling, wait and retry download
+            try:
+                check_df = pd.read_csv(str(csv_path), nrows=2)
+                if len(check_df.columns) < MIN_COLS:
+                    logger.warning(
+                        f"CSV only has {len(check_df.columns)} columns (expected >={MIN_COLS}). "
+                        f"Indicators may still be compiling. Waiting 15s and re-downloading..."
+                    )
+                    time.sleep(15)
+                    page.click(MENU_BTN, timeout=15000)
+                    page.click(DL_ITEM, timeout=15000)
+                    with page.expect_download(timeout=90000) as retry_info:
+                        page.click(DL_BTN, timeout=15000)
+                    retry_dl = retry_info.value
+                    retry_dl.save_as(str(csv_path))
+                    logger.info(f"Re-saved chart CSV to {csv_path}")
+            except Exception as check_err:
+                logger.debug(f"Pre-check on CSV columns encountered: {check_err}")
+
             data_dict, hist_df, realvol_10d, ret_10d = csv_to_datawindow(
                 str(csv_path), str(data_window_path), ticker=safe_symbol
             )

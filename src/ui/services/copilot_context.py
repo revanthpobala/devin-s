@@ -803,6 +803,335 @@ def _get_latest_research_date_for_ticker(ticker: str) -> Optional[str]:
 
 _TICKER_CONTEXT_CACHE: Dict[str, Tuple[float, List[str]]] = {}
 
+_PORTFOLIO_CONTEXT_CACHE: Tuple[float, str] = (0.0, "")
+_PORTFOLIO_CONTEXT_TTL: float = 20.0
+
+_PORTFOLIO_INTENT_RE = re.compile(
+    r'(\bportfolio|\bholdings?\b|\bpositions?\b|\ballocation\b|\bconcentrat\w*\b|'
+    r'\bmy\s+(trades?|account|book|legs?|spreads?|leaps|shares|options?|contracts?|schwab|covered\s+calls?)\b|'
+    r'\bcovered\s+calls?\b|\bpremium\s+harvest\b|\bnet\s+liquidation\b|\baccount\s+balance\b|'
+    r'\bbuying\s+power\b|\bnet\s+worth\b|\bbrokerage\b|\bdry\s+powder\b|\bcash\s+balance\b|'
+    r'\bwhat\s+do\s+i\s+own\b|\bwhat\s+am\s+i\s+holding\b|\bdo\s+i\s+own\b|\bhow\s+much\s+\w+\s+do\s+i\s+(own|have)\b|'
+    r'\bndxp\b)',
+    re.IGNORECASE
+)
+
+_BOARD_PORTFOLIO_MARKERS = (
+    "LIVE SCHWAB PORTFOLIO DOSSIER",
+    "SCHWAB PORTFOLIO DESK",
+    "SCHWAB PORTFOLIO DOSSIER",
+    "PORTFOLIO DESK",
+    "SCHWAB POSITIONS TABLE",
+)
+
+# Desk-scoped sessions: the chat follows the page the user is on (Today desk, Watchlist,
+# Intraday, ...). "Board context" then carries that page's real rows, and the assistant must
+# answer about THAT data — not a generic market monologue.
+_DESK_BOARD_MARKERS = (
+    "LIVE TODAY DESK",
+    "LIVE WATCHLIST",
+    "LIVE INTRADAY DESK",
+    "ACTIVE DESK:",
+)
+
+# Strong, unmistakable book ownership phrasing. This (not the broad intent regex) is what flips the
+# chat into the dedicated PORTFOLIO COPILOT persona, so a swing-desk question about a research
+# setup ("should I enter this position?") is never captured by the portfolio persona.
+_STRONG_PORTFOLIO_RE = re.compile(
+    r'(\bmy\s+(portfolio|book|account|holdings|positions|trades|schwab|brokerage|shares|options?|contracts?|legs?|spreads?|leaps|covered\s+calls?|covered\s+call)\b'
+    r'|\bportfolio\s+(summary|update|status|review|health|thoughts|overview|tactics)\b'
+    r'|\bthoughts\s+on\s+the\s+portfolio\b'
+    r'|\bsummarize\w*\s+.{0,25}portfolio\b'
+    r'|\bnet\s+liquidation\b'
+    r'|\bwhat\s+do\s+i\s+own\b'
+    r'|\bhow\s+is\s+my\s+book\b'
+    r'|\bover-?concentrat\w*\b'
+    r'|\bdry\s+powder\b)',
+    re.IGNORECASE
+)
+
+
+def _build_portfolio_context() -> str:
+    """
+    Assembles the user's COMPLETE live Schwab brokerage dossier for copilot portfolio questions:
+    every holding (shares + exact option contracts with strikes/expirations), per-account exposure,
+    aggregate exposure by ticker, recent filled orders, open intraday desk positions, and research
+    watch levels for held tickers.
+    """
+    global _PORTFOLIO_CONTEXT_CACHE
+
+    now_ts = time.time()
+    cached_ts, cached_text = _PORTFOLIO_CONTEXT_CACHE
+    if cached_text and (now_ts - cached_ts) < _PORTFOLIO_CONTEXT_TTL:
+        return cached_text
+
+    try:
+        from src.tracking.schwab_portfolio_manager import (
+            get_portfolio_positions,
+            get_portfolio_summary,
+        )
+    except Exception as e:
+        logger.debug(f"Portfolio manager import failed: {e}")
+        return ""
+
+    try:
+        summary = get_portfolio_summary()
+        positions = get_portfolio_positions()
+    except Exception as e:
+        logger.debug(f"Schwab portfolio fetch failed: {e}")
+        return ""
+
+    if not positions:
+        return ""
+
+    tot_val = float(summary.get("total_liquidation_value") or 0.0)
+    day_pnl = float(summary.get("total_day_pnl") or 0.0)
+    day_pct = float(summary.get("total_day_pnl_pct") or 0.0)
+    unreal = float(summary.get("total_unrealized_pnl") or 0.0)
+    unreal_pct = float(summary.get("total_unrealized_pnl_pct") or 0.0)
+    cash = float(summary.get("total_cash_balance") or 0.0)
+    accounts = summary.get("accounts") or []
+    breakdown = summary.get("asset_breakdown") or {}
+
+    header_lines = [
+        "### 💼 USER'S COMPLETE LIVE SCHWAB PORTFOLIO DOSSIER (EVERY TICKER, CONTRACT & TRADE CARRIED):",
+        "> ⚠️ **MANDATORY PORTFOLIO ADVISORY RULE**: The user is asking about their REAL brokerage portfolio.",
+        "> You MUST answer using ONLY the exact holdings, contracts, quantities, cost basis, and P&L listed below.",
+        "> NEVER output generic hypothetical text ('if you held shares...', 'if you had a spread...') — their real legs are enumerated below.",
+        "> Cite exact symbols, strikes, expirations, quantities, and dollar figures in every recommendation.",
+        "",
+        f"• **TOTAL LIQUIDATION VALUE**: **${tot_val:,.2f}** across {len(accounts)} linked account(s)",
+        f"• **TODAY'S REAL-TIME DAY P&L**: **${day_pnl:+,.2f} ({day_pct:+.2f}%)**",
+        f"• **TOTAL UNREALIZED P&L**: **${unreal:+,.2f} ({unreal_pct:+.2f}%)**",
+        f"• **CASH & BUYING POWER**: **${cash:,.2f}**",
+        f"• **POSITION COUNT**: {len(positions)} ({breakdown.get('EQUITY', {}).get('count', 0)} equities · {breakdown.get('OPTION', {}).get('count', 0)} options · {breakdown.get('MUTUAL_FUND', {}).get('count', 0)} funds)",
+    ]
+    if summary.get("last_synced"):
+        header_lines.append(f"• **LAST SCHWAB API SYNC**: {summary.get('last_synced')}")
+
+    parts = ["\n".join(header_lines)]
+
+    if accounts:
+        acct_lines = []
+        for a in accounts[:6]:
+            acct_lines.append(
+                f"• **{a.get('account_number_masked', '')}** ({a.get('account_type', '')}): Liquidation **${float(a.get('liquidation_value') or 0.0):,.2f}** | "
+                f"Cash **${float(a.get('cash_balance') or 0.0):,.2f}** | Day P&L **${float(a.get('day_profit_loss') or 0.0):+,.2f}**"
+            )
+        parts.append("#### 🏦 LINKED SCHWAB ACCOUNTS:\n" + "\n".join(acct_lines))
+
+    # Aggregate exposure by underlying ticker
+    by_underlying: Dict[str, Dict[str, Any]] = {}
+    for p in positions:
+        sym = (p.get("underlying_symbol") or p.get("symbol") or "?").upper()
+        agg = by_underlying.setdefault(sym, {"mv": 0.0, "unreal": 0.0, "day": 0.0, "legs": 0})
+        agg["mv"] += float(p.get("market_value") or 0.0)
+        agg["unreal"] += float(p.get("unrealized_profit_loss") or 0.0)
+        agg["day"] += float(p.get("day_profit_loss") or 0.0)
+        agg["legs"] += 1
+
+    # Complete holdings roster (largest market value first)
+    roster = []
+    for p in sorted(positions, key=lambda x: abs(float(x.get("market_value") or 0.0)), reverse=True)[:45]:
+        sym = (p.get("underlying_symbol") or p.get("symbol") or "?").upper()
+        acct = f"{p.get('account_type', '')} ({p.get('account_number_masked', '')})".strip()
+        qty = float(p.get("quantity") or 0.0)
+        mv = float(p.get("market_value") or 0.0)
+        avg = float(p.get("average_price") or 0.0)
+        cur = float(p.get("current_price") or 0.0)
+        unreal_p = float(p.get("unrealized_profit_loss") or 0.0)
+        upct = float(p.get("unrealized_profit_loss_pct") or 0.0)
+        dgl = float(p.get("day_profit_loss") or 0.0)
+        dpct = float(p.get("day_profit_loss_pct") or 0.0)
+        pct_port = f" — {mv / tot_val * 100.0:.1f}% of portfolio" if tot_val > 0 else ""
+
+        if p.get("asset_type") == "OPTION":
+            o_type = (p.get("option_type") or "OPT").upper()
+            strike = float(p.get("option_strike") or 0.0)
+            exp = p.get("option_expiration") or "N/A"
+            desc = p.get("description") or p.get("symbol") or ""
+            side = "LONG" if qty > 0 else "SHORT"
+            roster.append(
+                f"• **[{o_type}] {sym} {exp} ${strike:.2f}** — {side} {abs(qty):.0f} contract(s) in {acct}{pct_port}\n"
+                f"  - Contract: `{p.get('symbol')}` ({desc})\n"
+                f"  - Basis: **${avg:.2f}**/contract | Live Mark: **${cur:.2f}** | Market Value: **${mv:,.2f}**\n"
+                f"  - Day P&L: **${dgl:+,.2f} ({dpct:+.1f}%)** | Unrealized P&L: **${unreal_p:+,.2f} ({upct:+.1f}%)**"
+            )
+        elif p.get("asset_type") == "MUTUAL_FUND":
+            roster.append(
+                f"• **[FUND] {sym}** — {qty:,.3f} units in {acct}{pct_port} | MV **${mv:,.2f}** | "
+                f"Avg ${avg:.2f} | Unrealized **${unreal_p:+,.2f} ({upct:+.1f}%)** | Day **${dgl:+,.2f}**"
+            )
+        else:
+            roster.append(
+                f"• **[SHARES] {sym}** — {qty:,.2f} shares in {acct}{pct_port}\n"
+                f"  - Avg Cost Basis: **${avg:.2f}/share** | Live Price: **${cur:.2f}** | Market Value: **${mv:,.2f}**\n"
+                f"  - Day P&L: **${dgl:+,.2f} ({dpct:+.1f}%)** | Unrealized P&L: **${unreal_p:+,.2f} ({upct:+.1f}%)**"
+            )
+
+    parts.append(
+        "#### 📋 COMPLETE HOLDINGS ROSTER (every leg, sorted by market value):\n" + "\n".join(roster)
+    )
+
+    exp_lines = []
+    for sym, agg in sorted(by_underlying.items(), key=lambda kv: abs(kv[1]["mv"]), reverse=True)[:20]:
+        pct = f" ({agg['mv'] / tot_val * 100.0:.1f}%)" if tot_val > 0 else ""
+        exp_lines.append(
+            f"• **{sym}**{pct}: MV **${agg['mv']:,.2f}** | Unrealized **${agg['unreal']:+,.2f}** | Day **${agg['day']:+,.2f}** | {agg['legs']} leg(s)"
+        )
+    parts.append("#### 📊 AGGREGATE EXPOSURE BY TICKER:\n" + "\n".join(exp_lines))
+
+    # Recent filled trades + executive briefing + sentinel (analysis shares its own TTL cache)
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_analysis
+        analysis = get_portfolio_analysis()
+        trades = analysis.get("recent_trades") or []
+        if trades:
+            t_lines = []
+            for t in trades[:15]:
+                px = f"${t.get('price')}" if t.get("price") else "MKT"
+                t_lines.append(f"• {t.get('date')} | **{t.get('category')}** | {t.get('order_type')} | {t.get('legs')} | {px}")
+            parts.append("#### 🧾 RECENT FILLED TRADES (Schwab API verified, last 60 days):\n" + "\n".join(t_lines))
+
+        briefing = analysis.get("briefing") or {}
+        if briefing.get("what_happened"):
+            parts.append(
+                "#### 🎙️ EXECUTIVE PERFORMANCE ATTRIBUTION:\n"
+                f"WHAT HAPPENED: {briefing.get('what_happened')}\n\nWHAT IS HAPPENING: {briefing.get('what_is_happening', '')}"
+            )
+
+        sentinel = analysis.get("sentinel") or {}
+        if sentinel.get("has_violent_drop"):
+            s_lines = []
+            for vd in (sentinel.get("violent_drops") or [])[:4]:
+                s_lines.append(f"• 🚨 {vd.get('message')}")
+            for bn in (sentinel.get("breaking_news") or [])[:3]:
+                s_lines.append(f"• 📰 {bn.get('symbol')}: {bn.get('headline')}")
+            if s_lines:
+                parts.append("#### 🚨 ACTIVE SENTINEL RISK ALERTS:\n" + "\n".join(s_lines))
+    except Exception as ae:
+        logger.debug(f"Portfolio analysis enrichment failed: {ae}")
+
+    # Open intraday desk positions on tickers the user actually holds
+    held_roots = set(by_underlying.keys())
+    try:
+        pos_file = config.BASE_DIR / "data" / "positions.json"
+        if pos_file.exists():
+            pos_dict = json.loads(pos_file.read_text(encoding="utf-8"))
+            open_lines = []
+            for sym, p in (pos_dict or {}).items():
+                if not isinstance(p, dict):
+                    continue
+                s_u = str(sym).upper()
+                root = re.sub(r'[^A-Z].*$', '', s_u) or s_u
+                if root not in held_roots and s_u not in held_roots:
+                    continue
+                side = (p.get("side") or "LONG").upper()
+                entry = float(p.get("entry_price") or p.get("alert_price") or 0.0)
+                spot = float(p.get("current_price") or p.get("last_price") or entry)
+                pnl = 0.0
+                if entry > 0:
+                    pnl = ((spot - entry) / entry * 100.0) if side == "LONG" else ((entry - spot) / entry * 100.0)
+                open_lines.append(
+                    f"• **{s_u}** ({side}) | Entry **${entry:.2f}** | Live **${spot:.2f}** | P&L **{pnl:+.2f}%** | Strategy: {p.get('strategy', 'Intraday')}"
+                )
+            if open_lines:
+                parts.append("#### ⚡ OPEN INTRADAY DESK POSITIONS ON HELD TICKERS:\n" + "\n".join(open_lines))
+    except Exception as pe:
+        logger.debug(f"Open positions enrichment failed for portfolio context: {pe}")
+
+    # Research watch levels for held tickers
+    try:
+        with _get_db() as conn:
+            w_rows = conn.cursor().execute(
+                "SELECT ticker, status, verdict, entry_zone_low, entry_zone_high, tactical_stop, target_1, last_price FROM watch_targets"
+            ).fetchall()
+        w_lines = []
+        for r in w_rows:
+            t_u = (r["ticker"] or "").upper()
+            if t_u not in held_roots:
+                continue
+            w_lines.append(
+                f"• **{t_u}** [{r['status']}] | Verdict: {r['verdict']} | Entry ${r['entry_zone_low']}–${r['entry_zone_high']} | "
+                f"Stop ${r['tactical_stop']} | T1 ${r['target_1']} | Spot ${r['last_price']}"
+            )
+        if w_lines:
+            parts.append("#### 🎯 RESEARCH WATCH LEVELS ON HELD TICKERS:\n" + "\n".join(w_lines[:15]))
+    except Exception as we:
+        logger.debug(f"Watch target enrichment failed for portfolio context: {we}")
+
+    text = "\n\n".join(parts)
+    _PORTFOLIO_CONTEXT_CACHE = (time.time(), text)
+    return text
+
+
+def _build_portfolio_system_prompt(
+    calendar_today: str,
+    now_str: str,
+    now_et_str: str,
+    dossier_date: str,
+    elapsed_days_str: str,
+    market_context_block: str,
+) -> str:
+    """
+    Dedicated, standalone system prompt for the PORTFOLIO COPILOT chat.
+
+    This is intentionally NOT the generic desk prompt: the portfolio chat is a separate
+    assistant persona (Senior Portfolio Manager on the user's real Schwab book) with its own
+    rules, its own answer shape, and its own subject. It must never drift into generic
+    market commentary, single-ticker research framing, or a ticker the user merely had
+    focused in the sidebar.
+    """
+    return f"""You are **REV PORTFOLIO** — the dedicated Senior Portfolio Manager and Wealth Manager for Revanth's LIVE Schwab brokerage book.
+
+You are NOT a generic market commentator, NOT a single-stock research desk, and NOT a screener. Your ONLY subject is the money actually in this account: the shares, option contracts, mutual funds, and cash enumerated in the **COMPLETE LIVE SCHWAB PORTFOLIO DOSSIER** below. If it is not in that dossier, the user does not own it.
+
+═══════════════════════════════════════════════════
+ABSOLUTE OPERATING RULES (violating any rule is a failure)
+═══════════════════════════════════════════════════
+1. THE BOOK IS THE ONLY SUBJECT. Every answer starts from the user's real carried positions. Reference them by exact symbol, contract (strike + expiration), quantity, cost basis, and live mark. Never answer a portfolio question with a hypothetical, textbook, or generic-market framing.
+
+2. NO HYPOTHETICALS, EVER. Never write "if you held...", "if you had a spread...", "a typical portfolio...", "investors in your position...". The real legs are enumerated below — analyze THOSE.
+
+3. SINGLE SOURCE OF TRUTH. The **COMPLETE LIVE SCHWAB PORTFOLIO DOSSIER** below is the authoritative record of holdings, totals, and fills. If any other section (screen telemetry, older briefing, prior chat turns) shows a different total or a different holding set, the dossier wins and you say so.
+
+4. IGNORE THE TICKER FOCUS BADGE. This chat is a portfolio chat. If the user's UI shows a focused ticker (e.g. Focus: $WMT), it is NOT what they are asking about unless they explicitly name that ticker in their message. Focus on the book, not the last-clicked symbol.
+
+5. WHEN THE USER NAMES A TICKER, ANSWER AT THE POSITION LEVEL FIRST: state the real leg (qty, cost, mark, P&L, % of book) then the book-level consequences (weight, concentration, hedge, income, assignment risk, roll math). If they do NOT hold it, say so explicitly and answer whether it belongs in this book at all.
+
+6. THIS IS A PORTFOLIO CHAT — IT IS NOT THE GENERIC DESK CHAT. Do not produce entry zones / tactical stops / screener setups for stocks the user does not hold. Do not summarize "today's research universe" or ranked swing candidates. Only book-relevant actions.
+
+7. SUMMARY SHAPE — when the user asks for a portfolio summary, review, or status, respond with EXACTLY this structure:
+   (1) TOTALS & TODAY'S ATTRIBUTION: total liquidation value, today's P&L ($ and %), cumulative unrealized P&L, cash/SWVXX dry powder, # positions.
+   (2) MATERIAL HOLDINGS: every position >= 2% of book (plus any position the user named), with live P&L %, portfolio weight, days-to-expiry for options.
+   (3) OPTION LEGS & THETA: each contract with strike, expiration, DTE, mark vs basis, and the specific decay/assignment outcome if held to expiry.
+   (4) RISK FLAGS: concentration, sentinel price shocks, breached tactical stops, near-dated expirations, margin-account exposure, single-earnings-date concentration.
+   (5) RANKED ACTION LIST: per position, the single best next action with exact strikes/expirations/quantities and one-click action buttons.
+
+8. INCOME ENGINE (this book's primary edge). Evaluate the real legs for: selling OTM 30-45 DTE covered calls against actual share counts (never against shares the user does not own), PMCC rolls against real LEAPS legs, collars, and roll-outs. Compute premium from the real quantity (shares or contracts x 100) and state max assignment exposure in dollars and as % of book.
+
+9. INDEX 0DTE / NDXP VERTICALS. When the user references NDXP or index day-trade verticals, anchor to the real fills in the dossier (dates, strikes, net debit/credit), treat them as defined-risk day structures subject to the EOD mandatory flatten (13:45 MT), and never quote a generic index playbook that ignores their actual strikes.
+
+10. ALLOCATION, CONCENTRATION & DRY POWDER. Use the dossier's own aggregate-exposure section for weights. Flag single-name concentration, correlated mega-cap overlap, and idle cash. Recommend deployment (or defense) of dry powder with a concrete size, not a vague "consider adding".
+
+11. RISK SENTINEL. If the dossier reports ACTIVE SENTINEL RISK ALERTS, lead with them — the concrete shock, the affected leg, and the protective action (hedge size, stop, collar) before anything else.
+
+12. WATCH-LEVEL LINKAGE. The dossier lists research watch levels for held tickers. When recommending action on a held ticker, reconcile the current spot against that entry zone / tactical stop / target and say whether the position is in-zone, extended, or invalidated.
+
+13. ACCOUNT & TAX AWARENESS. Distinguish MARGIN vs CASH accounts (they are labeled per leg). Call out assignment risk on short calls, capital-gains impact of trimming long-held winners, and never propose an action in a CASH account that requires unsettled funds.
+
+14. INTERACTIVE ACTIONS & TOOLS. Finish every recommendation with one-click buttons drawn from the real leg: `[🔔 Set Alert at $XX.XX](action:alert?ticker=XXX&price=XX.XX&op=<=)` and `[🎯 Add to Watch Targets](action:watch?ticker=XXX&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`. Live quotes, options chains, and macro are already in context; emit any additional tool calls in your FIRST response so they run in parallel.
+
+15. TEMPORAL CHRONOLOGY. Today is {calendar_today} ({now_str} / {now_et_str}). The active baseline was recorded {dossier_date} ({elapsed_days_str}). Never speak of prior-day statements as future expectations, and never quote remembered dollar figures — only what is in the dossier below.
+
+15b. STAMP EVERY LIVE PRICE YOU CITE WITH ITS TIMESTAMP. When you quote a spot price, mark, or P&L figure from the dossier, include the timestamp shown for that data, e.g. `$188,927.85 (synced HH:MM ET)`. Unstamped prices read as stale.
+
+16. ANSWER SHAPE IS MANDATORY — LEAD WITH THE ANSWER. The user asks short questions and does NOT want a full research report every time. Open with a 1-3 line TL;DR that answers the question directly (the specific dollar figure, percentage, or verdict), then supporting detail ONLY as it serves the question. Default to under 350 words; go longer only when the user explicitly asks for depth ("explain", "deep dive", "full thesis", "detail"). Do NOT produce report scaffolding (numbered sections, H1/H2, catalyst history recaps) unless asked — the dossier below is SOURCE MATERIAL, not an outline to reproduce. Exception: rule 7's structure applies when a portfolio summary is explicitly requested.
+
+TICKERS IN CONTEXT: The user's real Schwab holdings (see roster below) plus any ticker explicitly named in the conversation. NOT a research universe.
+
+{market_context_block}"""
+
 
 def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, history: list = None, session_id: str = None) -> List[str]:
     """Fetches real-time quotes, options, news, SEC filings, and research reports for a specific ticker."""
@@ -2083,6 +2412,40 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
 
     has_explicit_dossier = bool(explicit_ticker and explicit_ticker.strip().upper() not in ("GENERAL", "AUTO", "NONE", "ALL", ""))
 
+    # 0a-ii. Complete live Schwab portfolio dossier (every holding, option leg, and recent fill).
+    # Injected whenever the user asks about their portfolio/holdings/trades OR is actively
+    # viewing the Portfolio desk (board telemetry carries the live roster from the browser).
+    board_is_portfolio = bool(board_context and any(m in board_context for m in _BOARD_PORTFOLIO_MARKERS))
+    portfolio_intent = board_is_portfolio or bool(_PORTFOLIO_INTENT_RE.search(question or ""))
+    if portfolio_intent:
+        try:
+            port_card = _build_portfolio_context()
+            if port_card:
+                context_parts.append(port_card)
+        except Exception as pe:
+            logger.debug(f"Portfolio dossier injection failed: {pe}")
+
+    # STRONG portfolio intent determines the persona, not just the data. The portfolio chat uses
+    # its own dedicated system prompt. A merely-focused ticker (sidebar badge / passed ticker) must
+    # NEVER hijack a portfolio question into the generic single-stock desk persona.
+    _ticker_param_specific = has_explicit_dossier or bool(str(explicit_ticker or "").strip().upper() not in ("", "GENERAL", "AUTO", "NONE", "ALL", "None"))
+    is_portfolio_chat = bool(_STRONG_PORTFOLIO_RE.search(question or "")) or (
+        board_is_portfolio and not _ticker_param_specific and not has_explicit_dossier
+    )
+
+    # Desk-scoped chat (no ticker focused, no portfolio persona): the board telemetry IS the page.
+    board_is_desk = bool(board_context and any(m in board_context for m in _DESK_BOARD_MARKERS))
+    if board_is_desk and not _ticker_param_specific:
+        desk_directive = (
+            " 17. DESK-SCOPED CHAT (the user is sitting on a specific desk page and the live data for that page is in the 'ACTIVE BOARD / SCREEN TELEMETRY' section):\n"
+            "    - Answer from THAT page's data first. If they ask 'which of these should I trade?', 'what's actionable?', or 'summarize this page', rank or summarise the exact rows listed in the telemetry — by conviction / in-zone status / R:R / distance to entry as appropriate.\n"
+            "    - Use each row's own numbers (entry zone, stop, target, live R:R, conviction, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
+            "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
+            "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
+        )
+    else:
+        desk_directive = ""
+
     # 0b. Ticker Verification Directive for Inferred / Unconfirmed Symbols
     if has_specific_ticker and not is_explicit and not has_explicit_dossier:
         ticker_confirmation_block = f"""### 🎯 MANDATORY TICKER VERIFICATION & CONFIRMATION DIRECTIVE:
@@ -2141,17 +2504,26 @@ You MUST follow this exact structure:
         ))
 
     daily_overview_text, today_universe_tickers = "", []
+    if is_portfolio_chat:
+        # The portfolio copilot answers about the book, not the research desk. The full daily
+        # research briefing (pipelines, arbitration, jobs, ranked swing candidates) is noise for
+        # this persona and costs ~50s of pipeline fetching plus ~125k chars of context.
+        is_overview_request = False
     if is_overview_request:
         daily_overview_text, today_universe_tickers = _build_daily_overview_context(date_str, question)
         if daily_overview_text:
             context_parts.append(daily_overview_text)
 
-    # 3. Build live context for each detected ticker (up to 3 symbols)
-    for sym in detected_tickers[:3]:
-        if sym and sym not in ("GENERAL", "AUTO", "NONE", ""):
-            sym_parts = _build_single_ticker_context(sym, date_str, question, history=history, session_id=session_id)
-            if sym_parts:
-                context_parts.append(f"## ═══════════════════════════════════════════════════\n## 📌 REAL-TIME CONTEXT FOR TICKER: {sym}\n## ═══════════════════════════════════════════════════\n" + "\n\n".join(sym_parts))
+    # 3. Build live context for each detected ticker (up to 3 symbols).
+    # The portfolio copilot answers about the real book only, so per-ticker research dossiers
+    # (charts, options chains, quant engine) are not built for it: the holdings dossier already
+    # carries every real leg, and live quotes stay available through tools.
+    if not is_portfolio_chat:
+        for sym in detected_tickers[:3]:
+            if sym and sym not in ("GENERAL", "AUTO", "NONE", ""):
+                sym_parts = _build_single_ticker_context(sym, date_str, question, history=history, session_id=session_id)
+                if sym_parts:
+                    context_parts.append(f"## ═══════════════════════════════════════════════════\n## 📌 REAL-TIME CONTEXT FOR TICKER: {sym}\n## ═══════════════════════════════════════════════════\n" + "\n\n".join(sym_parts))
 
     # Fallback if somehow context_parts is still empty
     if not context_parts:
@@ -2219,14 +2591,60 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
      (c) Actionable gameplan for today (in-zone triggers vs stalking targets).
    - NEVER claim "NO ACTIVE TICKER DATA DETECTED" or refuse to answer. You have complete institutional intelligence provided in the context below."""
 
-    system_prompt = f"""{role_header}
+    if board_is_desk and not is_portfolio_chat:
+        desk_directive = (
+            " 18. DESK-SCOPED CHAT (the user is sitting on a specific desk page and the live data for that page is in the 'USER'S ACTIVE BOARD / SCREEN TELEMETRY' section):\n"
+            "    - Answer from THAT page's data first. If they ask 'which of these should I trade?', 'what's actionable?', or 'summarize this page', rank or summarise the exact rows listed in the telemetry — by conviction / in-zone status / R:R / distance to entry as appropriate.\n"
+            "    - Use each row's own numbers (entry zone, stop, target, live R:R, conviction, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
+            "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
+            "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
+        )
+    else:
+        desk_directive = ""
+
+    if portfolio_intent and not is_portfolio_chat:
+        portfolio_mode_directive = (
+            " 17. PORTFOLIO AWARENESS (the user is on their Schwab Portfolio desk, and the portfolio dossier below lists their real book):\n"
+            "    - First answer the focused ticker question, then immediately tie it to the real leg if they hold it (exact quantity, cost basis, live mark, strike, expiration) instead of generic 'if you hold' text.\n"
+            "    - If the user pivots to the overall book (portfolio, holdings, P&L, allocation), switch to a portfolio-level answer built from the dossier and its ranked per-position action list."
+        )
+    else:
+        portfolio_mode_directive = ""
+
+    market_context_block = f"""---
+
+### ACTIVE REAL-TIME MARKET CONTEXT:
+• CURRENT SYSTEM TIME: {now_str} ({now_et_str})
+• CALENDAR TODAY: {calendar_today}
+• ACTIVE DOSSIER / REFERENCE DATE: {dossier_date} ({elapsed_days_str})
+• TICKERS IN CONTEXT: {symbols_list_str}
+
+{dossier_context}
+"""
+
+    if is_portfolio_chat:
+        system_prompt = _build_portfolio_system_prompt(
+            calendar_today=calendar_today,
+            now_str=now_str,
+            now_et_str=now_et_str,
+            dossier_date=dossier_date,
+            elapsed_days_str=elapsed_days_str,
+            market_context_block=market_context_block,
+        )
+    else:
+        system_prompt = f"""{role_header}
 
 Guidelines:
-1. Answer directly, concisely, and with high quantitative depth and precision.
+1. ANSWER SHAPE IS MANDATORY - LEAD WITH THE ANSWER. The user asks short questions and does NOT want a full research report every time.
+   - Open with a 1-3 line TL;DR that answers the question directly with the specific number, verdict, or level.
+   - Then give supporting detail ONLY as it serves the question. Default to under 350 words; go longer only when the user explicitly asks for depth ("explain", "deep dive", "full thesis", "detail").
+   - Do NOT produce section numbering, H1/H2 report scaffolding, revenue-guidance history, or investor-day recaps unless the user asked for that structure. The context below is SOURCE MATERIAL, not an outline to reproduce.
+   - Never pad with restating the question, disclaimers, or "let me walk you through" preamble.
 2. You have FULL ACCESS to real-time live market data, options chains, SEC EDGAR filings, breaking news, daily research briefings, Senior PM arbitration rulings, watch triggers, and open positions provided in the context below for {symbols_list_str}.
 {desk_briefing_directive}
 4. When the user asks about a correlated stock, sector peer, or comparison (e.g. comparing EIX to PCG, AMD to NVDA), analyze the real-time quotes, options, and catalysts for BOTH tickers directly from the active context. NEVER claim you lack data when it is provided.
 5. Cite exact real-time spot prices, bid/ask spreads, Greeks, and strikes when discussing levels. ALWAYS treat the LIVE REAL-TIME MARKET QUOTE as the sole authoritative current spot price. Never repeat historical report spot prices as today's price.
+5b. STAMP EVERY LIVE QUOTATION WITH ITS TIMESTAMP. Whenever you cite a spot price, price change, or quote-derived figure, append the quote time from the context in this exact form: `$X.XX (spot, HH:MM ET)`. A price without a timestamp reads as stale and is treated as an error.
 6. When recommending trades, always specify: Actionable Vehicle (Equity vs Option Structure), Exact Strikes / Expiration, Target Premium/Debit, Max Loss, and The ONE Thing Invalidation level.
 7. Mathematical Rigor & Deterministic Execution: All quantitative metrics, 14d ATRs, 20d Realized Volatilities, moving averages, and 10,000-path Monte Carlo probabilities are computed deterministically via the verified Python sandbox engine below. Always double-check mathematical identities (e.g. Max Profit + Max Loss = Spread Width, Breakeven = Strike ± Premium, R:R = Target Gain / Risk). Never hallucinate mental arithmetic.
 8. Strict Historical Factuality & No Retrospective Attribution: Never claim that a research report or technical model from an earlier date "had notice" or "saw the news" of a catalyst that occurred after that report was compiled. If a stock moved on news published today, state clearly that the news broke today, not in the earlier report. Distinguish between what the technical indicators saw on the report date and what news broke subsequently.
@@ -2299,24 +2717,24 @@ Guidelines:
      - Cloud Quote Alert: `[🔔 Set Alert at $XX.XX](action:alert?ticker=${primary_ticker}&price=XX.XX&op=<=)`
      - SQLite Watchlist Radar: `[🎯 Add to Watch Targets](action:watch?ticker=${primary_ticker}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`
      Clicking these buttons instantly triggers cloud push notifications via Tastytrade mobile or saves the target into the SQLite radar without requiring any typing!
-16. Real Schwab Brokerage Portfolio Advisory Mandate:
-   - When the user asks about their portfolio, holdings, asset allocation, P&L, or overall risk posture:
-     Ground your response in their real Schwab brokerage portfolio (shown under 'USER\'S LIVE SCHWAB BROKERAGE PORTFOLIO & WEALTH CONTEXT').
-     - Cite exact figures: Net Liquidation Value ($182.6k across 3 accounts), today's P&L, cumulative unrealized gains, and cash/SWVXX dry powder ($21.9k).
-     - Address their heavy concentration in GOOGL (35.5%) and AMZN (19.3%). Propose risk management strategies like covered calls (selling OTM 30-45 DTE calls against shares) to monetize high IV without triggering taxable capital gains, or collar structures.
-     - Evaluate today's performance attribution (tech pullbacks vs index buffer) and give clear, institutional recommendations on rebalancing, dry powder deployment, or letting winners ride.
+ 16. Real Schwab Brokerage Portfolio Advisory Mandate:
+    - When the user asks about their portfolio, holdings, asset allocation, P&L, covered calls, or overall risk posture:
+      Ground your response EXCLUSIVELY in their real Schwab brokerage data (the 'COMPLETE LIVE SCHWAB PORTFOLIO DOSSIER' and 'USER\'S LIVE SCHWAB PORTFOLIO & WEALTH CONTEXT' sections below).
+      - Cite the exact LIVE figures from those sections (total liquidation value, today's P&L, cumulative unrealized P&L, cash/SWVXX dry powder, per-position weights). NEVER quote hardcoded or remembered dollar figures — only what is in the context.
+      - Address their real concentration computed from the dossier (e.g. the GOOGL + AMZN weight). Propose concrete risk management (selling OTM 30-45 DTE covered calls against real share counts, PMCCs against real LEAPS legs, collars, staged trims) using their ACTUAL legs, quantities, and expirations.
+      - Evaluate today's performance attribution (top draggers vs buffers) and give clear institutional recommendations on rebalancing, dry powder deployment, or letting winners ride.
+    - When the user asks for a portfolio SUMMARY, use this exact structure:
+      (1) Totals & today's attribution (value, day P&L, unrealized, cash);
+      (2) Material holdings with live P&L % and portfolio weight;
+      (3) Options legs with strike/expiration/DTE and theta-decay risk;
+      (4) Risk flags (concentration, sentinel shocks, breached tactical stops, near-dated expirations);
+      (5) A ranked action list per position with exact strikes/expirations and one-click action buttons.
+{desk_directive}
+{portfolio_mode_directive}
 
 
 
----
-### ACTIVE REAL-TIME MARKET CONTEXT:
-• CURRENT SYSTEM TIME: {now_str} ({now_et_str})
-• CALENDAR TODAY: {calendar_today}
-• ACTIVE DOSSIER / REFERENCE DATE: {dossier_date} ({elapsed_days_str})
-• TICKERS IN CONTEXT: {symbols_list_str}
-
-{dossier_context}
-"""
+{market_context_block}"""
 
     # 4. Construct standard OpenAI multi-turn messages array
     messages = [{"role": "system", "content": system_prompt}]

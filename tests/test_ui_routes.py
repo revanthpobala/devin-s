@@ -205,7 +205,7 @@ def test_research_ticker_cockpit_view(client):
     response = client.get("/research/CAT?view=cockpit")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
-    assert "Stock Trading Operations Cockpit" in response.text
+    assert "REV TERMINAL" in response.text
 
 
 def test_research_hub_page(client):

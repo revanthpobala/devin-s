@@ -743,21 +743,26 @@ def run_deep_research(
             stats_a = {}
             stats_b = {}
 
-            if chosen_tier == "FULL":
-                p2 = run_pass2(
-                    ticker=ticker, date_str=date_str,
-                    system_prompt=system_prompt, user_prompt=user_prompt,
-                    system_prompt_independent=system_prompt_independent,
-                    independent_user_prompt=independent_user_prompt,
-                    image_paths_model_a=image_paths_model_a,
-                    image_paths_model_b=image_paths_model_b,
-                    force_local=force_local,
-                    skip_model_b=False,
-                    max_tool_batches_a=max_tools_a,
-                    max_tool_batches_b=max_tools_b,
-                    stats_a=stats_a,
-                    stats_b=stats_b,
+            skip_b = (chosen_tier == "LITE")
+            reports_dir = config.BASE_DIR / "reports" / date_str
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            existing_sum = reports_dir / f"{ticker}_summary.md"
+            existing_ind = reports_dir / f"{ticker}_independent.md"
+            existing_arb = reports_dir / f"{ticker}_arbitration.md"
+            has_valid_dual = (
+                existing_sum.exists() and existing_sum.stat().st_size > 1000
+                and (skip_b or (existing_ind.exists() and existing_ind.stat().st_size > 1000))
+            )
+            needs_arb_only = has_valid_dual and (not existing_arb.exists() or existing_arb.stat().st_size < 500)
+
+            if needs_arb_only and not os.getenv("FORCE_REDO_MODELS"):
+                logger.info(
+                    f"[{ticker}] ⚡ Valid Model A & Model B reports already exist on disk. "
+                    f"Skipping expensive pass 2 tool loops and proceeding directly to Stage 5: Senior PM Arbitration!"
                 )
+                clean_response = existing_sum.read_text(encoding="utf-8")
+                clean_ind_response = existing_ind.read_text(encoding="utf-8") if existing_ind.exists() else ""
             else:
                 p2 = run_pass2(
                     ticker=ticker, date_str=date_str,
@@ -767,81 +772,44 @@ def run_deep_research(
                     image_paths_model_a=image_paths_model_a,
                     image_paths_model_b=image_paths_model_b,
                     force_local=force_local,
-                    skip_model_b=True,
+                    skip_model_b=skip_b,
                     max_tool_batches_a=max_tools_a,
+                    max_tool_batches_b=max_tools_b,
                     stats_a=stats_a,
+                    stats_b=stats_b,
                 )
 
-            record_research_timing(
-                ticker=ticker, target_date=date_str, stage="MODEL_A",
-                seconds=stats_a.get("seconds", 0.0),
-                tool_rounds=stats_a.get("tool_rounds", 0),
-                tool_calls=stats_a.get("tool_calls", 0),
-                tokens=stats_a.get("tokens", 0),
-                tier=chosen_tier, job_id=job_id,
-            )
+                record_research_timing(
+                    ticker=ticker, target_date=date_str, stage="MODEL_A",
+                    seconds=stats_a.get("seconds", 0.0),
+                    tool_rounds=stats_a.get("tool_rounds", 0),
+                    tool_calls=stats_a.get("tool_calls", 0),
+                    tokens=stats_a.get("tokens", 0),
+                    tier=chosen_tier, job_id=job_id,
+                )
 
-            reports_dir = config.BASE_DIR / "reports" / date_str
-            reports_dir.mkdir(parents=True, exist_ok=True)
-
-            clean_response, _ = save_model_a_report(
-                ticker, date_str, p2.response, tdir, out_path, reports_dir, _drift_checker, dw_dict=dw_dict
-            )
-
-            # Model B Veto logic for MID tier:
-            # In MID, Model B runs only when Model A says GO and setup is near-gate
-            if chosen_tier == "MID":
-                is_model_a_go = bool(re.search(r'\b(ENTER|BUY|GO|ACTIONABLE)\b', clean_response, re.IGNORECASE))
-                is_near_gate = False
-                try:
-                    from src.logic.actionable_gate import eval_actionable_setup
-                    gate_eval = eval_actionable_setup(dw_dict)
-                    is_near_gate = gate_eval.is_actionable or len(gate_eval.failing_reasons) <= 1
-                except Exception:
-                    pass
-
-                if is_model_a_go and is_near_gate:
-                    logger.info(f"[{ticker}] Model A emitted GO and setup is near-gate. Launching Model B as independent veto...")
-                    will_use_remote, provider_label = _detect_provider(not force_local)
-                    ind_resp = _call_model(
-                        system_prompt_independent, independent_user_prompt, image_paths_model_b,
-                        date_str, will_use_remote, "Model B (Independent Veto)", ticker, True,
-                        max_tool_batches=max_tools_b, stats_out=stats_b,
-                    )
-                    p2.ind_response = ind_resp
+                if not skip_b and p2.ind_response:
                     record_research_timing(
                         ticker=ticker, target_date=date_str, stage="MODEL_B",
                         seconds=stats_b.get("seconds", 0.0),
                         tool_rounds=stats_b.get("tool_rounds", 0),
                         tool_calls=stats_b.get("tool_calls", 0),
                         tokens=stats_b.get("tokens", 0),
-                        tier=chosen_tier, job_id=job_id, details="Veto executed",
+                        tier=chosen_tier, job_id=job_id, details="Independent macro thesis completed",
                     )
                 else:
-                    p2.ind_response = "(Model B independent pass skipped for MID tier / non-GO or non-near-gate posture)"
                     record_research_timing(
                         ticker=ticker, target_date=date_str, stage="MODEL_B",
-                        seconds=0.0, tier=chosen_tier, job_id=job_id, details="Veto skipped in MID",
+                        seconds=0.0, tier=chosen_tier, job_id=job_id, details="Skipped in LITE",
                     )
-            elif chosen_tier == "FULL":
-                record_research_timing(
-                    ticker=ticker, target_date=date_str, stage="MODEL_B",
-                    seconds=stats_b.get("seconds", 0.0),
-                    tool_rounds=stats_b.get("tool_rounds", 0),
-                    tool_calls=stats_b.get("tool_calls", 0),
-                    tokens=stats_b.get("tokens", 0),
-                    tier=chosen_tier, job_id=job_id,
-                )
-            else:  # LITE
-                p2.ind_response = "(Model B independent pass skipped for LITE tier)"
-                record_research_timing(
-                    ticker=ticker, target_date=date_str, stage="MODEL_B",
-                    seconds=0.0, tier=chosen_tier, job_id=job_id, details="Skipped in LITE",
+
+                clean_response, _ = save_model_a_report(
+                    ticker, date_str, p2.response, tdir, out_path, reports_dir, _drift_checker, dw_dict=dw_dict
                 )
 
-            clean_ind_response = save_model_b_report(
-                ticker, date_str, p2.ind_response, tdir, reports_dir, dw_dict=dw_dict
-            )
+                clean_ind_response = save_model_b_report(
+                    ticker, date_str, p2.ind_response, tdir, reports_dir, dw_dict=dw_dict
+                )
 
             resolved_lane = (triage_record.get("setup_lane") if isinstance(triage_record, dict) else None) or "RR_SETUP"
             triage_reason = str(

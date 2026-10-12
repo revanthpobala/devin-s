@@ -100,13 +100,18 @@ window.AppPortfolio = {
         </div>
 
         <!-- Subtab Switcher -->
-        <div style="display:inline-flex; gap:6px; background:var(--bg-main); padding:4px; border-radius:8px; border:1px solid var(--border);">
-          <button class="btn ${this.activeSummaryTab === 'performance' ? '' : 'secondary'}" style="font-size:11px; padding:5px 14px; font-weight:700;" onclick="AppPortfolio.setSummaryTab('performance')">
-            📊 Today's Performance &amp; Allocation
+        <div style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <button class="btn secondary" style="font-size:11px; padding:5px 14px; font-weight:700;" onclick="AppChat.askPortfolioCopilot('Give me a full executive summary of my live Schwab portfolio: total liquidation value, today P&L attribution, my biggest holdings with portfolio weights, every option leg with strike expiration and DTE, concentration risk, and a ranked action list for each material position.')" title="Open the dedicated Portfolio Copilot on this exact portfolio">
+            💼 Open Portfolio Copilot
           </button>
-          <button class="btn ${this.activeSummaryTab === 'trades' ? '' : 'secondary'}" style="font-size:11px; padding:5px 14px; font-weight:700;" onclick="AppPortfolio.setSummaryTab('trades')">
-            📋 Evaluated Trade Activity Audit (${trades.length})
-          </button>
+          <div style="display:inline-flex; gap:6px; background:var(--bg-main); padding:4px; border-radius:8px; border:1px solid var(--border);">
+            <button class="btn ${this.activeSummaryTab === 'performance' ? '' : 'secondary'}" style="font-size:11px; padding:5px 14px; font-weight:700;" onclick="AppPortfolio.setSummaryTab('performance')">
+              📊 Today's Performance &amp; Allocation
+            </button>
+            <button class="btn ${this.activeSummaryTab === 'trades' ? '' : 'secondary'}" style="font-size:11px; padding:5px 14px; font-weight:700;" onclick="AppPortfolio.setSummaryTab('trades')">
+              📋 Evaluated Trade Activity Audit (${trades.length})
+            </button>
+          </div>
         </div>
       </div>
     `;

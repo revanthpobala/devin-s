@@ -356,44 +356,15 @@ def dispatch_next_queued_job():
                     worker_thread.start()
                     append_log(f"⚖️ [Local Queue] Dispatched local triage for {tkr} (Job ID: {jid}).")
 
-            # 2. Dispatch FULL Deep Research queue (Slot 1: FULL tier in rank order)
-            active_full = get_active_full_research_count()
-            full_slots_available = MAX_CONCURRENT_FULL - active_full
-            if full_slots_available > 0:
-                queued_full = c.execute(
-                    "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'FULL') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' AND UPPER(COALESCE(tier, 'FULL')) = 'FULL'"
+            # 2. Dispatch Deep Research queue across open slots (MAX_CONCURRENT_DEEP = 2)
+            active_deep = get_active_deep_research_count()
+            deep_slots_available = MAX_CONCURRENT_DEEP - active_deep
+            if deep_slots_available > 0:
+                queued_deep = c.execute(
+                    "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only'"
                 ).fetchall()
-                sorted_full = _score_and_sort_queued_jobs(queued_full)
-                for job in sorted_full[:full_slots_available]:
-                    jid = job["job_id"]
-                    tkr = job["ticker"]
-                    m = job["mode"]
-                    dt = job["target_date"]
-                    t_tier = "FULL"
-                    c.execute(
-                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'STARTING', stage_detail = 'Starting Deep Research (FULL)', started_at = ? WHERE job_id = ?",
-                        (datetime.now(timezone.utc).isoformat(), jid)
-                    )
-                    conn.commit()
-
-                    worker_thread = threading.Thread(
-                        target=run_research_worker,
-                        args=(jid, tkr, m, dt, True, t_tier),
-                        daemon=True
-                    )
-                    ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
-                    worker_thread.start()
-                    append_log(f"🔬 [Full Deep Slot] Dispatched FULL deep research for {tkr} (Job ID: {jid}) in rank order.")
-
-            # 3. Dispatch MID Deep Research queue (Slot 2: MID tier for manual clicks & movers)
-            active_mid = get_active_mid_research_count()
-            mid_slots_available = MAX_CONCURRENT_MID - active_mid
-            if mid_slots_available > 0:
-                queued_mid = c.execute(
-                    "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only' AND UPPER(COALESCE(tier, 'FULL')) IN ('MID', 'LITE')"
-                ).fetchall()
-                sorted_mid = _score_and_sort_queued_jobs(queued_mid)
-                for job in sorted_mid[:mid_slots_available]:
+                sorted_deep = _score_and_sort_queued_jobs(queued_deep)
+                for job in sorted_deep[:deep_slots_available]:
                     jid = job["job_id"]
                     tkr = job["ticker"]
                     m = job["mode"]
@@ -412,7 +383,7 @@ def dispatch_next_queued_job():
                     )
                     ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
                     worker_thread.start()
-                    append_log(f"⚡ [Mid Deep Slot] Dispatched MID deep research for {tkr} (Job ID: {jid}) in rank/mover order.")
+                    append_log(f"🔬 [Deep Slot] Dispatched {tkr} [{t_tier}] (Job ID: {jid}).")
 
 
 _STAGE_MARKERS = [
@@ -642,23 +613,23 @@ def run_research_worker(
                         or (isinstance(tr, dict) and tr.get("send_for_deep_research"))
                         or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research"))
                     )
-                    triage_pass = (verdict == "PASS") and send_flag
+                    triage_pass = (verdict in ("PASS", "WATCH")) and send_flag
                 except Exception as e:
                     _log_both(f"⚠️ Error parsing thesis JSON: {e}")
 
             if triage_pass:
-                _log_both(f"🎯 [Triage Pass] {ticker_u} SATISFIED local research (PASS)! Enqueued for Deep Research.")
+                _log_both(f"🎯 [Triage Pass] {ticker_u} SATISFIED local research ({verdict})! Enqueued for Deep Research.")
                 with get_db() as conn:
                     conn.cursor().execute(
-                        "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'LOCAL_DONE', stage_detail = 'PASS (Satisfied -> Enqueued for Deep)', completed_at = ? WHERE job_id = ?",
-                        (datetime.now(timezone.utc).isoformat(), job_id),
+                        "UPDATE active_research_jobs SET status = 'COMPLETED', stage = 'LOCAL_DONE', stage_detail = ?, completed_at = ? WHERE job_id = ?",
+                        (f"{verdict} (Satisfied -> Enqueued for Deep)", datetime.now(timezone.utc).isoformat(), job_id),
                     )
                     # Automatically enqueue into Deep Research Queue
                     deep_jid = f"auto-{ticker_u}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
                     deep_log = str(LOGS_DIR / f"{deep_jid}.log")
                     conn.cursor().execute(
-                        "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, log_file, target_date, stage_detail) VALUES (?, ?, 'deep_only', 'QUEUED', 'QUEUED', ?, ?, ?, 'Promoted from Local Triage (PASS)')",
-                        (deep_jid, ticker_u, datetime.now(timezone.utc).isoformat(), deep_log, t_date),
+                        "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, log_file, target_date, stage_detail) VALUES (?, ?, 'deep_only', 'QUEUED', 'QUEUED', ?, ?, ?, ?)",
+                        (deep_jid, ticker_u, datetime.now(timezone.utc).isoformat(), deep_log, t_date, f"Promoted from Local Triage ({verdict})"),
                     )
                     conn.commit()
             else:
@@ -717,11 +688,11 @@ def run_research_worker(
                         tr = th_json.get("triage") or {}
                         v = tr.get("triage") if isinstance(tr, dict) else str(tr)
                         send_flag = bool(th_json.get("send_for_deep_research") or (isinstance(tr, dict) and tr.get("send_for_deep_research")) or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research")))
-                        triage_pass = is_forced or ((v == "PASS") and send_flag)
+                        triage_pass = is_forced or ((v in ("PASS", "WATCH")) and send_flag)
                     except Exception:
                         pass
                 if not triage_pass:
-                    _log_both(f"⏹️ [Triage Gate] {ticker_u} did not qualify (PASS + send_for_deep_research). Deep research skipped to preserve slots.")
+                    _log_both(f"⏹️ [Triage Gate] {ticker_u} did not qualify (PASS/WATCH + send_for_deep_research). Deep research skipped to preserve slots.")
                     proceed_to_deep = False
 
         # Step 2: Deep Research (Model A & Model B Parallel + PM Arbitration)
@@ -796,8 +767,8 @@ def run_research_worker(
             final_stage = "DONE" if proceed_to_deep else "LOCAL_DONE"
             final_detail = None if proceed_to_deep else "Local triage complete; deep research skipped by triage gate"
             conn.cursor().execute(
-                "UPDATE active_research_jobs SET status = 'COMPLETED', stage = ?, stage_detail = ?, completed_at = ? WHERE job_id = ?",
-                (final_stage, final_detail, datetime.now(timezone.utc).isoformat(), job_id)
+                "UPDATE active_research_jobs SET status = 'COMPLETED', stage = ?, stage_detail = ?, completed_at = ?, target_date = COALESCE(target_date, ?) WHERE job_id = ?",
+                (final_stage, final_detail, datetime.now(timezone.utc).isoformat(), date_to_use, job_id)
             )
             conn.commit()
 

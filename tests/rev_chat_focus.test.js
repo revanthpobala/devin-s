@@ -55,7 +55,7 @@ function loadChat(extraDom = {}) {
     'ticker-input': { value: 'WMT' },
   }, extraDom);
 
-  const state = { revChatFocusTicker: '', activeChatTicker: '', currentReportData: null };
+  const state = { revChatFocusTicker: '', activeChatTicker: '', currentReportData: null, currentDesk: 'today' };
 
   const document = { getElementById: (id) => (id in elements ? elements[id] : null) };
   const window = { AppState: state };
@@ -67,7 +67,7 @@ function loadChat(extraDom = {}) {
   // valid as a property value, so no `name:` prefix.
   const names = ['_focusTicker', '_syncSidebarFocusInput', 'setRevChatFocus',
     'clearRevChatFocus', 'clearSidebarFocus', 'updateSidebarFocusBadge',
-    'applySidebarFocusInput'];
+    'applySidebarFocusInput', 'deskLabel'];
   const decls = names.map((n) => extractMethod(CHAT_SRC, n)).join(',\n');
   vm.runInContext(`window.AppChat = { ${decls} }; globalThis.AppChat = window.AppChat;`, ctx);
 
@@ -81,7 +81,7 @@ console.log('\nREV CHAT focus');
 test('defaults to Market with nothing focused', () => {
   const h = loadChat();
   h.AppChat.updateSidebarFocusBadge();
-  assert.strictEqual(badgeText(h), '🎯 Focus: Market');
+  assert.strictEqual(badgeText(h), '🎯 Focus: Today');
 });
 
 test('setting focus shows the ticker', () => {
@@ -99,7 +99,7 @@ test('CLEAR STICKS even when a report is open', () => {
   assert.strictEqual(badgeText(h), '🎯 Focus: $GLW');
 
   h.AppChat.clearSidebarFocus();
-  assert.strictEqual(badgeText(h), '🎯 Focus: Market',
+  assert.strictEqual(badgeText(h), '🎯 Focus: Today',
     'clear was undone by currentReportData: ' + badgeText(h));
   assert.strictEqual(h.state.revChatFocusTicker, '');
   assert.strictEqual(h.state.activeChatTicker, '');
@@ -112,7 +112,7 @@ test('CLEAR STICKS even when #ticker-input holds a value', () => {
   h.elements['ticker-input'].value = 'WMT';
   h.AppChat.clearSidebarFocus();
   assert.strictEqual(h.elements['ticker-input'].value, '');
-  assert.strictEqual(badgeText(h), '🎯 Focus: Market', badgeText(h));
+  assert.strictEqual(badgeText(h), '🎯 Focus: Today', badgeText(h));
 });
 
 test('a cleared focus is not resurrected by the send path', () => {
@@ -163,7 +163,7 @@ test('blanking the sidebar input returns to Market', () => {
   h.elements['rev-chat-focus-input'].value = '';
   h.AppChat.applySidebarFocusInput();
   assert.strictEqual(h.state.revChatFocusTicker, '');
-  assert.strictEqual(badgeText(h), '🎯 Focus: Market');
+  assert.strictEqual(badgeText(h), '🎯 Focus: Today');
 });
 
 test('sentinel words clear rather than becoming a ticker', () => {
@@ -182,7 +182,7 @@ test('focus round-trips: set, clear, set again', () => {
   h.AppChat.setRevChatFocus('INTC');
   assert.strictEqual(badgeText(h), '🎯 Focus: $INTC', badgeText(h));
   h.AppChat.clearSidebarFocus();
-  assert.strictEqual(badgeText(h), '🎯 Focus: Market', badgeText(h));
+  assert.strictEqual(badgeText(h), '🎯 Focus: Today', badgeText(h));
 });
 
 test('no module writes revChatFocusTicker outside the setter', () => {

@@ -1088,16 +1088,9 @@ def get_report_bundle(date: str, ticker: str):
                 local_dossier_md, local_wl = _build_local_research_dossier(target_date, ticker_u)
                 break
 
-    # If arbitration is missing but a real deep summary/independent exists, use it as primary display
-    if not arbitration_md and (summary_md or independent_md):
-        cand_md = summary_md or independent_md
-        if cand_md and not cand_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER"):
-            arbitration_md = cand_md
-
-    # If summary is missing but real arbitration exists, mirror it
-    if not summary_md and arbitration_md:
-        if not arbitration_md.startswith(f"# {ticker_u} | LOCAL RESEARCH DOSSIER"):
-            summary_md = arbitration_md
+    # Do not mirror summary_md into arbitration_md or vice versa.
+    # Each report tab (Arbitration, Model A Summary, Model B Independent, Local Triage)
+    # maintains its true content so pending states render accurately without misleading the user.
 
     # Note: If deep reports are missing and only local_dossier_md exists, do NOT mirror it into
     # arbitration_md or summary_md. Each tab maintains its true content so pending states render cleanly.
@@ -1926,21 +1919,27 @@ def get_research_jobs(date: Optional[str] = None):
     """
     with get_db() as conn:
         c = conn.cursor()
-        where = ""
-        params: tuple = ()
-        if date and date.strip():
-            where = "WHERE target_date = ?"
-            params = (date.strip(),)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        eff_date = (date or "").strip()
+        if not eff_date:
+            eff_date = today_str
+
+        if eff_date.lower() == "all":
+            where = ""
+            params: tuple = ()
+        else:
+            where = "WHERE (target_date = ? OR substr(started_at, 1, 10) = ?) OR status IN ('RUNNING', 'QUEUED')"
+            params = (eff_date, eff_date)
 
         available_dates = [
             r[0] for r in c.execute(
-                "SELECT DISTINCT target_date FROM active_research_jobs "
-                "WHERE target_date IS NOT NULL AND TRIM(target_date) != '' "
-                "AND target_date <= ? "
-                "ORDER BY target_date DESC LIMIT 60",
-                (datetime.now().strftime("%Y-%m-%d"),),
-            ).fetchall()
+                "SELECT DISTINCT COALESCE(target_date, substr(started_at, 1, 10)) FROM active_research_jobs "
+                "WHERE (target_date IS NOT NULL AND TRIM(target_date) != '') OR started_at IS NOT NULL "
+                "ORDER BY 1 DESC LIMIT 60"
+            ).fetchall() if r[0] and r[0] <= today_str
         ]
+        if today_str not in available_dates:
+            available_dates.insert(0, today_str)
 
         jobs = c.execute(f"""
             SELECT * FROM active_research_jobs
@@ -1952,14 +1951,25 @@ def get_research_jobs(date: Optional[str] = None):
                     ELSE 3
                 END,
                 started_at DESC
-            LIMIT 40
+            LIMIT 300
         """, params).fetchall()
-        jobs_list = []
+        raw_jobs_list = []
         for r in jobs:
             item = dict(r)
             job_id = item.get("job_id")
             thread = ACTIVE_RESEARCH_WORKERS.get(job_id)
             subproc = ACTIVE_RESEARCH_SUBPROCS.get(job_id)
+
+            t_date = item.get("target_date") or (item.get("started_at") or "")[:10] or today_str
+            item["target_date"] = t_date
+            ticker_sym = (item.get("ticker") or "").upper().strip()
+            rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_summary.md"
+            arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_arbitration.md"
+            has_arb = arb_file.exists()
+            has_rep = rep_file.exists() or has_arb
+            item["has_report"] = has_rep
+            item["has_arbitration"] = has_arb
+            item["report_date"] = t_date
 
             if thread is not None and thread.is_alive():
                 is_alive = True
@@ -1970,18 +1980,13 @@ def get_research_jobs(date: Optional[str] = None):
                     pid = item.get("pid")
                     is_alive = bool(pid and psutil.pid_exists(pid))
                     if not is_alive:
-                        ticker_sym = item.get("ticker", "")
                         live_pid = find_live_research_pid(ticker_sym, job_id)
                         if live_pid:
                             is_alive = True
                             item["pid"] = live_pid
 
                     if not is_alive and item.get("stage") not in ("SCRAPING", "STARTING"):
-                        t_date = item.get("target_date") or datetime.now().strftime("%Y-%m-%d")
-                        ticker_sym = item.get("ticker", "")
-                        rep_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_summary.md"
-                        arb_file = config.BASE_DIR / "reports" / t_date / f"{ticker_sym}_arbitration.md"
-                        if rep_file.exists() or arb_file.exists():
+                        if has_rep:
                             item["status"] = "COMPLETED"
                             item["stage"] = "DONE"
                         else:
@@ -1995,15 +2000,38 @@ def get_research_jobs(date: Optional[str] = None):
             if job_id:
                 item["log_url"] = f"/api/jobs/{job_id}/logs"
                 item["raw_log_url"] = f"/api/jobs/{job_id}/logs?raw=true"
-            jobs_list.append(item)
-        local_queue = [j for j in jobs_list if j.get("mode") == "local_only"]
-        deep_queue = [j for j in jobs_list if j.get("mode") != "local_only"]
+            raw_jobs_list.append(item)
+
+        # Deduplicate strictly: each ticker appears exactly once (RUNNING > QUEUED > latest finished)
+        seen_tickers = set()
+        deduped_jobs = []
+        for j in raw_jobs_list:
+            sym = (j.get("ticker") or "").upper().strip()
+            if not sym or sym in seen_tickers:
+                continue
+            seen_tickers.add(sym)
+            deduped_jobs.append(j)
+
+        def _is_local_job(j):
+            if j.get("mode") == "local_only":
+                return True
+            if j.get("stage") == "LOCAL_DONE":
+                return True
+            if "skipped by triage gate" in str(j.get("stage_detail") or "").lower():
+                return True
+            if j.get("status") == "COMPLETED" and not j.get("has_report") and j.get("stage") not in ("DONE", "DEEP_RESEARCH", "ARBITRATION"):
+                return True
+            return False
+
+        local_queue = [j for j in deduped_jobs if _is_local_job(j)]
+        deep_queue = [j for j in deduped_jobs if not _is_local_job(j)]
+
         active_local_count = get_active_local_research_count()
         active_full_count = get_active_full_research_count()
         active_mid_count = get_active_mid_research_count()
         active_deep_count = get_active_deep_research_count()
         return {
-            "jobs": jobs_list,
+            "jobs": deduped_jobs,
             "local_queue": local_queue,
             "deep_queue": deep_queue,
             # Slot counts stay GLOBAL, not date-scoped: you cannot free a GPU slot by filtering
@@ -2017,7 +2045,8 @@ def get_research_jobs(date: Optional[str] = None):
             "deep_slots_used": active_deep_count,
             "deep_slots_max": MAX_CONCURRENT_DEEP,
             "max_concurrent": MAX_CONCURRENT_RESEARCH,
-            "date": (date or "").strip(),
+            "date": eff_date,
+            "today": today_str,
             "available_dates": available_dates,
         }
 
@@ -2118,11 +2147,12 @@ def trigger_research(req: ResearchRequest):
                 )
                 conn.commit()
 
+    target_date = req.date.strip() if (req.date and req.date.strip()) else datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+
     if not req.force and req.mode in ("full", "deep_only"):
-        target_date = req.date.strip() if (req.date and req.date.strip()) else datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
         report_file = config.BASE_DIR / "reports" / target_date / f"{ticker_u}_summary.md"
         arbitration_file = config.BASE_DIR / "reports" / target_date / f"{ticker_u}_arbitration.md"
-        if report_file.exists() or arbitration_file.exists():
+        if report_file.exists() and arbitration_file.exists():
             append_log(f"⏭️ [Skip] {ticker_u} already has a completed deep research report for {target_date}. Skipping to preserve slots.")
             return {
                 "status": "skipped",
@@ -2142,14 +2172,10 @@ def trigger_research(req: ResearchRequest):
         active_slot_count = get_active_local_research_count()
         max_slots = MAX_CONCURRENT_LOCAL
         q_label = "Local Queue"
-    elif req_tier == "FULL":
-        active_slot_count = get_active_full_research_count()
-        max_slots = MAX_CONCURRENT_FULL
-        q_label = "Full Deep Slot"
     else:
-        active_slot_count = get_active_mid_research_count()
-        max_slots = MAX_CONCURRENT_MID
-        q_label = "Mid Deep Slot"
+        active_slot_count = get_active_deep_research_count()
+        max_slots = MAX_CONCURRENT_DEEP
+        q_label = f"Deep Slot ({req_tier})"
 
     if active_slot_count < max_slots:
         try:
@@ -2159,7 +2185,7 @@ def trigger_research(req: ResearchRequest):
                 conn.cursor().execute("""
                     INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
                     VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, req.date, start_detail, req_tier))
+                """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             # Duplicate active job for this ticker — return the existing one
@@ -2172,7 +2198,7 @@ def trigger_research(req: ResearchRequest):
                 return {"status": "running", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode, "tier": req_tier}
             raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
-        worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, req.date, req.force, req_tier), daemon=True)
+        worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, target_date, req.force, req_tier), daemon=True)
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
         append_log(f"🚀 Started research [{req_tier}] for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
@@ -2184,7 +2210,7 @@ def trigger_research(req: ResearchRequest):
                 conn.cursor().execute("""
                     INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
                     VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, req.date, q_detail, req_tier))
+                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             with get_db() as conn:
@@ -2199,6 +2225,35 @@ def trigger_research(req: ResearchRequest):
         q_label = "Local Queue" if is_local_job else "Deep Queue"
         append_log(f"📥 [{q_label}] Concurrency slots full ({active_slot_count}/{max_slots}). Queued {ticker_u} [{req_tier}] for research.")
         return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "tier": req_tier, "stage": "QUEUED", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/api/research/arbitrate/{ticker}")
+def run_arbitration_for_ticker_endpoint(ticker: str, date: Optional[str] = None):
+    """
+    Fast-path endpoint to execute Senior PM Ponytail Arbitration for a ticker
+    that already has Model A & Model B reports generated.
+    """
+    ticker_u = validate_ticker(ticker)
+    target_date = date.strip() if (date and date.strip()) else datetime.now().strftime("%Y-%m-%d")
+
+    from scripts.run_arbitration_pass import run_ticker_arbitration
+    import threading
+
+    def _bg_arbitrate():
+        try:
+            run_ticker_arbitration(ticker=ticker_u, date_str=target_date)
+        except Exception as e:
+            logger.error(f"[{ticker_u}] Fast arbitration error: {e}", exc_info=True)
+
+    t = threading.Thread(target=_bg_arbitrate, daemon=True)
+    t.start()
+
+    return {
+        "status": "started",
+        "ticker": ticker_u,
+        "date": target_date,
+        "message": f"Senior PM Arbitration launched in background for {ticker_u}.",
+    }
 
 
 @router.get("/api/research/timings")

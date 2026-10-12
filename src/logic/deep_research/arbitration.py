@@ -208,9 +208,13 @@ def run_arbitration(
 
     Returns the cleaned arbitration text (empty string on failure).
     """
-    if not (clean_response and clean_ind_response):
-        logger.warning(f"[{ticker}] Pass 2-JUDGE skipped because one or both reports failed.")
+    if not clean_response:
+        logger.warning(f"[{ticker}] Pass 2-JUDGE skipped because Model A (Pine Gem) report failed.")
         return ""
+
+    if not clean_ind_response or len(clean_ind_response.strip()) < 50:
+        logger.info(f"[{ticker}] Model B independent report not provided or short — arbitrating from Model A findings.")
+        clean_ind_response = f"(Model B independent report omitted for {ticker} — senior PM arbitrating directly from proprietary Pine Gem findings)"
 
     logger.info(f"[{ticker}] Running Senior PM Ponytail Judge (Cross-Examining Report A vs Report B)...")
 

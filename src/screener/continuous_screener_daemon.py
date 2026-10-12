@@ -275,11 +275,12 @@ class ContinuousScreenerDaemon(threading.Thread):
                 long_data = json.load(f)
             with open(short_file, "r", encoding="utf-8") as f:
                 short_data = json.load(f)
-            # If both files are completely empty lists, check file age
+            # If files are empty or older than the scan poll interval, run a fresh scan
+            mtime = min(long_file.stat().st_mtime, short_file.stat().st_mtime)
+            if time.time() - mtime > self.poll_interval:
+                return True
             if not long_data and not short_data:
-                mtime = min(long_file.stat().st_mtime, short_file.stat().st_mtime)
-                if time.time() - mtime > self.poll_interval:
-                    return True
+                return True
         except Exception:
             return True
 
@@ -406,9 +407,23 @@ class ContinuousScreenerDaemon(threading.Thread):
         # full-universe sweep; the loop's gate below catches it and idles instead.
         date_str = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
         in_hours = not self.market_hours_only or self.is_market_hours()
-        if in_hours and self.should_run_initial_scan(date_str):
-            logger.info("[ContinuousScreener] Today's screener results missing or empty. Running immediate initial scan...")
-            self.run_scan_cycle()
+        if in_hours:
+            if self.should_run_initial_scan(date_str):
+                logger.info("[ContinuousScreener] Today's screener results missing, empty, or stale. Running immediate initial scan...")
+                self.run_scan_cycle()
+            elif self.auto_deep_research:
+                # Manifest is fresh (< 10 min); immediately dispatch qualified candidates into open slots
+                try:
+                    raw_dir = config.BASE_DIR / "data" / "raw" / date_str
+                    long_file = raw_dir / "schwab_survivors.json"
+                    short_file = raw_dir / "short_survivors.json"
+                    long_data = json.load(open(long_file, "r", encoding="utf-8")) if long_file.exists() else []
+                    short_data = json.load(open(short_file, "r", encoding="utf-8")) if short_file.exists() else []
+                    if long_data or short_data:
+                        logger.info(f"[ContinuousScreener] Evaluating {len(long_data)} existing candidates for immediate deep research...")
+                        self.evaluate_and_dispatch_deep_research(long_data + short_data, date_str)
+                except Exception as e_init_disp:
+                    logger.debug(f"[ContinuousScreener] Initial dispatch notice: {e_init_disp}")
 
         # Step 2: Continuous loop
         while self.running:
@@ -569,13 +584,15 @@ class ContinuousScreenerDaemon(threading.Thread):
         return count
 
     def _reconcile_stale_research_jobs(self) -> None:
-        """Mark RUNNING/QUEUED research jobs as FAILED when their process is
+        """Mark RUNNING research jobs as FAILED when their process is
         dead and the job has exceeded STALE_THRESHOLD (30 min) since start.
 
         This prevents permanent slot starvation after a hard crash (OOM,
         kill -9, reboot) where the SQLite row survives but the process does
         not. Called at the start of get_active_research_count so every slot
         availability check sees accurate state.
+        QUEUED jobs are explicitly excluded because they do not have an active
+        process yet and wait legitimately for an open slot.
         """
         db_path = config.research_watch_db_path()
         if not db_path.exists():
@@ -588,7 +605,7 @@ class ContinuousScreenerDaemon(threading.Thread):
             with sqlite3.connect(str(db_path), timeout=5.0) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT job_id, pid, started_at FROM active_research_jobs WHERE status IN ('RUNNING', 'QUEUED')"
+                    "SELECT job_id, pid, started_at FROM active_research_jobs WHERE status = 'RUNNING'"
                 ).fetchall()
                 for row in rows:
                     pid = row["pid"]
@@ -645,15 +662,14 @@ class ContinuousScreenerDaemon(threading.Thread):
         """Dispatch research job asynchronously via Cockpit UI slot manager or background worker."""
         import sys
         sym_u = sym.upper().strip()
-        if "run_ui" in sys.modules:
-            try:
-                run_ui = sys.modules["run_ui"]
-                req = run_ui.ResearchRequest(ticker=sym_u, mode="full", date=target_date, force=False)
-                res = run_ui.trigger_research(req)
-                logger.info(f"🤖 [ContinuousScreener] Dispatched {sym_u} to Cockpit research manager: {res}")
-                return True
-            except Exception as e_ui:
-                logger.warning(f"[ContinuousScreener] Could not dispatch via run_ui: {e_ui}")
+        try:
+            from src.ui.routes.research import ResearchRequest, trigger_research
+            req = ResearchRequest(ticker=sym_u, mode="full", date=target_date, force=False, tier="MID")
+            res = trigger_research(req)
+            logger.info(f"🤖 [ContinuousScreener] Dispatched {sym_u} to Cockpit research manager: {res}")
+            return True
+        except Exception as e_ui:
+            logger.warning(f"[ContinuousScreener] Could not dispatch via trigger_research: {e_ui}")
 
         # Fallback to standalone background worker thread
         cand_payload = candidate_dict or {"symbol": sym_u, "priority_tier": "HIGH_PRIORITY", "priority_score": 75.0}
@@ -924,8 +940,8 @@ class ContinuousScreenerDaemon(threading.Thread):
         if reports_root.exists():
             date_dirs = sorted([d for d in reports_root.glob("202*") if d.is_dir()], reverse=True)[:5]
             for d in date_dirs:
-                for f in d.glob("*_summary.md"):
-                    t = f.name.replace("_summary.md", "").upper()
+                for f in d.glob("*_arbitration.md"):
+                    t = f.name.replace("_arbitration.md", "").upper()
                     already_completed_recent.add(t)
 
         if self.max_auto_deep_per_day > 0:

@@ -1373,7 +1373,22 @@ window.AppSwing = {
     }
   },
 
-  openReportModal(date, ticker, initialTab = null) {
+  openReportModal(date, ticker, initialTab = null, evt = null) {
+    // 1. Resolve event if passed or available globally
+    let clickEvent = evt;
+    if (!clickEvent && initialTab && typeof initialTab === 'object' && ('ctrlKey' in initialTab || 'metaKey' in initialTab || initialTab.type)) {
+      clickEvent = initialTab;
+      initialTab = null;
+    }
+    if (!clickEvent && date && typeof date === 'object' && ('ctrlKey' in date || 'metaKey' in date || date.type)) {
+      clickEvent = date;
+      date = null;
+    }
+    if (!clickEvent && typeof window !== 'undefined' && window.event) {
+      clickEvent = window.event;
+    }
+
+    // 2. Normalize date and ticker
     if (date === 'undefined' || date === 'null' || date === '') date = null;
     if (ticker === 'undefined' || ticker === 'null' || ticker === '') ticker = null;
 
@@ -1393,6 +1408,7 @@ window.AppSwing = {
     ticker = (ticker || '').toUpperCase().trim();
     if (!ticker) return;
 
+    // 3. Build target standalone URL
     let targetUrl = `/research/${encodeURIComponent(ticker)}`;
     if (initialTab === 'trades') {
       targetUrl += '/trades';
@@ -1409,10 +1425,34 @@ window.AppSwing = {
       }
     }
 
-    const win = window.open(targetUrl, '_blank');
-    if (!win) {
-      window.location.href = targetUrl;
+    // 4. Ctrl + Click or Cmd + Click or Middle Click -> Open in a new tab
+    const isNewTab = !!(clickEvent && (clickEvent.ctrlKey || clickEvent.metaKey || clickEvent.button === 1));
+    const modalEl = document.getElementById('report-modal');
+
+    if (clickEvent) {
+      if (clickEvent.preventDefault) clickEvent.preventDefault();
+      if (clickEvent.stopPropagation) clickEvent.stopPropagation();
+      if (clickEvent.stopImmediatePropagation) clickEvent.stopImmediatePropagation();
     }
+
+    if (isNewTab || !modalEl) {
+      const win = window.open(targetUrl, '_blank');
+      if (!win) {
+        window.location.href = targetUrl;
+      }
+      return;
+    }
+
+    // Normal Click -> Open in-page modal
+    return this.openReportModalLegacy(date, ticker, initialTab);
+  },
+
+  handleTickerClick(evt, ticker, date = null, initialTab = null) {
+    if (evt) {
+      if (evt.stopPropagation) evt.stopPropagation();
+      if (evt.preventDefault) evt.preventDefault();
+    }
+    return this.openReportModal(date, ticker, initialTab, evt);
   },
 
   async openReportModalLegacy(date, ticker, initialTab = null) {
@@ -1454,7 +1494,7 @@ window.AppSwing = {
     // 2. Prepare modal UI
     const modal = document.getElementById('report-modal');
     if (!modal) return;
-    if (modal.classList.contains('collapsed')) {
+    if (modal.classList.contains('collapsed') || modal.classList.contains('minimized')) {
       this.restoreReportModal();
     }
     modal.style.display = 'flex';

@@ -18,6 +18,27 @@ def index_page():
     return FileResponse(str(index_file))
 
 
+# SPA Desk routes: ensure direct URLs like /today, /trades, /alerts serve the cockpit UI
+DESK_VIEW_ROUTES = [
+    "/today",
+    "/swing",
+    "/radar",
+    "/alerts",
+    "/screener",
+    "/watchlist",
+    "/trades",
+    "/portfolio",
+    "/intraday",
+    "/journal",
+    "/record",
+    "/logs",
+]
+
+for _route in DESK_VIEW_ROUTES:
+    router.add_api_route(_route, index_page, methods=["GET"], response_class=FileResponse)
+
+
+
 @router.get("/research/{ticker}", response_class=FileResponse)
 def research_ticker_page(ticker: str, date: str = None, view: str = "standalone"):
     """

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stock Trading Operations Cockpit</title>
+  <title>REV TERMINAL — Autonomous Trading Desk</title>
   
   <!-- Typography Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -15,31 +15,97 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
   <!-- Modular Stylesheets -->
-  <link rel="stylesheet" href="/static/css/base.css?v=42">
-  <link rel="stylesheet" href="/static/css/layout.css?v=42">
-  <link rel="stylesheet" href="/static/css/components.css?v=42">
-  <link rel="stylesheet" href="/static/css/modals.css?v=43">
+  <link rel="stylesheet" href="/static/css/base.css?v=55">
+  <link rel="stylesheet" href="/static/css/layout.css?v=55">
+  <link rel="stylesheet" href="/static/css/components.css?v=55">
+  <link rel="stylesheet" href="/static/css/modals.css?v=55">
 </head>
 <body>
 
   <!-- Top Navigation Ribbon -->
   <header>
     <div class="brand">
-      <span class="brand-icon">🏛️</span>
-      <span class="brand-title">STOCK TRADING OPERATIONS COCKPIT</span>
+      <span class="brand-icon">⬡</span>
+      <span class="brand-title">REV TERMINAL</span>
+      <span class="brand-sub">Autonomous Trading Desk</span>
+      <span class="pill purple" style="font-size:10px; padding:2px 7px; font-weight:800; font-family:var(--font-mono); margin-left:6px; letter-spacing:0.5px;">v2.5.0</span>
     </div>
-    <div class="status-ribbon">
-      <div class="pill" id="pill-market"><span class="dot pulse"></span><span id="txt-market">Checking Market...</span></div>
-      <div class="pill" id="pill-llm"><span class="dot"></span><span id="txt-llm">LLM Port 8000</span></div>
-      <div class="pill cyan" id="pill-tasty"><span class="dot"></span><span id="txt-tasty">Tastytrade Cloud</span></div>
-      <div class="pill" id="pill-schwab" onclick="AppStatus.showSchwabInfo()" style="cursor:pointer;" title="Click for Schwab OAuth status & renewal instructions"><span class="dot"></span><span id="txt-schwab">Schwab API</span></div>
-      <div class="pill" id="pill-tracker"><span class="dot"></span><span id="txt-tracker">Gmail Ingestor</span></div>
-      <button class="btn secondary" id="btn-toggle-chat" onclick="AppChat.toggleCollapse()" style="padding: 5px 12px; font-size: 12px; display:inline-flex; align-items:center; gap:5px;" title="Toggle Rev Chat Sidebar (Full Screen Mode)">💬 <span id="txt-toggle-chat">Hide Chat</span></button>
-      <button class="btn secondary" id="btn-theme-toggle" onclick="App.toggleTheme()" style="padding: 5px 12px; font-size: 12px;" title="Switch between Clean Light and Dark Theme">☀️ Light</button>
-      <button class="btn" id="btn-toggle-tracker" onclick="AppStatus.toggleTracker()" style="padding: 5px 12px; font-size: 12px;">▶ Start Market Ingestor</button>
-      <button class="btn secondary" onclick="AppStatus.syncAlerts()" style="padding: 5px 12px; font-size: 12px;">🔄 Sync Alerts</button>
+    <div class="status-ribbon" id="status-ribbon">
+      <button class="pill sys-pill" id="pill-market" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
+      <button class="pill sys-pill" id="pill-llm" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
+      <button class="pill sys-pill" id="pill-schwab" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
+      <button class="pill sys-pill" id="pill-tracker" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
+      <button class="pill sys-pill" id="pill-tasty" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-tasty">TT</span></button>
+      <button class="btn secondary" id="btn-settings" onclick="AppSettings.open()" title="Settings, services & diagnostics">⚙️</button>
     </div>
   </header>
+
+  <!-- Settings / System Modal -->
+  <div id="settings-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this) AppSettings.close()">
+    <div class="modal-content" style="max-width:620px; width:92vw; max-height:86vh; overflow-y:auto;">
+      <div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border);">
+        <div style="display:flex; align-items:center; gap:9px;">
+          <span style="font-size:17px;">⚙️</span>
+          <span style="font-family:var(--font-display); font-size:15px; font-weight:800; letter-spacing:0.5px;">SETTINGS &amp; SYSTEM STATUS</span>
+        </div>
+        <button class="btn secondary" onclick="AppSettings.close()" style="padding:3px 10px; font-size:11px;">✕ Close</button>
+      </div>
+
+      <div style="padding:16px 18px; display:flex; flex-direction:column; gap:16px;">
+
+        <!-- Services -->
+        <div>
+          <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">SERVICES</div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+              <div>
+                <div style="font-size:12px; font-weight:800;">Market Ingestor</div>
+                <div style="font-size:10.5px; color:var(--text-muted);">Gmail poller for TradingView alerts. Runs during market hours only.</div>
+              </div>
+              <button class="btn" id="btn-toggle-tracker" onclick="AppStatus.toggleTracker()" style="padding:6px 14px; font-size:11px; white-space:nowrap;">▶ Start</button>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+              <div>
+                <div style="font-size:12px; font-weight:800;">Sync Alerts</div>
+                <div style="font-size:10.5px; color:var(--text-muted);">Pull the latest alert inbox and watch targets now.</div>
+              </div>
+              <button class="btn secondary" onclick="AppStatus.syncAlerts()" style="padding:6px 14px; font-size:11px; white-space:nowrap;">🔄 Sync</button>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:9px 12px; cursor:pointer;" onclick="AppStatus.showSchwabInfo()" title="Schwab OAuth status & renewal instructions">
+              <div>
+                <div style="font-size:12px; font-weight:800;">Schwab API</div>
+                <div style="font-size:10.5px; color:var(--text-muted);">Broker connection, quotes &amp; portfolio sync. Click for OAuth details.</div>
+              </div>
+              <span class="pill" id="pill-schwab-modal" style="font-size:10px;"><span class="dot"></span><span id="txt-schwab-modal">Schwab API</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Appearance -->
+        <div>
+          <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">APPEARANCE</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn secondary" id="btn-theme-toggle" onclick="App.toggleTheme()" style="padding:7px 14px; font-size:11.5px;">☀️ Light</button>
+            <button class="btn secondary" id="btn-toggle-chat" onclick="AppChat.toggleCollapse()" style="padding:7px 14px; font-size:11.5px;">💬 <span id="txt-toggle-chat">Hide Chat</span></button>
+          </div>
+        </div>
+
+        <!-- Live status mirrors (same IDs are updated in place by the status poller) -->
+        <div>
+          <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">LIVE STATUS</div>
+          <div id="settings-status-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:7px; font-size:11px;">
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">MARKET</div><div id="st-market" style="font-weight:700;">–</div></div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">LLM SERVER</div><div id="st-llm" style="font-weight:700;">–</div></div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">TASTYTRADE</div><div id="st-tasty" style="font-weight:700;">–</div></div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">SCHWAB</div><div id="st-schwab" style="font-weight:700;">–</div></div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">INGESTOR</div><div id="st-tracker" style="font-weight:700;">–</div></div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">CLOCK</div><div id="st-clock" style="font-weight:700; font-family:var(--font-mono);">–</div></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
   <div id="schwab-expiry-banner" style="display:none; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.5); color:#d97706; padding:10px 20px; margin:10px 24px 0 24px; border-radius:8px; font-weight:700; font-size:13px; display:none; align-items:center; justify-content:space-between;">
     <div id="schwab-expiry-banner-text">⚠️ <strong>Schwab Token Expiring Soon:</strong> Please re-authenticate via <code>python setup_schwab.py</code></div>
     <button class="btn secondary" onclick="AppStatus.showSchwabInfo()" style="padding:3px 10px; font-size:11.5px; border-color:rgba(245,158,11,0.5);">View Details</button>
@@ -1456,28 +1522,30 @@
     <aside class="sidebar-rev-chat">
       
       <!-- Sidebar Header -->
-      <div style="padding:10px 14px; background:var(--bg-surface); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-        <div style="display:flex; align-items:center; gap:6px;">
-          <span style="font-family:'Outfit',sans-serif; font-size:15px; font-weight:800; color:var(--text-main); letter-spacing:0.3px;">⚡ REV CHAT</span>
-          <span class="pill green" style="font-size:9px; padding:2px 6px;"><span class="dot pulse"></span>Qwen Local</span>
-          <span id="rev-chat-focus-badge" class="pill" style="font-size:9.5px; padding:2px 7px; cursor:pointer;" onclick="AppChat.clearSidebarFocus()" title="Current ticker focus. Click to clear and return to broad market.">🎯 Focus: Market</span>
-          <!-- On-demand focus. Click the badge above, or type here and press Enter.
-               Blanking the box returns the chat to broad market mode. -->
-          <input type="text" id="rev-chat-focus-input" class="input-ticker" placeholder="FOCUS"
-                 maxlength="6" autocomplete="off" spellcheck="false"
-                 style="width:74px; height:20px; padding:1px 6px; font-size:10px; font-weight:800; text-transform:uppercase;"
-                 title="Type a ticker and press Enter to focus the chat on it. Clear it and press Enter for broad market."
-                 onkeydown="if(event.key==='Enter'){ event.preventDefault(); AppChat.applySidebarFocusInput(); }"
-                 onblur="AppChat.applySidebarFocusInput()">
-        </div>
-        <!-- Prior Chats, New, Size Presets & Clear Button -->
-        <div style="display:flex; align-items:center; gap:4px;">
-          <button class="btn secondary" id="btn-sidebar-prior-chats" onclick="AppChat.togglePriorChats('sidebar')" style="padding:2px 7px; font-size:10.5px; font-weight:700; color:var(--blue);" title="View prior chats from last 15 days">📜 15d Chats</button>
-          <button class="btn secondary" onclick="AppChat.startNewChat('sidebar')" style="padding:2px 6px; font-size:10.5px; font-weight:700;" title="Start a fresh conversation">➕ New</button>
-          <button class="btn secondary" onclick="AppChat.setChatPreset(380)" style="padding:2px 5px; font-size:10px; font-weight:700;" title="Compact (380px)">S</button>
-          <button class="btn secondary" onclick="AppChat.setChatPreset(560)" style="padding:2px 5px; font-size:10px; font-weight:700;" title="Medium (560px)">M</button>
-          <button class="btn secondary" onclick="AppChat.clearRevChat()" style="padding:2px 6px; font-size:10.5px;">Clear</button>
-          <button class="btn secondary" id="btn-collapse-chat" onclick="AppChat.toggleCollapse()" style="padding:2px 7px; font-size:11px; font-weight:800; color:var(--text-muted);" title="Collapse Chat (Expand Trading Desk to 100% Full Screen)">⇥</button>
+      <div class="rev-chat-header" id="rev-chat-header">
+        <div class="rev-chat-header-row">
+          <div class="rev-chat-header-left">
+            <span class="rev-chat-brand">
+              <span class="rev-chat-brand-mark">⚡</span>
+              <span class="rev-chat-title">REV CHAT</span>
+            </span>
+            <span id="rev-chat-mode-badge" class="pill rev-chat-mode-badge" style="display:none;" title="This thread is the dedicated Portfolio Copilot: it answers about your live Schwab book only">💼 Portfolio</span>
+            <span id="rev-chat-focus-badge" class="pill rev-chat-focus-badge" onclick="AppChat.clearSidebarFocus()" title="Current chat scope: the desk you are on, or a single ticker. Tap to clear a ticker focus and return to desk scope.">🎯 Focus: Market</span>
+            <!-- On-demand focus. Tap the badge above, or type here and press Enter.
+                 Blanking the box returns the chat to broad market mode. -->
+            <input type="text" id="rev-chat-focus-input" class="input-ticker rev-chat-focus-input" placeholder="FOCUS"
+                   maxlength="6" autocomplete="off" spellcheck="false"
+                   title="Type a ticker and press Enter to focus the chat on it. Clear it and press Enter for broad market."
+                   onkeydown="if(event.key==='Enter'){ event.preventDefault(); AppChat.applySidebarFocusInput(); }"
+                   onblur="AppChat.applySidebarFocusInput()">
+          </div>
+          <div class="rev-chat-header-controls">
+            <button class="btn secondary rev-chat-hdr-btn" id="btn-sidebar-prior-chats" onclick="AppChat.togglePriorChats('sidebar')" title="View prior chats from last 15 days">📜 <span class="rev-chat-btn-label">15d Chats</span></button>
+            <button class="btn rev-chat-hdr-btn rev-chat-hdr-btn-portfolio" id="btn-rev-portfolio-copilot" onclick="AppChat.openPortfolioCopilot()" title="Open the dedicated Portfolio Copilot: a separate assistant for your live Schwab book (holdings, contracts, P&L, covered calls)">💼 <span class="rev-chat-btn-label">Portfolio</span></button>
+            <button class="btn secondary rev-chat-hdr-btn" onclick="AppChat.startNewChat('sidebar')" title="Start a fresh conversation">➕ <span class="rev-chat-btn-label">New</span></button>
+            <button class="btn secondary rev-chat-hdr-btn" onclick="AppChat.clearRevChat()" title="Clear this conversation">Clear</button>
+            <button class="btn secondary rev-chat-hdr-btn" id="btn-collapse-chat" onclick="AppChat.toggleCollapse()" title="Collapse Chat (Expand Trading Desk to 100% Full Screen)">⇥</button>
+          </div>
         </div>
       </div>
 
@@ -1497,7 +1565,7 @@
         <div class="chat-suggestions-header" onclick="AppChat.toggleSuggestions('sidebar')" title="Click to show/hide quick prompt suggestions">
           <div class="chat-suggestions-title">
             <span style="font-size:11px;">💡</span>
-            <span>Suggestions</span>
+            <span>Quick Prompts</span>
             <span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.8;">10</span>
           </div>
           <div class="chat-suggestions-toggle-btn">
@@ -2782,20 +2850,20 @@
   </div>
 
   <!-- Modular Scripts -->
-  <script src="/static/js/state.js?v=76"></script>
-  <script src="/static/js/utils.js?v=76"></script>
-  <script src="/static/js/api.js?v=76"></script>
-  <script src="/static/js/status.js?v=78"></script>
-  <script src="/static/js/swing.js?v=78"></script>
-  <script src="/static/js/watchlist.js?v=76"></script>
-  <script src="/static/js/trades.js?v=76"></script>
-  <script src="/static/js/intraday.js?v=76"></script>
-  <script src="/static/js/portfolio.js?v=1"></script>
-  <script src="/static/js/logs.js?v=76"></script>
-  <script src="/static/js/alerts.js?v=85"></script>
-  <script src="/static/js/chat.js?v=76"></script>
-  <script src="/static/js/desk.js?v=6"></script>
-  <script src="/static/js/tv_hover.js?v=2"></script>
-  <script src="/static/js/app.js?v=76"></script>
+  <script src="/static/js/state.js?v=86"></script>
+  <script src="/static/js/utils.js?v=86"></script>
+  <script src="/static/js/api.js?v=86"></script>
+  <script src="/static/js/status.js?v=87"></script>
+  <script src="/static/js/swing.js?v=86"></script>
+  <script src="/static/js/watchlist.js?v=86"></script>
+  <script src="/static/js/trades.js?v=86"></script>
+  <script src="/static/js/intraday.js?v=86"></script>
+  <script src="/static/js/portfolio.js?v=2"></script>
+  <script src="/static/js/logs.js?v=86"></script>
+  <script src="/static/js/alerts.js?v=86"></script>
+  <script src="/static/js/chat.js?v=86"></script>
+  <script src="/static/js/desk.js?v=10"></script>
+  <script src="/static/js/tv_hover.js?v=5"></script>
+  <script src="/static/js/app.js?v=86"></script>
 </body>
 </html>

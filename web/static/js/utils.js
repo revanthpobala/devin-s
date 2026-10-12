@@ -222,7 +222,7 @@ window.AppUtils = {
     const cls = options.className || 'ticker-with-tooltip';
     const style = options.style || '';
     const escapedName = this.escapeHtml(name);
-    return `<a href="/research/${sym}" target="_blank" class="${cls}" title="${escapedName} ($${sym}) · Click to open dedicated page" data-ticker="${sym}" style="cursor:pointer; text-decoration:none; color:inherit; ${style}" onclick="event.stopPropagation();">${prefix}${sym}</a>`;
+    return `<a href="/research/${sym}" class="${cls}" title="${escapedName} ($${sym}) · Click to open modal · Ctrl/Cmd+Click for new tab" data-ticker="${sym}" style="cursor:pointer; text-decoration:none; color:inherit; ${style}" onclick="if(window.AppSwing){ AppSwing.handleTickerClick(event, '${sym}'); }">${prefix}${sym}</a>`;
   },
 
   /**
@@ -242,23 +242,30 @@ window.AppUtils = {
         if (sym) {
           const comp = this.getCompanyName(sym);
           if (comp && (!el.title || el.title.startsWith('Click to open') || el.title.length < comp.length)) {
-            el.title = `${sym}: ${comp} · Click to open /research/${sym} · Hover for Live Chart`;
+            el.title = `${sym}: ${comp} · Click to open modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart`;
           }
           if (!el.getAttribute('data-ticker')) {
             el.setAttribute('data-ticker', sym);
           }
           el.classList.add('tv-symbol-hover');
           const isTickerPill = el.classList.contains('ticker-pill-btn');
-          if (!el.dataset.tickerClickBound && (el.tagName !== 'BUTTON' || isTickerPill) && el.tagName !== 'INPUT' && el.tagName !== 'A' && !el.closest('a')) {
+          if (!el.dataset.tickerClickBound && (el.tagName !== 'BUTTON' || isTickerPill) && el.tagName !== 'INPUT' && !el.hasAttribute('onclick')) {
             el.dataset.tickerClickBound = '1';
             el.style.cursor = 'pointer';
             el.addEventListener('click', (e) => {
-              if (e.target.closest('button.secondary, input, select, textarea, a, .btn-action, .btn:not(.ticker-pill-btn)')) return;
-              e.stopPropagation();
-              e.preventDefault();
-              if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
-                window.AppSwing.openReportModal(null, sym);
+              if (e.target.closest('button.secondary, input, select, textarea, .btn-action, .btn:not(.ticker-pill-btn)')) return;
+              if (window.AppSwing && typeof window.AppSwing.handleTickerClick === 'function') {
+                window.AppSwing.handleTickerClick(e, sym);
+              } else if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
+                window.AppSwing.openReportModal(null, sym, null, e);
               } else {
+                window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
+              }
+            });
+            el.addEventListener('auxclick', (e) => {
+              if (e.button === 1) {
+                e.stopPropagation();
+                e.preventDefault();
                 window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
               }
             });
@@ -315,15 +322,21 @@ window.AppUtils = {
             span.style.cursor = 'pointer';
             span.style.color = 'var(--cyan-glow, #38bdf8)';
             span.style.fontWeight = '700';
-            const comp = this.getCompanyName(sym);
-            span.title = comp ? `${sym}: ${comp} · Hover for Live TradingView Chart` : `$${sym} · Hover for Live TradingView Chart`;
+            span.title = comp ? `${sym}: ${comp} · Click for modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart` : `$${sym} · Click for modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart`;
             span.textContent = `$${sym}`;
             span.addEventListener('click', (e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
-                window.AppSwing.openReportModal(null, sym);
+              if (window.AppSwing && typeof window.AppSwing.handleTickerClick === 'function') {
+                window.AppSwing.handleTickerClick(e, sym);
+              } else if (window.AppSwing && typeof window.AppSwing.openReportModal === 'function') {
+                window.AppSwing.openReportModal(null, sym, null, e);
               } else {
+                window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
+              }
+            });
+            span.addEventListener('auxclick', (e) => {
+              if (e.button === 1) {
+                e.stopPropagation();
+                e.preventDefault();
                 window.open(`/research/${encodeURIComponent(sym)}`, '_blank');
               }
             });

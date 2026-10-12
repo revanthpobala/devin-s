@@ -4,6 +4,9 @@
 window.AppChat = {
   _revSessionId: null,
   _modalSessionId: null,
+  _portfolioSessionId: null,
+  _forcePortfolioChat: false,
+  _portfolioMode: false,
   _sidebarAttachedBoard: null,
   _sidebarAttachedImage: null,
   _modalAttachedBoard: null,
@@ -22,6 +25,255 @@ window.AppChat = {
   },
 
   // ---- Active Board & Vision Telemetry ----
+  // ---- Desk-scoped chat context -----------------------------------------------------------------
+  // The chat follows the page you are actually on. No stale ticker, no generic "Market" placeholder:
+  // each desk contributes the real data it is displaying right now, so "which of these is worth a
+  // trade?" can be answered from what the user is looking at.
+  deskLabel() {
+    const desk = (window.AppState && window.AppState.currentDesk) || 'swing';
+    const map = {
+      today: 'Today', swing: 'Swing Desk', watchlist: 'Watchlist', portfolio: 'Portfolio',
+      intraday: 'Intraday', alerts: 'Alerts', trades: 'Trades', screener: 'Screener',
+      logs: 'Logs', journal: 'Journal', record: 'Record',
+    };
+    return map[desk] || 'Desk';
+  },
+
+  buildDeskBoardContext() {
+    const desk = (window.AppState && window.AppState.currentDesk) || 'swing';
+
+    if (desk === 'portfolio') return this.buildPortfolioBoardContext();
+    if (desk === 'today') return this.buildTodayDeskContext();
+    if (desk === 'watchlist') return this.buildWatchlistDeskContext();
+    if (desk === 'intraday') return this.buildIntradayDeskContext();
+
+    return { name: `${this.deskLabel()} Desk`, context: `**ACTIVE DESK:** User is viewing the ${this.deskLabel()} desk. They have not focused a specific ticker, so treat their question as being about this desk's data (not a single stock).` };
+  },
+
+  buildTodayDeskContext() {
+    const desk = window.AppDesk;
+    const data = (desk && desk._lastTodayData) || {};
+    const pulse = data.market_pulse || {};
+    const regime = data.market_regime || {};
+    const opps = data.top_opportunities || [];
+    const alerts = data.actionable_alerts || [];
+    if (!opps.length && !Object.keys(pulse).length) return null;
+
+    const lines = [];
+    lines.push(`**LIVE TODAY DESK — the exact setups, alerts, and market pulse on screen (Date: ${data.date || 'today'}):**`);
+
+    const statusBits = [];
+    if (pulse.spy) statusBits.push(`SPY $${parseFloat(pulse.spy).toFixed(2)}`);
+    if (pulse.qqq) statusBits.push(`QQQ $${parseFloat(pulse.qqq).toFixed(2)}`);
+    if (pulse.vix) statusBits.push(`VIX ${parseFloat(pulse.vix).toFixed(2)}`);
+    if (pulse.market_status_text) statusBits.push(pulse.market_status_text);
+    if (statusBits.length) lines.push(`• MARKET PULSE: ${statusBits.join(' | ')}`);
+
+      // Regime gauges: Fear & Greed, VIX band, SPY tide, breadth, dramatic movers
+      if (regime && regime.available) {
+      const rgBits = [];
+      if (regime.fear_greed && regime.fear_greed.score !== undefined) rgBits.push(`Fear & Greed ${regime.fear_greed.score.toFixed(0)}/100 (${regime.fear_greed.rating || 'n/a'})`);
+      if (regime.vix && regime.vix.price) rgBits.push(`VIX ${parseFloat(regime.vix.price).toFixed(2)}`);
+      if (regime.tide) rgBits.push(`Tide: ${regime.tide.trend} (SPY 20EMA $${regime.tide.ema20} vs 50SMA $${regime.tide.sma50}, 20d ${regime.tide.spy_20d_return >= 0 ? '+' : ''}${regime.tide.spy_20d_return}%)`);
+      if (regime.breadth && regime.breadth.universe) rgBits.push(`Breadth ${regime.breadth.advancing}▲ / ${regime.breadth.declining}▼ / ${regime.breadth.flat}▬ of ${regime.breadth.universe}`);
+      if (rgBits.length) lines.push(`• MARKET REGIME${regime.as_of_et ? ` (${regime.as_of_et})` : ''}: ${rgBits.join(' | ')}`);
+
+      const mv = regime.movers || {};
+      const drops = mv.drops || [];
+      const spikes = mv.spikes || [];
+      if (drops.length || spikes.length) {
+        const fmt = (r) => `${r.ticker} ${r.chg_pct >= 0 ? '+' : ''}${r.chg_pct}% ($${r.price}${r.held ? ', HELD' : ''}${r.drastic ? ', DRASTIC' : ''})`;
+        lines.push(`• DRAMATIC MOVERS (|Δ|≥3% across ${mv.universe_size || 0} tracked names):`);
+        if (drops.length) lines.push(`   ▼ Drops: ${drops.map(fmt).join(' | ')}`);
+        if (spikes.length) lines.push(`   ▲ Spikes: ${spikes.map(fmt).join(' | ')}`);
+      }
+    }
+
+
+    const tab = (desk && desk._todaySubTab) || 'opps';
+    const filter = (desk && desk._oppsFilter) || 'ALL';
+    lines.push(`• ACTIVE VIEW: sub-tab "${tab}" | filter "${filter}" | ${opps.length} actionable opportunities | ${alerts.length} actionable alerts`);
+
+    if (data.funnel) {
+      const f = data.funnel;
+      lines.push(`• PIPELINE FUNNEL: alerts ${f.alerts || 0} → local PASS ${f.local_pass || 0} → measured ${f.measured || 0} → deep done ${f.deep_done || 0} → actionable ${f.actionable || 0}`);
+    }
+
+    const visible = opps.slice(0, 12);
+    if (visible.length) {
+      lines.push('\n**ACTIONABLE OPPORTUNITY CARDS ON SCREEN (ticker, side, spot, distance to entry, R:R, conviction, levels):**');
+      visible.forEach(o => {
+        const sym = (o.ticker || '').toUpperCase();
+        const spot = o.spot_price ? `$${parseFloat(o.spot_price).toFixed(2)}` : 'n/a';
+        const dist = o.in_zone ? '🎯 IN ZONE' : `${(parseFloat(o.dist_pct) || 0) >= 0 ? '+' : ''}${(parseFloat(o.dist_pct) || 0).toFixed(2)}%`;
+        const rr = o.live_rr > 0 ? `R:R ${parseFloat(o.live_rr).toFixed(2)}:1` : 'R:R n/a';
+        const entry = o.entry_zone_low && o.entry_zone_high ? `$${parseFloat(o.entry_zone_low).toFixed(2)}-$${parseFloat(o.entry_zone_high).toFixed(2)}` : 'n/a';
+        const stop = o.stop_loss ? `$${parseFloat(o.stop_loss).toFixed(2)}` : 'n/a';
+        const t1 = o.target_1 ? `$${parseFloat(o.target_1).toFixed(2)}` : 'n/a';
+        const conv = o.conviction !== undefined && o.conviction !== null ? `${o.conviction}/10` : 'n/a';
+        lines.push(`• **${sym}** ${o.side || ''} [${o.in_zone ? 'IN ZONE' : `${dist} from entry`}] | Spot ${spot} | ${rr} | Conviction ${conv} | Vehicle ${o.vehicle_type || 'shares'} | Entry ${entry} | Stop ${stop} | T1 ${t1}${o.score ? ` | Score ${o.score}` : ''}`);
+      });
+    }
+
+    const inZone = opps.filter(o => o.in_zone).map(o => (o.ticker || '').toUpperCase());
+    const coiling = opps.filter(o => !o.in_zone && o.priority_tier <= 2).map(o => (o.ticker || '').toUpperCase());
+    if (inZone.length) lines.push(`\n• IN ENTRY ZONE NOW: ${inZone.join(', ')}`);
+    if (coiling.length) lines.push(`• COILING TRIGGERS (tier ≤2, not yet in zone): ${coiling.join(', ')}`);
+
+    if (alerts.length) {
+      lines.push(`\n**ACTIONABLE ALERTS:** ${alerts.slice(0, 6).map(a => `${(a.ticker || '').toUpperCase()} (${a.verdict || a.side || 'alert'})`).join(' | ')}`);
+    }
+
+    // Deterministic action layer: bat signal, per-setup risk flags, event radar, calibration
+    const ap = data.action_panel || {};
+    if (ap.bat_signal && ap.bat_signal.action) {
+      const b = ap.bat_signal;
+      lines.push(`\n**🦇 BAT SIGNAL (deterministic): ${b.action}** — ${b.why || ''} Suggested sizing: ${b.size || 'n/a'}. (Live counts: ${b.headline || 'n/a'})`);
+    }
+    if (ap.risk_flags && Object.keys(ap.risk_flags).length) {
+      lines.push('\n**⚠️ RISK FLAGS (deterministic cross-check — these change takeability):**');
+      Object.entries(ap.risk_flags).slice(0, 12).forEach(([sym, v]) => {
+        const labels = (v.flags || []).map(f => `${f.tone === 'rose' ? '⛔' : (f.tone === 'cyan' ? '👤' : '⚠️')} ${f.label}`).join(' , ');
+        lines.push(`   • **${sym}**: ${labels}`);
+      });
+    }
+    if (ap.event_radar && ap.event_radar.length) {
+      lines.push('\n**📡 EVENT RADAR (drastic movers with cause and book impact):**');
+      ap.event_radar.slice(0, 6).forEach(m => {
+        lines.push(`   • **${m.ticker}** ${m.chg_pct >= 0 ? '+' : ''}${m.chg_pct}% ($${m.price})${m.held ? ' — YOU HOLD THIS' : ''} | Cause: ${m.cause || 'unknown'} | Stance: ${m.stance}`);
+      });
+    }
+    const cal = ap.calibration || {};
+    if (cal.real && (cal.real.scored || 0) > 0) {
+      const r = cal.real, m = cal.model || {}, cov = cal.coverage || {};
+      lines.push(`\n**🎓 CALIBRATION — SPLIT BY DATA POOL (never blended):**`);
+      lines.push(`   • REAL executed trades (${r.scored} scored, ${r.unmeasured} unmeasured): win rate ${r.win_rate_pct}% vs a ${r.breakeven_win_rate_pct}% breakeven implied by the payoff ratio | profit factor ${r.profit_factor} | expectancy ${r.expectancy}R | total ${r.total_realized_r}R`);
+      if ((m.scored || 0) > 0) {
+        lines.push(`   • MODEL simulated (${m.scored} scored): win rate ${m.win_rate_pct}% | profit factor ${m.profit_factor} | expectancy ${m.expectancy}R — this is a backtest with perfect fills, NOT evidence about the user's execution; do not size from it.`);
+      }
+      if (cov.available && cov.closed_total) {
+        lines.push(`   • DATA QUALITY: only ${cov.with_exit_price}/${cov.closed_total} (${cov.exit_coverage_pct}%) closed trades recorded an exit price and ${cov.stop_coverage_pct}% a stop level, so R exists for a subset. Treat the real-trade win rate as a small-sample estimate and say so.`);
+      }
+      (cal.reasoning || []).forEach(x => lines.push(`   • ${x}`));
+    }
+
+    const text = lines.join('\n');
+    return { name: 'Today Desk', context: text };
+  },
+
+  buildWatchlistDeskContext() {
+    const wl = window.AppWatchlist;
+    const targets = (wl && wl._allTargets) || [];
+    if (!targets.length) return null;
+
+    const lines = ['**LIVE WATCHLIST — every research target on screen (spot, distance to entry, stop, targets, status):**'];
+    targets.slice(0, 25).forEach(t => {
+      const sym = (t.ticker || '').toUpperCase();
+      const spot = t.last_price ? `$${parseFloat(t.last_price).toFixed(2)}` : 'n/a';
+      const ez = t.entry_zone_low && t.entry_zone_high ? `$${parseFloat(t.entry_zone_low).toFixed(2)}-$${parseFloat(t.entry_zone_high).toFixed(2)}` : 'n/a';
+      lines.push(`• **${sym}** [${t.status || 'n/a'}] ${t.verdict || ''} | Spot ${spot} | Entry ${ez} | Stop ${t.tactical_stop ? '$' + parseFloat(t.tactical_stop).toFixed(2) : 'n/a'} | T1 ${t.target_1 ? '$' + parseFloat(t.target_1).toFixed(2) : 'n/a'}`);
+    });
+    const byStatus = {};
+    targets.forEach(t => { const s = (t.status || 'UNKNOWN').toUpperCase(); byStatus[s] = (byStatus[s] || 0) + 1; });
+    lines.push(`\n• STATUS MIX: ${Object.entries(byStatus).map(([k, v]) => `${k} ${v}`).join(' | ')}`);
+    return { name: 'Watchlist Desk', context: lines.join('\n') };
+  },
+
+  buildIntradayDeskContext() {
+    const id = window.AppIntraday;
+    const positions = (id && id._rawPositions) || [];
+    if (!positions.length) {
+      return { name: 'Intraday Desk', context: '**ACTIVE DESK:** Intraday desk is open and there are currently **no open intraday positions**. Answer questions about the live monitor, stops, and EOD flatten rules for positions if they exist.' };
+    }
+    const lines = ['**LIVE INTRADAY DESK — open monitor positions on screen:**'];
+    positions.slice(0, 12).forEach(p => {
+      const sym = (p.ticker || '').toUpperCase();
+      const entry = p.entry_price ? `$${parseFloat(p.entry_price).toFixed(2)}` : 'n/a';
+      const spot = p.current_price ? `$${parseFloat(p.current_price).toFixed(2)}` : 'n/a';
+      const pnl = p.pnl_pct !== undefined && p.pnl_pct !== null ? `${parseFloat(p.pnl_pct) >= 0 ? '+' : ''}${parseFloat(p.pnl_pct).toFixed(2)}%` : 'n/a';
+      lines.push(`• **${sym}** ${(p.side || '').toUpperCase()} | Entry ${entry} | Live ${spot} | P&L ${pnl} | Stop ${p.stop ? '$' + parseFloat(p.stop).toFixed(2) : 'n/a'} | T1 ${p.target ? '$' + parseFloat(p.target).toFixed(2) : 'n/a'} | Strategy ${p.strategy || 'n/a'}`);
+    });
+    return { name: 'Intraday Desk', context: lines.join('\n') };
+  },
+
+  buildPortfolioBoardContext() {
+    const pf = window.AppPortfolio;
+    if (!pf) return null;
+
+    const summary = pf.summaryData || {};
+    const analysis = pf.analysisData || {};
+    const perf = analysis.performance || {};
+    const alloc = analysis.allocation || {};
+    const briefing = analysis.briefing || {};
+    const positions = (pf.positionsData || []).slice(0, 75);
+    if (!positions.length && !summary.total_liquidation_value) return null;
+
+    const money = (v, d = 2) => {
+      const n = Number(v) || 0;
+      return `${n < 0 ? '-' : '+'}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+    };
+    const plain = (v, d = 2) => `$${(Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+
+    const lines = [];
+    lines.push('**LIVE SCHWAB PORTFOLIO DESK — THE EXACT TICKERS, CONTRACTS & TRADES THE USER IS VIEWING:**');
+
+    const filters = [];
+    if (pf.activeAccountFilter && pf.activeAccountFilter !== 'ALL') filters.push(`Account=${pf.activeAccountFilter}`);
+    if (pf.activeAssetFilter && pf.activeAssetFilter !== 'ALL') filters.push(`Asset=${pf.activeAssetFilter}`);
+    if (pf.searchQuery) filters.push(`Search="${pf.searchQuery}"`);
+    if (pf.sortBy) filters.push(`Sort=${pf.sortBy}`);
+    if (filters.length) lines.push(`• ACTIVE VIEW FILTERS: ${filters.join(' | ')}`);
+
+    lines.push(
+      `• TOTAL LIQUIDATION VALUE: ${plain(summary.total_liquidation_value)} | ` +
+      `TODAY'S DAY P/L: ${money(summary.total_day_pnl)} (${summary.total_day_pnl_pct >= 0 ? '+' : ''}${(Number(summary.total_day_pnl_pct) || 0).toFixed(2)}%) | ` +
+      `TOTAL UNREALIZED P/L: ${money(summary.total_unrealized_pnl)} (${summary.total_unrealized_pnl_pct >= 0 ? '+' : ''}${(Number(summary.total_unrealized_pnl_pct) || 0).toFixed(2)}%) | ` +
+      `CASH: ${plain(summary.total_cash_balance)} | POSITIONS: ${summary.position_count || positions.length}`
+    );
+    if (alloc.equity_pct !== undefined) {
+      lines.push(
+        `• ALLOCATION: Equities ${alloc.equity_pct}% (${plain(alloc.equity_val, 0)}) | Mutual Funds ${alloc.mutual_fund_pct}% (${plain(alloc.mutual_fund_val, 0)}) | ` +
+        `Options ${alloc.option_pct}% (${plain(alloc.option_val, 0)}) | Cash ${alloc.cash_pct}% (${plain(alloc.cash_val, 0)}) | GOOGL+AMZN concentration: ${alloc.top2_concentration}%`
+      );
+    }
+    if (summary.last_synced) lines.push(`• LAST SYNCED FROM SCHWAB API: ${summary.last_synced}`);
+
+    lines.push('\n**EVERY POSITION ROW CURRENTLY ON SCREEN (Symbol, Contract, Qty, Cost, Live Px, Value, P/L, Account):**');
+    positions.forEach(p => {
+      const isOpt = p.asset_type === 'OPTION';
+      const sym = p.underlying_symbol || p.symbol;
+      const acct = `${p.account_type === 'MARGIN' ? 'MARGIN' : 'CASH'} ${p.account_number_masked || ''}`.trim();
+      const qty = Number(p.quantity) || 0;
+      let head = `• ${sym} [${p.asset_type}] — ${qty} ${isOpt ? 'ct' : 'sh'}`;
+      if (isOpt) head += ` ${p.option_expiration || ''} $${p.option_strike} ${p.option_type || ''}`.replace(/\s+/g, ' ');
+      if (p.description) head += ` — ${p.description}`;
+      const detail =
+        `Avg ${plain(p.average_price)} | Live ${plain(p.current_price)} | MV ${plain(p.market_value)} | ` +
+        `Day ${money(p.day_profit_loss)} | Unreal ${money(p.unrealized_profit_loss)} (${Number(p.unrealized_profit_loss_pct) >= 0 ? '+' : ''}${(Number(p.unrealized_profit_loss_pct) || 0).toFixed(1)}%) | ${acct}`;
+      lines.push(`${head}\n   ${detail}`);
+    });
+
+    const trades = (analysis.recent_trades || []).slice(0, 12);
+    if (trades.length) {
+      lines.push('\n**RECENT FILLED ORDERS (Schwab API verified):**');
+      trades.forEach(t => {
+        lines.push(`• ${t.date} | ${t.category} | ${t.order_type} | ${t.legs} | ${t.price ? '$' + t.price : 'MKT'}`);
+      });
+    }
+
+    if (briefing.what_happened) lines.push(`\n**EXECUTIVE BRIEFING (WHAT HAPPENED):** ${briefing.what_happened}`);
+    if (briefing.what_is_happening) lines.push(`**RISK POSTURE (WHAT IS HAPPENING NOW):** ${briefing.what_is_happening}`);
+
+    const draggers = (perf.top_draggers || []).slice(0, 5);
+    const gainers = (perf.top_gainers || []).slice(0, 5);
+    if (draggers.length) lines.push(`**TOP DAGGERS TODAY:** ${draggers.map(d => `${d.symbol} ${money(d.day_pnl)}`).join(' | ')}`);
+    if (gainers.length) lines.push(`**TOP GAINERS TODAY:** ${gainers.map(g => `${g.symbol} ${money(g.day_pnl)}`).join(' | ')}`);
+
+    let text = lines.join('\n');
+    if (text.length > 11000) text = text.slice(0, 11000) + '\n...[roster truncated for context window]';
+    return { name: 'Schwab Portfolio Desk', context: text };
+  },
+
   getActiveBoardContext(source) {
     const reportModal = document.getElementById('report-modal');
     const isModalOpen = reportModal && reportModal.style.display !== 'none';
@@ -86,8 +338,13 @@ window.AppChat = {
         };
       }
     } else {
-      // Main dashboard view (e.g. Watchlist or Swing Desk)
-      const currentDesk = window.App && window.App.currentDesk ? window.App.currentDesk : 'swing';
+      // Main dashboard view: follow the active desk (Today / Watchlist / Portfolio / Intraday / ...)
+      const currentDesk = (window.AppState && window.AppState.currentDesk) || 'swing';
+      if (currentDesk !== 'swing') {
+        const deskCtx = this.buildDeskBoardContext();
+        if (deskCtx) return deskCtx;
+      }
+
       if (currentDesk === 'watchlist') {
         const table = document.getElementById('watchlist-table');
         return {
@@ -251,13 +508,6 @@ window.AppChat = {
     const clamped = Math.max(300, Math.min(px, window.innerWidth * 0.65));
     document.documentElement.style.setProperty('--chat-w', `${clamped}px`);
     return clamped;
-  },
-
-  setChatPreset(px) {
-    this.applyChatWidth(px);
-    try {
-      localStorage.setItem('rev_chat_w', px);
-    } catch (e) {}
   },
 
   toggleCollapse() {
@@ -660,6 +910,13 @@ window.AppChat = {
         if (panel) panel.style.display = 'none';
       } else {
         this._revSessionId = sessionId;
+        if (String(sessionId).startsWith('sess_PORTFOLIO_')) {
+          this._portfolioMode = true;
+          this._portfolioSessionId = sessionId;
+        } else {
+          this._portfolioMode = false;
+          this._portfolioSessionId = null;
+        }
         window.AppState.revChatHistory = messages.map(m => ({ role: m.role, content: m.content, date: m.date, created_at: m.created_at }));
         this.renderRevChat();
         const panel = document.getElementById('sidebar-prior-chats-panel');
@@ -699,6 +956,8 @@ window.AppChat = {
       if (panel) panel.style.display = 'none';
     } else {
       this._revSessionId = `sess_REV_${Date.now()}`;
+      this._portfolioSessionId = null;
+      this._portfolioMode = false;
       window.AppState.revChatHistory = [];
       this.renderRevChat();
       const panel = document.getElementById('sidebar-prior-chats-panel');
@@ -718,6 +977,7 @@ window.AppChat = {
   clearRevChat() {
     window.AppState.revChatHistory = [];
     this._revSessionId = `sess_REV_${Date.now()}`;
+    this.exitPortfolioMode();
     this.renderRevChat();
   },
 
@@ -725,12 +985,42 @@ window.AppChat = {
     const thread = document.getElementById('rev-chat-thread');
     if (!thread) return;
 
+    this.updatePortfolioModeBadge();
+    thread.classList.toggle('rc-thread-portfolio', !!this._portfolioMode);
+
     const history = window.AppState.revChatHistory || [];
     if (history.length === 0) {
+      thread.classList.toggle('rc-thread-portfolio', !!this._portfolioMode);
+      if (this._portfolioMode) {
+        thread.innerHTML = `
+        <div class="rc-welcome rc-welcome-portfolio">
+          <div class="rc-welcome-head"><span class="rc-welcome-emoji">💼</span>Portfolio Copilot Ready</div>
+          <div class="rc-welcome-body">
+            A dedicated assistant for your <strong>live Schwab book</strong> — every holding, contract, strike, expiration, and fill. It answers about <strong>your actual positions only</strong> — never hypotheticals, and never a stock you do not own.
+            <div class="rc-quick-grid">
+              <button class="rc-quick-btn" onclick="AppChat.askPortfolioCopilot('Give me a full executive summary of my portfolio: total liquidation value, today P&amp;L attribution, my biggest holdings with portfolio weights, every option leg with strike expiration and DTE, concentration risk, and a ranked action list for each material position.')"><span class="rc-quick-btn-ico">📊</span><span>Full portfolio summary &amp; ranked action list</span></button>
+              <button class="rc-quick-btn" onclick="AppChat.askPortfolioCopilot('How concentrated am I, and what is my dry powder position right now?')"><span class="rc-quick-btn-ico">⚖️</span><span>Concentration &amp; dry powder check</span></button>
+              <button class="rc-quick-btn" onclick="AppChat.askPortfolioCopilot('Review every option contract I am carrying: strike, expiration, DTE, mark vs basis, and theta/assignment risk for each leg.')"><span class="rc-quick-btn-ico">🧾</span><span>All option legs &amp; expiry risk</span></button>
+              <button class="rc-quick-btn" onclick="AppChat.askPortfolioCopilot('What are my best covered call / PMCC candidates among my holdings right now, with exact strikes, expirations, and premium per contract?')"><span class="rc-quick-btn-ico">💰</span><span>Income engine: covered call / PMCC candidates</span></button>
+              <button class="rc-quick-btn" onclick="AppChat.askPortfolioCopilot('Review my recent filled trades and tell me what worked, what did not, and what to repeat or stop.')"><span class="rc-quick-btn-ico">🧠</span><span>Post-mortem of my recent fills</span></button>
+            </div>
+          </div>
+        </div>
+      `;
+        return;
+      }
+      thread.classList.remove('rc-thread-portfolio');
       thread.innerHTML = `
-        <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
-          <div style="font-weight:700; color:var(--blue); font-size:11px; margin-bottom:4px;">⚡ REV CHAT READY</div>
-          <div style="color:var(--text-muted); font-size:12px;">Ask any question about today's research runs, what was learned, what to do today, tactical levels, or stock setups (<span class="tv-symbol-hover" data-ticker="WMT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$WMT</span>, <span class="tv-symbol-hover" data-ticker="MSFT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$MSFT</span>, <span class="tv-symbol-hover" data-ticker="AMZN" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$AMZN</span>). Live quotes & options available on demand!</div>
+        <div class="rc-welcome">
+          <div class="rc-welcome-head"><span class="rc-welcome-emoji">⚡</span>Rev Chat Ready</div>
+          <div class="rc-welcome-body">
+            Ask anything about the page you are on, tactical levels, or stock setups (<span class="tv-symbol-hover" data-ticker="WMT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$WMT</span>, <span class="tv-symbol-hover" data-ticker="MSFT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$MSFT</span>, <span class="tv-symbol-hover" data-ticker="AMZN" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$AMZN</span>). Live quotes &amp; options available on demand.
+            <div class="rc-quick-grid">
+              <button class="rc-quick-btn" onclick="AppChat.askRevChat('What is the tape doing right now? Give me the Fear and Greed read, the VIX regime, the market tide, breadth, and any drastic movers, then what it means for my setups.')"><span class="rc-quick-btn-ico">📡</span><span>Regime check: Fear &amp; Greed, VIX, tide, breadth</span></button>
+              <button class="rc-quick-btn" onclick="AppChat.askRevChat('Which stocks dropped or spiked hard today, why, and does any of it hit something I hold?')"><span class="rc-quick-btn-ico">🌊</span><span>Biggest movers &amp; what caused them</span></button>
+            </div>
+            <div style="margin-top:8px; font-family:var(--font-mono, monospace); font-size:10.5px; color:var(--text-dim);">TIP · Click <strong>💼 Portfolio</strong> in the header for a dedicated assistant on your real Schwab holdings.</div>
+          </div>
         </div>
       `;
       return;
@@ -738,11 +1028,11 @@ window.AppChat = {
 
     thread.innerHTML = history.map(m => {
       if (m.role === 'user') {
-        return `<div style="align-self:flex-end; max-width:85%; background:var(--blue); color:#ffffff; border-radius:10px; padding:8px 12px; font-size:12.5px; line-height:1.4; box-shadow:0 1px 3px rgba(0,0,0,0.08);">${m.content}</div>`;
+        return `<div class="rc-msg rc-msg-user">${m.content}</div>`;
       } else {
-        return `<div style="align-self:flex-start; max-width:92%; background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:12.5px; line-height:1.5; color:var(--text-main); box-shadow:var(--shadow-card);">
-          <div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:4px;">⚡ REV CHAT</div>
-          <div>${window.AppUtils.renderMarkdown(m.content)}</div>
+        return `<div class="rc-msg rc-msg-assistant">
+          <div class="rc-msg-head"><span class="rc-msg-who">⚡ REV CHAT</span></div>
+          <div class="rc-msg-body">${window.AppUtils.renderMarkdown(m.content)}</div>
         </div>`;
       }
     }).join('');
@@ -804,12 +1094,14 @@ window.AppChat = {
       : this._focusTicker();
     if (t) {
       badge.innerText = `🎯 Focus: $${t}`;
-      badge.className = 'pill blue';
+      badge.className = 'pill blue rev-chat-focus-badge active';
       badge.title = `Chat is focused on $${t}. Click to clear, or type a ticker to switch.`;
     } else {
-      badge.innerText = `🎯 Focus: Market`;
-      badge.className = 'pill';
-      badge.title = `Chat is in broad market mode. Click to type a ticker and focus on one.`;
+      // No ticker focused: the chat is scoped to the desk/page the user is actually on.
+      const deskName = this.deskLabel();
+      badge.innerText = `🎯 Focus: ${deskName}`;
+      badge.className = 'pill rev-chat-focus-badge';
+      badge.title = `Chat is scoped to the ${deskName} desk (everything visible on this page). Click to type a ticker and focus on one stock instead.`;
     }
     this._syncSidebarFocusInput();
   },
@@ -980,6 +1272,64 @@ window.AppChat = {
     }
   },
 
+  // Portfolio-desk entry point: drops any single-ticker focus so the copilot answers about the
+  // whole carried book (every holding, contract, and recent fill) instead of one symbol.
+  askPortfolioCopilot(prompt) {
+    this._forcePortfolioChat = true;
+    this._portfolioSessionId = `sess_PORTFOLIO_${Date.now()}`;
+    this.clearRevChatFocus();
+    this.enterPortfolioMode();
+    this.openChatWithPrompt(prompt);
+  },
+
+  // Dedicated PORTFOLIO COPILOT thread: opened from the header button or the Portfolio desk.
+  // Keeps the chat in portfolio mode for every subsequent message until the user hits New/Clear,
+  // so a leftover ticker focus can never recapture the conversation.
+  openPortfolioCopilot() {
+    this.enterPortfolioMode();
+    window.AppState.revChatHistory = [];
+    this.renderRevChat();
+    const panel = document.getElementById('sidebar-prior-chats-panel');
+    if (panel) panel.style.display = 'none';
+  },
+
+  enterPortfolioMode() {
+    this._portfolioMode = true;
+    this._revSessionId = this._portfolioSessionId || `sess_PORTFOLIO_${Date.now()}`;
+    this._portfolioSessionId = this._revSessionId;
+    window.AppState.revChatFocusTicker = '';
+    window.AppState.activeChatTicker = '';
+    window.AppState.revChatFocusCleared = true;
+    if (typeof this.updateSidebarFocusBadge === 'function') this.updateSidebarFocusBadge();
+    if (typeof this._syncSidebarFocusInput === 'function') this._syncSidebarFocusInput();
+    const title = document.getElementById('rev-chat-mode-badge');
+    if (title) {
+      title.innerText = '💼 PORTFOLIO COPILOT';
+      title.style.display = 'inline-flex';
+    }
+  },
+
+  exitPortfolioMode() {
+    this._portfolioMode = false;
+    this._portfolioSessionId = null;
+    const title = document.getElementById('rev-chat-mode-badge');
+    if (title) title.style.display = 'none';
+  },
+
+  updatePortfolioModeBadge() {
+    const title = document.getElementById('rev-chat-mode-badge');
+    if (title) {
+      if (this._portfolioMode) {
+        title.innerText = '💼 Portfolio';
+        title.style.display = 'inline-flex';
+      } else {
+        title.style.display = 'none';
+      }
+    }
+    const header = document.getElementById('rev-chat-header');
+    if (header) header.classList.toggle('portfolio-mode', !!this._portfolioMode);
+  },
+
   askModalCopilot(prompt, ticker = null, date = null) {
     const input = document.getElementById('modal-chat-input');
     if (prompt && prompt.endsWith('$')) {
@@ -996,10 +1346,17 @@ window.AppChat = {
 
   handleRevChatBtnClick() {
     const btn = document.getElementById('btn-rev-chat-send');
-    if (window.AppState.isRevChatStreaming && btn && btn.innerText.includes('Stop')) {
+    // NOTE: read textContent (raw label), NOT innerText. The send button is CSS-uppercased, and
+    // Chromium's innerText returns the *rendered* text ("⏹ STOP"), which broke the Stop toggle.
+    const label = String((btn && (btn.textContent || btn.innerText)) || '').toUpperCase();
+    const isStop = label.includes('STOP');
+
+    if (window.AppState.isRevChatStreaming && isStop) {
       this.stopRevChatStream();
-    } else {
+    } else if (!window.AppState.isRevChatStreaming) {
       this.sendRevChatMsg();
+    } else {
+      this.stopRevChatStream();
     }
   },
 
@@ -1017,12 +1374,152 @@ window.AppChat = {
       window.AppState.revChatAbortController = null;
     }
     window.AppState.isRevChatStreaming = false;
+    this._flushRcStreamRender(null, '', '', false, true);
     const sendBtn = document.getElementById('btn-rev-chat-send');
     if (sendBtn) {
       sendBtn.className = 'btn';
       sendBtn.innerText = '💬 Send';
       sendBtn.disabled = false;
     }
+  },
+
+  // ---- Live tool-call timeline ------------------------------------------------------------
+  // The model's data-collection pass used to sit behind one static "Executing live tool(s)..."
+  // line with no progress. Now each tool gets a row with a live spinner, then a resolved
+  // duration when it lands, so long research passes visibly progress.
+  _rcToolLabel(name) {
+    const n = String(name || '').replace(/^get_realtime_quote$/, 'get_realtime_quote');
+    const map = {
+      fetch_earnings_calendar: '📅 Earnings calendar',
+      search_web: '🔎 Web search',
+      fetch_finnhub_news: '📰 Finnhub news',
+      fetch_alpaca_news: '📰 Alpaca news',
+      get_realtime_quote: '💹 Live quote',
+      fetch_options_chain: '🧮 Options chain',
+      scrape_tradingview_options_finder: '📈 TV strategy finder',
+      fetch_historical_zone_and_regime_analytics: '🕰️ Zone & regime analytics',
+      fetch_tastytrade_volatility_and_options: '🌊 Tastytrade vol metrics',
+      run_quantitative_plugin: '🧪 Quantitative plugin',
+      execute_python_code: '🐍 Python sandbox',
+      fetch_prior_research: '📚 Prior research',
+      detect_candlestick_patterns: '🕯️ Candlestick patterns',
+    };
+    return map[n] || `⚙️ ${n || 'tool'}`;
+  },
+
+  _rcToolStart(bubble, tools) {
+    if (!bubble || !tools.length) return;
+    let box = bubble.querySelector('.rc-tool-timeline');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'rc-tool-timeline';
+      const head = bubble.querySelector('.rc-msg-head');
+      if (head && head.nextSibling) bubble.insertBefore(box, head.nextSibling);
+      else bubble.appendChild(box);
+    }
+    tools.forEach((name) => {
+      if (box.querySelector(`[data-tool="${CSS.escape(String(name))}"]`)) return;
+      const row = document.createElement('div');
+      row.className = 'rc-tool-row is-running';
+      row.dataset.tool = String(name);
+      row.innerHTML = `<span class="rc-tool-spinner"></span><span class="rc-tool-name">${this._rcToolLabel(name)}</span><span class="rc-tool-time">running…</span>`;
+      box.appendChild(row);
+    });
+    box.style.display = 'block';
+  },
+
+  _rcToolDone(bubble, tools, totalMs) {
+    if (!bubble) return;
+    const box = bubble.querySelector('.rc-tool-timeline');
+    if (!box) return;
+    tools.forEach((t) => {
+      const name = typeof t === 'string' ? t : (t && t.name);
+      if (!name) return;
+      const row = box.querySelector(`[data-tool="${CSS.escape(String(name))}"]`);
+      if (!row) return;
+      const ok = typeof t === 'object' && t ? t.ok !== false : true;
+      const ms = typeof t === 'object' && t && t.ms ? t.ms : 0;
+      row.classList.remove('is-running');
+      row.classList.add(ok ? 'is-done' : 'is-error');
+      row.innerHTML = `<span class="rc-tool-spinner">${ok ? '✓' : '✕'}</span><span class="rc-tool-name">${this._rcToolLabel(name)}</span><span class="rc-tool-time">${ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms'}</span>`;
+    });
+    const foot = document.createElement('div');
+    foot.className = 'rc-tool-foot';
+    foot.textContent = `data pass complete · ${totalMs >= 1000 ? (totalMs / 1000).toFixed(1) + 's' : totalMs + 'ms'}`;
+    const existing = box.querySelector('.rc-tool-foot');
+    if (existing) existing.remove();
+    box.appendChild(foot);
+  },
+
+  // ---- Streaming renderer: throttled markdown + live telemetry -----------------------------  // Rendering full markdown on every token is what made long answers feel static and janky.
+  // We coalesce renders to ~12fps, keep the stop control mounted, show a live caret plus
+  // elapsed/token telemetry in the bubble head, and only auto-scroll when the user is at the bottom.
+  _rcStreamState: null,
+
+  _scheduleRcStreamRender(bubble, fullText, title) {
+    if (!bubble) return;
+    const st = this._rcStreamState || {};
+    st.bubble = bubble;
+    st.fullText = fullText;
+    st.title = title;
+    st.dirty = true;
+    if (!st.t0) st.t0 = Date.now();
+    this._rcStreamState = st;
+    const thread = document.getElementById('rev-chat-thread');
+    const nearBottom = thread
+      ? (thread.scrollHeight - thread.scrollTop - thread.clientHeight) < 80
+      : true;
+    this._rcStreamState.autoScroll = nearBottom;
+
+    if (this._rcStreamRaf) return;
+    this._rcStreamRaf = setTimeout(() => {
+      this._rcStreamRaf = null;
+      const st = this._rcStreamState;
+      if (!st || !st.bubble) return;
+      this._paintRcStream(st);
+    }, 80);
+  },
+
+  _paintRcStream(st) {
+    const elapsed = st.t0 ? `${((Date.now() - st.t0) / 1000).toFixed(1)}s` : '';
+    const tokens = st.fullText.length;
+    const meta = [elapsed, `${tokens} chars`].filter(Boolean).join(' · ');
+    // The live tool timeline lives outside the innerHTML-replaced region so it survives re-renders
+    const timeline = st.bubble.querySelector('.rc-tool-timeline');
+    st.bubble.innerHTML =
+      `<div class="rc-msg-head"><span class="rc-msg-who">${st.title}</span>` +
+      `<span class="rc-msg-meta">${meta}</span>` +
+      `<button class="btn danger rc-stop-btn" onclick="AppChat.stopRevChatStream()">⏹ Stop</button></div>`;
+    if (timeline) st.bubble.appendChild(timeline);
+    st.bubble.insertAdjacentHTML('beforeend',
+      `<div class="rc-msg-body rc-streaming">${window.AppUtils.renderMarkdown(st.fullText)}<span class="rc-caret"></span></div>`);
+    const thread = document.getElementById('rev-chat-thread');
+    if (thread && st.autoScroll) thread.scrollTop = thread.scrollHeight;
+    st.dirty = false;
+  },
+
+  _flushRcStreamRender(bubble, fullText, title, isError = false, cancelled = false) {
+    if (this._rcStreamRaf) {
+      clearTimeout(this._rcStreamRaf);
+      this._rcStreamRaf = null;
+    }
+    const st = this._rcStreamState;
+    const target = bubble || (st && st.bubble);
+    const text = fullText || (st && st.fullText) || '';
+    const headTitle = title || (st && st.title) || '';
+    const err = isError || cancelled;
+    if (target && text) {
+      const timeline = target.querySelector('.rc-tool-timeline');
+      const meta = st && st.t0 ? `${((Date.now() - st.t0) / 1000).toFixed(1)}s · ${text.length} chars` : `${text.length} chars`;
+      target.innerHTML =
+        `<div class="rc-msg-head${err ? ' rc-msg-head-err' : ''}"><span class="rc-msg-who">${err ? '⏹ ' : ''}${headTitle}</span>` +
+        `<span class="rc-msg-meta">${meta}</span></div>`;
+      if (timeline) target.appendChild(timeline);
+      target.insertAdjacentHTML('beforeend', `<div class="rc-msg-body">${window.AppUtils.renderMarkdown(text)}</div>`);
+    }
+    this._rcStreamState = null;
+    const thread = document.getElementById('rev-chat-thread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
   },
 
   async sendRevChatMsg(customPrompt = null) {
@@ -1060,24 +1557,48 @@ window.AppChat = {
       if (!this._revSessionId) this._revSessionId = `sess_REV_${Date.now()}`;
 
       // Snapshot prior history turns BEFORE appending the new question (clean role & content only)
-      const cleanHistory = (window.AppState.revChatHistory || [])
+      // Continuity: when the user switches between ticker and portfolio threads, top the context up
+      // from the last few turns of the other thread so follow-ups ("and its covered call?") keep
+      // their subject. These turns are context only - they are not rendered into this thread.
+      let cleanHistory = (window.AppState.revChatHistory || [])
         .filter(m => (m.role === 'user' || m.role === 'assistant') && m.content)
         .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : String(m.content) }));
 
+      if (cleanHistory.length < 2 && Array.isArray(window.AppState.revChatCrossTurns) && window.AppState.revChatCrossTurns.length) {
+        const bridge = window.AppState.revChatCrossTurns.slice(-4);
+        cleanHistory = bridge.concat(cleanHistory);
+      }
+
       window.AppState.revChatHistory.push({ role: 'user', content: question });
 
-      const boardContext = this._sidebarAttachedBoard ? this._sidebarAttachedBoard.context : null;
-      const boardName = this._sidebarAttachedBoard ? this._sidebarAttachedBoard.name : null;
+      // Remember recent turns across threads (capped) for cross-mode continuity
+      if (!Array.isArray(window.AppState.revChatCrossTurns)) window.AppState.revChatCrossTurns = [];
+      window.AppState.revChatCrossTurns.push({ role: 'user', content: question });
+      if (window.AppState.revChatCrossTurns.length > 8) window.AppState.revChatCrossTurns.shift();
+
+      let boardContext = this._sidebarAttachedBoard ? this._sidebarAttachedBoard.context : null;
+      let boardName = this._sidebarAttachedBoard ? this._sidebarAttachedBoard.name : null;
+
+      // Follow the active desk: every message carries what that page is actually showing (Today's
+      // setups, watchlist targets, live Schwab holdings, open intraday positions...) so the chat is
+      // scoped to the page the user is on instead of guessing at a generic market answer.
+      if (!boardContext) {
+        const deskCtx = this.buildDeskBoardContext();
+        if (deskCtx) {
+          boardContext = deskCtx.context;
+          boardName = deskCtx.name;
+        }
+      }
 
       if (thread) {
         const userBubble = document.createElement('div');
-        userBubble.style = 'align-self:flex-end; max-width:85%; background:var(--blue); color:#ffffff; border-radius:10px; padding:8px 12px; font-size:12.5px; line-height:1.4; box-shadow:0 1px 3px rgba(0,0,0,0.08);';
-        let bubbleContent = `<div style="white-space:pre-wrap;">${this.escapeHtml(question)}</div>`;
+        userBubble.className = 'rc-msg rc-msg-user';
+        let bubbleContent = `<div class="rc-msg-body" style="white-space:pre-wrap;">${this.escapeHtml(question)}</div>`;
         if (boardName) {
-          bubbleContent = `<div style="font-size:10px; opacity:0.85; margin-bottom:4px; font-weight:700;">📌 ${boardName}</div>` + bubbleContent;
+          bubbleContent = `<div class="rc-msg-head" style="opacity:0.9;"><span class="rc-msg-who">📌 ${boardName}</span></div>` + bubbleContent;
         }
         if (imageData) {
-          bubbleContent += `<div style="margin-top:6px;"><img src="${imageData}" style="max-height:85px; max-width:100%; border-radius:6px; border:1px solid rgba(255,255,255,0.35);" /></div>`;
+          bubbleContent += `<div style="margin-top:6px;"><img src="${imageData}" style="max-height:85px; max-width:100%; border-radius:6px; border:1px solid rgba(37,99,235,0.35);" /></div>`;
         }
         userBubble.innerHTML = bubbleContent;
         thread.appendChild(userBubble);
@@ -1114,18 +1635,43 @@ window.AppChat = {
         if (['GENERAL', 'AUTO', 'NONE', 'ALL', 'STOCK', 'MARKET'].includes(activeTicker)) activeTicker = '';
       }
 
-      if (activeTicker) {
+      // Portfolio Chat detection: this chat is a SEPARATE persona from the generic REV CHAT desk.
+      // It fires when the question is about the book itself, or when the user is on the Schwab
+      // Portfolio desk and is not asking about a specific stock. It must never be captured by a
+      // leftover sidebar ticker focus.
+      const currentDeskName = (window.AppState && window.AppState.currentDesk) || '';
+      const pfQuestion = /(portfolio|holdings?|positions?|my\s+(trades?|account|book|legs?|spreads?|leaps|shares|options?|contracts?|schwab|covered\s+calls?)|covered\s+calls?|allocation|concentrat\w*|net\s+liquidation|account\s+balance|buying\s+power|net\s+worth|dry\s+powder|cash\s+balance|what\s+do\s+i\s+own|what\s+am\s+i\s+holding|do\s+i\s+own|how\s+much\s+\w+\s+do\s+i\s+(own|have)|ndxp|brokerage)/i;
+      // Unmistakable book-ownership phrasing switches the chat to the dedicated portfolio persona
+      // from any desk; the broad regex only does so while the Portfolio desk is the active desk.
+      const pfStrong = /(my\s+(portfolio|book|account|holdings|positions|trades|schwab|brokerage|shares|options?|contracts?|legs?|spreads?|leaps|covered\s+calls?|covered\s+call)|portfolio\s+(summary|update|status|review|health|thoughts|overview|tactics)|thoughts\s+on\s+the\s+portfolio|summariz\w*\s+.{0,25}portfolio|net\s+liquidation|what\s+do\s+i\s+own|how\s+is\s+my\s+book|over-?concentrat\w*|dry\s+powder)/i;
+      const isPortfolioChat = this._portfolioMode || this._forcePortfolioChat || pfStrong.test(question) || (
+        currentDeskName === 'portfolio' && (pfQuestion.test(question) || !activeTicker)
+      );
+      this._forcePortfolioChat = false;
+      if (isPortfolioChat) this._portfolioMode = true;
+
+      if (isPortfolioChat) {
+        // Drop any inherited ticker framing so the dedicated PORTFOLIO COPILOT persona owns this turn.
+        activeTicker = '';
+        window.AppState.revChatFocusTicker = '';
+        window.AppState.activeChatTicker = '';
+        window.AppState.revChatFocusCleared = true;
+        if (!this._portfolioSessionId) this._portfolioSessionId = `sess_PORTFOLIO_${Date.now()}`;
+        this._revSessionId = this._portfolioSessionId;
+      } else if (activeTicker) {
         this.setRevChatFocus(activeTicker);
         if (!this._revSessionId || !this._revSessionId.includes(`_${activeTicker}_`)) {
           this._revSessionId = `sess_${activeTicker}_${Date.now()}`;
         }
       }
 
-      const chatHeaderTitle = activeTicker ? `⚡ REV CHAT ($${activeTicker})` : '⚡ REV CHAT';
+      const chatHeaderTitle = isPortfolioChat
+        ? '💼 PORTFOLIO COPILOT'
+        : (activeTicker ? `⚡ REV CHAT ($${activeTicker})` : '⚡ REV CHAT');
 
       const assistantBubble = document.createElement('div');
-      assistantBubble.style = 'align-self:flex-start; max-width:92%; background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:12.5px; line-height:1.5; color:var(--text-main); box-shadow:var(--shadow-card);';
-      assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div><em>Connecting to local model stream...</em></div>`;
+      assistantBubble.className = 'rc-msg rc-msg-assistant';
+      this._flushRcStreamRender(assistantBubble, 'Connecting to local model stream...', chatHeaderTitle, false);
       if (thread) {
         thread.appendChild(assistantBubble);
         thread.scrollTop = thread.scrollHeight;
@@ -1171,17 +1717,21 @@ window.AppChat = {
                 const data = JSON.parse(jsonStr);
                 if (data.session_id) this._revSessionId = data.session_id;
                 if (data.status === 'connecting') {
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div><em>Analyzing real-time market data...</em></div>`;
+                  this._flushRcStreamRender(assistantBubble, 'Analyzing real-time market data...', chatHeaderTitle, false);
                 } else if (data.status === 'slot_notice' || data.notice) {
                   const noticeMsg = data.notice || '';
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--blue); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div style="font-size:11px; color:var(--amber-light); margin-bottom:6px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:6px; padding:6px 8px;">${this.escapeHtml(noticeMsg)}</div><div><em>Streaming response...</em></div>`;
+                  this._flushRcStreamRender(assistantBubble, `> ${noticeMsg}\n\n_Streaming response..._`, chatHeaderTitle, false);
+                } else if (data.status === 'tool_start') {
+                  this._rcToolStart(assistantBubble, data.tools || []);
+                } else if (data.status === 'tool_done') {
+                  this._rcToolDone(assistantBubble, data.tools || [], data.total_ms || 0);
                 } else if (data.token) {
                   fullAnswer += data.token;
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;"><span>${chatHeaderTitle}</span><button class="btn danger" onclick="AppChat.stopRevChatStream()" style="padding:1px 6px; font-size:9.5px; font-weight:700; cursor:pointer;">⏹ Stop</button></div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
-                  if (thread) thread.scrollTop = thread.scrollHeight;
+                  if (!this._rcStreamT0) this._rcStreamT0 = Date.now();
+                  this._scheduleRcStreamRender(assistantBubble, fullAnswer, chatHeaderTitle);
                 } else if (data.error) {
                   fullAnswer += `\n\n❌ **Error:** ${data.error}`;
-                  assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--rose-light); margin-bottom:4px;">❌ ERROR</div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
+                  this._flushRcStreamRender(assistantBubble, fullAnswer, chatHeaderTitle, true);
                 }
               } catch (parseErr) {}
             }
@@ -1189,12 +1739,14 @@ window.AppChat = {
         }
 
         if (fullAnswer.trim()) {
-          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:4px;">${chatHeaderTitle}</div><div>${window.AppUtils.renderMarkdown(fullAnswer)}</div>`;
+          this._flushRcStreamRender(assistantBubble, fullAnswer, chatHeaderTitle, false);
           window.AppState.revChatHistory.push({ role: 'assistant', content: fullAnswer });
+          window.AppState.revChatCrossTurns.push({ role: 'assistant', content: fullAnswer });
+          if (window.AppState.revChatCrossTurns.length > 8) window.AppState.revChatCrossTurns.shift();
         } else {
-          // Stream ended with no content — surface the failure visibly
+          // Stream ended with no content - surface the failure visibly
           const emptyMsg = '⚠️ **No response received from LLM.** The server may have closed the connection early, hit an error, or the model is still loading. Check that the LLM server on port 8000 started correctly and try again.';
-          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--rose-light); margin-bottom:4px;">⚠️ STREAM EMPTY</div><div>${window.AppUtils.renderMarkdown(emptyMsg)}</div>`;
+          this._flushRcStreamRender(assistantBubble, emptyMsg, chatHeaderTitle, true);
           window.AppState.revChatHistory.push({ role: 'assistant', content: emptyMsg });
         }
 
@@ -1203,14 +1755,14 @@ window.AppChat = {
         if (fullAnswer.trim()) {
           const savedText = isAbort ? `${fullAnswer}\n\n*[⏹ Stream stopped by user]*` : `${fullAnswer}\n\n*[⚠️ Connection interrupted: ${e.message}]*`;
           window.AppState.revChatHistory.push({ role: 'assistant', content: savedText });
-          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--emerald-light); margin-bottom:4px;">⚡ REV CHAT</div><div>${window.AppUtils.renderMarkdown(savedText)}</div>`;
+          this._flushRcStreamRender(assistantBubble, savedText, chatHeaderTitle, false);
         } else {
           const errText = isAbort ? '*[⏹ Stream cancelled]*' : `❌ Error: ${e.message}`;
           window.AppState.revChatHistory.push({ role: 'assistant', content: errText });
-          assistantBubble.innerHTML = `<div style="font-size:10px; font-weight:700; color:var(--rose-light); margin-bottom:4px;">❌ NOTICE</div><div>${window.AppUtils.renderMarkdown(errText)}</div>`;
+          this._flushRcStreamRender(assistantBubble, errText, chatHeaderTitle, true);
         }
       }
-    } catch (topErr) {
+          } catch (topErr) {
       console.error("sendRevChatMsg error:", topErr);
     } finally {
       this._isSendingRevMsg = false;

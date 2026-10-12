@@ -23,6 +23,7 @@ from src import config
 from src.clients.price_client import get_current_prices_batch
 from src.logic.report_level_extractor import extract_watch_levels_from_report
 from src.tracking.ops_alerts import is_test_ticker
+from src.ui.state import get_db as _get_db
 
 logger = logging.getLogger(__name__)
 
@@ -697,3 +698,196 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
     _ALERTS_CACHE = res
     _ALERTS_CACHE_TIME = time.time()
     return res
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MARKET REGIME ENGINE — Fear & Greed, VIX band, market tide, and dramatic
+# intraday movers across the tracked universe (watch targets + holdings + today's setups).
+# Powers the Today desk "Regime & Pulse" strip and the desk-scoped copilot context.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_REGIME_CACHE: Dict[str, Any] = {}
+_REGIME_CACHE_TIME: float = 0.0
+_REGIME_TTL: float = 60.0
+
+_REGIME_DROP_ALERT_PCT = 3.0
+_REGIME_DRASTIC_PCT = 5.0
+
+
+def _vix_band(vix_px: float) -> str:
+    if vix_px > 40:
+        return "🔥 CRISIS MODE (>40) — severe panic; asymmetric buy zone opening"
+    if vix_px >= 30:
+        return "🔴 EXTREME FEAR (30-40) — panic selling; watch for reversals"
+    if vix_px >= 25:
+        return "🔴 HIGH VOLATILITY (25-30) — corrections likely; discount buyers"
+    if vix_px >= 20:
+        return "🟠 CAUTION ZONE (20-25) — vol rising; dip-buy only strong setups"
+    if vix_px >= 15:
+        return "🟡 NORMAL MARKET (15-20) — typical behaviour; follow trend"
+    if vix_px >= 12:
+        return "🟢 LOW VOLATILITY (12-15) — stable; watch for mean reversion"
+    return "🟢 TOO CALM (<12) — complacency; consider hedging into tops"
+
+
+def _fg_flag(score: float) -> str:
+    if score >= 75:
+        return "⚠️ EXTREME GREED (>75) — TOPPING / COMPLACENCY DANGER"
+    if score >= 55:
+        return "🟢 GREED (55-75) — MOMENTUM EXPANSION"
+    if score >= 45:
+        return "⚪ NEUTRAL (45-55) — BALANCED"
+    if score >= 25:
+        return "🟢 FEAR (25-45) — VALUE ACCUMULATION ZONE"
+    return "🟢 EXTREME FEAR (<25) — ASYMMETRIC REVERSAL BUYING OPPORTUNITY"
+
+
+def _tracked_universe() -> List[str]:
+    """Tickers worth watching intraday: watch targets, Schwab holdings, core indices."""
+    syms: set[str] = {"SPY", "QQQ"}
+    try:
+        with _get_db() as conn:
+            rows = conn.cursor().execute("SELECT DISTINCT ticker FROM watch_targets").fetchall()
+            syms.update((r["ticker"] or "").upper().strip() for r in rows if r["ticker"])
+    except Exception as e:
+        logger.debug(f"Regime universe watch_targets failed: {e}")
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+        for p in get_portfolio_positions() or []:
+            s = (p.get("underlying_symbol") or p.get("symbol") or "").upper().strip()
+            if s:
+                syms.add(s)
+    except Exception as e:
+        logger.debug(f"Regime universe holdings failed: {e}")
+    return sorted(s for s in syms if s and len(s) <= 6)
+
+
+def get_market_regime(force: bool = False) -> Dict[str, Any]:
+    """
+    Live market regime snapshot: Fear & Greed, VIX level + band, SPY market tide,
+    breadth, and the biggest intraday movers (drops and spikes) in the tracked universe.
+    """
+    global _REGIME_CACHE, _REGIME_CACHE_TIME
+    now_ts = time.time()
+    if not force and _REGIME_CACHE and (now_ts - _REGIME_CACHE_TIME) < _REGIME_TTL:
+        return _REGIME_CACHE
+
+    regime: Dict[str, Any] = {"available": False, "as_of_et": datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M %p ET")}
+
+    # Fear & Greed + VIX regime text
+    try:
+        from src.clients.macro_client import get_fear_and_greed, get_vix
+        fg_raw = get_fear_and_greed()
+        m = re.search(r"Fear & Greed Index:\s*([\d.]+)/100\s*\(([^)]*)\)", fg_raw or "")
+        if m:
+            score = float(m.group(1))
+            regime["fear_greed"] = {"score": score, "rating": (m.group(2) or "").upper(), "flag": _fg_flag(score)}
+        vix_raw = get_vix()
+        mv = re.search(r"VIX:\s*([\d.]+)", vix_raw or "")
+        if mv:
+            vix_px = float(mv.group(1))
+            regime["vix"] = {"price": vix_px, "band": _vix_band(vix_px)}
+    except Exception as e:
+        logger.debug(f"Regime sentiment gauges failed: {e}")
+
+    # Market tide (SPY 20 EMA vs 50 SMA) — sync network call, run off the event loop
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from src.screener.schwab_pre_move_scan import check_market_tide
+
+        def _tide() -> Any:
+            from src.clients.schwab_client import get_schwab_client
+            return check_market_tide(get_schwab_client())
+
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            tide = ex.submit(_tide).result(timeout=25)
+        if tide and tide.get("available"):
+            regime["tide"] = {
+                "spy": round(float(tide.get("last_px") or 0.0), 2),
+                "ema20": round(float(tide.get("ema20") or 0.0), 2),
+                "sma50": round(float(tide.get("sma50") or 0.0), 2),
+                "trend": tide.get("trend_str"),
+                "is_bullish": bool(tide.get("is_bullish")),
+                "spy_20d_return": round(float(tide.get("spy_20d_return") or 0.0) * 100.0, 2),
+            }
+    except Exception as e:
+        logger.debug(f"Regime market tide failed: {e}")
+
+    # Dramatic intraday movers across the tracked universe
+    try:
+        universe = _tracked_universe()
+        if universe:
+            from concurrent.futures import ThreadPoolExecutor
+            from src.clients.schwab_client import get_schwab_client
+
+            def _quotes() -> Dict[str, Dict[str, Any]]:
+                client = get_schwab_client()
+                out: Dict[str, Dict[str, Any]] = {}
+                for i in range(0, len(universe), 400):
+                    resp = client.get_quotes(universe[i:i + 400])
+                    if resp.status_code == 200:
+                        for sym, val in resp.json().items():
+                            if isinstance(val, dict):
+                                out[sym] = val
+                return out
+
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                raw = ex.submit(_quotes).result(timeout=40)
+
+            held: set[str] = set()
+            try:
+                from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+                for p in get_portfolio_positions() or []:
+                    s = (p.get("underlying_symbol") or p.get("symbol") or "").upper().strip()
+                    if s:
+                        held.add(s)
+            except Exception:
+                pass
+
+            advancing = declining = flat = 0
+            drops: List[Dict[str, Any]] = []
+            spikes: List[Dict[str, Any]] = []
+            for sym, val in raw.items():
+                clean = sym.replace("/", ".").upper()
+                quote = val.get("quote") or {}
+                chg = quote.get("netPercentChange")
+                if chg is None:
+                    chg = val.get("netPercentChange")
+                if chg is None:
+                    continue
+                chg_f = float(chg)
+                if chg_f > 0.05:
+                    advancing += 1
+                elif chg_f < -0.05:
+                    declining += 1
+                else:
+                    flat += 1
+                if abs(chg_f) < _REGIME_DROP_ALERT_PCT:
+                    continue
+                row = {
+                    "ticker": clean,
+                    "chg_pct": round(chg_f, 2),
+                    "price": round(float(quote.get("mark") or quote.get("lastPrice") or val.get("mark") or 0.0), 2),
+                    "volume": int(quote.get("totalVolume") or val.get("totalVolume") or 0),
+                    "drastic": abs(chg_f) >= _REGIME_DRASTIC_PCT,
+                    "held": clean in held,
+                }
+                (drops if chg_f < 0 else spikes).append(row)
+
+            drops.sort(key=lambda r: r["chg_pct"])
+            spikes.sort(key=lambda r: -r["chg_pct"])
+            regime["movers"] = {
+                "universe_size": len(raw),
+                "drops": drops[:8],
+                "spikes": spikes[:8],
+                "alerts": [r for r in (drops + spikes) if r["drastic"]][:10],
+            }
+            regime["breadth"] = {"advancing": advancing, "declining": declining, "flat": flat,
+                                 "universe": advancing + declining + flat}
+            regime["available"] = True
+    except Exception as e:
+        logger.debug(f"Regime movers scan failed: {e}")
+
+    _REGIME_CACHE = regime
+    _REGIME_CACHE_TIME = time.time()
+    return regime

@@ -53,7 +53,7 @@ def test_api_cockpit_html_page():
     """Verify Cockpit index HTML loads with 200 OK and expected core layout."""
     status, body = _fetch("/")
     assert status == 200
-    assert "Stock Trading Operations Cockpit" in body
+    assert "REV TERMINAL" in body
     assert "desk-switcher-bar" in body
     assert "sidebar-rev-chat" in body
     assert "report-modal" in body

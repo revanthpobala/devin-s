@@ -33,6 +33,7 @@ from src.tracking.watch_manager import (
     get_all_watch_targets,
     log_trigger_alert,
     sweep_expired_watch_targets,
+    sync_active_suggestions_to_watch_targets,
     update_target_live_state,
     upsert_watch_target,
 )
@@ -282,9 +283,16 @@ def sync_reports_to_watchlist(
 
 def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
     """Run one single price polling and trigger evaluation cycle across all active watch targets."""
+    # 1. Automatically sync all active PASS suggestions (last 21 days) into watch_targets
+    try:
+        sync_active_suggestions_to_watch_targets(lookback_days=21)
+    except Exception as e_sync:
+        logger.debug(f"Sync active suggestions to watch targets exception: {e_sync}")
+
+    # 2. Sweep expired targets (21 days lookback aligned with suggestions)
     try:
         now_et = get_eastern_now()
-        sweep_expired_watch_targets(days=5, as_of_date=now_et.strftime("%Y-%m-%d"))
+        sweep_expired_watch_targets(days=21, as_of_date=now_et.strftime("%Y-%m-%d"))
     except Exception as e_swp:
         logger.debug(f"Sweep expired watch targets exception: {e_swp}")
     targets = get_active_watch_targets()
@@ -600,7 +608,7 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                         days_diff = (t_dt - s_dt).days
                         if days_diff > 0:
                             bus_days = sum(1 for d in range(days_diff) if (s_dt + timedelta(days=d)).weekday() < 5)
-                            if bus_days >= 5:
+                            if bus_days >= 21:
                                 is_expired = True
                     except Exception:
                         pass

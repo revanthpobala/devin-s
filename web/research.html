@@ -14,8 +14,8 @@
   <script src="/static/vendor/marked.min.js"></script>
 
   <!-- Base Cockpit Stylesheet -->
-  <link rel="stylesheet" href="/static/css/base.css?v=50">
-  <link rel="stylesheet" href="/static/css/components.css?v=51">
+  <link rel="stylesheet" href="/static/css/base.css?v=55">
+  <link rel="stylesheet" href="/static/css/components.css?v=55">
   
   <style>
     :root {
@@ -1171,14 +1171,18 @@
       if (!data) return;
 
       if (tab === 'arb') {
-        const content = data.arbitration_md || (data.has_deep_research ? data.summary_md : null);
+        const content = data.arbitration_md;
         if (content && !content.includes('LOCAL RESEARCH DOSSIER') && !content.includes('TACTICAL RADAR')) {
           bodyEl.innerHTML = parseMarkdown(content);
         } else {
-          renderPendingState(bodyEl, 'Senior PM Arbitration', 'Multi-model quantitative deep research and PM arbitration have not been executed yet for this candidate.');
+          const hasDual = Boolean(data.summary_md || data.independent_md);
+          const desc = hasDual
+            ? 'Model A & Model B research are complete. Senior PM Judicial Arbitration has not been generated yet.'
+            : 'Multi-model quantitative deep research and PM arbitration have not been executed yet for this candidate.';
+          renderPendingState(bodyEl, 'Senior PM Arbitration', desc, hasDual);
         }
       } else if (tab === 'sum') {
-        const content = data.summary_md || (data.has_deep_research ? data.arbitration_md : null);
+        const content = data.summary_md;
         if (content && !content.includes('LOCAL RESEARCH DOSSIER') && !content.includes('TACTICAL RADAR')) {
           bodyEl.innerHTML = parseMarkdown(content);
         } else {
@@ -1230,19 +1234,55 @@
       }
     }
 
-    function renderPendingState(el, title, desc) {
+    function renderPendingState(el, title, desc, canFastArbitrate = false) {
+      const primaryBtn = canFastArbitrate
+        ? `<button id="btn-run-arbitrate-pending" class="btn-action btn-primary-gradient" onclick="triggerArbitrationOnly('${State.ticker}')">⚖️ Run Senior PM Arbitration (Fast)</button>`
+        : `<button class="btn-action btn-primary-gradient" onclick="triggerDeepResearch()">⚡ Run Deep Research Now</button>`;
       el.innerHTML = `
         <div class="empty-state-box">
           <div class="empty-state-icon">🔬</div>
           <div class="empty-state-title">${title} Pending</div>
           <div class="empty-state-desc">${desc}</div>
-          <div style="display:flex; justify-content:center; gap:10px;">
-            <button class="btn-action btn-primary-gradient" onclick="triggerDeepResearch()">⚡ Run Deep Research Now</button>
+          <div style="display:flex; justify-content:center; gap:10px; flex-wrap:wrap;">
+            ${primaryBtn}
             <button class="btn-action btn-secondary" onclick="switchTab('local')">📑 View Local Dossier</button>
           </div>
           <div class="progress-box" id="job-progress-box"></div>
         </div>
       `;
+    }
+
+    async function triggerArbitrationOnly(ticker) {
+      const sym = (ticker || State.ticker || '').toUpperCase();
+      if (!sym) return;
+      try {
+        const btn = document.getElementById('btn-run-arbitrate-pending');
+        if (btn) { btn.disabled = true; btn.innerText = '⏳ Arbitrating...'; }
+        const res = await fetch(`/api/research/arbitrate/${sym}`, { method: 'POST' });
+        const resp = await res.json();
+        if (res.ok) {
+          showNotification(`⚖️ Senior PM Arbitration started for ${sym}`, 'info');
+          let checks = 0;
+          const pollTimer = setInterval(async () => {
+            checks++;
+            if (checks > 45) { clearInterval(pollTimer); return; }
+            try {
+              const chk = await fetch(`/api/report/${sym}`);
+              const d = await chk.json();
+              if (d && d.arbitration_md && !d.arbitration_md.includes('LOCAL RESEARCH DOSSIER') && !d.arbitration_md.includes('TACTICAL RADAR')) {
+                clearInterval(pollTimer);
+                showNotification(`✅ Senior PM Arbitration complete for ${sym}!`, 'success');
+                loadReport(sym);
+              }
+            } catch (e) {}
+          }, 3500);
+        } else {
+          showNotification(`Error: ${resp.detail || 'Could not start arbitration'}`, 'error');
+          if (btn) { btn.disabled = false; btn.innerText = '⚖️ Run Senior PM Arbitration (Fast)'; }
+        }
+      } catch (e) {
+        showNotification(`Failed to start arbitration: ${e}`, 'error');
+      }
     }
 
     function renderChartsTab(el, data) {
@@ -1966,6 +2006,6 @@
     });
   </script>
   <!-- Universal TradingView Live Chart Hover Engine -->
-  <script src="/static/js/tv_hover.js?v=2"></script>
+  <script src="/static/js/tv_hover.js?v=5"></script>
 </body>
 </html>

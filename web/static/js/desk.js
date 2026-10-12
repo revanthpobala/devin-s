@@ -30,6 +30,275 @@ window.AppDesk = {
     }
   },
 
+  renderBatSignal(panel) {
+    const bat = (panel && panel.bat_signal) || {};
+    if (!bat || !bat.action) return '';
+    const tones = {
+      green: { bg: 'rgba(16,185,129,0.09)', border: 'rgba(16,185,129,0.45)', fg: 'var(--green)' },
+      amber: { bg: 'rgba(245,158,11,0.09)', border: 'rgba(245,158,11,0.45)', fg: 'var(--amber)' },
+      rose: { bg: 'rgba(220,38,38,0.09)', border: 'rgba(220,38,38,0.45)', fg: 'var(--rose-light)' },
+      cyan: { bg: 'rgba(6,182,212,0.09)', border: 'rgba(6,182,212,0.45)', fg: 'var(--cyan-glow)' },
+    };
+    const t = tones[bat.tone] || tones.amber;
+    const c = bat.counts || {};
+    const chip = (label, val, tone) => `<span style="display:inline-flex; align-items:center; gap:4px; background:var(--bg-main); border:1px solid var(--border); border-radius:5px; padding:3px 8px; font-size:10px; font-family:var(--font-mono);"><b style="color:${tone || 'var(--text-main)'}; font-size:12px;">${val}</b>${label}</span>`;
+
+    return `
+    <div class="station-card" style="padding:14px 18px; border-left:4px solid ${t.fg}; background:linear-gradient(90deg, ${t.bg} 0%, var(--bg-surface) 60%);">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+        <div style="flex:1 1 380px; min-width:0;">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:6px;">
+            <span style="font-size:17px;">🦇</span>
+            <span style="font-size:13.5px; font-weight:900; letter-spacing:0.7px; color:var(--text-main);">TODAY'S BAT SIGNAL</span>
+            <span style="font-size:9px; font-family:var(--font-mono); color:var(--text-dim);">deterministic · ${panel.as_of_et || ''}</span>
+          </div>
+          <div style="font-size:17px; font-weight:900; font-family:var(--font-display); color:${t.fg}; letter-spacing:0.4px; margin-bottom:5px;">→ ${bat.action}</div>
+          <div style="font-size:12px; color:var(--text-muted); line-height:1.5; max-width:720px;">${bat.why || ''}</div>
+          ${bat.size ? `<div style="margin-top:6px; font-size:11px; font-weight:800; color:var(--text-main);">Suggested sizing: <span style="font-family:var(--font-mono);">${bat.size}</span></div>` : ''}
+        </div>
+        <div style="flex:0 1 260px; min-width:200px;">
+          <div style="font-size:9px; font-weight:900; letter-spacing:0.7px; color:var(--text-dim); margin-bottom:6px;">WHY (LIVE COUNTS)</div>
+          <div style="display:flex; flex-wrap:wrap; gap:5px;">
+            ${chip('in zone', c.in_zone || 0, 'var(--green)')}
+            ${chip('coiling', c.coiling || 0, 'var(--amber)')}
+            ${chip('held & in zone', c.held_in_zone || 0, 'var(--cyan-glow)')}
+            ${chip('earnings blackout', c.earnings_blackout || 0, (c.earnings_blackout ? 'var(--rose-light)' : undefined))}
+            ${chip('open monitored', c.open_positions || 0)}
+          </div>
+          ${bat.headline ? `<div style="margin-top:8px; font-size:10px; font-family:var(--font-mono); color:var(--text-dim); line-height:1.5;">${bat.headline}</div>` : ''}
+          <button class="btn" style="margin-top:9px; width:100%; font-size:10.5px; font-weight:800; justify-content:center;" onclick="AppChat.askRevChat('Give me my bat signal for right now: the posture you would take, why, and the exact per-position actions for my book.')">💬 Ask the copilot to act on this</button>
+        </div>
+      </div>
+    </div>`;
+  },
+
+  renderRadarAndCalibration(panel) {
+    const radar = panel.event_radar || [];
+    const calib = panel.calibration || {};
+    const real = calib.real || {};
+    const model = calib.model || {};
+    const cov = calib.coverage || {};
+    const split = calib.pool_split || {};
+
+    const radarCards = radar.map(m => {
+      const up = (m.chg_pct || 0) >= 0;
+      const tone = up ? 'var(--green)' : 'var(--rose-light)';
+      const exp = m.exposure || null;
+      const imp = m.est_book_impact || 0;
+      return `
+      <div style="background:var(--bg-main); border:1px solid var(--border); border-left:4px solid ${m.held ? 'var(--cyan-glow)' : 'var(--border-subtle)'}; border-radius:8px; padding:12px 14px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <b style="font-family:var(--font-mono); font-size:14px; color:var(--cyan-glow);">${m.ticker}</b>
+            <b style="font-family:var(--font-display); font-size:16px; color:${tone};">${up ? '+' : ''}${m.chg_pct}%</b>
+            <span style="font-size:9px; font-family:var(--font-mono); color:var(--text-dim);">$${m.price} · vol ${(m.volume || 0).toLocaleString()}</span>
+            ${m.held ? '<span class="pill green" style="font-size:8.5px; padding:1px 6px;">YOU HOLD THIS</span>' : ''}
+            ${m.on_board ? '<span class="pill cyan" style="font-size:8.5px; padding:1px 6px;">ON BOARD</span>' : ''}
+          </div>
+          <button class="btn secondary" style="font-size:9.5px; padding:2px 8px;" onclick="AppChat.askRevChat('${m.ticker}$')">Ask about ${m.ticker}</button>
+        </div>
+        <div style="margin-top:7px; font-size:11.5px; color:var(--text-muted); line-height:1.5;">
+          <b style="color:var(--text-main);">Cause:</b> ${m.cause || 'unknown'}
+        </div>
+        ${exp ? `<div style="margin-top:6px; font-size:11px; font-family:var(--font-mono); color:var(--cyan-glow);">Your leg: ${exp.contract || exp.symbol || ''} · ${parseFloat(exp.quantity || 0).toFixed(2)} ${exp.asset_type === 'OPTION' ? 'ct' : 'sh'} · MV $${parseFloat(exp.market_value || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })} · Unreal ${parseFloat(exp.unrealized_pnl || 0) >= 0 ? '+' : '-'}$${Math.abs(parseFloat(exp.unrealized_pnl || 0)).toLocaleString('en-US', { maximumFractionDigits: 0 })}</div>
+        <div style="margin-top:3px; font-size:11px; font-weight:800; color:${imp >= 0 ? 'var(--green)' : 'var(--rose-light)'};">Estimated book impact of this move: ${imp >= 0 ? '+' : '-'}$${Math.abs(imp).toLocaleString('en-US', { maximumFractionDigits: 0 })}</div>` : ''}
+        <div style="margin-top:7px; font-size:11px; color:var(--text-main); line-height:1.5;"><b>Stance:</b> ${m.stance}</div>
+      </div>`;
+    }).join('');
+
+    const unmeasured = (calib.unmeasured_lanes || []).map(u => `
+      <div style="display:flex; align-items:center; gap:8px; font-size:10.5px; font-family:var(--font-mono);">
+        <b style="color:var(--purple-light);">${u.rule}</b>
+        <div style="flex:1 1 120px; height:6px; background:var(--bg-subtle); border-radius:3px; overflow:hidden;">
+          <div style="width:${Math.min(100, (u.observations / u.required) * 100).toFixed(0)}%; height:100%; background:var(--purple);"></div>
+        </div>
+        <span style="color:var(--text-muted);">${u.observations}/${u.required} obs</span>
+      </div>`).join('');
+
+    const stat = (label, val, tone, sub) => `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:7px; padding:8px 11px; min-width:100px;">
+      <div style="font-size:8.5px; font-weight:900; letter-spacing:0.6px; color:var(--text-dim);">${label}</div>
+      <div style="font-size:17px; font-weight:900; font-family:var(--font-display); color:${tone || 'var(--text-main)'}; line-height:1.15;">${val}</div>
+      ${sub ? `<div style="font-size:8.5px; color:var(--text-dim); font-family:var(--font-mono); margin-top:1px;">${sub}</div>` : ''}
+    </div>`;
+
+    const poolStats = (s, tone) => `
+      <div style="display:flex; gap:7px; flex-wrap:wrap; margin-bottom:9px;">
+        ${stat('SCORED', (s.scored || 0) + (s.unmeasured ? ` / ${s.scored + s.unmeasured}` : ''), 'var(--text-main)', 'unmeasured excluded')}
+        ${stat('WIN RATE', s.win_rate_pct !== null && s.win_rate_pct !== undefined ? Number(s.win_rate_pct).toFixed(0) + '%' : '–', tone)}
+        ${stat('BREAKEVEN', s.breakeven_win_rate_pct !== null && s.breakeven_win_rate_pct !== undefined ? Number(s.breakeven_win_rate_pct).toFixed(0) + '%' : '–', 'var(--text-dim)', 'from payoff ratio')}
+        ${stat('PROFIT FACTOR', s.profit_factor !== null && s.profit_factor !== undefined ? Number(s.profit_factor).toFixed(2) : '–', s.profit_factor >= 1.2 ? 'var(--green)' : 'var(--rose-light)')}
+        ${stat('EXPECTANCY', s.expectancy !== null && s.expectancy !== undefined ? (s.expectancy >= 0 ? '+' : '') + Number(s.expectancy).toFixed(2) + 'R' : '–', (s.expectancy || 0) >= 0.2 ? 'var(--green)' : 'var(--rose-light)')}
+        ${stat('TOTAL REALIZED', s.total_realized_r !== null && s.total_realized_r !== undefined ? (s.total_realized_r >= 0 ? '+' : '') + Number(s.total_realized_r).toFixed(1) + 'R' : '–', (s.total_realized_r || 0) >= 0 ? 'var(--green)' : 'var(--rose-light)')}
+      </div>`;
+
+    const covWarn = (cov.available && cov.closed_total) ? `
+      <div style="background:rgba(245,158,11,0.07); border:1px solid rgba(245,158,11,0.35); border-radius:7px; padding:9px 12px; margin-bottom:11px;">
+        <div style="font-size:9.5px; font-weight:900; letter-spacing:0.6px; color:var(--amber); margin-bottom:4px;">⚠️ DATA QUALITY — READ THE WIN RATE WITH THIS</div>
+        <div style="font-size:11px; color:var(--text-muted); line-height:1.55;">
+          Of <b style="color:var(--text-main);">${cov.closed_total}</b> closed trades, only <b style="color:var(--amber);">${cov.with_exit_price} (${cov.exit_coverage_pct}%)</b> recorded an exit price and <b style="color:var(--amber);">${cov.stop_coverage_pct}%</b> a stop level. A trade without a stop cannot produce an R multiple, so it is counted as <b>unmeasured</b> — never as breakeven.
+          ${(cov.worst_months || []).map(w => `<div style="margin-top:4px; font-family:var(--font-mono); font-size:10px;">• ${w.mon}: ${w.missing_exit}/${w.n} closed trades missing an exit price</div>`).join('')}
+        </div>
+      </div>` : '';
+
+    return `
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <div class="station-card" style="padding:14px 18px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span style="font-size:15px;">📡</span>
+          <span style="font-size:13px; font-weight:900; letter-spacing:0.5px;">EVENT RADAR — DRASTIC MOVERS vs YOUR BOOK</span>
+          <span style="font-size:9px; color:var(--text-dim); font-family:var(--font-mono);">≥5% moves, joined to cause and exposure</span>
+        </div>
+        ${radar.length ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(430px, 1fr)); gap:10px;">${radarCards}</div>` :
+          `<div style="padding:18px; text-align:center; color:var(--text-muted); font-size:11.5px; background:var(--bg-main); border:1px dashed var(--border); border-radius:8px;">No drastic (≥5%) movers in the tracked universe right now. The radar populates automatically when something breaks.</div>`}
+      </div>
+
+      <div class="station-card" style="padding:14px 18px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+          <span style="font-size:15px;">🎓</span>
+          <span style="font-size:13px; font-weight:900; letter-spacing:0.5px;">CALIBRATION — WHAT HAS ACTUALLY WORKED FOR YOU</span>
+          <button class="btn secondary" style="margin-left:auto; font-size:9.5px; padding:3px 9px;" onclick="AppChat.askRevChat('Given my real-trade calibration, which of todays setups should I take and which should I skip, and why?')">💬 Apply this to today</button>
+        </div>
+
+        ${covWarn}
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+          <div style="flex:1 1 320px; min-width:280px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--cyan-glow); border-radius:0 8px 8px 0; padding:9px 12px;">
+            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px;">
+              <b style="font-size:10.5px; letter-spacing:0.5px; color:var(--cyan-glow);">🟢 REAL TRADES</b>
+              <span style="font-size:9px; color:var(--text-dim); font-family:var(--font-mono);">${split.real_rows || 0} rows — what the tracker actually opened/closed</span>
+            </div>
+            ${real.scored ? poolStats(real) : `<div style="font-size:11px; color:var(--text-muted);">No measurable real trades yet — they need both an exit price and a stop level.</div>`}
+          </div>
+
+          <div style="flex:1 1 320px; min-width:280px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--purple); border-radius:0 8px 8px 0; padding:9px 12px;">
+            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px;">
+              <b style="font-size:10.5px; letter-spacing:0.5px; color:var(--purple-light);">🟣 MODEL (SIMULATED)</b>
+              <span style="font-size:9px; color:var(--text-dim); font-family:var(--font-mono);">${split.model_rows || 0} rows — bar-walk backtest on suggested setups</span>
+            </div>
+            ${model.scored ? poolStats(model) : `<div style="font-size:11px; color:var(--text-muted);">No simulated outcomes on record.</div>`}
+            <div style="font-size:9.5px; color:var(--text-dim); line-height:1.5;">Shown for reference only. A backtest with perfect fills is not evidence about your live execution — do not size from this pool.</div>
+          </div>
+        </div>
+
+        ${(calib.reasoning || []).length ? `
+        <div style="background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--purple); border-radius:0 7px 7px 0; padding:9px 12px;">
+          <div style="font-size:9px; font-weight:900; letter-spacing:0.6px; color:var(--purple-light); margin-bottom:5px;">WHAT THIS MEANS FOR YOUR NEXT TRADE</div>
+          ${calib.reasoning.map(r => `<div style="font-size:11.5px; color:var(--text-muted); line-height:1.55; margin-bottom:4px;">• ${r}</div>`).join('')}
+        </div>` : ''}
+
+        ${unmeasured ? `
+        <div style="margin-top:11px;">
+          <div style="font-size:9px; font-weight:900; letter-spacing:0.6px; color:var(--text-dim); margin-bottom:6px;">UNMEASURED LANES — NOT YET ALLOWED TO CLAIM AN EDGE (n≥200 required)</div>
+          <div style="display:flex; flex-direction:column; gap:5px;">${unmeasured}</div>
+        </div>` : ''}
+      </div>
+    </div>`;
+  },
+
+  renderRegimeStrip(regime) {
+    if (!regime || !regime.available) return '';
+    const fg = regime.fear_greed || null;
+    const vix = regime.vix || null;
+    const tide = regime.tide || null;
+    const breadth = regime.breadth || {};
+    const movers = regime.movers || {};
+    const drops = movers.drops || [];
+    const spikes = movers.spikes || [];
+    const drastic = movers.alerts || [];
+
+    const gauge = (score) => {
+      const pct = Math.max(2, Math.min(98, score));
+      const tone = score >= 75 ? 'var(--rose-light)' : score >= 55 ? 'var(--green)' : score >= 45 ? 'var(--amber)' : score >= 25 ? 'var(--cyan)' : 'var(--cyan-glow)';
+      return `<div style="width:104px;">
+        <div style="position:relative; height:7px; background:linear-gradient(90deg, var(--cyan-glow), var(--cyan), var(--amber), var(--green), var(--rose-light)); border-radius:4px; overflow:hidden;">
+          <div style="position:absolute; top:-3px; left:calc(${pct}% - 1.5px); width:3px; height:13px; background:var(--text-main); border-radius:2px; box-shadow:0 0 4px rgba(0,0,0,0.6);"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:8px; font-family:var(--font-mono); color:var(--text-dim); margin-top:3px;"><span>FEAR</span><span>GREED</span></div>
+        <div style="font-size:10px; color:${tone}; font-weight:800; margin-top:2px;">${fg ? (fg.flag || '').split('—')[0].trim() : ''}</div>
+      </div>`;
+    };
+
+    const moverChip = (m) => {
+      const up = m.chg_pct >= 0;
+      const tone = m.drastic ? (up ? 'var(--green)' : 'var(--rose-light)') : 'var(--amber)';
+      return `<span style="display:inline-flex; align-items:center; gap:5px; background:var(--bg-main); border:1px solid ${m.drastic ? tone : 'var(--border)'}; border-radius:6px; padding:3px 8px; font-size:10.5px; font-family:var(--font-mono); cursor:pointer;" title="${m.ticker} ${up ? '+' : ''}${m.chg_pct}% | $${m.price} | vol ${(m.volume || 0).toLocaleString()}${m.held ? ' | YOU HOLD THIS' : ''} | Click to focus chat" onclick="AppChat.askRevChat('${m.ticker}$')">
+        <b style="color:var(--cyan-glow);">${m.ticker}</b>
+        <b style="color:${tone};">${up ? '+' : ''}${m.chg_pct}%</b>
+        ${m.drastic ? '<span style="font-size:9px;">⚡</span>' : ''}
+        ${m.held ? '<span style="font-size:8.5px; color:var(--green); font-weight:800;">HELD</span>' : ''}
+      </span>`;
+    };
+
+    return `
+    <div class="station-card" style="padding:12px 18px; border-left:4px solid var(--purple); background:linear-gradient(180deg, rgba(168,85,247,0.05) 0%, var(--bg-surface) 100%);">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div style="font-size:18px;">📡</div>
+          <div>
+            <div style="font-size:13px; font-weight:900; letter-spacing:0.6px; color:var(--text-main);">MARKET REGIME &amp; SENTIMENT</div>
+            <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">live gauges · ${regime.as_of_et || ''}</div>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          ${fg ? `<div style="display:flex; align-items:center; gap:9px; background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
+            <div>
+              <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">CNN FEAR &amp; GREED</div>
+              <div style="font-size:20px; font-weight:900; font-family:var(--font-display); color:var(--text-main); line-height:1;">${fg.score ? fg.score.toFixed(0) : '–'}<span style="font-size:10px; color:var(--text-dim); font-weight:700;">/100</span></div>
+              <div style="font-size:9.5px; font-weight:800; color:var(--text-muted);">${fg.rating || ''}</div>
+            </div>
+            ${gauge(fg.score || 0)}
+          </div>` : ''}
+
+          ${vix ? `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">VIX</div>
+            <div style="font-size:18px; font-weight:900; font-family:var(--font-display); color:var(--text-main); line-height:1.1;">${vix.price.toFixed(2)}</div>
+            <div style="font-size:9.5px; font-weight:700; max-width:190px; color:var(--text-muted);">${(vix.band || '').split('—')[0].trim()}</div>
+          </div>` : ''}
+
+          ${tide ? `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">MARKET TIDE (SPY)</div>
+            <div style="font-size:12.5px; font-weight:900; color:${tide.is_bullish ? 'var(--green)' : 'var(--rose-light)'};">${tide.trend || ''}</div>
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted);">SPY $${tide.spy} · 20EMA $${tide.ema20} · 50SMA $${tide.sma50}</div>
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-dim);">20d return ${tide.spy_20d_return >= 0 ? '+' : ''}${tide.spy_20d_return}%</div>
+          </div>` : ''}
+
+          ${breadth.universe ? `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">BREADTH (${breadth.universe})</div>
+            <div style="font-size:12px; font-weight:800; font-family:var(--font-mono);"><span style="color:var(--green);">▲ ${breadth.advancing}</span> <span style="color:var(--rose-light);">▼ ${breadth.declining}</span> <span style="color:var(--text-dim);">▬ ${breadth.flat}</span></div>
+            <div style="height:5px; width:100%; min-width:96px; background:var(--bg-subtle); border-radius:3px; margin-top:5px; display:flex; overflow:hidden;">
+              <div style="width:${(breadth.advancing / breadth.universe * 100).toFixed(1)}%; background:var(--green);"></div>
+              <div style="width:${(breadth.flat / breadth.universe * 100).toFixed(1)}%; background:var(--text-dim);"></div>
+              <div style="width:${(breadth.declining / breadth.universe * 100).toFixed(1)}%; background:var(--rose-light);"></div>
+            </div>
+          </div>` : ''}
+        </div>
+      </div>
+
+      ${(drops.length || spikes.length) ? `
+      <div style="margin-top:11px; padding-top:10px; border-top:1px solid var(--border); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="font-size:11px;">🌊</span>
+          <span style="font-size:10px; font-weight:900; letter-spacing:0.6px; color:var(--text-muted);">DRAMATIC MOVERS<br><span style="font-size:8.5px; font-weight:700; color:var(--text-dim);">|Δ| ≥ 3% today · ⚡ ≥ 5%</span></span>
+        </div>
+        <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center;">
+          ${drops.map(moverChip).join('')}
+          <span style="color:var(--text-dim); font-size:10px;">│</span>
+          ${spikes.map(moverChip).join('')}
+        </div>
+        <span style="font-size:9.5px; color:var(--text-dim); font-family:var(--font-mono); margin-left:auto;">${(movers.universe_size || 0)} scanned · click a chip to focus the chat</span>
+      </div>` : ''}
+
+      ${drastic.length ? `
+      <div style="margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        <span style="font-size:9.5px; font-weight:900; color:var(--rose-light); letter-spacing:0.5px;">⚡ DRASTIC (≥5%):</span>
+        ${drastic.map(d => `<span style="font-size:10px; font-family:var(--font-mono); padding:2px 7px; border-radius:4px; background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.35); color:var(--rose-light);">${d.ticker} ${d.chg_pct >= 0 ? '+' : ''}${d.chg_pct}%${d.held ? ' · HELD' : ''}</span>`).join('')}
+        <button class="btn secondary" style="font-size:9.5px; padding:2px 8px; margin-left:auto;" onclick="AppChat.askRevChat('Walk me through the drastic movers right now, why they moved, and whether any affect my holdings.')">💬 Explain the movers</button>
+      </div>` : ''}
+    </div>`;
+  },
+
   toggleRowDrawer(drawerId, iconId) {
     const d = document.getElementById(drawerId);
     if (!d) return;
@@ -116,7 +385,7 @@ window.AppDesk = {
       out += `
         <tr style="border-bottom:1px solid var(--border); cursor:pointer;" onclick="AppDesk.toggleRowDrawer('${rowId}', '${iconId}')">
           <td style="padding:6px; text-align:center; color:var(--text-muted); font-size:10px;"><span id="${iconId}">▶</span></td>
-          <td style="padding:6px 8px; font-weight:700; color:var(--cyan);"><a href="javascript:void(0)" class="tv-symbol-hover" data-ticker="${sym}" title="$${sym} · Click to open Dossier · Hover for Live TradingView Chart" onclick="event.stopPropagation(); AppSwing.openReportModal('${repDate}', '${sym}', 'local')">${sym}</a></td>
+          <td style="padding:6px 8px; font-weight:700; color:var(--cyan);"><a href="javascript:void(0)" class="tv-symbol-hover" data-ticker="${sym}" title="$${sym} · Click for modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart" onclick="if(window.AppSwing){ AppSwing.handleTickerClick(event, '${sym}', '${repDate}', 'local'); }">${sym}</a></td>
           <td style="padding:6px 8px;">${this.fmt(ib.setup)}${this.setupTagChip(ib)}</td>
           <td style="padding:6px 8px; text-align:center;">${this.pill(dec || '–', decTone)}</td>
           <td style="padding:6px 8px; text-align:center;">${this.pill((ib.deep_status || 'none').toUpperCase(), ib.deep_status === 'COMPLETED' ? 'good' : ib.deep_status === 'RUNNING' ? 'info' : 'neutral')}</td>
@@ -545,6 +814,11 @@ window.AppDesk = {
       const vixPx = pulse.vix ? `${pulse.vix.toFixed(2)}` : '–';
       const phaseBadgeTone = pulse.market_open ? 'green' : (pulse.market_phase === 'AFTER_HOURS' || pulse.market_phase === 'PRE_MARKET') ? 'amber' : 'red';
 
+      const regime = todayData.market_regime || {};
+      const actionPanel = todayData.action_panel || {};
+      html += this.renderRegimeStrip(regime);
+      html += this.renderBatSignal(actionPanel);
+
       html += `
       <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px;">
@@ -623,9 +897,19 @@ window.AppDesk = {
           <button id="subtab-today-missed" class="btn ${activeTab === 'missed_moves' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('missed_moves')">
             📉 Missed Moves (${(missedMovesData && (missedMovesData.missed_moves || []).length) || 0})
           </button>
+          <button id="subtab-today-radar" class="btn ${activeTab === 'radar' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('radar')" title="Drastic movers with their cause and their impact on your book, plus your own setup performance">
+            📡 Event Radar &amp; Calibration (${((todayData.action_panel || {}).event_radar || []).length ? '!' : '0'})
+          </button>
         </div>
       </div>
       `;
+
+      // =========================================================================
+      // 2b. SUBTAB: EVENT RADAR & CALIBRATION
+      // =========================================================================
+      if (activeTab === 'radar') {
+        html += this.renderRadarAndCalibration(todayData.action_panel || {});
+      }
 
       // =========================================================================
       // 2. SUBTAB: ACTIONABLE OPPORTUNITIES (PROPER DEEP RESEARCH & SCREENING)
@@ -659,20 +943,30 @@ window.AppDesk = {
           <!-- Closest to Gate Strip (Task d7) -->
           ${(todayData && todayData.closest_to_gate && todayData.closest_to_gate.length > 0) ? `
           <div style="margin-bottom:14px; background:rgba(245,158,11,0.06); border:1px solid rgba(245,158,11,0.25); border-radius:8px; padding:10px 14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
               <div style="font-size:11.5px; font-weight:800; color:var(--amber);">
                 ⏳ CLOSEST TO GATE (${todayData.closest_to_gate.length} Setups Missing Exactly 1 Condition)
               </div>
-              <span style="font-size:10.5px; color:var(--text-muted);">One condition away from becoming actionable</span>
+              <span style="font-size:10.5px; color:var(--text-muted);">One condition away from actionable · Click setup to open Dossier & Plan</span>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              ${todayData.closest_to_gate.map(c => `
-                <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:11px; display:flex; align-items:center; gap:6px;">
-                  <b style="color:var(--text-main); font-family:var(--font-mono);">${c.ticker}</b>
-                  ${c.wait_for ? `<span style="color:var(--cyan); font-family:var(--font-mono); font-size:10px;">(${c.wait_for})</span>` : ''}
-                  <span style="color:var(--amber); font-size:10px;">⚠️ Missing: ${c.missing_condition}</span>
+              ${todayData.closest_to_gate.map(c => {
+                const repDate = (c.date && c.date !== '–') ? c.date.substring(0, 10) : 'latest';
+                return `
+                <div class="closest-gate-pill"
+                     onclick="if(window.AppSwing && typeof window.AppSwing.openReportModal === 'function'){ window.AppSwing.openReportModal('${repDate}', '${c.ticker}', 'plan', event); } else { window.location.href='/research/${c.ticker}'; }"
+                     onmouseenter="this.style.borderColor='rgba(245,158,11,0.7)'; this.style.background='rgba(245,158,11,0.12)'; this.style.transform='translateY(-1px)';"
+                     onmouseleave="this.style.borderColor='var(--border)'; this.style.background='var(--bg-surface)'; this.style.transform='none';"
+                     title="${c.ticker} · Click to open Dossier & Tactical Plan (Missing: ${c.missing_condition})"
+                     style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:5px 9px; font-size:11px; display:inline-flex; align-items:center; gap:6px; cursor:pointer; transition:all 0.15s ease; box-shadow:0 1px 3px rgba(0,0,0,0.15); user-select:none;">
+                  <b style="color:var(--cyan); font-family:var(--font-mono); font-size:11.5px;">${c.ticker}</b>
+                  ${c.last_price ? `<span style="color:var(--text-main); font-family:var(--font-mono); font-size:10.5px; font-weight:700;">$${parseFloat(c.last_price).toFixed(2)}</span>` : ''}
+                  ${(c.dist !== undefined && c.dist !== null) ? `<span style="color:${c.dist === 0 ? 'var(--green)' : 'var(--text-muted)'}; font-family:var(--font-mono); font-size:10px; font-weight:600;">${c.dist === 0 ? '🎯 In Zone' : (c.dist > 0 ? `+${parseFloat(c.dist).toFixed(1)}%` : `${parseFloat(c.dist).toFixed(1)}%`)}</span>` : ''}
+                  ${c.wait_for ? `<span style="color:var(--cyan); font-family:var(--font-mono); font-size:10px; font-weight:700;">(${c.wait_for})</span>` : ''}
+                  <span style="color:var(--amber); font-size:10px; font-weight:600;">⚠️ ${c.missing_condition}</span>
+                  <a href="/research/${c.ticker}" target="_blank" onclick="event.stopPropagation();" title="Open /research/${c.ticker} in new tab" style="color:var(--text-muted); font-size:10.5px; margin-left:2px; text-decoration:none; opacity:0.75;" onmouseenter="this.style.opacity='1'; this.style.color='var(--cyan)';" onmouseleave="this.style.opacity='0.75'; this.style.color='var(--text-muted)';">↗</a>
                 </div>
-              `).join('')}
+              `;}).join('')}
             </div>
           </div>` : ''}
 
@@ -698,6 +992,11 @@ window.AppDesk = {
             const sideTone = opp.side === 'LONG' ? 'var(--green)' : 'var(--rose-light)';
             const rrTxt = opp.live_rr > 0 ? `R:R ${opp.live_rr.toFixed(2)}:1` : '–';
 
+            // Deterministic risk cross-check: already held / earnings blackout / cluster / chasing / weak R:R
+            const riskEntry = ((todayData.action_panel || {}).risk_flags || {})[(sym || '').toUpperCase()];
+            const riskChips = (riskEntry && riskEntry.flags) ? riskEntry.flags.map(f => `
+              <span style="display:inline-flex; align-items:center; gap:4px; background:var(--bg-subtle); border:1px solid ${f.tone === 'rose' ? 'rgba(220,38,38,0.45)' : (f.tone === 'cyan' ? 'rgba(6,182,212,0.45)' : 'rgba(245,158,11,0.45)')}; border-radius:4px; padding:2px 7px; font-size:9px; font-weight:800; letter-spacing:0.3px; color:${f.tone === 'rose' ? 'var(--rose-light)' : (f.tone === 'cyan' ? 'var(--cyan-glow)' : 'var(--amber)')};" title="${(f.note || '').replace(/"/g, '&quot;')}">${f.tone === 'rose' ? '⛔' : (f.tone === 'cyan' ? '👤' : '⚠️')} ${f.label}</span>`).join('') : '';
+
             const isOptions = opp.vehicle_type === 'OPTIONS';
             const vehicleBg = isOptions ? 'rgba(168, 85, 247, 0.08)' : 'rgba(56, 189, 248, 0.08)';
             const vehicleBorder = isOptions ? 'rgba(168, 85, 247, 0.3)' : 'rgba(56, 189, 248, 0.3)';
@@ -710,8 +1009,9 @@ window.AppDesk = {
             const t2Val = opp.target_2 ? `$${parseFloat(opp.target_2).toFixed(2)}` : '–';
 
             html += `
-              <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); transition:transform 0.15s ease, border-color 0.15s ease;">
+              <div style="background:var(--bg-main); border:1px solid ${riskChips ? 'var(--border-subtle)' : 'var(--border)'}; border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); transition:transform 0.15s ease, border-color 0.15s ease;">
                 <div>
+                  ${riskChips ? `<div style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:9px;">${riskChips}</div>` : ''}
                   
                   <!-- Card Header -->
                   <div style="display:flex; justify-content:space-between; align-items:flex-start;">
