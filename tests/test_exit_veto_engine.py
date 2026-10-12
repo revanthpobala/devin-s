@@ -147,7 +147,8 @@ def test_review_tv_exit_catastrophic_safeguard(tmp_path, monkeypatch):
             "strategy": "Intraday",
         }
 
-        with patch("src.tracking.position_monitor.get_current_price", return_value=196.5):
+        with patch("src.tracking.position_monitor.get_current_price", return_value=196.5), \
+             patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "normal flow"}):
             decision = review_tv_exit("AAPL", exit_alert)
             assert decision["action"] == "CONFIRM_EXIT"
             assert "Catastrophic stop safeguard breached" in decision["reason"]
@@ -180,14 +181,18 @@ def test_review_tv_exit_catastrophic_wide_stop_within_risk_budget(tmp_path, monk
 
     # -3.0% drawdown: above the old flat 2.5% breaker, but well inside the
     # $10.00 stop distance and price still holds above stop -> VETO_HOLD.
-    with patch("src.tracking.position_monitor.get_current_price", return_value=194.0):
+    # read_tape is pinned like the MSFT cases: without it the tape override reads
+    # whatever verdict a real run left on disk and the verdict flips with machine state.
+    with patch("src.tracking.position_monitor.get_current_price", return_value=194.0), \
+         patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "normal flow"}):
         decision = review_tv_exit("AAPL", exit_alert)
         assert decision["action"] == "VETO_HOLD", decision
         assert "Catastrophic" not in decision["reason"]
         assert "No open position" not in decision["reason"], "the stubbed record was not seen"
 
     # Once price breaks the real stop, it exits via catastrophic breaker (ATR leg).
-    with patch("src.tracking.position_monitor.get_current_price", return_value=189.5):
+    with patch("src.tracking.position_monitor.get_current_price", return_value=189.5), \
+         patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "normal flow"}):
         decision = review_tv_exit("AAPL", exit_alert)
         assert decision["action"] == "CONFIRM_EXIT", decision
         assert "Catastrophic stop safeguard breached" in decision["reason"]

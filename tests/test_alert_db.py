@@ -171,6 +171,30 @@ def test_research_queue_force_requeues_same_day(temp_db, tmp_path):
             assert "without a fill" in items[0]["reason"]
 
 
+def test_batched_last_alert_lookup(temp_db):
+    """One query per ticker, batched: the scorecard needs the last alert per name."""
+    with patch.object(alert_db, "DB_PATH", temp_db):
+        fake_base = temp_db.parent / "app_base_batch"
+        fake_base.mkdir(exist_ok=True)
+        with patch.object(alert_db.config, "BASE_DIR", fake_base), \
+             patch("src.tracking.watch_manager.DB_PATH", temp_db):
+            from src.tracking import watch_manager as wm
+
+            wm.init_watch_db()  # log_trigger_alert itself does not create tables
+            wm.log_trigger_alert("AAA", "LEVEL_ZONE_TOP", "first", 100.0)
+            wm.log_trigger_alert("AAA", "RUNNING_NO_ROOM", "second", 101.0)
+            wm.log_trigger_alert("BBB", "MOVING", "bbb", 50.0)
+
+            out = wm.get_last_alerts_for(["AAA", "BBB", "CCC"])
+            assert set(out) == {"AAA", "BBB"}
+            # Most recent wins, not the first.
+            assert out["AAA"]["trigger_type"] == "RUNNING_NO_ROOM"
+            assert out["BBB"]["trigger_type"] == "MOVING"
+            # The single-ticker helper is the batched one with a single key.
+            assert wm.get_last_alert_for("AAA")["trigger_type"] == "RUNNING_NO_ROOM"
+            assert wm.get_last_alert_for("CCC") is None
+
+
 def test_sync_position(temp_db):
     with patch.object(alert_db, "DB_PATH", temp_db):
         pos_data = {

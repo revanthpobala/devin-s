@@ -1161,6 +1161,7 @@ def update_target_live_state(
 
 def log_trigger_alert(ticker: str, trigger_type: str, message: str, spot_price: float) -> None:
     """Log an alert event to the watch_alerts audit log."""
+    init_watch_db()
     now = _now_iso()
     date_str = datetime.now().strftime("%Y-%m-%d")
     with _db_lock:
@@ -1194,21 +1195,34 @@ def has_level_alert_today(ticker: str, trigger_type: str, date_str: str) -> bool
             ).fetchone()[0] > 0
 
 
-def get_last_alert_for(ticker: str) -> Optional[Dict[str, Any]]:
-    """The most recent watch alert logged for a ticker, or None.
+def get_last_alerts_for(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
+    """The most recent watch alert per ticker, in one query.
 
     The missed-moves scorecard shows the root-cause reason PLUS whether an alert was
-    actually sent for that name (plan/no-lost-movers, Live verification).
+    actually sent for that name (plan/no-lost-movers, Live verification); one batched
+    query keeps that off the per-row path.
     """
+    syms = [t.upper() for t in tickers if t]
+    if not syms:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
     init_watch_db()
     with _db_lock:
         with _get_connection() as conn:
-            row = conn.execute(
-                "SELECT ticker, date, trigger_type, message, spot_price, triggered_at "
-                "FROM watch_alerts WHERE ticker = ? ORDER BY triggered_at DESC, rowid DESC LIMIT 1",
-                (ticker.upper(),),
-            ).fetchone()
-    return dict(row) if row else None
+            for sym in syms:
+                row = conn.execute(
+                    "SELECT ticker, date, trigger_type, message, spot_price, triggered_at "
+                    "FROM watch_alerts WHERE ticker = ? ORDER BY triggered_at DESC, rowid DESC LIMIT 1",
+                    (sym,),
+                ).fetchone()
+                if row:
+                    out[sym] = dict(row)
+    return out
+
+
+def get_last_alert_for(ticker: str) -> Optional[Dict[str, Any]]:
+    """The most recent watch alert logged for a ticker, or None."""
+    return get_last_alerts_for([ticker]).get(ticker.upper())
 
 
 def get_recent_alerts(limit: int = 50) -> List[Dict[str, Any]]:

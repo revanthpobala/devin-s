@@ -299,12 +299,13 @@ def get_missed_moves(
     # Attach the alert-sent fact per row (the reason alone is half the picture: a missed
     # move that fired an alert is a different failure than one that never alerted).
     try:
-        from src.tracking.watch_manager import get_last_alert_for
+        from src.tracking.watch_manager import get_last_alerts_for
 
+        last_by_sym = get_last_alerts_for([r["ticker"] for r in records if not r.get("is_backfill")])
         for r in records:
             if r.get("is_backfill"):
                 continue
-            last = get_last_alert_for(r["ticker"])
+            last = last_by_sym.get(r["ticker"].upper())
             r["alert_sent"] = bool(last)
             r["last_alert"] = (
                 {"trigger_type": last.get("trigger_type"), "date": last.get("date"),

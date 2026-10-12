@@ -10,7 +10,6 @@ status, and its actionable wording carries the UNMEASURED lane tag with no sizin
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from unittest.mock import patch
 
@@ -98,7 +97,7 @@ def test_midday_cross_of_a_level_fires_exactly_one_alert(tmp_path):
     # Cycle 2: trades up through the zone -> one alert per crossed level.
     with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
          patch("run_watch_alerts.get_current_price", return_value=106.0):
-        res = evaluate_watch_cycle(sync_sheets=False)
+        evaluate_watch_cycle(sync_sheets=False)
     types = [r["trigger_type"] for r in _alert_rows("MIDDAY")]
     assert "LEVEL_ZONE_TOP" in types
     assert len([t for t in types if t == "LEVEL_ZONE_TOP"]) == 1
@@ -290,8 +289,6 @@ def test_level_alert_dedupe_uses_the_writers_clock():
     """Regression: the dedupe key was the ET date while log_trigger_alert files rows
     under the local date, so in the late-night window the COUNT and the INSERT
     disagreed about 'today' and the same cross alerted twice."""
-    from datetime import datetime as _dt
-
     watch_manager.upsert_watch_target(_payload("DDUP"))
     # One cross in poll 1 (below zone -> zone top).
     with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
@@ -311,6 +308,64 @@ def test_level_alert_dedupe_uses_the_writers_clock():
             "SELECT COUNT(*) FROM watch_alerts WHERE ticker = 'DDUP' AND trigger_type = 'LEVEL_T2'"
         ).fetchone()
     assert rows[0] == 1
+
+
+def test_bars_stats_prefers_the_live_datawindow_and_caches_per_cycle():
+    """The production 20-day-stats path: live Data Window first, bars as fallback,
+    one fetch per ticker per cycle (the cache clears at the top of every cycle)."""
+    run_watch_alerts._BARS_STATS_CACHE.clear()
+    with patch("src.tracking.level_engine._bars_frame", return_value=_fake_bars_for_stats()) as bars:
+        # 1. No Data Window: the bar-derived prior high and ADV20 arm the levels.
+        high_1, adv_1 = run_watch_alerts._bars_stats_for_ticker("STAT1")
+        assert high_1 == 719.0                   # max High of the last 20 rows (700+19)
+        assert adv_1 == pytest.approx(1_009_500.0)  # mean Volume of the 20 rows
+        assert bars.call_count == 1
+
+        # 2. A live Data Window high wins over the bars for that (ticker, dw) key; the
+        # ADV20 for the new key is fetched once more and then cached like any other.
+        high_2, adv_2 = run_watch_alerts._bars_stats_for_ticker(
+            "STAT1", dw={"high_20d": 761.25}
+        )
+        assert high_2 == 761.25
+        assert adv_2 == pytest.approx(1_009_500.0)
+        assert bars.call_count == 2
+        run_watch_alerts._bars_stats_for_ticker("STAT1", dw={"high_20d": 761.25})
+        assert bars.call_count == 2  # same key -> cached
+
+        # 3. Absent stays absent: no bars, no DW -> no HIGH_20D level, unmeasured volume.
+        with patch("src.tracking.level_engine._bars_frame", return_value=None):
+            run_watch_alerts._BARS_STATS_CACHE.clear()
+            assert run_watch_alerts._bars_stats_for_ticker("STAT2", dw={}) == (None, None)
+    run_watch_alerts._BARS_STATS_CACHE.clear()
+
+
+def _fake_bars_for_stats():
+    class _Row(dict):
+        def get(self, k, default=None):
+            return dict.get(self, k, default)
+
+    class _Bars:
+        def __init__(self, rows, index):
+            self._rows = rows
+            self.index = index
+
+        def __len__(self):
+            return len(self._rows)
+
+        @property
+        def iloc(self):
+            outer = self
+
+            class _Iloc:
+                def __getitem__(self, i):
+                    return outer._rows[i]
+
+            return _Iloc()
+
+    rows = [_Row({"High": 700.0 + i, "Low": 690.0, "Close": 695.0, "Volume": 1_000_000 + i * 1000})
+            for i in range(20)]
+    index = [f"2026-09-{d:02d}" for d in range(1, 31)]
+    return _Bars(rows, index)
 
 
 def test_target_hit_without_fill_requeues_local_triage():

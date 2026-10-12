@@ -352,7 +352,7 @@ def _bars_stats_for_ticker(
     means absent — a missing 20d high simply arms no HIGH_20D level, and a missing
     ADV20 leaves crosses tagged unmeasured, never dropped.
     """
-    key = ticker.upper()
+    key = (ticker.upper(), dw_high20_key(dw))
     if key in _BARS_STATS_CACHE:
         return _BARS_STATS_CACHE[key]
     dw_high = 0.0
@@ -365,6 +365,18 @@ def _bars_stats_for_ticker(
     bars_high, adv20 = bars_high_20d_and_adv20(ticker)
     _BARS_STATS_CACHE[key] = (dw_high if dw_high > 0 else bars_high, adv20)
     return _BARS_STATS_CACHE[key]
+
+
+def dw_high20_key(dw: Optional[Dict[str, Any]]) -> float:
+    """The Data Window's 20-day high, or 0.0 when absent — the cache key's second part,
+    so a later call carrying a different DW value is not shadowed by an earlier one."""
+    if not isinstance(dw, dict):
+        return 0.0
+    for k in ("high_20d", "High 20D", "20d high", "20d_high", "high_20d_high", "Highest 20D"):
+        v = _f(dw.get(k))
+        if v > 0:
+            return v
+    return 0.0
 
 
 def _cooldown_elapsed(state, kind: str, now_et) -> bool:
@@ -644,6 +656,12 @@ def _collect_armed_coverage(existing_syms: set) -> List[Dict[str, Any]]:
                 long_p = triage.get("long_plan") or data.get("long_plan") or {}
                 if not long_p or not (_f(long_p.get("stop")) > 0 and (_f(long_p.get("target")) > 0 or _f(long_p.get("target_1")) > 0)):
                     continue
+                # Gate inputs that actually exist in the thesis triage are mapped so the
+                # at-market re-score's gate reasons are precise instead of claiming every
+                # input is missing. signal_pack / ext_z / atr14 are NOT synthesised from
+                # derived facts — absent means absent, the gate fails closed on them.
+                action_long = triage.get("action_long")
+                fade_long = triage.get("fade_long")
                 armed[sym] = {
                     "ticker": sym,
                     "date": d.name,
@@ -656,6 +674,8 @@ def _collect_armed_coverage(existing_syms: set) -> List[Dict[str, Any]]:
                     "target_1": _f(long_p.get("target") or long_p.get("target_1")),
                     "target_2": _f(long_p.get("target_2")),
                     "invalidation_price": None,
+                    "action_long": action_long if action_long is not None else None,
+                    "fade": fade_long if fade_long is not None else None,
                     "status": "STALKING",
                     "verdict": triage.get("triage") or "STALK",
                     "raw_json": json.dumps({"datawindow": triage.get("datawindow_signals") or triage.get("dw") or {}}),

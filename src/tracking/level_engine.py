@@ -272,27 +272,6 @@ def bars_high_20d_and_adv20(
         return None, None
 
 
-def prior_20d_high(
-    ticker: str,
-    dw: Optional[Dict[str, Any]] = None,
-    as_of: Optional[str] = None,
-) -> Optional[float]:
-    """Prior 20-day high: live Data Window when present, else daily bars, else None."""
-    if dw:
-        for key in ("high_20d", "High 20D", "20d high", "20d_high", "high_20d_high", "Highest 20D"):
-            val = _num(dw.get(key))
-            if val > 0:
-                return val
-    high_20d, _adv = bars_high_20d_and_adv20(ticker, as_of=as_of)
-    return high_20d
-
-
-def adv20_from_bars(ticker: str, as_of: Optional[str] = None) -> Optional[float]:
-    """20-day average daily volume from daily bars, else None."""
-    _high, adv = bars_high_20d_and_adv20(ticker, as_of=as_of)
-    return adv
-
-
 @dataclass
 class LevelEngineState:
     """Per-ticker runtime state: armed levels plus the last poll price.

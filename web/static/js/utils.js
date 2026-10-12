@@ -322,7 +322,7 @@ window.AppUtils = {
             span.style.cursor = 'pointer';
             span.style.color = 'var(--cyan-glow, #38bdf8)';
             span.style.fontWeight = '700';
-            span.title = comp ? `${sym}: ${comp} · Click for modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart` : `$${sym} · Click for modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart`;
+            span.title = `$${sym} · Click for modal · Ctrl/Cmd+Click for new tab · Hover for Live Chart`;
             span.textContent = `$${sym}`;
             span.addEventListener('click', (e) => {
               if (window.AppSwing && typeof window.AppSwing.handleTickerClick === 'function') {

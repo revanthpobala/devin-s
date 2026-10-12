@@ -21,11 +21,9 @@ from src.tracking.level_engine import (
     KIND_ZONE_LOW,
     KIND_ZONE_TOP,
     LevelEngineState,
-    adv20_from_bars,
     bars_high_20d_and_adv20,
     build_armed_levels,
     get_engine_state,
-    prior_20d_high,
     rearm_on_close,
     reset_engine_state,
     volume_pace,
@@ -299,11 +297,3 @@ def test_bars_high_20d_and_adv20_absent_means_absent():
     with patch("src.tracking.level_engine._bars_frame", return_value=None):
         assert bars_high_20d_and_adv20("META") == (None, None)
     assert bars_high_20d_and_adv20("") == (None, None)
-    assert adv20_from_bars("") is None
-
-
-def test_prior_20d_high_prefers_live_datawindow():
-    dw = {"high_20d": 761.25}
-    assert prior_20d_high("META", dw=dw) == 761.25
-    with patch("src.tracking.level_engine._bars_frame", return_value=None):
-        assert prior_20d_high("META", dw={}) is None  # absent, never fabricated
