@@ -623,20 +623,38 @@ _EARN_CACHE: Dict[str, Optional[int]] = {}
 
 _PAPER_REFRESH_T: float = 0.0
 _PAPER_REFRESH_EVERY: float = 300.0
+_PAPER_REFRESH_THREAD: Any = None
 
 
 def _maybe_refresh_paper() -> None:
-    """Throttled paper-thesis resolution so the desk shows fresh outcomes without blocking."""
-    global _PAPER_REFRESH_T
+    """
+    Resolve paper theses in a background thread. This MUST NOT run inline: the desk endpoint
+    is polled every 6s and the bar walk takes ~1s per 5 positions, so an inline refresh froze
+    the whole desk for ~12s once every throttle window.
+    """
+    global _PAPER_REFRESH_T, _PAPER_REFRESH_THREAD
     now_ts = time.time()
     if (now_ts - _PAPER_REFRESH_T) < _PAPER_REFRESH_EVERY:
         return
     _PAPER_REFRESH_T = now_ts
+    if _PAPER_REFRESH_THREAD and _PAPER_REFRESH_THREAD.is_alive():
+        return
+
+    def _work() -> None:
+        try:
+            from src.tracking.thesis_evaluator import refresh_thesis_paper_trades
+            refresh_thesis_paper_trades()
+        except Exception as e:
+            logger.debug(f"Background paper refresh failed: {e}")
+
     try:
-        from src.tracking.thesis_evaluator import refresh_thesis_paper_trades
-        refresh_thesis_paper_trades()
+        import threading
+        _PAPER_REFRESH_THREAD = threading.Thread(
+            target=_work, name="paper-thesis-refresh", daemon=True
+        )
+        _PAPER_REFRESH_THREAD.start()
     except Exception as e:
-        logger.debug(f"Throttled paper refresh failed: {e}")
+        logger.debug(f"Could not start paper refresh thread: {e}")
 
 
 def _days_to_earnings(sym: str) -> Optional[int]:
@@ -669,9 +687,11 @@ def build_action_panel(opportunities: Optional[List[Dict[str, Any]]] = None,
     if not force and _CACHE and (now_ts - _CACHE_T) < _TTL:
         return _CACHE
 
-    opportunities = opportunities or []
-    regime = regime or {}
-    open_positions = open_positions or []
+    # Callers hand this assembled data from several services; coerce defensively so a single
+    # malformed upstream payload degrades to an empty section instead of raising here.
+    opportunities = opportunities if isinstance(opportunities, list) else []
+    regime = regime if isinstance(regime, dict) else {}
+    open_positions = open_positions if isinstance(open_positions, list) else []
     movers_raw = regime.get("movers") or {}
     movers = list(movers_raw.get("alerts") or [])
     movers += list(movers_raw.get("spikes") or [])

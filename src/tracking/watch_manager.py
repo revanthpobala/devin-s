@@ -699,17 +699,20 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                 pass
             logger.info(f"[{ticker}] Registered in Watchlist DB (Side: {side}, Verdict: {data.get('verdict')}, Status: {data.get('status')})")
 
-            # Freeze the thesis: capture the spot price at generation time and open the
-            # 100-share paper position that lets the thesis be scored against the tape later.
-            try:
-                from src.tracking.thesis_evaluator import record_thesis_paper_trade
-                paper = record_thesis_paper_trade(data)
-                if paper:
-                    logger.info(
-                        f"[PAPER] {ticker} paper position opened at ${float(paper.get('thesis_spot') or 0):.2f}"
-                    )
-            except Exception as e_paper:
-                logger.debug(f"[PAPER] capture failed for {ticker}: {e_paper}")
+        # Freeze the thesis: capture the spot price at generation time and open the
+        # 100-share paper position that lets the thesis be scored against the tape later.
+        # NOTE: this runs AFTER the lock block is released on purpose. The capture takes a
+        # live quote, and holding the DB lock across that network call stalled every other
+        # consumer of the watch DB (desk API, watch daemon, position monitor) behind it.
+        try:
+            from src.tracking.thesis_evaluator import record_thesis_paper_trade
+            paper = record_thesis_paper_trade(data)
+            if paper:
+                logger.info(
+                    f"[PAPER] {ticker} paper position opened at ${float(paper.get('thesis_spot') or 0):.2f}"
+                )
+        except Exception as e_paper:
+            logger.debug(f"[PAPER] capture failed for {ticker}: {e_paper}")
 
 
 def backfill_watch_targets_gate_inputs() -> int:

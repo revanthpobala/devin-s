@@ -388,10 +388,22 @@ window.AppStatus = {
         }
       }
 
-      // 3. Tastytrade Status
+      // 3. Tastytrade Status — the ribbon keeps a short label (status.js previously wrote the
+      // long form into the same node, which broke the compact header on every poll).
       const tastyTxt = document.getElementById('txt-tasty');
-      if (tastyTxt) {
-        tastyTxt.innerText = `Tastytrade (${data.tasty_alert_count || 0} Alerts)`;
+      const tastyCount = Number(data.tasty_alert_count || 0);
+      if (tastyTxt) tastyTxt.innerText = tastyCount > 0 ? `TT ${tastyCount}` : 'TT';
+      const tastyPill = document.getElementById('pill-tasty');
+      if (tastyPill) {
+        const tastyOk = data.tasty_configured !== false && data.tasty_online !== false;
+        tastyPill.className = tastyOk
+          ? `pill sys-pill ${tastyCount > 0 ? 'cyan' : 'green'}`
+          : 'pill sys-pill red';
+        tastyPill.title = tastyOk
+          ? (tastyCount > 0
+            ? `Tastytrade cloud: ${tastyCount} active quote alert(s). Click to open settings.`
+            : 'Tastytrade cloud connected, no active quote alerts. Click to open settings.')
+          : 'Tastytrade cloud unreachable. Click to open settings.';
       }
 
       // 3b. Schwab OAuth 7-Day Lifecycle Indicator

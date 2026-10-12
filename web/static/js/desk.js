@@ -30,6 +30,20 @@ window.AppDesk = {
     }
   },
 
+  // Memoised renderers for the slow-changing regime/action blocks. The Today desk rebuilds its
+  // entire DOM every 6s, so these blocks are rendered once per distinct payload instead of
+  // re-parsing a large subtree (movers, ledger, calibration tables) on every poll.
+  _memo: {},
+
+  memoRender(key, data, fn) {
+    let sig;
+    try { sig = JSON.stringify(data); } catch (e) { sig = String(Date.now()); }
+    if (this._memo[key] && this._memo[key].sig === sig) return this._memo[key].html;
+    const html = fn(data);
+    this._memo[key] = { sig, html };
+    return html;
+  },
+
   renderBatSignal(panel) {
     const bat = (panel && panel.bat_signal) || {};
     if (!bat || !bat.action) return '';
@@ -236,7 +250,15 @@ window.AppDesk = {
     const vix = regime.vix || null;
     const tide = regime.tide || null;
     const breadth = regime.breadth || {};
-    const movers = regime.movers || {};
+    const moversRaw = regime.movers || {};
+    // A feed can hand back a list with null holes; every row must be a real object.
+    const _clean = (a) => (Array.isArray(a) ? a.filter(m => m && typeof m === 'object') : []);
+    const movers = {
+      universe_size: moversRaw.universe_size || 0,
+      drops: _clean(moversRaw.drops),
+      spikes: _clean(moversRaw.spikes),
+      alerts: _clean(moversRaw.alerts),
+    };
     const drops = movers.drops || [];
     const spikes = movers.spikes || [];
     const drastic = movers.alerts || [];
@@ -254,11 +276,11 @@ window.AppDesk = {
     };
 
     const moverChip = (m) => {
-      const up = m.chg_pct >= 0;
+      const up = (m.chg_pct || 0) >= 0;
       const tone = m.drastic ? (up ? 'var(--green)' : 'var(--rose-light)') : 'var(--amber)';
-      return `<span style="display:inline-flex; align-items:center; gap:5px; background:var(--bg-main); border:1px solid ${m.drastic ? tone : 'var(--border)'}; border-radius:6px; padding:3px 8px; font-size:10.5px; font-family:var(--font-mono); cursor:pointer;" title="${m.ticker} ${up ? '+' : ''}${m.chg_pct}% | $${m.price} | vol ${(m.volume || 0).toLocaleString()}${m.held ? ' | YOU HOLD THIS' : ''} | Click to focus chat" onclick="AppChat.askRevChat('${m.ticker}$')">
-        <b style="color:var(--cyan-glow);">${m.ticker}</b>
-        <b style="color:${tone};">${up ? '+' : ''}${m.chg_pct}%</b>
+      return `<span style="display:inline-flex; align-items:center; gap:5px; background:var(--bg-main); border:1px solid ${m.drastic ? tone : 'var(--border)'}; border-radius:6px; padding:3px 8px; font-size:10.5px; font-family:var(--font-mono); cursor:pointer;" title="${(m.ticker || '')} ${up ? '+' : ''}${(m.chg_pct || 0)}% | $${m.price || 0} | vol ${((m.volume || 0)).toLocaleString()}${m.held ? ' | YOU HOLD THIS' : ''} | Click to focus chat" onclick="AppChat.askRevChat('${m.ticker}$')">
+        <b style="color:var(--cyan-glow);">${m.ticker || '?'}</b>
+        <b style="color:${tone};">${up ? '+' : ''}${(m.chg_pct || 0)}%</b>
         ${m.drastic ? '<span style="font-size:9px;">⚡</span>' : ''}
         ${m.held ? '<span style="font-size:8.5px; color:var(--green); font-weight:800;">HELD</span>' : ''}
       </span>`;
@@ -288,24 +310,24 @@ window.AppDesk = {
 
           ${vix ? `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
             <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">VIX</div>
-            <div style="font-size:18px; font-weight:900; font-family:var(--font-display); color:var(--text-main); line-height:1.1;">${vix.price.toFixed(2)}</div>
-            <div style="font-size:9.5px; font-weight:700; max-width:190px; color:var(--text-muted);">${(vix.band || '').split('—')[0].trim()}</div>
+            <div style="font-size:18px; font-weight:900; font-family:var(--font-display); color:var(--text-main); line-height:1.1;">${vix.price !== null && vix.price !== undefined ? Number(vix.price).toFixed(2) : '–'}</div>
+            <div style="font-size:9.5px; font-weight:700; max-width:190px; color:var(--text-muted);">${(vix.band || '').split('—')[0].trim() || 'n/a'}</div>
           </div>` : ''}
 
           ${tide ? `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
             <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">MARKET TIDE (SPY)</div>
-            <div style="font-size:12.5px; font-weight:900; color:${tide.is_bullish ? 'var(--green)' : 'var(--rose-light)'};">${tide.trend || ''}</div>
-            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted);">SPY $${tide.spy} · 20EMA $${tide.ema20} · 50SMA $${tide.sma50}</div>
-            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-dim);">20d return ${tide.spy_20d_return >= 0 ? '+' : ''}${tide.spy_20d_return}%</div>
+            <div style="font-size:12.5px; font-weight:900; color:${tide.is_bullish ? 'var(--green)' : 'var(--rose-light)'};">${tide.trend || 'n/a'}</div>
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted);">SPY ${tide.spy !== null && tide.spy !== undefined ? '$' + Number(tide.spy).toFixed(2) : '–'} · 20EMA ${tide.ema20 !== null && tide.ema20 !== undefined ? '$' + Number(tide.ema20).toFixed(2) : '–'} · 50SMA ${tide.sma50 !== null && tide.sma50 !== undefined ? '$' + Number(tide.sma50).toFixed(2) : '–'}</div>
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-dim);">20d return ${tide.spy_20d_return !== null && tide.spy_20d_return !== undefined ? (Number(tide.spy_20d_return) >= 0 ? '+' : '') + Number(tide.spy_20d_return).toFixed(2) + '%' : 'n/a'}</div>
           </div>` : ''}
 
           ${breadth.universe ? `<div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
             <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">BREADTH (${breadth.universe})</div>
-            <div style="font-size:12px; font-weight:800; font-family:var(--font-mono);"><span style="color:var(--green);">▲ ${breadth.advancing}</span> <span style="color:var(--rose-light);">▼ ${breadth.declining}</span> <span style="color:var(--text-dim);">▬ ${breadth.flat}</span></div>
+            <div style="font-size:12px; font-weight:800; font-family:var(--font-mono);"><span style="color:var(--green);">▲ ${breadth.advancing || 0}</span> <span style="color:var(--rose-light);">▼ ${breadth.declining || 0}</span> <span style="color:var(--text-dim);">▬ ${breadth.flat || 0}</span></div>
             <div style="height:5px; width:100%; min-width:96px; background:var(--bg-subtle); border-radius:3px; margin-top:5px; display:flex; overflow:hidden;">
-              <div style="width:${(breadth.advancing / breadth.universe * 100).toFixed(1)}%; background:var(--green);"></div>
-              <div style="width:${(breadth.flat / breadth.universe * 100).toFixed(1)}%; background:var(--text-dim);"></div>
-              <div style="width:${(breadth.declining / breadth.universe * 100).toFixed(1)}%; background:var(--rose-light);"></div>
+              <div style="width:${((breadth.advancing || 0) / breadth.universe * 100).toFixed(1)}%; background:var(--green);"></div>
+              <div style="width:${((breadth.flat || 0) / breadth.universe * 100).toFixed(1)}%; background:var(--text-dim);"></div>
+              <div style="width:${((breadth.declining || 0) / breadth.universe * 100).toFixed(1)}%; background:var(--rose-light);"></div>
             </div>
           </div>` : ''}
         </div>
@@ -328,7 +350,7 @@ window.AppDesk = {
       ${drastic.length ? `
       <div style="margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
         <span style="font-size:9.5px; font-weight:900; color:var(--rose-light); letter-spacing:0.5px;">⚡ DRASTIC (≥5%):</span>
-        ${drastic.map(d => `<span style="font-size:10px; font-family:var(--font-mono); padding:2px 7px; border-radius:4px; background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.35); color:var(--rose-light);">${d.ticker} ${d.chg_pct >= 0 ? '+' : ''}${d.chg_pct}%${d.held ? ' · HELD' : ''}</span>`).join('')}
+        ${drastic.map(d => `<span style="font-size:10px; font-family:var(--font-mono); padding:2px 7px; border-radius:4px; background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.35); color:var(--rose-light);">${d.ticker || '?'} ${(d.chg_pct || 0) >= 0 ? '+' : ''}${d.chg_pct || 0}%${d.held ? ' · HELD' : ''}</span>`).join('')}
         <button class="btn secondary" style="font-size:9.5px; padding:2px 8px; margin-left:auto;" onclick="AppChat.askRevChat('Walk me through the drastic movers right now, why they moved, and whether any affect my holdings.')">💬 Explain the movers</button>
       </div>` : ''}
     </div>`;
@@ -851,8 +873,10 @@ window.AppDesk = {
 
       const regime = todayData.market_regime || {};
       const actionPanel = todayData.action_panel || {};
-      html += this.renderRegimeStrip(regime);
-      html += this.renderBatSignal(actionPanel);
+      // Memoised: identical payloads render once per 6s poll instead of re-parsing these
+      // subtrees every cycle (the desk rebuilds its whole DOM each poll).
+      html += this.memoRender('regime_strip', regime, (r) => this.renderRegimeStrip(r));
+      html += this.memoRender('bat_signal', actionPanel, (p) => this.renderBatSignal(p));
 
       html += `
       <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
@@ -943,7 +967,7 @@ window.AppDesk = {
       // 2b. SUBTAB: EVENT RADAR & CALIBRATION
       // =========================================================================
       if (activeTab === 'radar') {
-        html += this.renderRadarAndCalibration(todayData.action_panel || {});
+        html += this.memoRender('radar_calib', todayData.action_panel || {}, (p) => this.renderRadarAndCalibration(p));
       }
 
       // =========================================================================
@@ -1729,7 +1753,19 @@ window.AppDesk = {
 
         html += `</div>`;
         const cont = document.getElementById('today-content-container');
-        if (cont) cont.innerHTML = html;
+        if (cont) {
+          // The whole desk is re-rendered on every 6s poll. Preserving the scroll position
+          // stops the page jumping back to the top while the user is reading a card or a
+          // ledger, which was the worst symptom of the rebuild.
+          const prevScroll = cont.scrollTop;
+          const prevFocusId = document.activeElement && document.activeElement.id;
+          cont.innerHTML = html;
+          if (prevScroll > 0) cont.scrollTop = prevScroll;
+          if (prevFocusId) {
+            const refocus = document.getElementById(prevFocusId);
+            if (refocus && typeof refocus.focus === 'function') refocus.focus();
+          }
+        }
 
       } catch (err) {
       console.error('Failed loading Today desk:', err);

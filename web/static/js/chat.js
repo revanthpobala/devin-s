@@ -121,7 +121,10 @@ window.AppChat = {
     if (coiling.length) lines.push(`• COILING TRIGGERS (tier ≤2, not yet in zone): ${coiling.join(', ')}`);
 
     if (alerts.length) {
-      lines.push(`\n**ACTIONABLE ALERTS:** ${alerts.slice(0, 6).map(a => `${(a.ticker || '').toUpperCase()} (${a.verdict || a.side || 'alert'})`).join(' | ')}`);
+      const cleanAlerts = alerts.filter(a => a && typeof a === 'object');
+      if (cleanAlerts.length) {
+        lines.push(`\n**ACTIONABLE ALERTS:** ${cleanAlerts.slice(0, 6).map(a => `${(a.ticker || '?').toUpperCase()} (${a.verdict || a.side || 'alert'})`).join(' | ')}`);
+      }
     }
 
     // Deterministic action layer: bat signal, per-setup risk flags, event radar, calibration
@@ -133,14 +136,16 @@ window.AppChat = {
     if (ap.risk_flags && Object.keys(ap.risk_flags).length) {
       lines.push('\n**⚠️ RISK FLAGS (deterministic cross-check — these change takeability):**');
       Object.entries(ap.risk_flags).slice(0, 12).forEach(([sym, v]) => {
-        const labels = (v.flags || []).map(f => `${f.tone === 'rose' ? '⛔' : (f.tone === 'cyan' ? '👤' : '⚠️')} ${f.label}`).join(' , ');
-        lines.push(`   • **${sym}**: ${labels}`);
+        const flags = (v && Array.isArray(v.flags)) ? v.flags.filter(f => f && typeof f === 'object') : [];
+        const labels = flags.map(f => `${f.tone === 'rose' ? '⛔' : (f.tone === 'cyan' ? '👤' : '⚠️')} ${f.label || 'flag'}`).join(' , ');
+        lines.push(`   • **${sym || '?'}**: ${labels || 'see desk card'}`);
       });
     }
     if (ap.event_radar && ap.event_radar.length) {
       lines.push('\n**📡 EVENT RADAR (drastic movers with cause and book impact):**');
-      ap.event_radar.slice(0, 6).forEach(m => {
-        lines.push(`   • **${m.ticker}** ${m.chg_pct >= 0 ? '+' : ''}${m.chg_pct}% ($${m.price})${m.held ? ' — YOU HOLD THIS' : ''} | Cause: ${m.cause || 'unknown'} | Stance: ${m.stance}`);
+      ap.event_radar.filter(m => m && typeof m === 'object').slice(0, 6).forEach(m => {
+        const chg = Number(m.chg_pct) || 0;
+        lines.push(`   • **${m.ticker || '?'}** ${chg >= 0 ? '+' : ''}${chg}% ($${m.price || 0})${m.held ? ' — YOU HOLD THIS' : ''} | Cause: ${m.cause || 'unknown'} | Stance: ${m.stance || 'n/a'}`);
       });
     }
     const cal = ap.calibration || {};
@@ -245,12 +250,16 @@ window.AppChat = {
       const sym = p.underlying_symbol || p.symbol;
       const acct = `${p.account_type === 'MARGIN' ? 'MARGIN' : 'CASH'} ${p.account_number_masked || ''}`.trim();
       const qty = Number(p.quantity) || 0;
+      const px = (v) => (v !== null && v !== undefined && !isNaN(parseFloat(v)) ? parseFloat(v) : 0);
       let head = `• ${sym} [${p.asset_type}] — ${qty} ${isOpt ? 'ct' : 'sh'}`;
-      if (isOpt) head += ` ${p.option_expiration || ''} $${p.option_strike} ${p.option_type || ''}`.replace(/\s+/g, ' ');
+      if (isOpt) {
+        const strike = p.option_strike !== null && p.option_strike !== undefined ? `$${parseFloat(p.option_strike).toFixed(2)}` : 'strike n/a';
+        head += ` ${p.option_expiration || 'exp n/a'} ${strike} ${p.option_type || ''}`.replace(/\s+/g, ' ');
+      }
       if (p.description) head += ` — ${p.description}`;
       const detail =
         `Avg ${plain(p.average_price)} | Live ${plain(p.current_price)} | MV ${plain(p.market_value)} | ` +
-        `Day ${money(p.day_profit_loss)} | Unreal ${money(p.unrealized_profit_loss)} (${Number(p.unrealized_profit_loss_pct) >= 0 ? '+' : ''}${(Number(p.unrealized_profit_loss_pct) || 0).toFixed(1)}%) | ${acct}`;
+        `Day ${money(p.day_profit_loss)} | Unreal ${money(p.unrealized_profit_loss)} (${px(p.unrealized_profit_loss_pct) >= 0 ? '+' : ''}${px(p.unrealized_profit_loss_pct).toFixed(1)}%) | ${acct}`;
       lines.push(`${head}\n   ${detail}`);
     });
 
@@ -1482,8 +1491,9 @@ window.AppChat = {
   },
 
   _paintRcStream(st) {
+    const text = typeof st.fullText === 'string' ? st.fullText : '';
     const elapsed = st.t0 ? `${((Date.now() - st.t0) / 1000).toFixed(1)}s` : '';
-    const tokens = st.fullText.length;
+    const tokens = text.length;
     const meta = [elapsed, `${tokens} chars`].filter(Boolean).join(' · ');
     // The live tool timeline lives outside the innerHTML-replaced region so it survives re-renders
     const timeline = st.bubble.querySelector('.rc-tool-timeline');
@@ -1493,7 +1503,7 @@ window.AppChat = {
       `<button class="btn danger rc-stop-btn" onclick="AppChat.stopRevChatStream()">⏹ Stop</button></div>`;
     if (timeline) st.bubble.appendChild(timeline);
     st.bubble.insertAdjacentHTML('beforeend',
-      `<div class="rc-msg-body rc-streaming">${window.AppUtils.renderMarkdown(st.fullText)}<span class="rc-caret"></span></div>`);
+      `<div class="rc-msg-body rc-streaming">${window.AppUtils.renderMarkdown(text)}<span class="rc-caret"></span></div>`);
     const thread = document.getElementById('rev-chat-thread');
     if (thread && st.autoScroll) thread.scrollTop = thread.scrollHeight;
     st.dirty = false;
