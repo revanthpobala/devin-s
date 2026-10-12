@@ -141,6 +141,36 @@ def test_research_queue_and_survivors_sync(temp_db, tmp_path):
             assert survivors_data[0]["screener_setup"] == "Put-Sell Timing"
 
 
+def test_research_queue_force_requeues_same_day(temp_db, tmp_path):
+    """The mover / runaway lane re-triages on a live bar: force re-queues a name
+    already queued for the day (the daemon has always passed force=True, but the
+    parameter did not exist, so that call died on TypeError)."""
+    with patch.object(alert_db, "DB_PATH", temp_db):
+        fake_base = tmp_path / "app_base_force"
+        fake_base.mkdir()
+        with patch.object(alert_db.config, "BASE_DIR", fake_base):
+            date_str = "2026-09-10"
+
+            assert alert_db.queue_for_research(
+                symbol="NVDA", date_str=date_str, source="screener_alert", reason="first pass",
+            ) is True
+
+            # Same-day dedupe still holds without force.
+            assert alert_db.queue_for_research(symbol="NVDA", date_str=date_str) is False
+
+            # force re-queues: status resets to QUEUED and the new reason sticks.
+            assert alert_db.queue_for_research(
+                symbol="NVDA", date_str=date_str, source="watch_runaway",
+                reason="T1 reached without a fill", force=True,
+            ) is True
+
+            items = alert_db.get_research_queue(date_str)
+            assert len(items) == 1
+            assert items[0]["status"] == "QUEUED"
+            assert items[0]["source"] == "watch_runaway"
+            assert "without a fill" in items[0]["reason"]
+
+
 def test_sync_position(temp_db):
     with patch.object(alert_db, "DB_PATH", temp_db):
         pos_data = {

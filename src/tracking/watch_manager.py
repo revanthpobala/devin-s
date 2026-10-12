@@ -485,6 +485,25 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
 
     now = _now_iso()
 
+    # D2 defence in depth: cap the persisted conviction to the band the row's own
+    # verdict supports, so even a caller that skipped the arbitration-time cap
+    # cannot store an uncapped LLM number. Missing stays at the schema default.
+    conviction = data.get("conviction", 5)
+    if conviction is not None:
+        from src.tracking.alert_evaluator import cap_conviction
+
+        _verdict_txt = str(data.get("verdict") or "STALK").upper()
+        _cap_triage = (
+            "PASS" if "ENTER" in _verdict_txt
+            else ("CUT" if "CASH_SKIP" in _verdict_txt else "WATCH")
+        )
+        conviction = cap_conviction(
+            conviction,
+            _cap_triage,
+            [],
+            has_plan=bool(shares_plan.get("tactical_stop")),
+        )
+
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
@@ -645,7 +664,7 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     ticker,
                     date_str,
                     data.get("verdict", "STALK"),
-                    data.get("conviction", 5),
+                    conviction,
                     db_actionable,
                     side,
                     shares_plan.get("entry_type", "LIMIT"),
@@ -696,7 +715,7 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     ticker,
                     data.get("date", datetime.now().strftime("%Y-%m-%d")),
                     data.get("verdict", "STALK"),
-                    data.get("conviction", 5),
+                    conviction,
                     db_actionable,
                     side,
                     shares_plan.get("entry_type", "LIMIT"),
@@ -1060,16 +1079,23 @@ def sweep_expired_watch_targets(days: int = 21, as_of_date: Optional[str] = None
 
 
 def get_active_watch_targets() -> List[Dict[str, Any]]:
-    """Return all active watch targets that are not terminated."""
+    """Return all active watch targets that are not terminated.
+
+    MISSED_RUNAWAY is NOT terminal (plan/no-lost-movers, B3): a name that ran away is
+    re-scored at market and re-queued, so rows still carrying that legacy status must
+    come back into the armed set instead of sitting dead until the 21-day sweep.
+    """
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 SELECT * FROM watch_targets 
-                WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT')
+                WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY')
                   AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
-                ORDER BY date DESC, conviction DESC
+                ORDER BY date DESC,
+                         CASE status WHEN 'IN_TRADE' THEN 1 WHEN 'IN_ZONE' THEN 2 ELSE 3 END,
+                         distance_to_entry_pct
                 """
             )
             rows = cursor.fetchall()
@@ -1098,9 +1124,12 @@ def update_target_live_state(
     """Update live price, distance, status, alert state, and actionability for a ticker."""
     now = _now_iso()
     status_upper = (status or "").upper()
+    # B3: MISSED_RUNAWAY is no longer terminal. A name that ran away from its zone
+    # is re-scored at market (RUNNING_ACTIONABLE / RUNNING_NO_ROOM) and re-queued
+    # for local triage, so it must stay a live, armed row.
     terminal_statuses = (
         "TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED",
-        "STOPPED", "MISSED_RUNAWAY", "EXPIRED", "REJECTED_BY_GATE"
+        "STOPPED", "EXPIRED", "REJECTED_BY_GATE"
     )
     if status_upper in terminal_statuses:
         if is_actionable_now is None:
@@ -1146,6 +1175,23 @@ def log_trigger_alert(ticker: str, trigger_type: str, message: str, spot_price: 
             )
             conn.commit()
     logger.info(f"🚨 [WATCH ALERT] [{ticker}] {trigger_type}: {message} (Price: ${spot_price:.2f})")
+
+
+def has_level_alert_today(ticker: str, trigger_type: str, date_str: str) -> bool:
+    """Per-(ticker, level, day) dedupe for the level engine (plan/no-lost-movers, A4).
+
+    One alert per level per day. Level trigger types are ``LEVEL_<KIND>`` plus the
+    B re-score outcomes (RUNNING_ACTIONABLE / RUNNING_NO_ROOM / TARGET_HIT_NO_FILL) —
+    kept distinct from the entry triggers so the existing COUNT queries and the
+    missed-moves desk rows stay parseable.
+    """
+    init_watch_db()
+    with _db_lock:
+        with _get_connection() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM watch_alerts WHERE ticker = ? AND trigger_type = ? AND date = ?",
+                (ticker.upper(), trigger_type, str(date_str)[:10]),
+            ).fetchone()[0] > 0
 
 
 def get_recent_alerts(limit: int = 50) -> List[Dict[str, Any]]:

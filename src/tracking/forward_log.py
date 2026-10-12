@@ -19,6 +19,9 @@ from src import config
 logger = logging.getLogger(__name__)
 
 SHIP_DATE = "2026-10-08"
+# The runaway lane shipped later than the Catch Movers set; its ship date is frozen
+# at its own ship, not backdated onto the first set's.
+RUNAWAY_SHIP_DATE = "2026-10-12"
 MIN_FORWARD_OBSERVATIONS = 200
 
 # Registered unmeasured rules
@@ -38,6 +41,12 @@ UNMEASURED_RULES = {
     "MOVER_TRIGGER": {
         "ship_date": SHIP_DATE,
         "description": "Live move >= 5.0% from dossier spot (placeholder) or zone-top break",
+        "status": "UNMEASURED",
+        "min_observations": MIN_FORWARD_OBSERVATIONS,
+    },
+    "RUNAWAY_AT_MARKET": {
+        "ship_date": RUNAWAY_SHIP_DATE,
+        "description": "At-market re-score after a level cross: price running above the plan, gates cleared, R:R at market >= floor. Not the in-zone PB lane, so it cannot claim that lane's edge until the honest replay measures it.",
         "status": "UNMEASURED",
         "min_observations": MIN_FORWARD_OBSERVATIONS,
     },
@@ -65,11 +74,14 @@ def record_forward_observation(rule_name: str, ticker: str, data: Dict[str, Any]
     if rule_name not in ledger:
         ledger[rule_name] = []
 
+    rule_meta = UNMEASURED_RULES.get(rule_name, {})
     observation = {
         "ticker": ticker.upper(),
         "timestamp": datetime.now().isoformat(),
         "rule": rule_name,
-        "ship_date": SHIP_DATE,
+        # Frozen at the rule's own ship date: a rule registered later keeps its own
+        # date so the observation window is honest about when the lane went live.
+        "ship_date": rule_meta.get("ship_date", SHIP_DATE),
         "data": data,
     }
     ledger[rule_name].append(observation)
@@ -95,7 +107,7 @@ def get_rule_forward_stats(rule_name: str) -> Dict[str, Any]:
 
     return {
         "rule": rule_name,
-        "ship_date": SHIP_DATE,
+        "ship_date": UNMEASURED_RULES.get(rule_name, {}).get("ship_date", SHIP_DATE),
         "observations": count,
         "required": MIN_FORWARD_OBSERVATIONS,
         "is_measured": False,

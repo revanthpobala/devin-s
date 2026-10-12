@@ -207,12 +207,15 @@ def test_missed_runaway_and_breakout_triggers(tmp_path):
         }
         watch_manager.upsert_watch_target(hood_payload)
 
-        # Case A: Price breaks out above $112 -> Transitions to IN_TRADE with BREAKOUT_ENTERED
+        # Case A: price crosses the breakout level ($112.5) mid-cycle -> the level
+        # engine records the cross and the B re-score runs at market. This plan's
+        # T1 (110) is already below the live price and there is no room above it, so
+        # the name "ran, no room": re-queued, NEVER the terminal MISSED_RUNAWAY.
         with patch("run_watch_alerts.get_current_price", return_value=112.5):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
-            assert res[0]["status"] == "IN_TRADE"
-            assert res[0]["last_alert_type"] == "BREAKOUT_ENTERED"
+            assert res[0]["status"] == "STALKING", "a target hit without a fill must not be terminal"
+            assert res[0]["last_alert_type"] in ("TARGET_HIT_NO_FILL", "RUNNING_NO_ROOM")
 
         # Case B: Reset to STALKING without breakout level; price rips to Target 2 ($120) without entering zone
         hood_payload_no_bo = dict(hood_payload)
@@ -224,8 +227,17 @@ def test_missed_runaway_and_breakout_triggers(tmp_path):
         with patch("run_watch_alerts.get_current_price", return_value=120.0), patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
             res = evaluate_watch_cycle(sync_sheets=False)
             hood_r = next(r for r in res if r["ticker"] == "HOOD_RUNAWAY")
-            assert hood_r["status"] == "MISSED_RUNAWAY"
-            assert hood_r["last_alert_type"] == "MISSED_RUNAWAY_TARGET_2"
+            assert hood_r["status"] != "MISSED_RUNAWAY"
+            assert hood_r["status"] == "STALKING"
+            assert hood_r["last_alert_type"] in ("TARGET_HIT_NO_FILL", "RUNNING_NO_ROOM")
+
+        # The runaway re-queue actually fired: local triage was queued with force.
+        import sqlite3 as _sq
+        with watch_manager._db_lock, watch_manager._get_connection() as _conn:
+            _rows = _conn.execute(
+                "SELECT COUNT(*) FROM watch_alerts WHERE ticker = 'HOOD_RUNAWAY' AND trigger_type = 'TARGET_HIT_NO_FILL'"
+            ).fetchone()
+        assert _rows[0] == 1, "exactly one TARGET_HIT_NO_FILL alert per (ticker, level, day)"
 
 
 def test_short_side_watch_alerts(tmp_path):
@@ -313,11 +325,14 @@ def test_floor_proximity_buffer(tmp_path):
 
         from datetime import datetime
         mock_now = datetime(2026, 8, 14, 16, 30)
-        # Price at $302.00 is above $301.50 -> STALKING (Phase 3: tight IN_ZONE removes +1% above-zone trigger)
+        # Price at $302.00 is above $301.50 -> the B re-score runs at market (above zone
+        # top, below T1): it has room (R:R 3.5@mkt) and clears the gate, so the name is
+        # RUNNING_ACTIONABLE at market — no longer silently STALKING.
         with patch("run_watch_alerts.get_eastern_now", return_value=mock_now), patch("run_watch_alerts.get_current_price", return_value=302.0):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
-            assert res[0]["status"] == "STALKING"
+            assert res[0]["status"] == "IN_TRADE"
+            assert res[0]["last_alert_type"] == "RUNNING_ACTIONABLE"
             assert res[0]["distance_to_entry_pct"] > 0
 
         # Price enters zone at $301.00 -> IN_ZONE

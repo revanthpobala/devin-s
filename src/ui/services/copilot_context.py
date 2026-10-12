@@ -2031,12 +2031,11 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                         verdict = "STALK"
                 if conviction is None:
                     cm = re.search(r"Conviction:\s*(\d+)/10", txt, re.IGNORECASE)
-                    conviction = int(cm.group(1)) if cm else 5
+                    conviction = int(cm.group(1)) if cm else None
 
                 # Cached spot price
                 spot_price = cached_prices.get(sym)
                 spot_str = f" | Current Spot: **${spot_price:.2f}**" if spot_price else ""
-
                 shares_plan = wl.get("shares_plan") or {}
                 options_plan = wl.get("options_plan") or {}
 
@@ -2055,7 +2054,12 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                 elif wl.get("invalidation_condition"):
                     invalidation_snippet = wl["invalidation_condition"]
 
-                card = [f"#### 📌 **{sym}** — Verdict: **{verdict}** (Conviction: {conviction}/10){spot_str}"]
+                # D1: gate result → lane → MEASURED/UNMEASURED comes first; conviction is a
+                # trailing label only and never a ranking key. A missing conviction is
+                # reported as unmeasured, never defaulted to a fabricated 5.
+                lane = wl.get("setup_lane") or "UNMEASURED_LANE"
+                lane_tag = "MEASURED" if lane in {"CODE20", "RR_SETUP", "RSI2"} else "UNMEASURED"
+                card = [f"#### 📌 **{sym}** — Verdict: **{verdict}** | Lane: {lane} [{lane_tag}]{spot_str}"]
                 
                 if shares_plan:
                     ez_l = shares_plan.get("entry_zone_low")
@@ -2081,6 +2085,12 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
 
                 if ruling_snippet:
                     card.append(f"  - **Judicial Ruling & Conflict Resolution:** {ruling_snippet}")
+
+                conviction_str = (
+                    "unmeasured (no card score)" if conviction is None
+                    else f"{conviction}/10 — label only, never a ranking key"
+                )
+                card.append(f"  - **Conviction:** {conviction_str}")
 
                 dossier_lines.append("\n".join(card))
 
@@ -2445,8 +2455,10 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
     if board_is_desk and not _ticker_param_specific:
         desk_directive = (
             " 17. DESK-SCOPED CHAT (the user is sitting on a specific desk page and the live data for that page is in the 'ACTIVE BOARD / SCREEN TELEMETRY' section):\n"
-            "    - Answer from THAT page's data first. If they ask 'which of these should I trade?', 'what's actionable?', or 'summarize this page', rank or summarise the exact rows listed in the telemetry — by conviction / in-zone status / R:R / distance to entry as appropriate.\n"
-            "    - Use each row's own numbers (entry zone, stop, target, live R:R, conviction, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
+            "    - Answer from THAT page's data first. If they ask 'which of these should I trade?', 'what's actionable?', or 'summarize this page', rank or summarise the exact rows listed in the telemetry — by GATE RESULT first, then in-zone status, then R:R, then distance to entry.\n"
+            "    - Show each row in this order: gate result (measured pass or the reason it failed), R:R at market, lane, and the MEASURED/UNMEASURED tag LAST. Conviction is a trailing label, never a ranking key and never a reason to act.\n"
+            "    - Use each row's own numbers (entry zone, stop, target, live R:R, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
+            "    - An UNMEASURED row is labelled, not hidden: say plainly that the lane is UNMEASURED (no replay corpus behind it) rather than promoting it.\n"
             "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
             "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
         )
@@ -2601,8 +2613,10 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
     if board_is_desk and not is_portfolio_chat:
         desk_directive = (
             " 18. DESK-SCOPED CHAT (the user is sitting on a specific desk page and the live data for that page is in the 'USER'S ACTIVE BOARD / SCREEN TELEMETRY' section):\n"
-            "    - Answer from THAT page's data first. If they ask 'which of these should I trade?', 'what's actionable?', or 'summarize this page', rank or summarise the exact rows listed in the telemetry — by conviction / in-zone status / R:R / distance to entry as appropriate.\n"
-            "    - Use each row's own numbers (entry zone, stop, target, live R:R, conviction, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
+            "    - Answer from THAT page's data first. If they ask 'which of these should I trade?', 'what's actionable?', or 'summarize this page', rank or summarise the exact rows listed in the telemetry — by GATE RESULT first, then in-zone status, then R:R, then distance to entry.\n"
+            "    - Show each row in this order: gate result (measured pass or the reason it failed), R:R at market, lane, and the MEASURED/UNMEASURED tag LAST. Conviction is a trailing label, never a ranking key and never a reason to act.\n"
+            "    - Use each row's own numbers (entry zone, stop, target, live R:R, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
+            "    - An UNMEASURED row is labelled, not hidden: say plainly that the lane is UNMEASURED (no replay corpus behind it) rather than promoting it.\n"
             "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
             "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
         )

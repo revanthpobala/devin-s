@@ -480,12 +480,21 @@ def test_rr_at_market_never_scores_the_planned_entry(client):
     The plan fallback also manufactured ratios out of degenerate geometry (a $1-wide risk
     scored as "RR 29"), and it ranked stop-inside-noise rows above real ones. rr_at_market
     now holds the signal-time ratio or the live-print ratio, or nothing.
+
+    The plan-geometry ratio's own shape is round((target - entry_h) / (entry_h - stop), 2).
+    C3 keeps a matching number for its own labelled field (rr_zone_at_entry_high — the zone
+    path's R:R at entry_high, stated beside the breakout path's), so the guard is scoped to
+    the rr_at_market block: the formula must never flow into that field's assignment.
     """
     import src.ui.routes.desk as desk_mod
 
     desk_src = (desk_mod.__file__ and open(desk_mod.__file__, encoding="utf-8").read()) or ""
-    plan_formula = "round((target - entry_h) / (entry_h - stop), 2)"
-    assert plan_formula not in desk_src, "the plan-geometry ratio is back in rr_at_market"
+    start = desk_src.index("if rr_at_signal is not None:")
+    end = desk_src.index('r["rr_at_market_source"] = rr_source')
+    rr_block = desk_src[start:end]
+    assert "entry_h - stop" not in rr_block, "the plan-geometry ratio is back in rr_at_market"
+    # ... and the C3 zone path carries it under its own name, separately.
+    assert 'r["rr_zone_at_entry_high"] = rr_zone_at_entry_high' in desk_src
 
 
 def test_local_score_is_published_on_one_scale(client):
@@ -507,6 +516,85 @@ def test_local_score_is_published_on_one_scale(client):
     assert _normalized_local_score("") == ""
     assert _normalized_local_score(None) == ""
     assert _normalized_local_score("abc") == ""
+
+
+def test_card_states_both_paths_and_both_rr(client):
+    """C3: a name with a limit zone below market AND a breakout path states both paths
+    and their R:R (zone R:R at entry_high; breakout R:R at the trigger) instead of one
+    blended number. A trigger whose targets sit at/below it is flagged broken, not blended.
+    """
+    from src.ui.routes.desk import get_today
+
+    with _db_lock, _get_connection() as conn:
+        cursor = conn.cursor()
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        # Zone 100-110 below the market, break at 125 above it, stop 95, target 130.
+        cursor.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, breakout_level, stop, target_1, atr_at_signal, signal_pack, fade, action_long, ext_z) "
+            "VALUES ('BKO', ?, 'test', 'PASS', 'RR_SETUP', 100, 110, 125, 95, 130, 5.0, 36, 0.0, 20, 0.0)",
+            (today,),
+        )
+        # A broken trigger path: target 120 sits BELOW the breakout 125 (the META shape).
+        cursor.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, breakout_level, stop, target_1, atr_at_signal, signal_pack, fade, action_long, ext_z) "
+            "VALUES ('BRK', ?, 'test', 'PASS', 'RR_SETUP', 100, 110, 125, 95, 120, 5.0, 36, 0.0, 20, 0.0)",
+            (today,),
+        )
+        cursor.execute(
+            "INSERT INTO watch_targets (ticker, date, status, verdict, actionable, side, last_price, updated_at) "
+            "VALUES ('BKO', ?, 'STALKING', 'STALK', 1, 'LONG', 112.0, ?)",
+            (today, datetime.now().isoformat()),
+        )
+        cursor.execute(
+            "INSERT INTO watch_targets (ticker, date, status, verdict, actionable, side, last_price, updated_at) "
+            "VALUES ('BRK', ?, 'STALKING', 'STALK', 1, 'LONG', 112.0, ?)",
+            (today, datetime.now().isoformat()),
+        )
+        # The desk only assembles cards for rows with a live alert decision.
+        conn.commit()
+
+    # Cards are only built for rows that have a local triage decision; seed one per ticker
+    # through the alerts table the desk reads.
+    from src.tracking import alert_db as _adb
+    with _adb._db_lock, _adb._get_connection() as ac:
+        for sym in ("BKO", "BRK"):
+            ac.execute(
+                """
+                INSERT OR REPLACE INTO alerts (message_id, email_id, date, timestamp, symbol, action, strategy,
+                                               alert_price, market_price, setup, score, raw_payload, status,
+                                               llm_decision, llm_playbook, created_at)
+                VALUES (?, ?, ?, ?, ?, 'LONG', 'Swing', 112.0, 112.0, 'RR_SETUP', '70', '{}', 'PROCESSED',
+                        'WATCH (card 70)', 'card playbook', ?)
+                """,
+                (f"msg-{sym}", f"mail-{sym}", today, datetime.now().isoformat(), sym, datetime.now().isoformat()),
+            )
+        ac.commit()
+
+    payload = get_today()
+    rows = {}
+    for group in ("needs_you", "actionable_alerts", "stalking", "watch", "cut", "unmeasured", "closest_to_gate", "top_opportunities"):
+        for item in payload.get(group) if payload.get(group) else []:
+            tick = (item.get("ticker") or "").upper()
+            if tick:
+                rows[tick] = item
+
+    bko = rows.get("BKO")
+    assert bko is not None
+    # Zone R:R at entry_high = (130-110)/(110-95) = 1.33
+    assert bko["rr_zone_at_entry_high"] == 1.33
+    # Breakout R:R at the trigger = (130-125)/(125-95) = 0.17
+    assert bko["rr_breakout_at_trigger"] == 0.17
+    assert bko["breakout_trigger_broken"] is False
+    assert "zone R:R 1.33 @ $110.00" in bko["rr_paths_text"]
+    assert "breakout R:R 0.17 @ $125.00" in bko["rr_paths_text"]
+
+    brk = rows.get("BRK")
+    assert brk is not None
+    # Target 120 sits below the 125 trigger: the path is flagged broken, never blended.
+    assert brk["breakout_trigger_broken"] is True
+    assert brk["rr_breakout_at_trigger"] is None
+    assert "broken" in brk["rr_paths_text"]
 
 
 def monkeypatch_attr(obj, name, value):

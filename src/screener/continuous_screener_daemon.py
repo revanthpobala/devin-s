@@ -657,16 +657,23 @@ class ContinuousScreenerDaemon(threading.Thread):
             return False
 
     def dispatch_candidate_research(
-        self, sym: str, target_date: str, candidate_dict: Optional[Dict[str, Any]] = None
+        self, sym: str, target_date: str, candidate_dict: Optional[Dict[str, Any]] = None, tier: str = "MID"
     ) -> bool:
-        """Dispatch research job asynchronously via Cockpit UI slot manager or background worker."""
+        """Dispatch research job asynchronously via Cockpit UI slot manager or background worker.
+
+        tier: "LITE" | "MID" | "FULL" — the ranked dispatch loop sends the top name
+        through the FULL pipeline (Debate + Models A & B + Arbitration) and the rest MID.
+        """
         import sys
         sym_u = sym.upper().strip()
+        tier_u = str(tier or "MID").upper()
+        if tier_u not in ("LITE", "MID", "FULL"):
+            tier_u = "MID"
         try:
             from src.ui.routes.research import ResearchRequest, trigger_research
-            req = ResearchRequest(ticker=sym_u, mode="full", date=target_date, force=False, tier="MID")
+            req = ResearchRequest(ticker=sym_u, mode="full", date=target_date, force=False, tier=tier_u)
             res = trigger_research(req)
-            logger.info(f"🤖 [ContinuousScreener] Dispatched {sym_u} to Cockpit research manager: {res}")
+            logger.info(f"🤖 [ContinuousScreener] Dispatched {sym_u} to Cockpit research manager [{tier_u}]: {res}")
             return True
         except Exception as e_ui:
             logger.warning(f"[ContinuousScreener] Could not dispatch via trigger_research: {e_ui}")
@@ -1026,11 +1033,15 @@ class ContinuousScreenerDaemon(threading.Thread):
         available_slots = max(0, self.max_concurrent_slots - self.get_active_research_count())
         take_n = min(available_slots, slots_left)
         selected = eligible[:take_n]
+        # Rank order already decided at the sort above (PB funnel first, then proxy/directional
+        # R:R), so the head of `selected` is the top-ranked name and gets the FULL pipeline
+        # (Debate + Models A & B + Arbitration); the rest stay MID.
         dispatched_syms = []
 
-        for p in selected:
+        for rank, p in enumerate(selected):
             sym = str(p.get("symbol") or p.get("Symbol") or p.get("Ticker")).upper().strip()
-            success = self.dispatch_candidate_research(sym, target_date, candidate_dict=p)
+            tier = "FULL" if rank == 0 else "MID"
+            success = self.dispatch_candidate_research(sym, target_date, candidate_dict=p, tier=tier)
             if success:
                 with self._lock:
                     self.auto_deep_dispatched_today.add(sym)

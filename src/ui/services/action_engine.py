@@ -137,6 +137,10 @@ def get_bat_signal(opportunities: Optional[List[Dict[str, Any]]] = None,
         holdings = {}
 
     in_zone = [o for o in opportunities if o.get("in_zone")]
+    # D1: conviction is a trailing label, never a signal. The high-conviction count is
+    # display-only context on the board — no posture, gate or directive reads it, so an
+    # LLM's self-score cannot steer anything. The conviction values here arrive capped
+    # by the write-path caps (D2).
     high_conv = [o for o in opportunities if (o.get("conviction") or 0) >= 7]
     coiling = [o for o in opportunities if not o.get("in_zone") and (o.get("priority_tier") or 9) <= 2]
     held = {t.upper() for t in holdings.keys()}

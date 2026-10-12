@@ -1331,6 +1331,10 @@ window.AppDesk = {
                       </span>
                     </div>
                     <div style="font-weight:700; color:var(--text-main);">${opp.vehicle_label}</div>
+                    ${opp.rr_paths_text ? `
+                    <div style="margin-top:6px; font-size:10.5px; color:var(--text-muted); font-weight:700; font-family:var(--font-mono);" title="Each path's R:R is measured at its own entry — the limit zone at entry_high, the breakout at its trigger. A broken trigger path has targets at or below the trigger and was demoted, not blended.">
+                      ${opp.rr_paths_text}
+                    </div>` : ''}
                   </div>
 
                   <!-- PM Thesis / Takeaways -->

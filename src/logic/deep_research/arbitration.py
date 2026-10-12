@@ -136,6 +136,11 @@ def _build_judge_sys_prompt(ticker: str) -> str:
         '  "lane_prior_ev": 0.0\n'
         '}\n'
         '```\n\n'
+        "LEVEL GEOMETRY HARD RULE: for a LONG breakout, target_1 and target_2 MUST both sit strictly "
+        "ABOVE breakout_level, and the R:R measured AT the trigger — (target_1 - breakout_level) / "
+        "(breakout_level - breakout_stop) — must clear the R:R floor. A trigger whose targets sit at "
+        "or below it is not a breakout: that trigger will be stripped and only the limit-zone plan "
+        "will survive.\n\n"
         f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
         "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
         "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
@@ -404,6 +409,20 @@ def run_arbitration(
         )
 
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
+
+        # C2: C1's demotion happens inside validate_levels on `plan`, but the plan that
+        # gets persisted (upsert_watch_target, append_suggestion, and the display-only
+        # watch_levels.json files) is watch_data["shares_plan"]. Propagate the stripped
+        # trigger so no surface keeps a trigger whose targets sat at/below it (META).
+        if plan.get("breakout_demoted_reason") and isinstance(watch_data.get("shares_plan"), dict):
+            _sp = watch_data["shares_plan"]
+            _sp["breakout_level"] = 0
+            _sp["breakout_stop"] = 0
+            _sp["breakout_demoted_reason"] = plan["breakout_demoted_reason"]
+            logger.info(
+                f"[{ticker}] C1 breakout trigger demoted: {plan['breakout_demoted_reason']}"
+            )
+
         if not _ok:
             logger.warning(
                 f"[{ticker}] Level gate FAILED: {'; '.join(_reasons)} — "

@@ -403,6 +403,51 @@ def get_today():
                     r["rr_at_market"] = rr_at_market
                     r["rr_at_market_source"] = rr_source
 
+                    # C3: two paths, two R:R. A name with a limit zone below market AND a
+                    # live breakout path states both numbers instead of one blended ratio:
+                    # the zone's R:R measured at entry_high, and the breakout's R:R measured
+                    # at its own trigger (with the trigger's own stop when the plan carries
+                    # one, else the row's tactical stop). A trigger whose targets sit at or
+                    # below it is flagged broken — the META defect, demoted, never blended.
+                    rr_zone_at_entry_high = None
+                    if entry_h and stop and entry_h > stop and target and target > entry_h:
+                        rr_zone_at_entry_high = round((target - entry_h) / (entry_h - stop), 2)
+                    r["rr_zone_at_entry_high"] = rr_zone_at_entry_high
+
+                    breakout_lvl = 0.0
+                    rr_breakout_at_trigger = None
+                    breakout_trigger_broken = False
+                    try:
+                        breakout_lvl = float(r.get("breakout_level") or 0.0)
+                    except (TypeError, ValueError):
+                        breakout_lvl = 0.0
+                    bstop = 0.0
+                    try:
+                        bstop = float(r.get("breakout_stop") or stop or 0.0)
+                    except (TypeError, ValueError):
+                        bstop = 0.0
+                    if breakout_lvl > 0:
+                        if bstop and breakout_lvl > bstop and target and target > breakout_lvl:
+                            rr_breakout_at_trigger = round(
+                                (target - breakout_lvl) / (breakout_lvl - bstop), 2
+                            )
+                        else:
+                            # Targets at/below the trigger (or no stop below it): the trigger
+                            # path is not measurable. Say so; never show a blended number.
+                            breakout_trigger_broken = True
+                    r["breakout_level"] = breakout_lvl
+                    r["rr_breakout_at_trigger"] = rr_breakout_at_trigger
+                    r["breakout_trigger_broken"] = breakout_trigger_broken
+
+                    _path_bits = []
+                    if rr_zone_at_entry_high is not None:
+                        _path_bits.append(f"zone R:R {rr_zone_at_entry_high:.2f} @ ${entry_h:.2f}")
+                    if rr_breakout_at_trigger is not None:
+                        _path_bits.append(f"breakout R:R {rr_breakout_at_trigger:.2f} @ ${breakout_lvl:.2f}")
+                    elif breakout_trigger_broken:
+                        _path_bits.append("breakout path broken (targets at/below trigger — demoted)")
+                    r["rr_paths_text"] = " | ".join(_path_bits)
+
                     status = r.get("status") or "STALKING"
                     dist = r.get("dist")
                     near = dist is not None and abs(float(dist)) <= 1.5

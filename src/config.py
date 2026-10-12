@@ -64,6 +64,12 @@ SPX_CONSTITUENTS_CSV = BASE_DIR / "EveryDay" / "SPX-constituents.csv"
 LOOP_MODE = os.getenv("LOOP_MODE", "false").lower() in ("true", "1", "yes")
 POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "60"))
 
+# Level engine (plan/no-lost-movers.md, A4): one alert per (ticker, level, day),
+# and an N-minute cooldown between same-level alerts so a flickering quote cannot
+# re-fire the same cross. Per-day dedupe is durable (watch_alerts COUNT); the
+# cooldown is the in-process guard between polls.
+LEVEL_ALERT_COOLDOWN_MIN = int(os.getenv("LEVEL_ALERT_COOLDOWN_MIN", "15"))
+
 # LLM Configuration
 MIN_CONVICTON_FOR_DEEP_RESEARCH = int(os.getenv("MIN_CONVICTON_FOR_DEEP_RESEARCH", "5"))
 # Reversion-mode candidates are conviction-gated on the Rev Zone score itself

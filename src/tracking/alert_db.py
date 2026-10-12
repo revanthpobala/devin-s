@@ -491,10 +491,13 @@ def queue_for_research(
     setup: Optional[str] = None,
     source: str = "screener_alert",
     reason: str = "Screener setup trigger",
+    force: bool = False,
 ) -> bool:
     """Add a ticker to the SQLite research queue AND sync to survivors.json.
 
     Deduplicates by (date, symbol). Returns True if newly queued, False if already present.
+    `force` re-queues a name already queued for the day (status reset to QUEUED) — the
+    mover / runaway lane re-triages on a live bar and must bypass the same-day dedupe.
     """
     symbol = symbol.strip().upper()
     if not symbol:
@@ -519,7 +522,22 @@ def queue_for_research(
                 newly_added = True
                 logger.info(f"[research_queue] Queued {symbol} for date {date_str} (setup={setup}).")
             except sqlite3.IntegrityError:
-                logger.debug(f"[research_queue] {symbol} already queued for date {date_str}.")
+                if force:
+                    cursor.execute(
+                        """
+                        UPDATE research_queue
+                        SET status = 'QUEUED', reason = ?, setup = ?, source = ?, created_at = ?
+                        WHERE date = ? AND symbol = ?
+                        """,
+                        (reason, setup or "", source, created_at, date_str, symbol),
+                    )
+                    conn.commit()
+                    newly_added = True
+                    logger.info(
+                        f"[research_queue] Forced re-queue of {symbol} for {date_str} (same-day dedupe bypassed)."
+                    )
+                else:
+                    logger.debug(f"[research_queue] {symbol} already queued for date {date_str}.")
 
     # Sync to survivors.json file system manifest so existing scripts (run_local_research, run_deep_research) pick it up
     if newly_added:

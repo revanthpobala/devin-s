@@ -364,6 +364,53 @@ def test_evaluate_and_dispatch_deep_research_with_qualifying_short():
         assert mock_dispatch.call_count == 2
 
 
+def test_ranked_dispatch_sends_top_name_full_rest_mid():
+    """F3: the ranked head of the selected list gets the FULL pipeline; the rest stay MID."""
+    daemon = ContinuousScreenerDaemon(poll_interval=300, auto_deep_research=True, max_concurrent_slots=2)
+    daemon.max_auto_deep_per_day = 2
+
+    candidates = [
+        {"symbol": "LYB", "side": "LONG", "price": 62.5, "pb_funnel": True, "proxy_rr": 3.5,
+         "priority_score": 75.0, "priority_tier": "HIGH_PRIORITY"},
+        {"symbol": "MBGL", "side": "LONG", "price": 30.0, "pb_funnel": True, "proxy_rr": 3.1,
+         "priority_score": 40.0, "priority_tier": "MONITOR"},
+    ]
+
+    with patch.object(daemon, "dispatch_candidate_research", return_value=True) as mock_dispatch, \
+         patch.object(daemon, "_is_job_active_in_db", return_value=False), \
+         patch.object(daemon, "get_active_research_count", return_value=0), \
+         patch("src.tracking.alert_db.queue_for_research"):
+
+        daemon.evaluate_and_dispatch_deep_research(candidates, "2029-01-03")
+
+    tiers_by_sym = {
+        call.args[0]: call.kwargs.get("tier") for call in mock_dispatch.call_args_list
+    }
+    assert tiers_by_sym.get("LYB") == "FULL"
+    assert tiers_by_sym.get("MBGL") == "MID"
+
+
+def test_dispatch_candidate_research_passes_tier_to_research_request():
+    """The tier parameter reaches ResearchRequest verbatim (invalid values degrade to MID)."""
+    daemon = ContinuousScreenerDaemon(poll_interval=300)
+
+    captured = {}
+
+    def _fake_trigger(req):
+        captured["tier"] = req.tier
+        return {"status": "started"}
+
+    with patch("src.ui.routes.research.trigger_research", side_effect=_fake_trigger):
+        daemon.dispatch_candidate_research("LYB", "2029-01-04", tier="FULL")
+        assert captured["tier"] == "FULL"
+
+        daemon.dispatch_candidate_research("LYB", "2029-01-04", tier="bogus")
+        assert captured["tier"] == "MID"
+
+        daemon.dispatch_candidate_research("LYB", "2029-01-04")
+        assert captured["tier"] == "MID"
+
+
 def test_dispatch_gate_is_scoped_to_the_screener_intake():
     """PB was measured on Schwab daily bars. It must gate the screener intake ONLY.
 

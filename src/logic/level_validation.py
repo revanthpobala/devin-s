@@ -103,6 +103,64 @@ def check_geometry(
     return reasons
 
 
+def check_breakout_geometry(
+    breakout_level: float,
+    breakout_stop: float,
+    target_1: float,
+    side: str = "LONG",
+    rr_floor: Optional[float] = None,
+) -> Tuple[bool, List[str]]:
+    """Validate a plan's breakout path at its own trigger.
+
+    The META case: a LIMIT plan carried breakout_level 747.60, breakout_stop 735.00,
+    target_1 742.09 and target_2 747.60 — both targets AT OR BELOW the trigger.
+    check_geometry only orders levels for entry_type == "BREAKOUT", so a plan that
+    happened to carry a `breakout_level` field on a LIMIT entry was never checked
+    on that path, was stored, and was then evaluated against a trigger its own
+    targets had already passed.
+
+    Applies to ANY plan with breakout_level > 0, whatever its entry_type. Requires
+    target_1 >= breakout_level and R:R at the trigger
+    (target_1 - breakout_level) / (breakout_level - breakout_stop) >= rr_floor.
+    """
+    if (side or "LONG").upper() != "LONG":
+        return True, []
+    bl = float(breakout_level or 0.0)
+    if bl <= 0:
+        return True, []
+    if rr_floor is None:
+        from src.tracking.rr_config import min_rr
+        rr_floor = min_rr()
+
+    reasons: List[str] = []
+    t1 = float(target_1 or 0.0)
+    if t1 <= 0:
+        reasons.append(
+            f"breakout trigger ${bl:.4f} has no target_1 — the trigger cannot be measured"
+        )
+    elif t1 < bl:
+        reasons.append(
+            f"target_1 ${t1:.4f} is below breakout trigger ${bl:.4f} — targets must sit above the trigger"
+        )
+
+    bs = float(breakout_stop or 0.0)
+    if bs <= 0:
+        reasons.append(
+            f"breakout trigger ${bl:.4f} has no breakout_stop — R:R at the trigger is unmeasurable"
+        )
+    elif bs >= bl:
+        reasons.append(
+            f"breakout_stop ${bs:.4f} >= breakout trigger ${bl:.4f} — negative risk at the trigger"
+        )
+    elif t1 > bl:
+        rr_at_trigger = (t1 - bl) / (bl - bs)
+        if rr_at_trigger < rr_floor:
+            reasons.append(
+                f"R:R at trigger {rr_at_trigger:.2f} below {rr_floor:.2f} floor"
+            )
+    return (len(reasons) == 0), reasons
+
+
 def _zone_midpoint(entry_low: float, entry_high: float) -> float:
     if entry_low and entry_high:
         return (entry_low + entry_high) / 2.0
@@ -296,6 +354,40 @@ def validate_levels(
         spot=spot,
     )
     reasons.extend(geo_reasons)
+
+    # ── C1. Breakout geometry for ANY plan carrying a trigger ───────────
+    # META slipped through because this check only ran for entry_type ==
+    # "BREAKOUT". Demote, don't reject: a trigger whose targets sit at/below it
+    # is stripped (breakout_level = 0, reason recorded) so the limit-zone path
+    # survives; a plan whose breakout IS the entry fails outright with no entry left.
+    rr_at_trigger = 0.0
+    if breakout_level > 0:
+        bo_ok, bo_reasons = check_breakout_geometry(
+            breakout_level=breakout_level,
+            breakout_stop=float(plan.get("breakout_stop") or 0.0),
+            target_1=target_1,
+            side=side,
+        )
+        if not bo_ok:
+            demote_reason = "; ".join(bo_reasons)
+            plan["breakout_level"] = 0.0
+            plan["breakout_stop"] = 0.0
+            plan["breakout_demoted_reason"] = demote_reason
+            breakout_level = 0.0
+            if entry_type == "BREAKOUT":
+                reasons.append(f"breakout demoted, no entry left: {demote_reason}")
+            else:
+                logger.info(
+                    f"[LEVEL_GATE] {ticker or 'plan'}: breakout trigger demoted to no-room "
+                    f"({demote_reason}); limit-zone path retained."
+                )
+        else:
+            bs_val = float(plan.get("breakout_stop") or 0.0)
+            if bs_val > 0 and target_1 > breakout_level:
+                rr_at_trigger = round(
+                    (target_1 - breakout_level) / (breakout_level - bs_val), 4
+                )
+    plan["rr_at_trigger"] = rr_at_trigger
 
     has_shares_entry = entry_type not in ("NO_ENTRY", "NONE", "")
     if not has_shares_entry and "entry_type is NO_ENTRY" not in reasons:

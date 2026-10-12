@@ -34,6 +34,26 @@ def _parse_json_lenient(raw):
     return None
 
 
+def _cap_thesis_conviction(llm_json: Dict[str, Any], has_plan: bool) -> None:
+    """D2: cap the LLM's self-reported conviction in-place before any write.
+
+    A conviction above the band its own verdict, flags and plan support is an
+    absurd badge (an 8 on a CUT). An absent conviction stays absent — the cap
+    never fabricates a default.
+    """
+    if llm_json.get("conviction") is None:
+        return
+    from src.tracking.alert_evaluator import cap_conviction
+
+    llm_json["conviction"] = cap_conviction(
+        llm_json.get("conviction"),
+        llm_json.get("triage"),
+        llm_json.get("key_flags") or [],
+        entry_mode=llm_json.get("entry_mode"),
+        has_plan=has_plan,
+    )
+
+
 def _find_artifact(out_dir: Path, filename: str) -> Path:
     """Finds an artifact in out_dir/<ticker>/, out_dir/, or the triage segregation folders if it was moved."""
     ticker = filename.split("_")[0]
@@ -1853,6 +1873,12 @@ Output:
             llm_json["earnings_override"] = f"earnings in {earnings_days}d"
         elif det_ev_r is not None and det_ev_r < min_ev_r:
             llm_json["ev_floor_override"] = f"ev_r {det_ev_r} < {min_ev_r}"
+
+    # D2: the LLM's self-reported conviction is capped to the band its OWN verdict,
+    # flags and plan support before anything is written, so no thesis file, ledger
+    # row or sheet cell can carry an uncapped number downstream. An absent
+    # conviction stays absent — the cap never fabricates a default.
+    _cap_thesis_conviction(llm_json, has_plan)
 
     # H. Alpha Vantage Fetch (Moved to the paid pass in deep_research.py)
     av_sentiment = {}
