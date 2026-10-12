@@ -27,10 +27,12 @@ router = APIRouter(prefix="/api/desk", tags=["desk"])
 def _normalized_local_score(raw) -> Any:
     """One scale for local_score: the 1-10 conviction band the desk speaks everywhere else.
 
-    alerts.score is the 0-100 card score (63, 100 for an intraday card) and the decision
-    badge carries already-band-limited "(4/10)" text, so the same column was serving 63 next
-    to 4/10. Normalize at the boundary: the badge numerator is already on the band, a raw
-    score over 10 is divided by 10. Missing stays as-is.
+    alerts.score is the 0-100 card score and decision badges carry already-band-limited
+    "(4/10)" text, so the same column was serving 63 next to 4/10. Normalize at the
+    boundary: the badge numerator is already on the band, and a raw number is ALWAYS a
+    card score -- there is no ambiguity to resolve, because a band conviction never
+    arrives without its "/10". A raw "7" is a card score of 7, i.e. 0.7, not 7/10.
+    Missing or unparseable stays unmeasured rather than guessing a band.
     """
     if raw is None or raw == "":
         return ""
@@ -44,7 +46,7 @@ def _normalized_local_score(raw) -> Any:
         v = float(s)
     except ValueError:
         return ""
-    return round(v / 10.0, 1) if v > 10 else round(v, 1)
+    return round(v / 10.0, 1)
 
 # Measured and not configurable: the corpus median stop is 0.69 ATR and 65% of stops get hit, so
 # anything narrower is inside daily noise and inflates R:R without adding information.

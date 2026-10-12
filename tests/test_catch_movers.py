@@ -305,17 +305,39 @@ def test_append_suggestion_live_spot_and_move_since_bar_pct(tmp_path):
         conn.close()
 
 
-def test_missed_moves_live_scan_without_backfill():
-    """Verify live scan without backfill records returns real moves tagged is_backfill=False."""
-    with patch("src.clients.price_client.get_current_prices_batch", return_value={"VST": 166.66, "CIEN": 446.30, "ZS": 213.62, "AAPL": 500.0, "META": 1000.0}):
-        res = get_missed_moves(min_move_pct=5.0, include_backfill=False)
-        assert "missed_moves" in res
-        assert "weekly_rollup" in res
-        assert len(res["missed_moves"]) > 0
-        assert all(r.get("is_backfill") is False for r in res["missed_moves"])
-        # Real tickers should be present
-        tickers = {r["ticker"] for r in res["missed_moves"]}
-        assert any(t in tickers for t in ("CIEN", "VST", "ZS", "AAPL", "META"))
+def test_missed_moves_live_scan_without_backfill(tmp_path):
+    """A live scan (no backfill rows) records real moves tagged is_backfill=False.
+
+    Self-contained on purpose. The unscoped version scanned whatever dossier directories
+    happened to exist on disk and asserted a mover was among them, so it failed on any day
+    the scanned dates held no qualifying name. The seed below is the same VST fixture the
+    trigger test uses, so the scan is deterministic regardless of the machine's data dir.
+    """
+    from datetime import datetime, timedelta
+
+    dossier_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    d_dir = tmp_path / "data" / "triage" / dossier_date
+    d_dir.mkdir(parents=True)
+    (d_dir / "VST_thesis.json").write_text(json.dumps({
+        "triage": {"triage": "WATCH", "spot": 140.0, "setup_lane": "COIL"},
+        "llm_data": {"setup_lane": "COIL"},
+    }), encoding="utf-8")
+
+    with patch("src.config.BASE_DIR", tmp_path):
+        with patch(
+            "src.clients.price_client.get_current_prices_batch",
+            return_value={"VST": 166.66},
+        ):
+            res = get_missed_moves(min_move_pct=5.0, include_backfill=False)
+    assert "missed_moves" in res
+    assert "weekly_rollup" in res
+    assert len(res["missed_moves"]) == 1
+    mv = res["missed_moves"][0]
+    assert mv["is_backfill"] is False
+    assert mv["ticker"] == "VST"
+    assert mv["move_pct"] == pytest.approx(19.0, abs=0.1)
+    assert mv["last_verdict"] == "WATCH"
+    assert mv["lane"] == "COIL"
 
 
 def test_momentum_breakout_lane_and_forward_logging():

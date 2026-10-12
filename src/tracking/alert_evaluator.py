@@ -489,7 +489,9 @@ def synthesize_deterministic_triage(
     # ENTRY ALERT TRIAGE
     verdict = str(payload.get("verdict") or alert.get("verdict") or "").upper()
     grade = str(payload.get("grade") or alert.get("grade") or "B").upper()
-    score = str(payload.get("score") or alert.get("score") or "75")
+    # No fabricated score. The old `or "75"` turned a card with no parseable score into a
+    # 7.5/10 "conviction" on a TAKE, which is a made-up number wearing an honest label.
+    raw_score = payload.get("score") if payload.get("score") is not None else alert.get("score")
     plan = str(
         payload.get("plan")
         or alert.get("plan")
@@ -519,18 +521,25 @@ def synthesize_deterministic_triage(
     # Conviction is published on ONE scale: the gem's 1-10 bands. The card score is 0-100,
     # so a "73" card must not sit in the same sentence as a swing triage's "(4/10)". A card
     # that is not a TAKE carries no deployment conviction at all -- the card's own score is
-    # not permission -- so it routes through the same cap as a CUT.
+    # not permission -- so it routes through the same cap as a CUT. A card whose score is
+    # missing or unparseable is UNMEASURED: no fabricated default, no band, no number.
     try:
-        card_score = float(score)
+        card_score = float(raw_score)
     except (TypeError, ValueError):
-        card_score = 75.0
-    o_triage = "PASS" if "TAKE" in action_call else "CUT"
-    conviction = cap_conviction(
-        round(card_score / 10.0, 1), o_triage, [], entry_mode="MOMENTUM", has_plan=True
-    )
+        card_score = None
+
+    if card_score is None:
+        conviction_txt = "N/A (unmeasured card score)"
+        card_txt = str(raw_score) if raw_score not in (None, "") else "N/A"
+    else:
+        o_triage = "PASS" if "TAKE" in action_call else "CUT"
+        conviction_txt = (
+            f"{cap_conviction(round(card_score / 10.0, 1), o_triage, [], entry_mode='MOMENTUM', has_plan=True)}/10"
+        )
+        card_txt = f"{card_score:.0f}"
 
     pb = f"""{header}
-Conviction: {conviction}/10 ({grade}) | Card: {verdict or action} {grade}({card_score:.0f}) | Regime: {context} | VIX: {vix}
+Conviction: {conviction_txt} ({grade}) | Card: {verdict or action} {grade}({card_txt}) | Regime: {context} | VIX: {vix}
 
 THE PLAY:    {symbol} 0DTE {"CALLS" if is_call else "PUTS"} ATM
 PLAN:        {plan}

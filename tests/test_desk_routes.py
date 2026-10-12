@@ -498,10 +498,15 @@ def test_local_score_is_published_on_one_scale(client):
 
     assert _normalized_local_score("63") == 6.3
     assert _normalized_local_score("100") == 10.0
+    # A raw number is always the 0-100 card score: a "7" is 0.7 on the band, never 7/10.
+    # A band conviction never arrives without its "/10" (from the decision badge).
+    assert _normalized_local_score("7") == 0.7
     assert _normalized_local_score("6/10") == 6.0
-    assert _normalized_local_score(9) == 9.0
+    assert _normalized_local_score("0") == 0.0
+    # Missing or unparseable is unmeasured, not a guessed band.
     assert _normalized_local_score("") == ""
     assert _normalized_local_score(None) == ""
+    assert _normalized_local_score("abc") == ""
 
 
 def monkeypatch_attr(obj, name, value):

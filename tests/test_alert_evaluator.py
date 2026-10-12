@@ -162,3 +162,23 @@ def test_0dte_conviction_uses_the_110_band():
 def test_0dte_stand_aside_carries_no_deployment_conviction():
     pb = _0dte_playbook("STAND ASIDE", "63")
     assert "Conviction: 4/10" in pb
+
+
+def test_0dte_unparseable_card_score_is_unmeasured_not_75():
+    """No fabricated default: an absent "75" used to print a made-up 7.5/10 TAKE."""
+    pb = _0dte_playbook("BUY CALLS", "")
+    assert "Conviction: N/A (unmeasured card score)" in pb
+    assert "7.5/10" not in pb
+    assert "/100" not in pb
+
+
+def test_0dte_missing_card_score_is_unmeasured_not_75():
+    from src.tracking.alert_evaluator import synthesize_deterministic_triage
+
+    pb = synthesize_deterministic_triage(
+        "AAPL", "ALERT_CALLS", "Intraday", "10:07 AM ET", 100.0, 15.0,
+        {"verdict": "BUY CALLS", "grade": "A"},
+        {},
+    )[1]
+    assert "Conviction: N/A (unmeasured card score)" in pb
+    assert "7.5/10" not in pb
