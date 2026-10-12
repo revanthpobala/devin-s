@@ -225,6 +225,11 @@ def bars_high_20d_and_adv20(
 
     Same data source as `_compute_atr14_from_bars` (level_validation.py): the
     get_bars_since_date helper. Never fabricates — absent means absent.
+
+    With no explicit `as_of` the window ends at the last COMPLETED session: the live
+    session's partial bar is not a prior 20-day high, and today's print is measured
+    against an ADV20 that excludes it. An explicit as_of includes bars up to that date
+    (the historical-replay contract).
     """
     if not ticker:
         return None, None
@@ -236,7 +241,7 @@ def bars_high_20d_and_adv20(
             except Exception:
                 d_obj = datetime.now().date()
         else:
-            d_obj = datetime.now().date()
+            d_obj = datetime.now().date() - timedelta(days=1)
         bars = _bars_frame(ticker, (d_obj - timedelta(days=45)).strftime("%Y-%m-%d"))
         if bars is None or len(bars) == 0:
             return None, None
@@ -300,6 +305,10 @@ class LevelEngineState:
     ticker: str
     levels: List[ArmedLevel] = field(default_factory=list)
     last_price: Optional[float] = None
+    # The plan the current levels were built from. A changed plan (new thesis,
+    # edited levels, new 20-day high) rebuilds and re-arms; an unchanged plan keeps
+    # the armed flags, cooldown stamps and in-process last price across polls.
+    plan_signature: tuple = ()
 
     def by_kind(self, kind: str) -> Optional[ArmedLevel]:
         for lv in self.levels:
@@ -362,6 +371,14 @@ def engine_state_key(ticker: str, plan_identity: str) -> str:
     return f"{ticker.upper()}|{plan_identity}"
 
 
+def _plan_signature(plan: Dict[str, Any], side: str, high_20d: Optional[float]) -> tuple:
+    """A comparable fingerprint of the armed levels a plan produces."""
+    return tuple(
+        (lv.kind, lv.price, lv.direction)
+        for lv in build_armed_levels(plan or {}, side=side, high_20d=high_20d)
+    )
+
+
 def get_engine_state(
     ticker: str,
     plan: Optional[Dict[str, Any]] = None,
@@ -372,16 +389,30 @@ def get_engine_state(
 ) -> LevelEngineState:
     """Get (or rebuild) a ticker's engine state.
 
-    plan_identity pins the state to one thesis (e.g. f"{ticker}_{date}"); a new
-    thesis re-arms everything, because its levels are new levels.
+    ``plan_identity`` pins the state to one thesis (e.g. f"{ticker}_{date}"). The
+    state survives every poll of an unchanged plan — armed flags, cooldown stamps
+    and the in-process last price are what make re-arm and the cooldown real. It
+    rebuilds only when the levels actually change (new thesis, edited plan, new
+    20-day high): those are new levels, so they re-arm.
     """
     key = engine_state_key(ticker, plan_identity)
     state = _ENGINE_STATE.get(key)
-    if state is None or plan is not None:
-        levels = build_armed_levels(plan or {}, side=side, high_20d=high_20d)
-        state = LevelEngineState(ticker=ticker.upper(), levels=levels, last_price=last_price)
+
+    if plan is not None:
+        signature = _plan_signature(plan, side, high_20d)
+        if state is None or state.plan_signature != signature:
+            state = LevelEngineState(
+                ticker=ticker.upper(),
+                levels=build_armed_levels(plan, side=side, high_20d=high_20d),
+                last_price=None,
+                plan_signature=signature,
+            )
+            _ENGINE_STATE[key] = state
+    elif state is None:
+        state = LevelEngineState(ticker=ticker.upper())
         _ENGINE_STATE[key] = state
-    elif last_price is not None and state.last_price is None:
+
+    if last_price is not None and state.last_price is None:
         state.last_price = last_price
     return state
 

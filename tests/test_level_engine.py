@@ -217,6 +217,36 @@ def test_engine_state_rebuilds_on_new_thesis():
     assert fresh.by_kind(KIND_ZONE_TOP).armed is True
 
 
+def test_engine_state_survives_repeated_polls_of_the_same_plan():
+    """Regression: the state used to be rebuilt on every call that passed a plan, which
+    wiped armed flags, cooldown stamps and the in-process last price every poll — so
+    the cooldown never suppressed anything and coverage names never crossed at all.
+    """
+    state = get_engine_state("META", plan=META_PLAN, plan_identity="META_2026-10-09", last_price=700.0)
+    assert state.detect_crosses(720.0)  # crosses from 700 to 720
+
+    # The watch loop calls get_engine_state with the plan on every poll and then sets
+    # state.last_price = live_price itself (the DB row only seeds a cold start).
+    again = get_engine_state("META", plan=META_PLAN, plan_identity="META_2026-10-09", last_price=700.0)
+    assert again is state
+    again.last_price = 720.0
+    again.mark_fired(KIND_T1)
+
+    third = get_engine_state("META", plan=META_PLAN, plan_identity="META_2026-10-09")
+    assert third is state
+    assert third.by_kind(KIND_T1).armed is False
+    assert third.last_price == 720.0
+
+
+def test_engine_state_rebuilds_when_the_plan_changes():
+    """An edited plan is new levels: they re-arm even inside the same thesis id."""
+    get_engine_state("META", plan=META_PLAN, plan_identity="META_2026-10-09").mark_fired(KIND_ZONE_TOP)
+    edited = dict(META_PLAN, entry_zone_low=705.0)
+    state = get_engine_state("META", plan=edited, plan_identity="META_2026-10-09")
+    assert state.by_kind(KIND_ZONE_TOP).armed is True
+    assert state.by_kind(KIND_ZONE_LOW).price == 705.0
+
+
 # ---------------------------------------------------------------------------
 # 20-day stats from bars
 # ---------------------------------------------------------------------------

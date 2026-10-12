@@ -341,13 +341,16 @@ _BARS_STATS_CACHE: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
 
 
 def _bars_stats_for_ticker(
-    ticker: str, date_str: Optional[str], dw: Optional[Dict[str, Any]] = None
+    ticker: str, dw: Optional[Dict[str, Any]] = None
 ) -> Tuple[Optional[float], Optional[float]]:
     """(prior 20-day high, ADV20) for a ticker, one fetch per cycle.
 
     The live Data Window carries the 20-day high when present; ADV20 only exists on
-    daily bars. Absent means absent — a missing 20d high simply arms no HIGH_20D
-    level, and a missing ADV20 leaves crosses tagged unmeasured, never dropped.
+    daily bars. Both bar-derived numbers use the LAST COMPLETED sessions — the plan
+    measured today's print against them, so the window must not stop at the setup
+    date (that made RVOL a stale denominator when a thesis was days old). Absent
+    means absent — a missing 20d high simply arms no HIGH_20D level, and a missing
+    ADV20 leaves crosses tagged unmeasured, never dropped.
     """
     key = ticker.upper()
     if key in _BARS_STATS_CACHE:
@@ -359,7 +362,7 @@ def _bars_stats_for_ticker(
             if v > 0:
                 dw_high = v
                 break
-    bars_high, adv20 = bars_high_20d_and_adv20(ticker, as_of=date_str)
+    bars_high, adv20 = bars_high_20d_and_adv20(ticker)
     _BARS_STATS_CACHE[key] = (dw_high if dw_high > 0 else bars_high, adv20)
     return _BARS_STATS_CACHE[key]
 
@@ -376,10 +379,17 @@ def _cooldown_elapsed(state, kind: str, now_et) -> bool:
         return True
 
 
-def _emit_level_alert(ticker: str, trigger_type: str, message: str, price: float, today_str: str) -> bool:
-    """Log a level/re-score alert unless the same (ticker, level, day) already fired."""
+def _emit_level_alert(ticker: str, trigger_type: str, message: str, price: float) -> bool:
+    """Log a level/re-score alert unless the same (ticker, level, day) already fired.
+
+    The dedupe key is derived from the same clock that files the row (log_trigger_alert
+    writes date = datetime.now()), so the COUNT and the INSERT can never disagree about
+    what "today" is — an ET-vs-local skew would otherwise break the dedupe (or suppress
+    the wrong day) in the late-night window.
+    """
+    date_str = datetime.now().strftime("%Y-%m-%d")
     try:
-        if has_level_alert_today(ticker, trigger_type, today_str):
+        if has_level_alert_today(ticker, trigger_type, date_str):
             return False
     except Exception as e:
         # A dedupe read failure must not suppress the alert itself.
@@ -645,7 +655,7 @@ def _process_coverage_row(
 
     plan_identity = str(c.get("thesis_id") or f"{ticker}_{date_str or ''}")
     dw_compact = _live_datawindow(c)
-    _high, adv20 = _bars_stats_for_ticker(ticker, date_str, dw_compact)
+    _high, adv20 = _bars_stats_for_ticker(ticker, dw_compact)
     state = get_engine_state(
         ticker, plan=_plan_view_from_row(c), plan_identity=plan_identity,
         side=side, high_20d=_high, last_price=None,
@@ -661,7 +671,7 @@ def _process_coverage_row(
         if not _cooldown_elapsed(state, _c.kind, now_et):
             continue
         _emit_level_alert(
-            ticker, _c.trigger_type, _level_cross_message(ticker, _c, c, rvol), live_price, today_str
+            ticker, _c.trigger_type, _level_cross_message(ticker, _c, c, rvol), live_price
         )
         state.mark_fired(_c.kind, when=now_et)
         cross_kinds.append(_c.kind)
@@ -723,7 +733,7 @@ def _apply_running_rescore(
         out["alert_fired"] = "RUNNING_ACTIONABLE"
         out["is_actionable_now"] = 1
         out["eval_verdict"] = "TAKE"
-        _emit_level_alert(ticker, "RUNNING_ACTIONABLE", res["message"], live_price, today_str)
+        _emit_level_alert(ticker, "RUNNING_ACTIONABLE", res["message"], live_price)
         _forward_log_runaway(ticker, res, cross_kinds)
         return out
 
@@ -735,12 +745,12 @@ def _apply_running_rescore(
             ticker, "TARGET_HIT_NO_FILL",
             f"[{ticker}] Target ${tgt:.2f} reached without a fill (price ${live_price:.2f}) — "
             f"ran, no room at market; levels re-queued for local triage, thesis stays alive.",
-            live_price, today_str,
+            live_price,
         ):
             out["alert_fired"] = "TARGET_HIT_NO_FILL"
         _requeue_for_local_triage(ticker, t, live_price, today_str)
     else:
-        if _emit_level_alert(ticker, "RUNNING_NO_ROOM", res["message"], live_price, today_str):
+        if _emit_level_alert(ticker, "RUNNING_NO_ROOM", res["message"], live_price):
             out["alert_fired"] = "RUNNING_NO_ROOM"
     return out
 
@@ -858,9 +868,13 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         # are not suppressed by it.
         now_et = get_eastern_now()
         today_str = now_et.strftime("%Y-%m-%d")
+        # The daily-close invalidation rule (an intraday wick is a floor probe, not a
+        # thesis kill) still needs the clock, and so does the after-close re-arm. The
+        # breakout path itself no longer has any after-close gate (A3).
+        is_after_close = (now_et.hour > 16) or (now_et.hour == 16 and now_et.minute >= 0)
         plan_identity = str(t.get("thesis_id") or f"{ticker}_{str(t.get('date') or '')[:10]}")
         dw_compact = _live_datawindow(t)
-        high_20d, adv20 = _bars_stats_for_ticker(ticker, str(t.get("date") or "")[:10] or None, dw_compact)
+        high_20d, adv20 = _bars_stats_for_ticker(ticker, dw_compact)
         state = get_engine_state(
             ticker,
             plan=_plan_view_from_row(t),
@@ -881,11 +895,16 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             if not _cooldown_elapsed(state, _c.kind, now_et):
                 continue
             _emit_level_alert(
-                ticker, _c.trigger_type, _level_cross_message(ticker, _c, t, rvol), live_price, today_str
+                ticker, _c.trigger_type, _level_cross_message(ticker, _c, t, rvol), live_price
             )
             state.mark_fired(_c.kind, when=now_et)
             cross_kinds.append(_c.kind)
         state.last_price = live_price
+
+        # A4: after the close, a level whose price closed back through it re-arms, so
+        # tomorrow's session can fire it again. STOP / INVALIDATION stay single-fire.
+        if is_after_close:
+            state.rearm_on_close(live_price)
 
         # 3. Evaluate State Transitions & Alerts
         new_status = "STALKING"
@@ -895,9 +914,6 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         inv_cond = str(t.get("invalidation_condition") or "DAILY_CLOSE_BELOW").upper()
         is_stop_breached = False
         is_testing_floor = False
-        # The daily-close invalidation rule (an intraday wick is a floor probe, not a
-        # thesis kill) still needs the clock. The breakout path no longer does.
-        is_after_close = (now_et.hour > 16) or (now_et.hour == 16 and now_et.minute >= 0)
 
         if inv_price and inv_price > 0:
             if side == "LONG":
@@ -1125,7 +1141,9 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         else:
             # B1: running above the plan — above the zone top and below T1. Re-score
             # at market; this is where a strong stock that ran used to fall through
-            # to a bare STALKING with no alert at all.
+            # to a bare STALKING with no alert at all. A name already IN_TRADE is
+            # excluded: the trade owns it, and "ran, no room" would demote a live
+            # position to STALKING.
             _above_zone = (
                 (entry_high and entry_high > 0 and live_price > float(entry_high))
                 or ((not entry_high or entry_high <= 0) and entry_low and entry_low > 0 and live_price > float(entry_low))
@@ -1134,7 +1152,7 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                 ((side == "LONG") and ((not target_1) or live_price < float(target_1)))
                 or ((side == "SHORT") and ((not target_1) or live_price > float(target_1)))
             )
-            if _above_zone and _below_t1:
+            if _above_zone and _below_t1 and old_status != "IN_TRADE":
                 _rr = _apply_running_rescore(
                     ticker, live_price, t, side, now_et, cross_kinds, today_str,
                     reached_target=bool(hit_t1 or hit_t2),
@@ -1214,7 +1232,6 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             "🎯" if new_status == "IN_ZONE"
             else "📈" if new_status == "IN_TRADE"
             else "⏳" if new_status == "STALKING"
-            else "🏃" if new_status == "MISSED_RUNAWAY"
             else "🏁" if new_status == "TARGET_HIT"
             else "🛑"
         )

@@ -17,6 +17,7 @@ import pytest
 
 from src.clients.quote_router import QuoteData
 from src.tracking import watch_manager
+import run_watch_alerts
 from run_watch_alerts import evaluate_watch_cycle
 
 
@@ -202,6 +203,55 @@ def test_legacy_missed_runaway_row_is_resurrected_not_terminal():
     with watch_manager._db_lock, watch_manager._get_connection() as conn:
         db_row = conn.execute("SELECT status FROM watch_targets WHERE ticker = 'LEGACY'").fetchone()
     assert db_row[0] == "STALKING"
+
+
+def test_active_trade_above_zone_is_not_demoted_to_stalking():
+    """Regression: the running re-score used to run before the IN_TRADE branch, so an
+    active trade sitting above its zone below T1 was flipped to STALKING and told to
+    'wait for a pullback' — a live position demoted to a stalk."""
+    watch_manager.upsert_watch_target(_payload("HOLD", status="IN_TRADE"))
+
+    with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
+         patch("run_watch_alerts.get_current_price", return_value=108.0), \
+         patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
+        res = evaluate_watch_cycle(sync_sheets=False)
+
+    row = next(r for r in res if r["ticker"] == "HOLD")
+    assert row["status"] == "IN_TRADE"
+
+    with watch_manager._db_lock, watch_manager._get_connection() as conn:
+        db_row = conn.execute(
+            "SELECT status, evaluation_verdict FROM watch_targets WHERE ticker = 'HOLD'"
+        ).fetchone()
+    assert db_row[0] == "IN_TRADE"
+    assert not [r for r in _alert_rows("HOLD") if r["trigger_type"] == "RUNNING_NO_ROOM"]
+
+
+def test_level_alert_dedupe_uses_the_writers_clock():
+    """Regression: the dedupe key was the ET date while log_trigger_alert files rows
+    under the local date, so in the late-night window the COUNT and the INSERT
+    disagreed about 'today' and the same cross alerted twice."""
+    from datetime import datetime as _dt
+
+    watch_manager.upsert_watch_target(_payload("DDUP"))
+    # One cross in poll 1 (below zone -> zone top).
+    with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
+         patch("run_watch_alerts.get_current_price", return_value=99.0), \
+         patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
+        evaluate_watch_cycle(sync_sheets=False)
+
+    # Same cross again after the level re-armed would be the only way to double-fire;
+    # instead assert the emit path itself is date-consistent with the writer.
+    emitted_first = run_watch_alerts._emit_level_alert("DDUP", "LEVEL_T2", "first", 130.0)
+    emitted_second = run_watch_alerts._emit_level_alert("DDUP", "LEVEL_T2", "second", 130.0)
+    assert emitted_first is True
+    assert emitted_second is False
+
+    with watch_manager._db_lock, watch_manager._get_connection() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM watch_alerts WHERE ticker = 'DDUP' AND trigger_type = 'LEVEL_T2'"
+        ).fetchone()
+    assert rows[0] == 1
 
 
 def test_target_hit_without_fill_requeues_local_triage():
