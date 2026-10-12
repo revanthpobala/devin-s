@@ -22,6 +22,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from src import config
+from src.tracking.watch_manager import placeholder_rows_sql
 from src.ui.services.daemon_manager import find_running_tracker_pid
 from src.ui.state import (
     ACTIVE_RESEARCH_SUBPROCS,
@@ -314,7 +315,14 @@ def get_all_tickers_endpoint():
     # 2. SQLite Watchlist
     try:
         with get_db() as conn:
-            rows = conn.cursor().execute("SELECT DISTINCT ticker FROM watch_targets").fetchall()
+            # The universe placeholder rows are counted by the SPX walk further down; counting them
+            # here too is what made the coverage Gaps card report the entire Schwab 1000 as never
+            # researched, so only rows with a real thesis count as "studied". Same predicate the
+            # watchlist read and the migration use.
+            rows = conn.cursor().execute(
+                f"SELECT DISTINCT ticker FROM watch_targets "
+                f"WHERE NOT ({placeholder_rows_sql(active_only=True)})"
+            ).fetchall()
             for r in rows:
                 if r["ticker"]:
                     tickers.add(r["ticker"].upper())

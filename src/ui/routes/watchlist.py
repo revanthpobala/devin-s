@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src import config
+from src.tracking.watch_manager import placeholder_rows_sql
 from src.ui.state import append_log, get_db
 
 import time
@@ -78,14 +79,18 @@ def get_watch_targets():
 
         with get_db() as conn:
             c = conn.cursor()
-            rows = c.execute("SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1").fetchall()
-            if len(rows) < 500:
-                try:
-                    from src.tracking.watch_manager import ensure_universe_prepopulated
-                    ensure_universe_prepopulated()
-                    rows = c.execute("SELECT rowid as id, * FROM watch_targets WHERE is_active IS NULL OR is_active = 1").fetchall()
-                except Exception as ex:
-                    logger.warning(f"Could not auto-prepopulate universe: {ex}")
+            # Placeholder universe rows are NOT re-created on read any more, and are not returned
+            # either. They are `ticker + date='' + status='UNRESEARCHED' + verdict=UNMEASURED`
+            # spawn jobs that book every constituent slot for a 1s run and write no artifact:
+            # 993 rows, 844 placeholders, which is 85% of the row count on the Watchlist tab and in
+            # the trades view. The universe now lives in `tracked_universe`; `watch_targets` only
+            # holds rows with a real thesis behind them, and that definition is the same predicate
+            # the migration and the identity backfill use.
+            rows = c.execute(
+                "SELECT rowid as id, * FROM watch_targets "
+                "WHERE (is_active IS NULL OR is_active = 1) "
+                f"AND NOT ({placeholder_rows_sql(active_only=False)})"
+            ).fetchall()
 
             targets = []
 
@@ -98,14 +103,6 @@ def get_watch_targets():
                         item["parsed_json"] = {}
 
                 sym = item.get("ticker", "").upper()
-                st_upper = str(item.get("status", "")).upper()
-                if st_upper == "UNRESEARCHED":
-                    item["research_timestamp"] = "1970-01-01T00:00:00"
-                    item["is_open_position"] = False
-                    item["trade_ideas"] = []
-                    item["last_price"] = None
-                    targets.append(item)
-                    continue
 
                 d_str = item.get("date", "")
                 target_mtime = None
@@ -134,8 +131,6 @@ def get_watch_targets():
             try:
                 from src.clients.schwab_client import _QUOTE_CACHE
                 for item in targets:
-                    if str(item.get("status", "")).upper() == "UNRESEARCHED":
-                        continue
                     sym = item.get("ticker", "").upper()
                     cached_q = _QUOTE_CACHE.get(sym)
                     if cached_q and len(cached_q) > 1 and cached_q[1]:
@@ -155,12 +150,6 @@ def get_watch_targets():
             actionable_count = 0
 
             for item in targets:
-                if str(item.get("status") or "").upper() == "UNRESEARCHED":
-                    item["trade_type"] = "SHARES"
-                    item["trade_label"] = "Constituent"
-                    item["is_actionable"] = False
-                    continue
-
                 entry_low = item.get("entry_zone_low")
                 entry_high = item.get("entry_zone_high")
                 side = str(item.get("side") or "LONG").upper()

@@ -126,6 +126,15 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN zone_rr_flags INTEGER")
             if "rr_at_market_at_signal" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN rr_at_market_at_signal REAL")
+            # Present in data/research_watch.db but not in the CREATE above: a writer that no
+            # longer exists in the tree added them, and nothing reads them. They are carried here
+            # so the ladder can actually restore every column of a legacy database -- without
+            # these two branches, dropping one of them leaves the DB permanently short of its
+            # schema and init_watch_db() silently succeeds.
+            if "history_key" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN history_key TEXT")
+            if "bars_in_status" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN bars_in_status INTEGER")
 
             cursor.execute(
                 """
@@ -177,6 +186,32 @@ def init_watch_db():
                     atr_at_signal REAL,
                     zone_rr_flags INTEGER,
                     rr_at_market_at_signal REAL
+                )
+                """
+            )
+            # Separate concern from watch_targets. That table is the THESIS LEDGER: rows keyed
+            # by ticker+date with levels, verdict and provenance. This one is the UNIVERSE the
+            # poller walks. Conflating them is what put 844 'UNRESEARCHED' constituents into
+            # watch_targets, where every reader (watchlist, copilot context, coverage Gaps,
+            # trades view) presented them as research results.
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tracked_universe (
+                    ticker TEXT PRIMARY KEY,
+                    name TEXT,
+                    sector TEXT,
+                    source TEXT,
+                    added_at TEXT
+                )
+                """
+            )
+            # The archive for those placeholder rows, so the migration is a move, not a delete.
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watch_targets_backup_placeholders (
+                    ticker TEXT PRIMARY KEY,
+                    archived_at TEXT,
+                    snapshot_json TEXT
                 )
                 """
             )
@@ -1282,13 +1317,16 @@ def record_last_researched(
 
 
 def ensure_universe_prepopulated() -> int:
-    """Pre-populate watch_targets with the full Schwab 1000 constituent universe (~983 tickers).
+    """Pre-populate the tracked universe with the full Schwab 1000 constituents (~983 tickers).
 
-    1. Loads all constituents from All_tickrs/Schwab_1000_Index®_Index_Constituents.csv.
+    1. Loads all constituents from All_tickrs/Schwab_1000_Index®_Index_Constituents.csv into
+       `tracked_universe` -- universe storage, NOT `watch_targets`.
     2. Syncs any existing deep research reports from reports/ so researched tickers have their
-       latest research timestamp, levels, verdict, conviction, and status.
-    3. Inserts unresearched constituents with status='UNRESEARCHED' and updated_at='1970-01-01T00:00:00'.
-    Returns total count of targets in watch_targets.
+       latest research timestamp, levels, verdict, conviction, and status, in `watch_targets`.
+    3. Does NOT insert placeholder rows. Unresearched constituents belong to `tracked_universe`;
+       `watch_targets` only holds rows with a real thesis.
+
+    Returns the number of constituents tracked.
     """
     csv_path = config.BASE_DIR / "All_tickrs" / "Schwab_1000_Index®_Index_Constituents.csv"
     if not csv_path.exists():
@@ -1304,7 +1342,7 @@ def ensure_universe_prepopulated() -> int:
                 if sym and sym not in constituents:
                     constituents[sym] = {
                         "name": (row.get("Name") or "").strip(),
-                        "weight": float(row.get("IndexWeighting") or 0.0),
+                        "sector": (row.get("Sector") or "").strip(),
                     }
     except Exception as e:
         logger.error(f"Error loading constituents CSV: {e}")
@@ -1383,23 +1421,269 @@ def ensure_universe_prepopulated() -> int:
                     (sym, date_str, verdict, conviction, ez_low, ez_high, stop, t1, t2, opt, status, res_time),
                 )
 
-            # Insert unresearched constituents
+            # Insert the constituents into the universe table. Nothing here touches
+            # watch_targets, so a poller walking the universe can never create a thesis row.
             for sym, meta in constituents.items():
-                if sym not in extracted_cards and sym not in existing_rows:
-                    name = meta.get("name") or sym
-                    cursor.execute(
-                        """
-                        INSERT OR IGNORE INTO watch_targets (
-                            ticker, date, verdict, conviction, actionable, side,
-                            entry_type, status, options_summary, updated_at, is_active
-                        ) VALUES (?, '', 'UNRESEARCHED', 0, 0, 'LONG', 'LIMIT', 'UNRESEARCHED', ?, '1970-01-01T00:00:00', 1)
-                        """,
-                        (sym, f"Schwab 1000 ({name})"),
-                    )
+                cursor.execute(
+                    """
+                    INSERT INTO tracked_universe (ticker, name, sector, source, added_at)
+                    VALUES (?, ?, ?, 'SCHWAB_1000', ?)
+                    ON CONFLICT(ticker) DO UPDATE SET
+                        name=excluded.name,
+                        sector=excluded.sector,
+                        source=excluded.source
+                    """,
+                    (sym, meta.get("name") or sym, meta.get("sector") or "", _now_iso()),
+                )
 
             conn.commit()
-            total = cursor.execute("SELECT count(1) FROM watch_targets").fetchone()[0]
+            total = cursor.execute("SELECT count(1) FROM tracked_universe").fetchone()[0]
             logger.info(f"[WATCHLIST] Universe pre-populated. Total constituents tracked: {total}")
             return total
+
+
+# One definition of "this row is universe storage, not a thesis". It was spelled four different
+# ways: the migration predicate below (three fields, case-sensitive), the three read filters on
+# status alone, and a Python `.upper()` check in the identity backfill. A row with
+# status='UNRESEARCHED' but a real date therefore fell through all of them -- hidden from every
+# read path, archived by nobody, backfilled by nobody -- and `count_placeholder_rows()` reported 0
+# for a 'Unresearched' status the backfill still skipped. Everything below shares this one helper.
+#
+# `upper()` on both sides so the SQL and the Python check agree on case, and both spellings of the
+# verdict ('UNMEASURED' from the old writer, 'UNRESEARCHED' from the production rows) match.
+def placeholder_rows_sql(active_only: bool = True) -> str:
+    """SQL fragment matching watch_targets rows that carry no thesis.
+
+    Args:
+        active_only: also require is_active. Read filters want it (an inactive row is excluded from
+            the ledger either way); the archive wants every matching row regardless of is_active,
+            so that a deactivated placeholder is still archived rather than stranded.
+    """
+    parts = [
+        "(status IS NULL OR upper(status) = 'UNRESEARCHED')",
+        "(verdict IS NULL OR upper(verdict) IN ('UNRESEARCHED', 'UNMEASURED'))",
+        "(date IS NULL OR date = '')",
+    ]
+    if active_only:
+        parts.append("(is_active IS NULL OR is_active = 1)")
+    return " AND ".join(parts)
+
+
+def is_placeholder_row(row: dict) -> bool:
+    """Python mirror of placeholder_rows_sql(): same three fields, same case handling."""
+    status = str(row.get("status") or "").strip().upper()
+    verdict = str(row.get("verdict") or "").strip().upper()
+    date = str(row.get("date") or "").strip()
+    return (
+        status in ("", "UNRESEARCHED")
+        and verdict in ("", "UNRESEARCHED", "UNMEASURED")
+        and date == ""
+    )
+
+
+PLACEHOLDER_ROW_PREDICATE = placeholder_rows_sql(active_only=False)
+
+
+def count_placeholder_rows() -> int:
+    """How many placeholder rows are in watch_targets right now (dry-run helper)."""
+    init_watch_db()
+    with _db_lock:
+        with _get_connection() as conn:
+            return conn.execute(
+                f"SELECT count(1) FROM watch_targets WHERE {PLACEHOLDER_ROW_PREDICATE}"
+            ).fetchone()[0]
+
+
+def migrate_watch_target_placeholders(dry_run: bool = False) -> dict:
+    """Move the 'UNRESEARCHED' constituent placeholders out of watch_targets.
+
+    They were universe storage written into the thesis ledger: 844 rows, 85% of the row count on
+    the Watchlist tab, one 1s job invocation per constituent per cycle, and no artifact produced.
+    The universe itself is safe in `tracked_universe` (see `ensure_universe_prepopulated`); this
+    clears the rows that predate that separation.
+
+    Archive before delete, and idempotent: a ticker already present in the archive is never
+    overwritten and never re-archived, so a second run reports zeros and touches nothing.
+    """
+    init_watch_db()
+    now = _now_iso()
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                f"SELECT rowid AS id, * FROM watch_targets WHERE {PLACEHOLDER_ROW_PREDICATE}"
+            ).fetchall()
+            planned = [dict(r) for r in rows]
+            if dry_run:
+                return {
+                    "planned": len(planned),
+                    "archived": 0,
+                    "deleted": 0,
+                    "already_archived": 0,
+                    "tickers": sorted(r["ticker"] for r in planned)[:20],
+                }
+
+            archived = 0
+            already = 0
+            for row in planned:
+                cur = cursor.execute(
+                    """
+                    INSERT INTO watch_targets_backup_placeholders (ticker, archived_at, snapshot_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(ticker) DO NOTHING
+                    """,
+                    (row["ticker"], now, json.dumps(row, default=str)),
+                )
+                if cur.rowcount:
+                    archived += 1
+                else:
+                    already += 1
+
+            cursor.execute(f"DELETE FROM watch_targets WHERE {PLACEHOLDER_ROW_PREDICATE}")
+            deleted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(planned)
+            conn.commit()
+
+            remaining = cursor.execute(
+                f"SELECT count(1) FROM watch_targets WHERE {PLACEHOLDER_ROW_PREDICATE}"
+            ).fetchone()[0]
+            ledger = cursor.execute("SELECT count(1) FROM watch_targets").fetchone()[0]
+
+    result = {
+        "planned": len(planned),
+        "archived": archived,
+        "already_archived": already,
+        "deleted": deleted,
+        "remaining_placeholders": remaining,
+        "watch_targets_rows": ledger,
+    }
+    logger.info(f"[WATCHLIST] Placeholder migration: {result}")
+    return result
+
+
+def _add_trading_days(start_date) -> str:
+    added = 0
+    exp_cur = start_date
+    while added < 5:
+        exp_cur += timedelta(days=1)
+        if exp_cur.weekday() < 5:
+            added += 1
+    return str(exp_cur.strftime("%Y-%m-%d"))
+
+
+def backfill_watch_target_identity(dry_run: bool = False) -> dict:
+    """Populate thesis_id / created_date / expires_on for rows written before those columns existed.
+
+    watch_targets.thesis_id is the dedupe key -- the paper ledger and run_watch_alerts both join on
+    (ticker, thesis_id) -- and in production it is 0/993 populated. A row without one therefore
+    reads as a brand-new thesis on every pass, which is how one fresh thesis gets booked twice
+    with conflicting outcomes, and why 856 rows look live-active while only 239 have ever had a
+    filled paper trade.
+
+    Derivation mirrors upsert_watch_target exactly, so a backfilled row and a freshly written row
+    agree on identity:
+        created_date = COALESCE(created_date, date, date(updated_at))
+        thesis_id    = {TICKER}_{created_date}
+        expires_on   = created_date + 5 trading days
+
+    Idempotent: a row that already carries an identity is left untouched, so re-running changes
+    nothing. Placeholder rows are skipped -- they are owned by migrate_watch_target_placeholders.
+    """
+    init_watch_db()
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                """
+                SELECT rowid AS id, ticker, date, created_date, expires_on, thesis_id, updated_at, status
+                FROM watch_targets
+                """
+            ).fetchall()
+
+            updates = []
+            skipped_placeholder = 0
+            for r in rows:
+                row = dict(r)
+                # Same definition the migration and the read filters use, so a row cannot be
+                # claimed as a placeholder by one pass and as a thesis by another.
+                if is_placeholder_row(row):
+                    skipped_placeholder += 1
+                    continue
+                if row.get("thesis_id"):
+                    continue  # already identified; never churn an existing identity
+
+                ticker = str(row.get("ticker") or "").strip().upper()
+                if not ticker:
+                    continue
+
+                created = str(row.get("created_date") or "").strip()
+                if not created:
+                    created = str(row.get("date") or "").strip()
+                if not created:
+                    updated = str(row.get("updated_at") or "")
+                    if updated.startswith("1970-01-01"):
+                        updated = ""  # the placeholder sentinel, not a real thesis date
+                    created = updated[:10]
+                created = created[:10]
+                if not created:
+                    created = datetime.now().strftime("%Y-%m-%d")
+
+                try:
+                    start = datetime.strptime(created, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                expires = str(row.get("expires_on") or "") or _add_trading_days(start)
+
+                updates.append((f"{ticker}_{created}", created, expires, row["id"]))
+
+            if dry_run:
+                return {
+                    "planned": len(updates),
+                    "updated": 0,
+                    "skipped_placeholders": skipped_placeholder,
+                    "sample": [u[0] for u in updates[:20]],
+                }
+
+            cursor.executemany(
+                """
+                UPDATE watch_targets
+                SET thesis_id = ?, created_date = ?, expires_on = ?
+                WHERE rowid = ?
+                """,
+                updates,
+            )
+            conn.commit()
+
+            missing_after = cursor.execute(
+                f"SELECT count(1) FROM watch_targets "
+                f"WHERE (thesis_id IS NULL OR thesis_id = '') "
+                f"AND NOT ({placeholder_rows_sql(active_only=False)})"
+            ).fetchone()[0]
+            identified = cursor.execute(
+                "SELECT count(1) FROM watch_targets WHERE thesis_id IS NOT NULL AND thesis_id != ''"
+            ).fetchone()[0]
+
+    result = {
+        "planned": len(updates),
+        "updated": len(updates),
+        "skipped_placeholders": skipped_placeholder,
+        "missing_after": missing_after,
+        "identified_rows": identified,
+    }
+    logger.info(f"[WATCHLIST] Identity backfill: {result}")
+    return result
+
+
+if __name__ == "__main__":
+    import sys
+
+    init_watch_db()
+    if "--migrate-placeholders" in sys.argv:
+        dry = "--dry-run" in sys.argv
+        print(json.dumps(migrate_watch_target_placeholders(dry_run=dry), indent=2))
+    elif "--backfill-identity" in sys.argv:
+        dry = "--dry-run" in sys.argv
+        print(json.dumps(backfill_watch_target_identity(dry_run=dry), indent=2))
+    else:
+        print(f"Universe constituents tracked: {ensure_universe_prepopulated()}")
 
 

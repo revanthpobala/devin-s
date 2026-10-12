@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from src import config
+from src.tracking.watch_manager import placeholder_rows_sql
 from src.ui.routes.research import extract_report_card as _extract_report_card
 from src.ui.state import (
     ACTIVE_RESEARCH_SUBPROCS,
@@ -2148,9 +2149,15 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     try:
         with _get_db() as conn:
             c = conn.cursor()
+            # No UNRESEARCHED placeholders: the copilot gets the same ledger the watchlist shows,
+            # not 844 rows that exist only to reserve a constituent slot. They also pollute the
+            # `today_tickers` accumulator below, which feeds "what did we study today". Same
+            # predicate the watchlist read and the placeholder migration use.
             w_rows = c.execute(
                 "SELECT ticker, date, verdict, status, entry_zone_low, entry_zone_high, tactical_stop, target_1, last_price, distance_to_entry_pct "
-                "FROM watch_targets ORDER BY "
+                "FROM watch_targets "
+                f"WHERE NOT ({placeholder_rows_sql(active_only=True)}) "
+                "ORDER BY "
                 "CASE status WHEN 'IN_ZONE' THEN 1 WHEN 'IN_TRADE' THEN 2 WHEN 'STALKING' THEN 3 ELSE 4 END, "
                 "distance_to_entry_pct ASC"
             ).fetchall()

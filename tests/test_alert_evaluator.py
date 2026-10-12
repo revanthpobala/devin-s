@@ -4,7 +4,11 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from src.tracking import alert_db
-from src.tracking.alert_evaluator import evaluate_alert_payload, build_live_market_context
+from src.tracking.alert_evaluator import (
+    cap_conviction,
+    evaluate_alert_payload,
+    build_live_market_context,
+)
 
 
 @pytest.fixture
@@ -82,3 +86,50 @@ def test_evaluate_alert_payload_daily_mocked(temp_db):
         assert len(alerts) == 1
         assert "WATCH (6/10)" in alerts[0]["llm_decision"]
         assert alerts[0]["status"] == "PROCESSED"
+
+
+# =====================================================================================
+# Conviction caps: the badge may never claim an edge the verdict's own flags deny.
+# Regression for 2026-10-12, when the model printed 6/10 for four no-edge drift rows.
+# =====================================================================================
+
+def test_no_edge_flag_caps_conviction_at_4():
+    assert cap_conviction(6, "WATCH", ["news_confirmed", "no_edge"], entry_mode="NONE", has_plan=False) == 4
+
+
+def test_earnings_imminent_hard_gate_caps_conviction():
+    assert cap_conviction(6, "WATCH", ["earnings_imminent", "cheap_iv_debit"]) == 4
+
+
+def test_news_contradicts_and_stage_4_cap_conviction():
+    assert cap_conviction(8, "WATCH", ["news_contradicts"]) == 4
+    assert cap_conviction(9, "WATCH", ["stage_4_markdown"]) == 4
+
+
+def test_cut_verdict_caps_conviction():
+    assert cap_conviction(7, "CUT", []) == 4
+
+
+def test_watch_with_nothing_to_stalk_caps_conviction():
+    """No entry mode and no stop/target levels is not the 6-7 'measurable edge' band."""
+    assert cap_conviction(6, "WATCH", [], entry_mode="NONE", has_plan=False) == 4
+
+
+def test_measured_watch_keeps_its_conviction():
+    """Entry mode + levels + no defect flags: an actionable stalk stays a 6."""
+    assert cap_conviction(6, "WATCH", [], entry_mode="MEAN_REVERSION_LONG", has_plan=True) == 6
+
+
+def test_high_conviction_survives_when_the_setup_is_real():
+    assert cap_conviction(9, "WATCH", ["news_confirmed"], entry_mode="MOMENTUM_LONG", has_plan=True) == 9
+
+
+def test_cap_never_inflates():
+    """A low number on a flagged row is already honest; the cap is a ceiling only."""
+    assert cap_conviction(2, "WATCH", ["no_edge"], entry_mode="NONE", has_plan=False) == 2
+
+
+def test_garbage_conviction_falls_back_to_default():
+    assert cap_conviction("high", "WATCH", []) == 4
+    assert cap_conviction(None, "WATCH", []) == 4
+    assert cap_conviction(99, "WATCH", [], entry_mode="TREND_LONG", has_plan=True) == 10

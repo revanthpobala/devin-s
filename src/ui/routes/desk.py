@@ -366,7 +366,13 @@ def get_today():
                     elif last_px and stop and last_px > stop and target and target > last_px:
                         rr_at_market = round((target - last_px) / (last_px - stop), 2)
                         rr_source = "live"
-                    elif entry_h and stop and entry_h > stop and target and target > entry_h:
+                    elif (
+                        # A stop at or through the live price leaves no risk to measure. Without
+                        # this guard the plan branch scores a $1 sliver as "RR 29", the same
+                        # stop-inside-noise artifact stop_tight exists to demote.
+                        (not last_px or last_px > stop)
+                        and entry_h and entry_h > stop and target and target > entry_h
+                    ):
                         rr_at_market = round((target - entry_h) / (entry_h - stop), 2)
                         rr_source = "plan"
                     else:
@@ -1252,11 +1258,20 @@ def get_record(
 
                 equity_curve = []
                 cum_r = 0.0
+                peak_r = 0.0
+                max_drawdown_r = 0.0
                 for row in scored_rows:
                     rv = float(row["r_net"]) if row["r_net"] is not None else 0.0
                     cum_r += rv
+                    peak_r = max(peak_r, cum_r)
+                    max_drawdown_r = max(max_drawdown_r, peak_r - cum_r)
                     equity_curve.append({
                         "date": row["exit_date"],
+                        # signal_date + id + ticker are what make a point drillable: the client
+                        # links it straight to the research dossier for that trade.
+                        "signal_date": row["date"],
+                        "id": row["id"],
+                        "ticker": row["ticker"],
                         "r_net": rv,
                         "cum_r": round(cum_r, 2),
                     })
@@ -1346,6 +1361,8 @@ def get_record(
                     "won_count": wins,
                     "loss_count": total_scored - wins,
                     "equity_curve": equity_curve,
+                    # Worst peak-to-trough run of the curve, in R. Sum R alone hides it.
+                    "max_drawdown_r": round(max_drawdown_r, 2),
                     "by_lane": by_lane,
                     "first_score_eta": first_score_eta,
                     "scope": scope,

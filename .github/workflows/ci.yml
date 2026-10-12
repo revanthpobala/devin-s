@@ -26,3 +26,29 @@ jobs:
       - name: Run Pytest
         run: |
           pytest
+
+      # Node has always been preinstalled on the GitHub-hosted runners, so these suites were one
+      # step away from being wired up and never were -- which is why 4 UI guards (the asserter
+      # roster, scroll/focus restore, memoisation degradation, chat context leaks) only ran when
+      # somebody remembered to run them by hand. Listed explicitly, because there is no JS test
+      # runner to discover them.
+      - name: Run JS UI guards
+        run: |
+          node tests/desk_rerender_guard.test.js
+          node tests/desk_render_guard.test.js
+          node tests/rev_chat_focus.test.js
+          node tests/chat_context_guard.test.js
+          node tests/session_calendar.test.js
+          node tests/session_modal.test.js
+      - name: Run JS desk characterisation & behaviour
+        run: |
+          node tests/desk_loadtoday_characterization.test.js
+          node tests/desk_loadtoday_rerender.test.js
+          node tests/app_poll_loop_guard.test.js
+          node tests/desk_render_field_coverage.test.js
+      # One repo-wide contract: every onclick handler, in the HTML and in the JS renderers that
+      # build it, must resolve to a defined object.method. The `AppDesk.triggerResearch` TypeError
+      # shipped because only the HTML half was audited.
+      - name: Run UI wiring audit
+        run: |
+          python tests/ui_wiring_audit.py

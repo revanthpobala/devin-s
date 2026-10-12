@@ -1,0 +1,274 @@
+<div style="display:flex; flex-direction:column; gap:16px;"><div id="desk-regime-strip">
+    <div class="station-card" style="padding:12px 18px; border-left:4px solid var(--purple); background:linear-gradient(180deg, rgba(168,85,247,0.05) 0%, var(--bg-surface) 100%);">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div style="font-size:18px;">📡</div>
+          <div>
+            <div style="font-size:13px; font-weight:900; letter-spacing:0.6px; color:var(--text-main);">MARKET REGIME &amp; SENTIMENT</div>
+            <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">live gauges · </div>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          
+
+          <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">VIX</div>
+            <div style="font-size:18px; font-weight:900; font-family:var(--font-display); color:var(--text-main); line-height:1.1;">–</div>
+            <div style="font-size:9.5px; font-weight:700; max-width:190px; color:var(--text-muted);">n/a</div>
+          </div>
+
+          <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:7px 12px;">
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); font-weight:700; letter-spacing:0.4px;">MARKET TIDE (SPY)</div>
+            <div style="font-size:12.5px; font-weight:900; color:var(--rose-light);">n/a</div>
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted);">SPY – · 20EMA – · 50SMA –</div>
+            <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-dim);">20d return n/a</div>
+          </div>
+
+          
+        </div>
+      </div>
+
+      
+      <div style="margin-top:11px; padding-top:10px; border-top:1px solid var(--border); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="font-size:11px;">🌊</span>
+          <span style="font-size:10px; font-weight:900; letter-spacing:0.6px; color:var(--text-muted);">DRAMATIC MOVERS<br><span style="font-size:8.5px; font-weight:700; color:var(--text-dim);">|Δ| ≥ 3% today · ⚡ ≥ 5%</span></span>
+        </div>
+        <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center;">
+          <span style="display:inline-flex; align-items:center; gap:5px; background:var(--bg-main); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:10.5px; font-family:var(--font-mono); cursor:pointer;" title=" +0% | $0 | vol 0 | Click to focus chat" onclick="AppChat.askRevChat('null$')">
+        <b style="color:var(--cyan-glow);">?</b>
+        <b style="color:var(--amber);">+0%</b>
+        
+        
+      </span>
+          <span style="color:var(--text-dim); font-size:10px;">│</span>
+          
+        </div>
+        <span style="font-size:9.5px; color:var(--text-dim); font-family:var(--font-mono); margin-left:auto;">0 scanned · click a chip to focus the chat</span>
+      </div>
+
+      
+      <div style="margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        <span style="font-size:9.5px; font-weight:900; color:var(--rose-light); letter-spacing:0.5px;">⚡ DRASTIC (≥5%):</span>
+        <span style="font-size:10px; font-family:var(--font-mono); padding:2px 7px; border-radius:4px; background:rgba(220,38,38,0.1); border:1px solid rgba(220,38,38,0.35); color:var(--rose-light);">? +0%</span>
+        <button class="btn secondary" style="font-size:9.5px; padding:2px 8px; margin-left:auto;" onclick="AppChat.askRevChat('Walk me through the drastic movers right now, why they moved, and whether any affect my holdings.')">💬 Explain the movers</button>
+      </div>
+    </div></div><div id="desk-bat-signal"></div>
+      <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px;">
+          
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <div style="font-size:22px;">⚡</div>
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:15px; font-weight:800; letter-spacing:0.5px; color:var(--text-main);">
+                  MARKET DYNAMICS &amp; EXECUTION COCKPIT
+                </span>
+                <span id="desk-market-pill" class="pill amber" style="font-weight:800; font-size:10px;">
+                  <span class="dot pulse"></span> <span id="desk-market-status-text">🟢 CONTINUOUS SURVEILLANCE ACTIVE</span>
+                </span>
+              </div>
+              <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">
+                Continuous Screening across Schwab 1000 &amp; TradingView · Live Quotes · Proximity &amp; R:R Updates
+              </div>
+            </div>
+          </div>
+
+          <!-- Market Indices Strip -->
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+            <div style="display:flex; gap:10px; align-items:center; background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:6px 14px;">
+               <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">SPY</span> <b id="desk-spy-px" style="color:var(--text-main);">–</b></div>
+              <div style="color:var(--border);">|</div>
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">QQQ</span> <b id="desk-qqq-px" style="color:var(--text-main);">–</b></div>
+              <div style="color:var(--border);">|</div>
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">VIX</span> <b id="desk-vix-px" style="color:var(--green);">–</b></div>
+            </div>
+
+            <button class="btn secondary" style="font-size:11px; padding:6px 12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;" onclick="AppDesk.loadToday()">
+              🔄 <span>Refresh Live</span>
+            </button>
+          </div>
+
+        </div>
+
+        <!-- Pipeline Funnel Summary Strip (Task B2) -->
+        
+
+        <!-- Cockpit Primary Navigation Tabs -->
+        <div style="display:flex; gap:8px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); flex-wrap:wrap;">
+          <button id="subtab-today-opps" class="btn " style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('opps')">
+            🎯 Actionable Opportunities (<span id="subtab-count-opps">1</span>)
+          </button>
+          <button id="subtab-today-alerts" class="btn secondary" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('alerts')">
+            🚨 Actionable Alerts (<span id="subtab-count-alerts">1</span>)
+          </button>
+          <button id="subtab-today-feedback" class="btn secondary" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('positions')">
+            📊 Positions &amp; Feedback Loop (<span id="subtab-count-positions-open">0</span> Open · <span id="subtab-count-positions-closed">0</span> Evaluated)
+          </button>
+          <button id="subtab-today-coverage" class="btn secondary" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('coverage')">
+            🛡️ Pipeline Coverage &amp; Deferrals (<span id="subtab-count-coverage">0</span> Deferred · <span id="subtab-count-coverage-stalking">0</span> Stalking)
+          </button>
+          <button id="subtab-today-missed" class="btn secondary" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('missed_moves')">
+            📉 Missed Moves (<span id="subtab-count-missed">0</span>)
+          </button>
+          <button id="subtab-today-radar" class="btn secondary" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('radar')" title="Drastic movers with their cause and their impact on your book, plus your own setup performance">
+            📡 Event Radar &amp; Calibration (<span id="subtab-count-radar">!</span>)
+          </button>
+        </div>
+      </div>
+      
+        <div class="station-card" style="padding:16px 20px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:18px;">🎯</span>
+                <span style="font-size:14px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
+                  TOP QUALIFIED ACTIONABLE OPPORTUNITIES
+                </span>
+                <span class="pill cyan" style="font-weight:800; font-size:10px;">1 Setups</span>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
+                Institutional Senior PM directives with defined risk floors, binding invalidations, and specific options spread blueprints.
+              </div>
+            </div>
+
+            <!-- Opportunity Filter Buttons -->
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn " style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('ALL')">All (1)</button>
+              <button class="btn secondary" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('IN_ZONE')">🎯 In Entry Zone (0)</button>
+              <button class="btn secondary" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('COILING')">⚡ Coiling Triggers (1)</button>
+              <button class="btn secondary" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('HIGH_CONVICTION')">💎 High Conviction (0)</button>
+            </div>
+          </div>
+
+          <!-- Closest to Gate Strip (Task d7) -->
+          
+          <div style="margin-bottom:14px; background:rgba(245,158,11,0.06); border:1px solid rgba(245,158,11,0.25); border-radius:8px; padding:10px 14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <div style="font-size:11.5px; font-weight:800; color:var(--amber);">
+                ⏳ CLOSEST TO GATE (2 Setups Missing Exactly 1 Condition)
+              </div>
+              <span style="font-size:10.5px; color:var(--text-muted);">One condition away from actionable · Click setup to open Dossier & Plan</span>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              
+                <div class="closest-gate-pill"
+                     onclick="if(window.AppSwing && typeof window.AppSwing.openReportModal === 'function'){ window.AppSwing.openReportModal('latest', 'null', 'plan', event); } else { window.location.href='/research/null'; }"
+                     onmouseenter="this.style.borderColor='rgba(245,158,11,0.7)'; this.style.background='rgba(245,158,11,0.12)'; this.style.transform='translateY(-1px)';"
+                     onmouseleave="this.style.borderColor='var(--border)'; this.style.background='var(--bg-surface)'; this.style.transform='none';"
+                     title="null · Click to open Dossier & Tactical Plan (Missing: null)"
+                     style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:5px 9px; font-size:11px; display:inline-flex; align-items:center; gap:6px; cursor:pointer; transition:all 0.15s ease; box-shadow:0 1px 3px rgba(0,0,0,0.15); user-select:none;">
+                  <b style="color:var(--cyan); font-family:var(--font-mono); font-size:11.5px;">null</b>
+                  
+                  
+                  
+                  <span style="color:var(--amber); font-size:10px; font-weight:600;">⚠️ null</span>
+                  <a href="/research/null" target="_blank" onclick="event.stopPropagation();" title="Open /research/null in new tab" style="color:var(--text-muted); font-size:10.5px; margin-left:2px; text-decoration:none; opacity:0.75;" onmouseenter="this.style.opacity='1'; this.style.color='var(--cyan)';" onmouseleave="this.style.opacity='0.75'; this.style.color='var(--text-muted)';">↗</a>
+                </div>
+              
+            </div>
+          </div>
+
+          <!-- Opportunities Grid -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
+        
+              <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); transition:transform 0.15s ease, border-color 0.15s ease;">
+                <div>
+                  
+                  
+                  <!-- Card Header -->
+                  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <div>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:20px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('latest', 'null', 'plan')">
+                          null
+                        </span>
+                        <span class="badge" style="border-color:var(--rose-light); color:var(--rose-light); font-weight:800; font-size:10px;">
+                          null
+                        </span>
+                        <span class="badge" style="border-color:var(--cyan); color:var(--cyan); font-weight:800; font-size:10px;">
+                          null
+                        </span>
+                        <span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); font-weight:800; font-size:9.5px;">🔬 DEEP RESEARCH</span>
+                        
+                      </div>
+                      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:10.5px; color:var(--text-muted); margin-top:3px;">
+                        <span class="pill cyan" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
+                          latest
+                        </span>
+                        <span>Conviction: <b>null/10</b></span>
+                        <span>·</span>
+                        <span>Score: <b>null/100</b></span>
+                      </div>
+                    </div>
+
+                    <div style="text-align:right;">
+                      <div style="font-size:18px; font-weight:900; font-family:var(--font-mono); color:var(--text-main);">–</div>
+                      <div style="font-size:11px; font-family:var(--font-mono); font-weight:800; color:var(--cyan);">0.00%</div>
+                      
+                    </div>
+                  </div>
+
+                  <!-- Tactical Geometry Grid -->
+                  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:10px; background:var(--bg-surface); padding:8px 10px; border-radius:8px; border:1px solid var(--border); font-family:var(--font-mono); font-size:11px;">
+                    <div>
+                      <div style="font-size:9.5px; color:var(--text-muted); text-transform:uppercase;">Entry Zone</div>
+                      <div style="font-weight:700; color:var(--text-main);">–––</div>
+                    </div>
+                    <div>
+                      <div style="font-size:9.5px; color:var(--rose-light); text-transform:uppercase;">Stop Loss</div>
+                      <div style="font-weight:700; color:var(--rose-light);">–</div>
+                    </div>
+                    <div>
+                      <div style="font-size:9.5px; color:var(--green); text-transform:uppercase;">Target 1 (50%)</div>
+                      <div style="font-weight:700; color:var(--green);">–</div>
+                    </div>
+                  </div>
+
+                  <!-- Execution Vehicle Blueprint -->
+                  <div style="margin-top:10px; background:rgba(56, 189, 248, 0.08); border:1px solid rgba(56, 189, 248, 0.3); border-radius:8px; padding:10px 12px; font-size:11.5px; line-height:1.4;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">
+                        📊 EXECUTION BLUEPRINT
+                      </div>
+                      <span class="badge" style="border-color:var(--green); color:var(--green); font-size:9.5px; font-weight:800;">
+                        –
+                      </span>
+                    </div>
+                    <div style="font-weight:700; color:var(--text-main);">null</div>
+                  </div>
+
+                  <!-- PM Thesis / Takeaways -->
+                  
+
+                  <!-- Stalk Limit Price Target or Honest PB Note (Task f3) -->
+                  
+
+                  <!-- Gate Reasons / Blocker -->
+                  
+
+                  <!-- Invalidation Rule -->
+                  
+
+                </div>
+
+                <!-- 1-Click Action Buttons -->
+                <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
+                  <button class="btn" style="flex:1; min-width:110px; font-size:11px; padding:6px 10px; font-weight:800; background:linear-gradient(135deg, #059669 0%, #10b981 100%); color:white;" onclick="AppDesk.openActionablePosition('null', 'null', 0, 0, 0, 'Equity')">
+                    🚀 Take Trade
+                  </button>
+                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:6px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('latest', 'null', 'plan')">
+                    📑 Dossier
+                  </button>
+                  <button class="btn secondary" style="font-size:11px; padding:6px 10px;" onclick="AppDesk.triggerDeep('null', this)" title="Re-run Multi-Pass Deep Research">
+                        🔬 Research
+                      </button>
+                  <a href="https://www.tradingview.com/chart/jPAQSlZC/?symbol=null&interval=D" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open in your logged-in TradingView session with the Rev - Enhanced v2 layout">
+                    📈 TV
+                  </a>
+                </div>
+
+              </div>
+            </div></div></div>

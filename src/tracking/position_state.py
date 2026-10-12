@@ -337,6 +337,17 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
         )
         rec["exit_r"] = exit_r
 
+        # Same verdict vocabulary the watch daemon writes, so the trades/watchlist badges
+        # (TARGET_HIT vs STAND_ASIDE) read the same way whichever path closed the position.
+        _tgt = rec.get("target")
+        _target_hit = False
+        if _tgt:
+            try:
+                _target_hit = px >= float(_tgt) if "LONG" in side else px <= float(_tgt)
+            except (TypeError, ValueError):
+                _target_hit = False
+        eval_verdict = "TARGET_HIT" if _target_hit else "STAND_ASIDE"
+
         _save_state(state)
 
     try:
@@ -375,40 +386,70 @@ def close_position(ticker: str, exit_price: float | None = None, exit_reason: st
             notify_push(exit_push)
         except Exception as e_epush:
             logger.debug(f"Failed to emit exit push for {ticker}: {e_epush}")
-
-        # Sync realized R to suggestions and watch_targets tables if linked
-        sugg_id = rec.get("suggestion_id")
-        wt_id = rec.get("watch_target_id")
-        try:
-            import sqlite3
-            watch_db_p = config.research_watch_db_path()
-            if watch_db_p.exists():
-                with sqlite3.connect(str(watch_db_p), timeout=10.0) as wconn:
-                    wcur = wconn.cursor()
-                    if sugg_id:
-                        wcur.execute(
-                            """
-                            UPDATE suggestions
-                            SET exit_date = ?, exit_price = ?, r_realized = ?
-                            WHERE id = ?
-                            """,
-                            (str(now)[:10], px, exit_r, sugg_id),
-                        )
-                    if wt_id:
-                        wcur.execute(
-                            """
-                            UPDATE watch_targets
-                            SET status = 'COMPLETED', exit_price = ?, r_realized = ?, updated_at = ?
-                            WHERE rowid = ?
-                            """,
-                            (px, exit_r, now, wt_id),
-                        )
-                    wconn.commit()
-        except Exception as e_sugg_sync:
-            logger.debug(f"Failed syncing suggestion/watch_target exit_r: {e_sugg_sync}")
-
     except Exception as e:
         logger.debug(f"Failed syncing closed position / event to alert_db: {e}")
+
+    # Sync realized R to suggestions and watch_targets tables if linked.
+    #
+    # watch_targets has no exit_price / r_realized column -- this UPDATE used to name both and
+    # threw OperationalError on every close, swallowed by the except below, which is why the
+    # calibration panel only ever saw an exit price on ~22% of closed trades. Write the columns
+    # that exist; the dollar/R detail belongs to `suggestions` and the thesis ledger.
+    #
+    # Deliberately OUTSIDE the alert_db try above: the exit-capture write must not be collateral
+    # damage of an unrelated failure in that block (a missing `positions` table in the alerts
+    # database was enough to skip this entire section).
+    sugg_id = rec.get("suggestion_id")
+    wt_id = rec.get("watch_target_id")
+    # Imported lazily: watch_manager touches config only, but position_state is imported by the
+    # tracker at process start and this keeps that import graph unchanged.
+    from src.tracking.watch_manager import placeholder_rows_sql
+    try:
+        import sqlite3
+        watch_db_p = config.research_watch_db_path()
+        if watch_db_p.exists():
+            with sqlite3.connect(str(watch_db_p), timeout=10.0) as wconn:
+                wcur = wconn.cursor()
+                if sugg_id:
+                    wcur.execute(
+                        """
+                        UPDATE suggestions
+                        SET exit_date = ?, exit_price = ?, exit_reason = ?, r_net = ?
+                        WHERE id = ?
+                        """,
+                        (str(now)[:10], px, rec["exit_reason"], exit_r, sugg_id),
+                    )
+                if wt_id:
+                    # Same placeholder guard as the ticker branch below. A rowid is not enough on
+                    # its own: `take_trade_endpoint` resolves one by ticker, and for a constituent
+                    # with no thesis the only row that can match is a placeholder.
+                    wcur.execute(
+                        f"""
+                        UPDATE watch_targets
+                        SET status = 'COMPLETED', last_price = ?, evaluation_verdict = ?, updated_at = ?
+                        WHERE rowid = ? AND NOT ({placeholder_rows_sql(active_only=False)})
+                        """,
+                        (px, eval_verdict, now, wt_id),
+                    )
+                else:
+                    # Fallback for positions the alert tracker opened, which carry no
+                    # watch_target_id. Deliberately restricted to rows that carry a thesis:
+                    # watch_targets is keyed by ticker and 844 of its rows are universe
+                    # placeholders (no date, no levels) covering the whole Schwab 1000, so an
+                    # unrestricted `WHERE ticker = ?` would otherwise rewrite one of those into
+                    # status='COMPLETED' with a price and a verdict -- a fabricated completed
+                    # thesis the new read filters would then publish to the watchlist.
+                    wcur.execute(
+                        f"""
+                        UPDATE watch_targets
+                        SET status = 'COMPLETED', last_price = ?, evaluation_verdict = ?, updated_at = ?
+                        WHERE ticker = ? AND NOT ({placeholder_rows_sql(active_only=False)})
+                        """,
+                        (px, eval_verdict, now, ticker),
+                    )
+                wconn.commit()
+    except Exception as e_sugg_sync:
+        logger.debug(f"Failed syncing suggestion/watch_target exit_r: {e_sugg_sync}")
 
     logger.info(
         f"[state] CLOSED {ticker} @ ${px} (Net P&L: ${rec.get('net_pnl', 0.0):+.2f}, "

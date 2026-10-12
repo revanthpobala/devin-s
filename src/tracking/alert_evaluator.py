@@ -71,6 +71,48 @@ def _action_side(action: str) -> Optional[str]:
     return None
 
 
+# Conviction bands from gems/revanth-gem-local.md's calibration guide: 6-7 is reserved for an
+# "actionable stalk ... with measurable edge", 1-4 covers defective geometry, Stage 4, and
+# direct news contradiction. The LLM self-reports the number and drifts across sessions --
+# on 2026-10-12 it printed 6/10 for four drift rows whose own critiques said "no defined
+# structural floor" / "do not deploy capital into binary risk". The verdict's own assertions
+# therefore cap the number it is allowed to print, so a badge can never claim an edge the
+# reasoning denies.
+_CONVICTION_CAP_FLAGS = frozenset({
+    "no_edge",                # the verdict asserts there is no measurable edge
+    "news_contradicts",       # the thesis is contradicted by the news
+    "earnings_imminent",      # binary risk gate: nothing to stalk into
+    "stage_4_markdown",       # distribution / falling knife: defective geometry
+})
+
+# Missing or unparseable conviction lands here. The gem deliberately leaves 5 undefined;
+# 4 is the top of the "defective" band and is the honest reading of "unmeasured".
+_CONVICTION_DEFAULT = 4
+
+
+def cap_conviction(conviction, triage, key_flags, entry_mode="NONE", has_plan=False) -> int:
+    """Clamp a self-reported conviction to the band the verdict itself supports.
+
+    Never raises: a cap can only pull the number down to what the row's own flags, verdict,
+    and plan justify. A WATCH with no entry mode and no stop/target levels is stalking
+    nothing, which is not the "measurable edge" the 6-7 band describes.
+    """
+    try:
+        n = int(float(conviction))
+    except (TypeError, ValueError):
+        n = _CONVICTION_DEFAULT
+    n = max(1, min(10, n))
+
+    triage = str(triage or "").strip().upper()
+    flags = {str(f).strip() for f in (key_flags or []) if f}
+
+    if triage == "CUT" or (flags & _CONVICTION_CAP_FLAGS):
+        n = min(n, 4)
+    if triage == "WATCH" and str(entry_mode or "NONE").upper() in ("", "NONE") and not has_plan:
+        n = min(n, 4)
+    return n
+
+
 def _env_int(name: str, default: int) -> int:
     """Read an integer env var, falling back to `default` on any parse error.
 
@@ -800,6 +842,17 @@ Output strictly valid JSON matching the revanth-gem-local.md schema.
     entry_mode = parsed_json.get("entry_mode") or "NONE"
     catalyst = parsed_json.get("catalyst") or "none"
     key_flags = parsed_json.get("key_flags") or []
+
+    # A conviction above the band its own verdict supports is an absurd badge: 6/10 on a row
+    # flagging no_edge reads as "actionable stalk" while the critique says there is no edge.
+    # The cap is deterministic and only ever pulls the number down.
+    conviction = cap_conviction(
+        conviction,
+        triage,
+        key_flags,
+        entry_mode=entry_mode,
+        has_plan=bool(parsed_json.get("tactical_stop")) and bool(parsed_json.get("target_1")),
+    )
 
     # Clean formatted decision badge
     if triage == "PASS":

@@ -1,0 +1,126 @@
+{
+  "today": {
+    "market_pulse": {
+      "market_open": false,
+      "market_phase": "AFTER_HOURS",
+      "market_status_text": null,
+      "spy": null,
+      "qqq": null,
+      "vix": null
+    },
+    "market_regime": {
+      "available": true,
+      "as_of_et": null,
+      "fear_greed": null,
+      "vix": { "price": null, "band": null },
+      "tide": {
+        "is_bullish": false,
+        "trend": null,
+        "spy": null,
+        "ema20": null,
+        "sma50": null,
+        "spy_20d_return": null
+      },
+      "breadth": { "universe": 0, "advancing": null, "declining": null, "flat": null },
+      "movers": {
+        "universe_size": null,
+        "drops": [null, { "ticker": null, "chg_pct": null, "price": null, "volume": null }],
+        "spikes": [null, null],
+        "alerts": [{ "ticker": null, "chg_pct": null, "held": null }]
+      }
+    },
+    "action_panel": {
+      "as_of_et": null,
+      "bat_signal": { "action": null, "tone": null, "why": null, "size": null, "headline": null, "counts": null },
+      "risk_flags": { "MSFT": null },
+      "event_radar": [
+        {
+          "ticker": null,
+          "chg_pct": null,
+          "price": null,
+          "volume": null,
+          "held": null,
+          "on_book": null,
+          "cause": null,
+          "stance": null,
+          "est_book_impact": null,
+          "exposure": null
+        },
+        null
+      ],
+      "calibration": {
+        "real": null,
+        "model": {},
+        "paper": null,
+        "coverage": null,
+        "pool_split": null,
+        "recent_paper": [null]
+      }
+    },
+    "top_opportunities": [
+      null,
+      {
+        "ticker": null,
+        "in_zone": null,
+        "priority_tier": null,
+        "conviction": null,
+        "score": null,
+        "spot_price": null,
+        "report_date": null,
+        "dist_pct": null,
+        "side": null,
+        "live_rr": null,
+        "state_label": null,
+        "stage": null,
+        "vintage": null,
+        "quote_source": null,
+        "vehicle_type": null,
+        "vehicle_label": null,
+        "entry_low": null,
+        "entry_high": null,
+        "tactical_stop": null,
+        "target_1": null,
+        "target_2": null,
+        "pm_bullets": null,
+        "wait_for": null,
+        "pb_message": null,
+        "gate_reasons": null,
+        "invalidation": null,
+        "needs_deep_research": null
+      }
+    ],
+    "actionable_alerts": [
+      null,
+      {
+        "symbol": null,
+        "side": null,
+        "action": null,
+        "strategy": null,
+        "setup": null,
+        "date": null,
+        "state_label": null,
+        "in_zone": null,
+        "entry_price": null,
+        "spot_price": null,
+        "dist_pct": null,
+        "stop_price": null,
+        "target_price": null,
+        "live_rr": null
+      }
+    ],
+    "feedback_loop": null,
+    "found": null,
+    "inbox": null,
+    "measured_count": null,
+    "closest_to_gate": [null, { "ticker": null, "date": null, "last_price": null, "dist": null, "wait_for": null, "missing_condition": null }],
+    "funnel": null,
+    "rr_gates": null,
+    "coverage": null,
+    "below_bar_count": null
+  },
+  "record": null,
+  "coverage": null,
+  "briefing": null,
+  "feedback": null,
+  "missed-moves": null
+}

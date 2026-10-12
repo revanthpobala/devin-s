@@ -73,22 +73,10 @@ run('empty regime memoises to empty string', () => {
   assert.strictEqual(out, '');
 });
 
-console.log('\nSCROLL/FFOCUS PRESERVATION (loadToday source contract)');
-
-run('loadToday preserves scrollTop across the innerHTML swap', () => {
-  const i = src.indexOf('const prevScroll = cont.scrollTop;');
-  assert.ok(i > 0, 'prevScroll capture missing');
-  const window = src.slice(i, i + 400);
-  assert.ok(window.includes('cont.innerHTML = html;'), 'innerHTML assignment missing');
-  assert.ok(window.includes('cont.scrollTop = prevScroll;'), 'scrollTop restore missing');
-});
-
-run('loadToday restores focus to the previously focused control', () => {
-  const i = src.indexOf('const prevFocusId = document.activeElement && document.activeElement.id;');
-  assert.ok(i > 0, 'activeElement capture missing');
-  const window = src.slice(i, i + 500);
-  assert.ok(window.includes('refocus.focus();'), 'focus restore missing');
-});
+// The scroll / focus preservation contract is verified BEHAVIOURALLY in
+// tests/desk_loadtoday_rerender.test.js: it runs the real loadToday against a stub DOM where
+// focus() scrolls the window, which a source-text check cannot see. The substring version of
+// these two assertions passed for months while the restore never actually ran.
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

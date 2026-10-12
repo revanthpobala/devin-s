@@ -464,7 +464,7 @@ def take_trade_endpoint(data: dict):
                 """, (fill_price if fill_price > 0 else None, notes, sugg_id))
 
             elif row_id:
-                w_r = c.execute("SELECT ticker, side, tactical_stop, target_1, target_2, entry_zone_high, entry_zone_low FROM watch_targets WHERE rowid = ?", (row_id,)).fetchone()
+                w_r = c.execute(f"SELECT ticker, side, tactical_stop, target_1, target_2, entry_zone_high, entry_zone_low FROM watch_targets WHERE rowid = ? AND NOT ({placeholder_rows_sql(active_only=False)})", (row_id,)).fetchone()
                 if w_r:
                     ticker = ticker or w_r["ticker"]
                     side = w_r["side"] or "LONG"
@@ -473,10 +473,10 @@ def take_trade_endpoint(data: dict):
                     t2 = w_r["target_2"]
                     if fill_price <= 0:
                         fill_price = float(w_r["entry_zone_high"] or w_r["entry_zone_low"] or 0.0)
-                c.execute("""
-                    UPDATE watch_targets 
+                c.execute(f"""
+                    UPDATE watch_targets
                     SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
-                    WHERE rowid = ?
+                    WHERE rowid = ? AND NOT ({placeholder_rows_sql(active_only=False)})
                 """, (fill_price if fill_price > 0 else None, quantity, row_id))
 
             elif ticker:
@@ -495,7 +495,12 @@ def take_trade_endpoint(data: dict):
                         WHERE id = ?
                     """, (fill_price if fill_price > 0 else None, notes, sugg_id))
                 else:
-                    w_r = c.execute("SELECT rowid, ticker, side, tactical_stop, target_1, target_2, entry_zone_high, entry_zone_low FROM watch_targets WHERE LOWER(ticker) = LOWER(?) ORDER BY rowid DESC LIMIT 1", (ticker,)).fetchone()
+                    # Resolve by ticker, but never to a placeholder row: watch_targets is keyed by
+                    # ticker, so a constituent with no thesis has exactly one row and it is a
+                    # placeholder. Attaching a position to it would mint an 'IN_TRADE' row with no
+                    # levels, which the placeholder-filtered watchlist then publishes as a real
+                    # trade -- and whose rowid would be handed to close_position to complete.
+                    w_r = c.execute(f"SELECT rowid, ticker, side, tactical_stop, target_1, target_2, entry_zone_high, entry_zone_low FROM watch_targets WHERE LOWER(ticker) = LOWER(?) AND NOT ({placeholder_rows_sql(active_only=False)}) ORDER BY rowid DESC LIMIT 1", (ticker,)).fetchone()
                     if w_r:
                         row_id = w_r["rowid"]
                         side = w_r["side"] or "LONG"
@@ -504,11 +509,11 @@ def take_trade_endpoint(data: dict):
                         t2 = w_r["target_2"]
                         if fill_price <= 0:
                             fill_price = float(w_r["entry_zone_high"] or w_r["entry_zone_low"] or 0.0)
-                        c.execute("""
-                            UPDATE watch_targets 
-                            SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
-                            WHERE rowid = ?
-                        """, (fill_price if fill_price > 0 else None, quantity, row_id))
+                c.execute(f"""
+                    UPDATE watch_targets
+                    SET user_taken = 1, status = 'IN_TRADE', fill_price = ?, quantity = ?, updated_at = datetime('now')
+                    WHERE rowid = ? AND NOT ({placeholder_rows_sql(active_only=False)})
+                """, (fill_price if fill_price > 0 else None, quantity, row_id))
 
             conn.commit()
 

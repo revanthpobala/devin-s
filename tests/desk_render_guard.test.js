@@ -22,6 +22,8 @@ function extract(s, name) {
 }
 
 const methods = [
+  // Stand-in for the instance helper the radar block shares with loadToday.
+  '_list(a) { return Array.isArray(a) ? a.filter(r => r && typeof r === "object") : []; }',
   extract(deskSrc, 'renderBatSignal'),
   extract(deskSrc, 'renderRegimeStrip'),
   extract(deskSrc, 'renderRadarAndCalibration'),

@@ -23,6 +23,7 @@ from src import config
 from src.clients.price_client import get_current_prices_batch
 from src.logic.report_level_extractor import extract_watch_levels_from_report
 from src.tracking.ops_alerts import is_test_ticker
+from src.tracking.watch_manager import placeholder_rows_sql
 from src.ui.state import get_db as _get_db
 
 logger = logging.getLogger(__name__)
@@ -747,7 +748,13 @@ def _tracked_universe() -> List[str]:
     syms: set[str] = {"SPY", "QQQ"}
     try:
         with _get_db() as conn:
-            rows = conn.cursor().execute("SELECT DISTINCT ticker FROM watch_targets").fetchall()
+            # Same placeholder predicate the watchlist, the copilot context and the migration use:
+            # the 844 'UNRESEARCHED' constituent rows are universe storage, not intraday targets,
+            # and leaving them in made this universe the entire Schwab 1000.
+            rows = conn.cursor().execute(
+                f"SELECT DISTINCT ticker FROM watch_targets "
+                f"WHERE NOT ({placeholder_rows_sql(active_only=True)})"
+            ).fetchall()
             syms.update((r["ticker"] or "").upper().strip() for r in rows if r["ticker"])
     except Exception as e:
         logger.debug(f"Regime universe watch_targets failed: {e}")

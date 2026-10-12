@@ -87,7 +87,9 @@ window.AppDesk = {
   },
 
   renderRadarAndCalibration(panel) {
-    const radar = panel.event_radar || [];
+    // Null holes in event_radar used to throw here, and because the radar block is memoised the
+    // whole desk then froze on the next poll with nothing shown to the user.
+    const radar = this._list(panel.event_radar);
     const calib = panel.calibration || {};
     const real = calib.real || {};
     const model = calib.model || {};
@@ -700,7 +702,166 @@ window.AppDesk = {
   _todaySubTab: 'opps',
   _oppsFilter: 'ALL',
   _lastTodayData: null,
+  _lastCoverageData: null,
+  _lastMissedMovesData: null,
   _isPollingToday: false,
+
+  // Feedback fields the user has typed into. The full re-render replaces the whole sub-tab
+  // subtree, so their values are captured before the swap and put back after it; a controller
+  // reload (deep-research dispatch, position action, sub-tab switch) must not eat an unsaved note.
+  _dirtyFeedbackIds: new Set(),
+  _feedbackGuardBound: false,
+
+  /** Null holes and non-objects out of a feed array. Same rule as renderRegimeStrip's _clean. */
+  _list(a) {
+    return Array.isArray(a) ? a.filter(r => r && typeof r === 'object') : [];
+  },
+
+  _phaseTone(pulse) {
+    const p = pulse || {};
+    return p.market_open ? 'green' : (p.market_phase === 'AFTER_HOURS' || p.market_phase === 'PRE_MARKET') ? 'amber' : 'red';
+  },
+
+  _setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.innerText = String(text);
+  },
+
+  /**
+   * Write a memoised block into a stable element, and skip the write entirely when memoRender
+   * hands back the string it produced last time. Comparing the cached HTML to what is already in
+   * the DOM is what keeps the poll from re-parsing a 2-4k subtree every 6s, while still honouring
+   * the memo contract at memoRender().
+   */
+  _writeMemo(elId, key, data, fn) {
+    const html = this.memoRender(key, data, fn);
+    const el = document.getElementById(elId);
+    if (el && el.innerHTML !== html) el.innerHTML = html;
+  },
+
+  /**
+   * The 6s poll path. Touches ONLY the three areas that actually change between polls:
+   *   1. the market-status pill and the SPY/QQQ/VIX strip
+   *   2. the regime strip and the bat signal (stable divs, memo-skipped)
+   *   3. the funnel counts and the six sub-tab count badges
+   * Everything else -- the opportunity cards, the alerts table, the positions/feedback forms,
+   * the coverage and missed-moves panels -- is rebuilt by its controller, which is what stops a
+   * twice-a-minute teardown of ~900 lines of DOM.
+   */
+  _patchLive() {
+    const data = this._lastTodayData || {};
+    const pulse = data.market_pulse || {};
+    const regime = data.market_regime || {};
+    const panel = data.action_panel || {};
+    const topOpps = this._list(data.top_opportunities);
+    const alerts = this._list(data.actionable_alerts);
+    const feedback = data.feedback_loop || {};
+    const openPositions = this._list(feedback.open_positions);
+    const closedPositions = this._list(feedback.closed_positions);
+    const cov = this._lastCoverageData || {};
+    const mm = this._lastMissedMovesData || {};
+    const capDeferred = this._list(cov.deep_cap_deferred);
+    const watchNoDeep = this._list(cov.watch_no_deep);
+    const missedList = this._list(mm.missed_moves);
+    const radar = this._list(panel.event_radar);
+    const f = data.funnel || {};
+
+    // 1. market pill + indices strip
+    const pill = document.getElementById('desk-market-pill');
+    if (pill) pill.className = `pill ${this._phaseTone(pulse)}`;
+    this._setText('desk-market-status-text', pulse.market_status_text || '🟢 CONTINUOUS SURVEILLANCE ACTIVE');
+    this._setText('desk-spy-px', pulse.spy ? `$${pulse.spy.toFixed(2)}` : '–');
+    this._setText('desk-qqq-px', pulse.qqq ? `$${pulse.qqq.toFixed(2)}` : '–');
+    this._setText('desk-vix-px', pulse.vix ? `${pulse.vix.toFixed(2)}` : '–');
+    const vixEl = document.getElementById('desk-vix-px');
+    if (vixEl) vixEl.style.color = (pulse.vix || 0) > 20 ? 'var(--rose-light)' : 'var(--green)';
+
+    // 2. regime strip + bat signal
+    this._writeMemo('desk-regime-strip', 'regime_strip', regime, (r) => this.renderRegimeStrip(r));
+    this._writeMemo('desk-bat-signal', 'bat_signal', panel, (p) => this.renderBatSignal(p));
+
+    // 3. funnel counts
+    this._setText('desk-funnel-alerts', f.alerts || 0);
+    this._setText('desk-funnel-local-done', f.local_done || 0);
+    this._setText('desk-funnel-local-pass', f.local_pass || 0);
+    this._setText('desk-funnel-measured', f.measured || 0);
+    this._setText('desk-funnel-deep-queued', f.deep_queued || 0);
+    this._setText('desk-funnel-deep-done', f.deep_done || 0);
+    this._setText('desk-funnel-actionable', f.actionable || 0);
+
+    // 3b. the six sub-tab count badges
+    this._setText('subtab-count-opps', topOpps.length);
+    this._setText('subtab-count-alerts', alerts.length);
+    this._setText('subtab-count-positions-open', openPositions.length);
+    this._setText('subtab-count-positions-closed', closedPositions.length);
+    this._setText('subtab-count-coverage', capDeferred.length);
+    this._setText('subtab-count-coverage-stalking', watchNoDeep.length);
+    this._setText('subtab-count-missed', missedList.length);
+    this._setText('subtab-count-radar', radar.length ? '!' : '0');
+  },
+
+  /**
+   * The full commit: sub-tab switches, filter changes, and every controller reload.
+   * Preserves the window scroll and the focused control across the swap, and puts back anything
+   * the user typed into a feedback form.
+   */
+  _renderFull(html) {
+    const cont = document.getElementById('today-content-container');
+    if (!cont) return;
+
+    // #today-content-container has no overflow rule anywhere in the CSS, so the WINDOW is the
+    // scroller: reading cont.scrollTop was always 0 and the restore never ran.
+    const prevScroll = window.scrollY || 0;
+    const prevFocusId = document.activeElement && document.activeElement.id;
+    const dirty = this._captureDirtyFeedback();
+
+    cont.innerHTML = html;
+
+    this._restoreDirtyFeedback(dirty);
+    if (prevFocusId) {
+      const refocus = document.getElementById(prevFocusId);
+      if (refocus && typeof refocus.focus === 'function') refocus.focus();
+    }
+    // Last: focus() scrolls the element into view and would otherwise win.
+    if (prevScroll > 0) window.scrollTo(0, prevScroll);
+
+    this._bindFeedbackDirtyGuard(cont);
+  },
+
+  /**
+   * Event-delegated dirty tracking. The forms are re-created on every full render, so per-element
+   * listeners would have to be re-attached each time; one pair of listeners on the container
+   * covers every current and future #fb-* control.
+   *
+   * `input` fires as the user types; `change` covers the grade <select>, which never fires
+   * `input` and is therefore invisible to the silent guard at the top of loadToday.
+   */
+  _bindFeedbackDirtyGuard(cont) {
+    if (this._feedbackGuardBound || !cont || typeof cont.addEventListener !== 'function') return;
+    const mark = (ev) => {
+      const id = ev && ev.target && ev.target.id;
+      if (id && /^fb-(grade|notes|lesson)-/.test(id)) this._dirtyFeedbackIds.add(id);
+    };
+    cont.addEventListener('input', mark);
+    cont.addEventListener('change', mark);
+    this._feedbackGuardBound = true;
+  },
+
+  _captureDirtyFeedback() {
+    const saved = {};
+    this._dirtyFeedbackIds.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && 'value' in el) saved[id] = el.value;
+    });
+    return saved;
+  },
+
+  _restoreDirtyFeedback(saved) {
+    Object.keys(saved).forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && 'value' in el) el.value = saved[id];
+    });
+  },
 
   setTodaySubTab(tab) {
     this._todaySubTab = tab || 'opps';
@@ -825,32 +986,67 @@ window.AppDesk = {
   },
 
   async loadToday(silent = false) {
+    // In-flight guard (the flag existed and was never read): a poll must never commit over a
+    // controller reload. With one whole-desk swap that showed up as a full rollback; with partial
+    // updates it would be worse -- only some of the live areas would move.
+    if (this._isPollingToday) return;
     if (silent && document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
       return;
     }
+    this._isPollingToday = true;
     try {
-      const [todayData, recordData, coverageData, briefingData, feedbackData, missedMovesData] = await Promise.all([
+      // The poll path never reads briefingData or feedbackData, so it does not fetch them either:
+      // morning-briefing rebuilds its panel with live quotes and feedback-loop builds the full
+      // post-mortem, and both were being paid for every 6s and thrown away.
+      const requests = [
         window.AppApi.request('/api/desk/today'),
-        window.AppApi.request('/api/desk/record?scope=all').catch(() => null),
         window.AppApi.request('/api/desk/coverage').catch(() => null),
-        window.AppApi.request('/api/desk/morning-briefing').catch(() => null),
-        window.AppApi.request('/api/desk/feedback-loop').catch(() => null),
         window.AppApi.request('/api/desk/missed-moves').catch(() => null),
-      ]);
+      ];
+      if (!silent) {
+        requests.push(
+          window.AppApi.request('/api/desk/morning-briefing').catch(() => null),
+          window.AppApi.request('/api/desk/feedback-loop').catch(() => null),
+        );
+      }
+      const resolved = await Promise.all(requests);
+      const [todayData, coverageData, missedMovesData, briefingData = null, feedbackData = null] = resolved;
 
       this._lastTodayData = todayData;
+      this._lastCoverageData = coverageData;
+      this._lastMissedMovesData = missedMovesData;
+
+      if (silent) {
+        // The poll writes into the three live areas and nothing else. Building the ~900-line
+        // desk string and throwing it away would be the cost with none of the benefit.
+        this._patchLive();
+        return;
+      }
 
       const pulse = (todayData && todayData.market_pulse) || {};
-      const topOpps = (todayData && todayData.top_opportunities) || (briefingData && briefingData.tier1_actionable) || [];
-      const actionableAlerts = (todayData && todayData.actionable_alerts) || [];
+      // One rule, one place: _phaseTone is what the poll writes into the pill, so the reloaded
+      // desk has to use the same helper or the two paths disagree on the tone.
+      const phaseBadgeTone = this._phaseTone(pulse);
+      // A feed can hand back a list with null holes. Without this the very first filter throws,
+      // and because the 6s poll is silent the whole desk then freezes with no visible error.
+      const topOpps = this._list((todayData && todayData.top_opportunities) || (briefingData && briefingData.tier1_actionable));
+      const actionableAlerts = this._list((todayData && todayData.actionable_alerts));
       const feedback = feedbackData || (todayData && todayData.feedback_loop) || {};
-      const openPositions = feedback.open_positions || [];
-      const closedPositions = feedback.closed_positions || [];
+      const openPositions = this._list(feedback.open_positions);
+      const closedPositions = this._list(feedback.closed_positions);
       const scorecard = feedback.scorecard || {};
 
       const inZoneOpps = topOpps.filter(o => o.in_zone);
       const coilingOpps = topOpps.filter(o => !o.in_zone && o.priority_tier <= 2);
       const highConvOpps = topOpps.filter(o => o.conviction >= 7);
+
+      // Sub-tab badge counts, computed once through _list() exactly as _patchLive() computes them.
+      // They used to be re-derived inline with a raw `.length`, so a null hole made a controller
+      // reload show N and the next poll silently rewrite the badge to N-1.
+      const capDeferred = this._list(coverageData && coverageData.deep_cap_deferred);
+      const watchNoDeep = this._list(coverageData && coverageData.watch_no_deep);
+      const missedList = this._list(missedMovesData && missedMovesData.missed_moves);
+      const radar = this._list(todayData && todayData.action_panel && todayData.action_panel.event_radar);
 
       const activeTab = this._todaySubTab || 'opps';
       const oppFilter = this._oppsFilter || 'ALL';
@@ -869,14 +1065,14 @@ window.AppDesk = {
       const spyPx = pulse.spy ? `$${pulse.spy.toFixed(2)}` : '–';
       const qqqPx = pulse.qqq ? `$${pulse.qqq.toFixed(2)}` : '–';
       const vixPx = pulse.vix ? `${pulse.vix.toFixed(2)}` : '–';
-      const phaseBadgeTone = pulse.market_open ? 'green' : (pulse.market_phase === 'AFTER_HOURS' || pulse.market_phase === 'PRE_MARKET') ? 'amber' : 'red';
 
       const regime = todayData.market_regime || {};
       const actionPanel = todayData.action_panel || {};
-      // Memoised: identical payloads render once per 6s poll instead of re-parsing these
-      // subtrees every cycle (the desk rebuilds its whole DOM each poll).
-      html += this.memoRender('regime_strip', regime, (r) => this.renderRegimeStrip(r));
-      html += this.memoRender('bat_signal', actionPanel, (p) => this.renderBatSignal(p));
+      // Memoised, and wrapped in stable divs so the poll can write the new string straight into
+      // the DOM: identical payloads render once per 6s poll instead of re-parsing these subtrees
+      // every cycle, and a changed payload updates the div without rebuilding the desk.
+      html += `<div id="desk-regime-strip">${this.memoRender('regime_strip', regime, (r) => this.renderRegimeStrip(r))}</div>`;
+      html += `<div id="desk-bat-signal">${this.memoRender('bat_signal', actionPanel, (p) => this.renderBatSignal(p))}</div>`;
 
       html += `
       <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
@@ -889,8 +1085,8 @@ window.AppDesk = {
                 <span style="font-size:15px; font-weight:800; letter-spacing:0.5px; color:var(--text-main);">
                   MARKET DYNAMICS &amp; EXECUTION COCKPIT
                 </span>
-                <span class="pill ${phaseBadgeTone}" style="font-weight:800; font-size:10px;">
-                  <span class="dot pulse"></span> ${marketText}
+                <span id="desk-market-pill" class="pill ${phaseBadgeTone}" style="font-weight:800; font-size:10px;">
+                  <span class="dot pulse"></span> <span id="desk-market-status-text">${marketText}</span>
                 </span>
               </div>
               <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">
@@ -902,11 +1098,11 @@ window.AppDesk = {
           <!-- Market Indices Strip -->
           <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
             <div style="display:flex; gap:10px; align-items:center; background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:6px 14px;">
-              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">SPY</span> <b style="color:var(--text-main);">${spyPx}</b></div>
+               <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">SPY</span> <b id="desk-spy-px" style="color:var(--text-main);">${spyPx}</b></div>
               <div style="color:var(--border);">|</div>
-              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">QQQ</span> <b style="color:var(--text-main);">${qqqPx}</b></div>
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">QQQ</span> <b id="desk-qqq-px" style="color:var(--text-main);">${qqqPx}</b></div>
               <div style="color:var(--border);">|</div>
-              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">VIX</span> <b style="color:${(pulse.vix || 0) > 20 ? 'var(--rose-light)' : 'var(--green)'};">${vixPx}</b></div>
+              <div style="font-size:11px; font-family:var(--font-mono);"><span style="color:var(--text-muted); font-weight:700;">VIX</span> <b id="desk-vix-px" style="color:${(pulse.vix || 0) > 20 ? 'var(--rose-light)' : 'var(--green)'};">${vixPx}</b></div>
             </div>
 
             <button class="btn secondary" style="font-size:11px; padding:6px 12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;" onclick="AppDesk.loadToday()">
@@ -923,41 +1119,41 @@ window.AppDesk = {
             <span>⚡ PIPELINE FUNNEL:</span>
           </div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-family:var(--font-mono); font-size:11px;">
-            <span>Alerts: <b style="color:var(--text-main);">${todayData.funnel.alerts || 0}</b></span>
+            <span>Alerts: <b id="desk-funnel-alerts" style="color:var(--text-main);">${todayData.funnel.alerts || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Local Done: <b style="color:var(--text-main);">${todayData.funnel.local_done || 0}</b></span>
+            <span>Local Done: <b id="desk-funnel-local-done" style="color:var(--text-main);">${todayData.funnel.local_done || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Local PASS: <b style="color:var(--cyan);">${todayData.funnel.local_pass || 0}</b></span>
+            <span>Local PASS: <b id="desk-funnel-local-pass" style="color:var(--cyan);">${todayData.funnel.local_pass || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Measured: <b style="color:var(--purple-light);">${todayData.funnel.measured || 0}</b></span>
+            <span>Measured: <b id="desk-funnel-measured" style="color:var(--purple-light);">${todayData.funnel.measured || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Deep Queued: <b style="color:var(--amber);">${todayData.funnel.deep_queued || 0}</b></span>
+            <span>Deep Queued: <b id="desk-funnel-deep-queued" style="color:var(--amber);">${todayData.funnel.deep_queued || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Deep Done: <b style="color:var(--blue-light);">${todayData.funnel.deep_done || 0}</b></span>
+            <span>Deep Done: <b id="desk-funnel-deep-done" style="color:var(--blue-light);">${todayData.funnel.deep_done || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Actionable: <b style="color:var(--green); font-size:12px;">${todayData.funnel.actionable || 0}</b></span>
+            <span>Actionable: <b id="desk-funnel-actionable" style="color:var(--green); font-size:12px;">${todayData.funnel.actionable || 0}</b></span>
           </div>
         </div>` : ''}
 
         <!-- Cockpit Primary Navigation Tabs -->
         <div style="display:flex; gap:8px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); flex-wrap:wrap;">
           <button id="subtab-today-opps" class="btn ${activeTab === 'opps' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('opps')">
-            🎯 Actionable Opportunities (${topOpps.length})
+            🎯 Actionable Opportunities (<span id="subtab-count-opps">${topOpps.length}</span>)
           </button>
           <button id="subtab-today-alerts" class="btn ${activeTab === 'alerts' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('alerts')">
-            🚨 Actionable Alerts (${actionableAlerts.length})
+            🚨 Actionable Alerts (<span id="subtab-count-alerts">${actionableAlerts.length}</span>)
           </button>
           <button id="subtab-today-feedback" class="btn ${activeTab === 'positions' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('positions')">
-            📊 Positions &amp; Feedback Loop (${openPositions.length} Open · ${closedPositions.length} Evaluated)
+            📊 Positions &amp; Feedback Loop (<span id="subtab-count-positions-open">${openPositions.length}</span> Open · <span id="subtab-count-positions-closed">${closedPositions.length}</span> Evaluated)
           </button>
           <button id="subtab-today-coverage" class="btn ${activeTab === 'coverage' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('coverage')">
-            🛡️ Pipeline Coverage &amp; Deferrals (${(coverageData && (coverageData.deep_cap_deferred || []).length) || 0})
+            🛡️ Pipeline Coverage &amp; Deferrals (<span id="subtab-count-coverage">${capDeferred.length}</span> Deferred · <span id="subtab-count-coverage-stalking">${watchNoDeep.length}</span> Stalking)
           </button>
           <button id="subtab-today-missed" class="btn ${activeTab === 'missed_moves' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('missed_moves')">
-            📉 Missed Moves (${(missedMovesData && (missedMovesData.missed_moves || []).length) || 0})
+            📉 Missed Moves (<span id="subtab-count-missed">${missedList.length}</span>)
           </button>
           <button id="subtab-today-radar" class="btn ${activeTab === 'radar' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('radar')" title="Drastic movers with their cause and their impact on your book, plus your own setup performance">
-            📡 Event Radar &amp; Calibration (${((todayData.action_panel || {}).event_radar || []).length ? '!' : '0'})
+            📡 Event Radar &amp; Calibration (<span id="subtab-count-radar">${radar.length ? '!' : '0'}</span>)
           </button>
         </div>
       </div>
@@ -1009,7 +1205,7 @@ window.AppDesk = {
               <span style="font-size:10.5px; color:var(--text-muted);">One condition away from actionable · Click setup to open Dossier & Plan</span>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              ${todayData.closest_to_gate.map(c => {
+              ${this._list(todayData.closest_to_gate).map(c => {
                 const repDate = (c.date && c.date !== '–') ? c.date.substring(0, 10) : 'latest';
                 return `
                 <div class="closest-gate-pill"
@@ -1588,7 +1784,7 @@ window.AppDesk = {
                               ${item.reason || 'Deferred by daily GPU / deep research slot cap'}
                             </td>
                             <td style="padding:8px 12px; text-align:right;">
-                              <button class="btn secondary" style="padding:3px 8px; font-size:10px;" onclick="AppDesk.triggerResearch('${item.ticker}')">Run Research</button>
+                              <button class="btn secondary" style="padding:3px 8px; font-size:10px;" onclick="AppDesk.triggerDeep('${item.ticker}', this)" title="Dispatch this deferred candidate into Deep Research">Run Research</button>
                             </td>
                           </tr>
                         `).join('')}
@@ -1752,29 +1948,18 @@ window.AppDesk = {
         }
 
         html += `</div>`;
-        const cont = document.getElementById('today-content-container');
-        if (cont) {
-          // The whole desk is re-rendered on every 6s poll. Preserving the scroll position
-          // stops the page jumping back to the top while the user is reading a card or a
-          // ledger, which was the worst symptom of the rebuild.
-          const prevScroll = cont.scrollTop;
-          const prevFocusId = document.activeElement && document.activeElement.id;
-          cont.innerHTML = html;
-          if (prevScroll > 0) cont.scrollTop = prevScroll;
-          if (prevFocusId) {
-            const refocus = document.getElementById(prevFocusId);
-            if (refocus && typeof refocus.focus === 'function') refocus.focus();
-          }
-        }
+        this._renderFull(html);
 
       } catch (err) {
-      console.error('Failed loading Today desk:', err);
-      const cont = document.getElementById('today-content-container');
-      if (cont && !silent) {
-        cont.innerHTML = `<div style="color:var(--rose-light); padding:20px; text-align:center;">Failed to load Today desk: ${err}</div>`;
+        console.error('Failed loading Today desk:', err);
+        const cont = document.getElementById('today-content-container');
+        if (cont && !silent) {
+          cont.innerHTML = `<div style="color:var(--rose-light); padding:20px; text-align:center;">Failed to load Today desk: ${err}</div>`;
+        }
+      } finally {
+        this._isPollingToday = false;
       }
-    }
-  },
+    },
 
 
   async loadJournal(page = 1) {
@@ -2012,6 +2197,7 @@ window.AppDesk = {
             <div><span style="color:var(--text-muted);">Sum R</span> <b style="color:${data.sum_r !== undefined && data.sum_r >= 0 ? 'var(--green)' : 'var(--rose-light)'};">${sumR}</b></div>
             <div><span style="color:var(--text-muted);">Mean</span> <b>${meanR}</b></div>
             <div><span style="color:var(--text-muted);">Median</span> <b>${medianR}</b></div>
+            <div><span style="color:var(--text-muted);">Max DD</span> <b style="color:var(--rose-light);" title="Worst peak-to-trough run of the curve, in R">${data.max_drawdown_r !== undefined && data.max_drawdown_r !== null ? '-' + data.max_drawdown_r.toFixed(2) + ' R' : '–'}</b></div>
           </div>
           ${totalScored < 100 ? `<div style="padding:6px 12px; background:var(--bg-subtle); border:1px dashed var(--amber); color:var(--amber); font-size:11px; border-radius:6px; margin-left:auto;">⚠️ n &lt; 100: metrics are not statistically significant</div>` : ''}
         </div>`;
@@ -2038,9 +2224,24 @@ window.AppDesk = {
           const lastY = zeroY - lastC.cum_r * yScale;
           const lastColor = lastC.cum_r >= 0 ? 'var(--green)' : 'var(--rose-light)';
 
+          // Every point is a trade: native <title> for the hover tooltip, and a click that opens
+          // the research dossier behind it, exactly like the Journal rows do. Points without a
+          // signal date or ticker stay plain circles.
+          const dotTitles = ec.map((c, i) => {
+            const x = 12 + (i / (ec.length - 1)) * (ec.length > 1 ? 600 : 0);
+            const y = zeroY - c.cum_r * yScale;
+            const color = c.r_net >= 0 ? 'var(--green)' : 'var(--rose-light)';
+            const tip = `${c.ticker || '?'} · exit ${c.date || '?'} · ${c.r_net >= 0 ? '+' : ''}${c.r_net.toFixed(2)}R · cum ${c.cum_r >= 0 ? '+' : ''}${c.cum_r.toFixed(2)}R`;
+            const clickable = c.ticker
+              ? ` style="cursor:pointer;" onclick="AppSwing.openReportModal('${c.signal_date || ''}', '${String(c.ticker).replace(/'/g, "\\'")}')"`
+              : '';
+            return `<circle cx="${x}" cy="${y}" r="3" fill="${color}"${clickable}><title>${tip}</title></circle>`;
+          }).join('');
+
           html += `<svg viewBox="0 0 624 110" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
             <line x1="0" y1="${zeroY}" x2="624" y2="${zeroY}" stroke="var(--border)" stroke-width="1"/>
             <polyline points="${points}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            ${dotTitles}
             <circle cx="${12 + ((ec.length - 1) / (ec.length - 1)) * 600}" cy="${lastY}" r="3" fill="${lastColor}"/>
           </svg>`;
         } else if (data.equity_curve && data.equity_curve.length === 1) {
@@ -2049,7 +2250,20 @@ window.AppDesk = {
         } else {
           html += `<div style="text-align:center; color:var(--text-muted); padding:20px;">No equity curve data yet.</div>`;
         }
-        html += `</div></div>`;
+        // The 200px box holds only the SVG; the axis labels and the drill-in hint sit under it.
+        html += `</div>`;
+
+        if (data.equity_curve && data.equity_curve.length > 1) {
+          const ec = data.equity_curve;
+          const firstPt = ec[0];
+          const lastPt = ec[ec.length - 1];
+          html += `<div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); font-family:var(--font-mono); margin-top:4px;">
+            <span>${firstPt.date || '–'}</span>
+            <span>${lastPt.date || '–'}</span>
+          </div>
+          <div style="font-size:10px; color:var(--text-muted); text-align:right; margin-top:2px;">click any point → research dossier · hover for the trade</div>`;
+        }
+        html += `</div>`;
 
         // Lanes table
         const lanes = data.by_lane || {};

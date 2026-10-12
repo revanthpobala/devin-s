@@ -1,0 +1,364 @@
+{
+  "today": {
+    "market_pulse": {
+      "market_open": true,
+      "market_phase": "RTH",
+      "market_status_text": "🟢 CONTINUOUS SURVEILLANCE ACTIVE",
+      "spy": 5782.31,
+      "qqq": 512.44,
+      "vix": 14.72,
+      "as_of_et": "10:42 AM ET"
+    },
+    "market_regime": {
+      "available": true,
+      "as_of_et": "10:42 AM ET",
+      "fear_greed": { "score": 62, "rating": "Greed", "flag": "🟢 GREED (55-75) — MOMENTUM EXPANSION" },
+      "vix": { "price": 14.72, "band": "🟢 LOW VOLATILITY (12-15) — stable; watch for mean reversion" },
+      "tide": {
+        "is_bullish": true,
+        "trend": "UPTREND",
+        "spy": 5782.31,
+        "ema20": 5744.1,
+        "sma50": 5688.4,
+        "spy_20d_return": 2.41
+      },
+      "breadth": { "universe": 983, "advancing": 612, "declining": 301, "flat": 70 },
+      "movers": {
+        "universe_size": 983,
+        "drops": [
+          { "ticker": "XYZ", "chg_pct": -6.4, "price": 41.2, "volume": 18200000, "drastic": true, "held": true },
+          { "ticker": "AAA", "chg_pct": -3.1, "price": 88.05, "volume": 4100000, "drastic": false, "held": false }
+        ],
+        "spikes": [
+          { "ticker": "BBB", "chg_pct": 8.9, "price": 204.5, "volume": 9900000, "drastic": true, "held": false }
+        ],
+        "alerts": [
+          { "ticker": "XYZ", "chg_pct": -6.4, "held": true }
+        ]
+      }
+    },
+    "action_panel": {
+      "as_of_et": "10:42 AM ET",
+      "bat_signal": {
+        "action": "DEPLOY",
+        "tone": "green",
+        "why": "Tide is up, Fear & Greed 62 and VIX in the low band: measured reversals are in play.",
+        "size": "FULL SIZE (1.0x)",
+        "headline": "3 in zone · 2 earnings blackout",
+        "counts": { "in_zone": 3, "coiling": 5, "held_in_zone": 1, "earnings_blackout": 2, "open_positions": 2 }
+      },
+      "risk_flags": {
+        "MSFT": {
+          "flags": [
+            { "label": "ALREADY HELD", "tone": "cyan", "note": "Long 100 sh in the Schwab book" },
+            { "label": "WEAK R:R", "tone": "amber", "note": "1.4 below the 2.0 measured floor" }
+          ]
+        }
+      },
+      "event_radar": [
+        {
+          "ticker": "XYZ",
+          "chg_pct": -6.4,
+          "price": 41.2,
+          "volume": 18200000,
+          "drastic": true,
+          "held": true,
+          "on_book": true,
+          "cause": "Guidance cut at the pre-market call",
+          "stance": "Defended the floor; invalidation still intact.",
+          "est_book_impact": -1840.0,
+          "exposure": {
+            "contract": "XYZ 40 PUT",
+            "symbol": "XYZ   251121P00040000",
+            "quantity": 2,
+            "asset_type": "OPTION",
+            "market_value": -640.0,
+            "unrealized_pnl": -180.0
+          }
+        }
+      ],
+      "calibration": {
+        "real": { "total": 24, "wins": 14, "win_rate_pct": 58.3, "sum_r": 6.2 },
+        "model": { "total": 149, "wins": 88, "win_rate_pct": 59.1, "sum_r": 41.8 },
+        "paper": { "total": 64, "wins": 39, "win_rate_pct": 60.9, "sum_r": 22.4 },
+        "coverage": { "exit_coverage_pct": 22.2, "closed_total": 24, "with_exit_price": 5 },
+        "pool_split": { "real": 24, "model": 149, "paper": 64 },
+        "recent_paper": [
+          { "ticker": "MSFT", "thesis_id": "MSFT_2026-10-09", "outcome": "TARGET_HIT", "r_multiple": 2.1 }
+        ]
+      }
+    },
+    "top_opportunities": [
+      {
+        "ticker": "MSFT",
+        "in_zone": true,
+        "priority_tier": 1,
+        "conviction": 8,
+        "score": 91,
+        "spot_price": 492.1,
+        "report_date": "2026-10-10",
+        "dist_pct": 0.0,
+        "side": "LONG",
+        "live_rr": 2.65,
+        "state_label": "IN ZONE",
+        "stage": "DEEP_RESEARCH",
+        "ran_since_cut": null,
+        "vintage": "TODAY",
+        "quote_source": "SCHWAB",
+        "vehicle_type": "OPTIONS",
+        "vehicle_label": "MSFT 490/500 CALL DEBIT SPREAD",
+        "entry_low": 488.0,
+        "entry_high": 492.5,
+        "tactical_stop": 481.4,
+        "target_1": 505.0,
+        "target_2": 512.0,
+        "pm_bullets": ["Stage 2 markup off a defended 20 EMA.", "PB funnel is set."],
+        "wait_for": "492.50 limit",
+        "pb_message": null,
+        "gate_reasons": [],
+        "invalidation": { "level": 481.4, "rationale": "Daily close below the 20 EMA" },
+        "needs_deep_research": false
+      },
+      {
+        "ticker": "NVDA",
+        "in_zone": false,
+        "priority_tier": 2,
+        "conviction": 7,
+        "score": 78,
+        "spot_price": 178.9,
+        "report_date": "2026-10-09",
+        "dist_pct": -2.4,
+        "side": "LONG",
+        "live_rr": 1.4,
+        "state_label": "COILING",
+        "stage": "SCREENER_COIL",
+        "ran_since_cut": "1.2 ATR",
+        "vintage": "1d old",
+        "quote_source": "YAHOO_FALLBACK",
+        "vehicle_type": "EQUITY",
+        "vehicle_label": "Straight shares",
+        "entry_low": 174.0,
+        "entry_high": 176.2,
+        "tactical_stop": 170.1,
+        "target_1": 188.0,
+        "target_2": 194.0,
+        "pm_bullets": [],
+        "wait_for": null,
+        "pb_message": "PB funnel unset — size down",
+        "gate_reasons": ["R:R below the 2.0 measured floor"],
+        "invalidation": null,
+        "needs_deep_research": true
+      },
+      {
+        "ticker": "AAPL",
+        "in_zone": false,
+        "priority_tier": 3,
+        "conviction": 5,
+        "score": 61,
+        "spot_price": 261.4,
+        "report_date": "2026-10-08",
+        "dist_pct": 3.8,
+        "side": "LONG",
+        "live_rr": 0,
+        "state_label": "STALKING",
+        "stage": "DEEP_RESEARCH",
+        "ran_since_cut": null,
+        "vintage": "2d old",
+        "quote_source": "ALPACA",
+        "vehicle_type": "EQUITY",
+        "vehicle_label": "Straight shares",
+        "entry_low": 252.0,
+        "entry_high": 254.5,
+        "tactical_stop": 246.8,
+        "target_1": 268.0,
+        "target_2": 275.0,
+        "pm_bullets": [],
+        "wait_for": null,
+        "pb_message": null,
+        "gate_reasons": [],
+        "invalidation": { "level": 246.8, "rationale": null },
+        "needs_deep_research": false
+      }
+    ],
+    "actionable_alerts": [
+      {
+        "symbol": "TSLA",
+        "side": "LONG",
+        "action": "BUY",
+        "strategy": "0DTE Momentum",
+        "setup": "Opening Range Breakout",
+        "date": "2026-10-12",
+        "state_label": "IN ZONE",
+        "in_zone": true,
+        "entry_price": 401.2,
+        "spot_price": 403.75,
+        "dist_pct": 0.6,
+        "stop_price": 396.5,
+        "target_price": 412.0,
+        "live_rr": 1.9
+      },
+      {
+        "symbol": "AMD",
+        "side": "SHORT",
+        "action": "SELL",
+        "strategy": "Swing",
+        "setup": "Exhaustion Gap",
+        "date": "2026-10-11",
+        "state_label": "APPROACHING",
+        "in_zone": false,
+        "entry_price": 221.5,
+        "spot_price": 217.2,
+        "dist_pct": -1.9,
+        "stop_price": 226.0,
+        "target_price": 209.0,
+        "live_rr": 2.5
+      }
+    ],
+    "feedback_loop": {
+      "open_positions": [],
+      "closed_positions": [],
+      "scorecard": { "total_trades": 0, "win_rate_pct": 0, "wins": 0, "losses": 0, "total_realized_r": 0 }
+    },
+    "found": [],
+    "inbox": [],
+    "measured_count": 3,
+    "closest_to_gate": [
+      { "ticker": "CRWD", "date": "2026-10-10", "last_price": 421.3, "dist": 0.0, "wait_for": "421.00 limit", "missing_condition": "RSI3 < 12" },
+      { "ticker": "PLTR", "date": "2026-10-09", "last_price": null, "dist": -1.2, "wait_for": null, "missing_condition": "PB funnel" }
+    ],
+    "funnel": {
+      "alerts": 18,
+      "local_done": 14,
+      "local_pass": 6,
+      "measured": 11,
+      "deep_queued": 2,
+      "deep_done": 4,
+      "actionable": 3
+    },
+    "rr_gates": {
+      "values": { "rr_market_min": 2.0, "rr_hi_rr": 5.0 },
+      "presets": { "1_0": { "rr_market_min": 1.0 } },
+      "label": "R:R floor 2.0"
+    },
+    "coverage": { "found_count": 18, "inbox_count": 4, "actionable_count": 3 },
+    "below_bar_count": 2
+  },
+  "record": { "scope": "all", "items": [], "summary": { "total": 0, "closed": 0, "wins": 0, "sum_r": 0 } },
+  "coverage": {
+    "alerts": 18,
+    "local_done": 14,
+    "local_pass": 6,
+    "deep_cap_deferred": [
+      { "ticker": "CRWD", "reason": "Deep research slot cap reached for today" },
+      { "ticker": "PLTR", "reason": "Deferred by daily GPU / deep research slot cap" }
+    ],
+    "watch_no_deep": [
+      { "ticker": "UBER", "reason": "Awaiting entry zone / price compression trigger" },
+      { "ticker": "COIN", "reason": "RSI3 not yet reset" }
+    ]
+  },
+  "briefing": {
+    "tier1_actionable": [],
+    "generated_at": "2026-10-12T09:00:00-04:00"
+  },
+  "feedback": {
+    "open_positions": [
+      {
+        "ticker": "MSFT",
+        "side": "LONG",
+        "entry_price": 488.1,
+        "spot_price": 492.1,
+        "stop_loss": 481.4,
+        "target": 505.0,
+        "unrealized_r": 0.34,
+        "unrealized_pnl": 400.0,
+        "pnl_pct": 0.82,
+        "scaled_at_t1": true,
+        "be_locked": true
+      },
+      {
+        "ticker": "NVDA",
+        "side": "LONG",
+        "entry_price": 175.0,
+        "spot_price": 178.9,
+        "stop_loss": 170.1,
+        "target": 188.0,
+        "unrealized_r": 0.48,
+        "unrealized_pnl": 390.0,
+        "pnl_pct": 2.23,
+        "scaled_at_t1": false,
+        "be_locked": false
+      }
+    ],
+    "closed_positions": [
+      {
+        "trade_id": "MSFT_trade_1760000000",
+        "ticker": "MSFT",
+        "outcome": "WIN",
+        "realized_r": 2.1,
+        "exit_reason": "TARGET_2_HIT",
+        "entry_price": 488.1,
+        "exit_price": 512.0,
+        "execution_grade": "A",
+        "auto_grade": "B",
+        "user_grade": "A",
+        "diagnostic": "Clean entry, held through the midday lull.",
+        "user_lesson": "Hold to T2 when the tide is up",
+        "user_notes": "Scaled 50% at T1"
+      },
+      {
+        "trade_id": "AMD_trade_1760000100",
+        "ticker": "AMD",
+        "outcome": "LOSS",
+        "realized_r": -1.0,
+        "exit_reason": "STOP_BREACHED",
+        "entry_price": 221.5,
+        "exit_price": 226.0,
+        "execution_grade": null,
+        "auto_grade": "C",
+        "user_grade": null,
+        "diagnostic": "Chased the gap; no measured R:R at entry.",
+        "user_lesson": null,
+        "user_notes": null
+      }
+    ],
+    "scorecard": {
+      "total_trades": 24,
+      "win_rate_pct": 58.3,
+      "wins": 14,
+      "losses": 10,
+      "total_realized_r": 6.2,
+      "profit_factor": 1.7,
+      "expectancy": 0.26
+    }
+  },
+  "missed-moves": {
+    "missed_moves": [
+      {
+        "ticker": "XYZ",
+        "move_pct": 14.2,
+        "last_verdict": "PASS",
+        "lane": "RR_SETUP",
+        "root_cause_reason": "stale_data",
+        "details": "Data window was 3 sessions old at triage time"
+      },
+      {
+        "ticker": "QQQ",
+        "move_pct": 8.4,
+        "last_verdict": "WATCH",
+        "lane": "CODE20",
+        "root_cause_reason": "chased",
+        "details": "Entry zone was 4% below spot"
+      }
+    ],
+    "weekly_rollup": {
+      "stale_data": 3,
+      "chased": 5,
+      "no-PB": 2,
+      "cap": 1,
+      "no_setup": 4,
+      "no_levels": 1,
+      "other": 0
+    }
+  }
+}
