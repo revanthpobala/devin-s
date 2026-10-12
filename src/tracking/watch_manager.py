@@ -1194,6 +1194,23 @@ def has_level_alert_today(ticker: str, trigger_type: str, date_str: str) -> bool
             ).fetchone()[0] > 0
 
 
+def get_last_alert_for(ticker: str) -> Optional[Dict[str, Any]]:
+    """The most recent watch alert logged for a ticker, or None.
+
+    The missed-moves scorecard shows the root-cause reason PLUS whether an alert was
+    actually sent for that name (plan/no-lost-movers, Live verification).
+    """
+    init_watch_db()
+    with _db_lock:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT ticker, date, trigger_type, message, spot_price, triggered_at "
+                "FROM watch_alerts WHERE ticker = ? ORDER BY triggered_at DESC, rowid DESC LIMIT 1",
+                (ticker.upper(),),
+            ).fetchone()
+    return dict(row) if row else None
+
+
 def get_recent_alerts(limit: int = 50) -> List[Dict[str, Any]]:
     """Return the most recent alert events."""
     with _db_lock:

@@ -9,6 +9,7 @@ status, and its actionable wording carries the UNMEASURED lane tag with no sizin
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from unittest.mock import patch
@@ -35,6 +36,11 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.clients.quote_router.quote_router.get_watchlist_quotes_batch", lambda syms: {}
     )
+    # E2: the label path is isolated to a file that does not exist, so every lane is
+    # watch-only unless a test writes its own corpus verdict. The machine's real corpus
+    # (data/research/rule_labels.json) must not decide test outcomes.
+    monkeypatch.setattr(run_watch_alerts, "_RULE_LABELS_PATH", tmp_path / "no_rule_labels.json")
+    monkeypatch.setattr(run_watch_alerts, "_rule_labels_cache", {"ts": 0.0, "data": None})
     yield
     level_engine.reset_engine_state()
 
@@ -141,9 +147,9 @@ def test_cross_without_adv20_still_fires_unmeasured():
     assert "unmeasured" in msgs[0]
 
 
-def test_runaway_rescore_is_never_terminal_and_words_the_alert():
-    """B: RUNNING_ACTIONABLE keeps the push wording and tags the lane UNMEASURED; a
-    no-room runaway keeps the name armed instead of writing MISSED_RUNAWAY."""
+def test_runaway_rescore_is_watch_only_without_a_measured_corpus():
+    """B/E2: without a corpus that measured the rule, the gate+R:R clearing is not a buy.
+    The name stays armed (never terminal) and the alert carries the watch-only reason."""
     watch_manager.upsert_watch_target(_payload(
         "RUN",
         shares_plan={
@@ -171,20 +177,73 @@ def test_runaway_rescore_is_never_terminal_and_words_the_alert():
 
     row = next(r for r in res if r["ticker"] == "RUN")
     # 109: above zone top, below T1, stop 95 below price, R:R (140-109)/(109-95)=2.21
-    assert row["status"] == "IN_TRADE"
-    assert row["last_alert_type"] == "RUNNING_ACTIONABLE"
+    # — the math clears, but no corpus measured the zone-top rule.
+    assert row["status"] == "STALKING"
+    assert row["last_alert_type"] == "RUNNING_NO_ROOM"
 
     alerts = _alert_rows("RUN")
-    push = next(r for r in alerts if r["trigger_type"] == "RUNNING_ACTIONABLE")
-    assert "BUY 100 RUN at market-$109.00" in push["message"]
-    assert "stop $95.00" in push["message"]
-    assert "T1 $140.00" in push["message"]
+    push = next(r for r in alerts if r["trigger_type"] == "RUNNING_NO_ROOM")
+    assert "gate clears at market" in push["message"]
     assert "R:R 2.21@mkt" in push["message"]
-    assert "UNMEASURED" in push["message"]
-    assert "shares" not in push["message"].lower().replace("BUY 100", "")
+    assert "watch-only" in push["message"]
+    assert "BUY 100" not in push["message"]
 
     with watch_manager._db_lock, watch_manager._get_connection() as conn:
         db_row = conn.execute("SELECT status FROM watch_targets WHERE ticker = 'RUN'").fetchone()
+    assert db_row[0] == "STALKING"
+
+
+def test_runaway_actionable_wording_needs_a_measured_corpus(tmp_path, monkeypatch):
+    """The same name with a corpus that measured its rule gets the actionable wording."""
+    labels_path = tmp_path / "rule_labels.json"
+    labels_path.write_text(json.dumps({
+        "rules": {"zone_top_market": {"verdict": "MEASURED", "actionable_wording_allowed": True,
+                                      "note": "24 resolved fills; 58% wins; +0.41R."}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(run_watch_alerts, "_RULE_LABELS_PATH", labels_path)
+    monkeypatch.setattr(run_watch_alerts, "_rule_labels_cache", {"ts": 0.0, "data": None})
+
+    watch_manager.upsert_watch_target(_payload(
+        "RUN2",
+        shares_plan={
+            "entry_type": "LIMIT",
+            "side": "LONG",
+            "entry_zone_low": 100.0,
+            "entry_zone_high": 105.0,
+            "breakout_level": 108.0,
+            "breakout_stop": 103.0,
+            "tactical_stop": 95.0,
+            "target_1": 140.0,
+            "target_2": 150.0,
+        },
+        signal_pack=36,
+        fade=0.0,
+        action_long=20,
+        ext_z=0.0,
+        atr_at_signal=3.0,
+    ))
+
+    with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
+         patch("run_watch_alerts.get_current_price", return_value=109.0), \
+         patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
+        res = evaluate_watch_cycle(sync_sheets=False)
+
+    row = next(r for r in res if r["ticker"] == "RUN2")
+    assert row["status"] == "IN_TRADE"
+    assert row["last_alert_type"] == "RUNNING_ACTIONABLE"
+
+    alerts = _alert_rows("RUN2")
+    push = next(r for r in alerts if r["trigger_type"] == "RUNNING_ACTIONABLE")
+    assert "BUY 100 RUN2 at market-$109.00" in push["message"]
+    assert "stop $95.00" in push["message"]
+    assert "T1 $140.00" in push["message"]
+    assert "R:R 2.21@mkt" in push["message"]
+    assert "lane MEASURED" in push["message"]
+    # No sizing text beyond the fixed push wording.
+    assert "shares" not in push["message"].lower().replace("BUY 100", "")
+
+    with watch_manager._db_lock, watch_manager._get_connection() as conn:
+        db_row = conn.execute("SELECT status FROM watch_targets WHERE ticker = 'RUN2'").fetchone()
     assert db_row[0] == "IN_TRADE"
 
 

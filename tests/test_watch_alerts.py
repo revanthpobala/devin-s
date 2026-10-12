@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import pandas as pd
 
+import run_watch_alerts
 from src.logic.report_level_extractor import (
     _credit_strike_em_consistent,
     _demote_unscaled_credit,
@@ -326,13 +327,16 @@ def test_floor_proximity_buffer(tmp_path):
         from datetime import datetime
         mock_now = datetime(2026, 8, 14, 16, 30)
         # Price at $302.00 is above $301.50 -> the B re-score runs at market (above zone
-        # top, below T1): it has room (R:R 3.5@mkt) and clears the gate, so the name is
-        # RUNNING_ACTIONABLE at market — no longer silently STALKING.
-        with patch("run_watch_alerts.get_eastern_now", return_value=mock_now), patch("run_watch_alerts.get_current_price", return_value=302.0):
+        # top, below T1): R:R (316-302)/(302-298) = 3.50 clears the floor, but with no
+        # corpus that measured the zone-top rule the lane is watch-only (E2) — the name
+        # stays armed instead of receiving a buy instruction.
+        with patch("run_watch_alerts.get_eastern_now", return_value=mock_now), \
+             patch("run_watch_alerts.get_current_price", return_value=302.0), \
+             patch.object(run_watch_alerts, "_RULE_LABELS_PATH", test_db.parent / "no_labels.json"):
             res = evaluate_watch_cycle(sync_sheets=False)
             assert len(res) == 1
-            assert res[0]["status"] == "IN_TRADE"
-            assert res[0]["last_alert_type"] == "RUNNING_ACTIONABLE"
+            assert res[0]["status"] == "STALKING"
+            assert res[0]["last_alert_type"] == "RUNNING_NO_ROOM"
             assert res[0]["distance_to_entry_pct"] > 0
 
         # Price enters zone at $301.00 -> IN_ZONE

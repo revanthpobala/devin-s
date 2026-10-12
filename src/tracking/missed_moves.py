@@ -278,6 +278,9 @@ def get_missed_moves(
                 "root_cause_reason": root_cause,
                 "details": f"Moved +{best_move_pct:.1f}% from ${d_spot:.2f} to ${live_p:.2f} ({verdict}: {root_cause})",
                 "is_backfill": False,
+                # Live verification: each row shows the reason PLUS whether an alert was sent.
+                "alert_sent": False,
+                "last_alert": None,
             })
             seen_tickers.add(sym)
 
@@ -286,10 +289,30 @@ def get_missed_moves(
         for b in BACKFILL_MISSED_MOVES:
             b_row = dict(b)
             b_row["is_backfill"] = True
+            b_row.setdefault("alert_sent", False)
+            b_row.setdefault("last_alert", None)
             if b["ticker"] in seen_tickers:
                 records = [r for r in records if r["ticker"] != b["ticker"]]
             records.append(b_row)
             seen_tickers.add(b["ticker"])
+
+    # Attach the alert-sent fact per row (the reason alone is half the picture: a missed
+    # move that fired an alert is a different failure than one that never alerted).
+    try:
+        from src.tracking.watch_manager import get_last_alert_for
+
+        for r in records:
+            if r.get("is_backfill"):
+                continue
+            last = get_last_alert_for(r["ticker"])
+            r["alert_sent"] = bool(last)
+            r["last_alert"] = (
+                {"trigger_type": last.get("trigger_type"), "date": last.get("date"),
+                 "spot_price": last.get("spot_price")}
+                if last else None
+            )
+    except Exception as e:
+        logger.debug(f"missed-move alert lookup failed: {e}")
 
     # Sort all records by move percentage descending
     records.sort(key=lambda x: x.get("move_pct", 0.0), reverse=True)

@@ -416,44 +416,58 @@ _RULE_LABELS_PATH = config.BASE_DIR / "data" / "research" / "rule_labels.json"
 _RULE_LABELS_TTL_S = 900
 _rule_labels_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
 
+# Which runaway rule a crossing maps to (E1's three rules decide the wording).
+_CROSS_TO_RULE = {
+    "HIGH_20D": "high_20d_break",
+    "BREAKOUT": "zone_top_market",
+    "ZONE_TOP": "zone_top_market",
+}
 
-def _runaway_rule_label() -> Dict[str, Any]:
-    """E1/E2: the replay corpus decides the running lane's label and wording.
+
+def runaway_rule_for(cross_kinds: List[str], reached_target: bool = False) -> str:
+    """The E1 rule a crossing belongs to; the corpus decides that rule's wording."""
+    if reached_target:
+        return "post_t1_reentry"
+    for kind in ("HIGH_20D", "BREAKOUT", "ZONE_TOP"):
+        if kind in (cross_kinds or []):
+            return _CROSS_TO_RULE[kind]
+    return "zone_top_market"
+
+
+def _runaway_rule_label(rule: str = "zone_top_market") -> Dict[str, Any]:
+    """E1/E2: the replay corpus decides a rule's label and whether it may say "actionable".
 
     ``rule_labels.json`` is written by ``scripts/research/replay_runaway_rules.py --write-labels``.
-    A rule may only say "actionable" once the honest replay passes it (n, win rate,
-    expectancy); anything missing, unreadable, stale, or UNMEASURED means the alert
-    keeps the UNMEASURED tag and watch-only fallback wording, and the forward ledger
-    keeps counting observations. Fail-closed in every direction.
+    A rule whose honest replay passes (n, win rate, expectancy, fire-rate) gets to say
+    actionable; a rule that fails — or has no corpus, or an unreadable one — is watch-only
+    and its alerts carry the UNMEASURED/measured-negative reason. Fail-closed in every
+    direction, so no alert can claim more than the corpus measured.
     """
     import time as _time
 
     now = _time.time()
     if now - _rule_labels_cache["ts"] < _RULE_LABELS_TTL_S and _rule_labels_cache["data"] is not None:
-        return _rule_labels_cache["data"]
+        data = _rule_labels_cache["data"]
+    else:
+        data = {}
+        try:
+            if _RULE_LABELS_PATH.exists():
+                raw = json.loads(_RULE_LABELS_PATH.read_text(encoding="utf-8"))
+                data = raw.get("rules") or {}
+        except Exception as e:
+            logger.debug(f"[E2] rule_labels unreadable ({e}); every lane stays watch-only.")
+        _rule_labels_cache["ts"] = now
+        _rule_labels_cache["data"] = data
 
-    label = {"label": "UNMEASURED", "actionable_allowed": False, "source": "absent"}
-    try:
-        if _RULE_LABELS_PATH.exists():
-            data = json.loads(_RULE_LABELS_PATH.read_text(encoding="utf-8"))
-            rules = data.get("rules") or {}
-            for key in ("zone_top_market", "breakout_trigger", "pullback_zone_top"):
-                rule = rules.get(key) or {}
-                if rule.get("actionable_wording_allowed") and rule.get("verdict") == "MEASURED":
-                    label = {
-                        "label": "MEASURED",
-                        "actionable_allowed": True,
-                        "source": "replay_corpus",
-                        "rule": key,
-                        "note": rule.get("note"),
-                    }
-                    break
-    except Exception as e:
-        logger.debug(f"[E2] rule_labels unreadable ({e}); running lane stays UNMEASURED.")
-
-    _rule_labels_cache["ts"] = now
-    _rule_labels_cache["data"] = label
-    return label
+    rule_meta = data.get(rule) or {}
+    allowed = bool(rule_meta.get("actionable_wording_allowed")) and rule_meta.get("verdict") == "MEASURED"
+    return {
+        "rule": rule,
+        "label": "MEASURED" if allowed else "UNMEASURED",
+        "actionable_allowed": allowed,
+        "source": "replay_corpus" if rule_meta else "absent",
+        "note": rule_meta.get("note"),
+    }
 
 
 def _rescore_at_market(
@@ -508,8 +522,12 @@ def _rescore_at_market(
     stop_is_real = 0 < stop < live_price
     actionable = gates_clear and stop_is_real and live_rr >= floor
 
-    lane_label = _runaway_rule_label()
-    lane = "MEASURED" if lane_label["label"] == "MEASURED" else "UNMEASURED"
+    lane_label = _runaway_rule_label(runaway_rule_for(cross_kinds))
+    lane = lane_label["label"]
+    gates_ok = gates_clear and stop_is_real and live_rr >= floor
+    # E2: the corpus decides who may say "actionable". A gate pass on an unmeasured (or
+    # measured-negative) rule is a watch-only alert with the reason stated, never a buy.
+    actionable = bool(gates_ok and lane_label["actionable_allowed"])
     outcome = "RUNNING_ACTIONABLE" if actionable else "RUNNING_NO_ROOM"
     crosses_txt = ",".join(cross_kinds) if cross_kinds else "above-zone"
 
@@ -517,6 +535,14 @@ def _rescore_at_market(
         message = (
             f"BUY 100 {ticker} at market-${live_price:.2f} | stop ${stop:.2f} | "
             f"T1 ${t1:.2f} | R:R {live_rr:.2f}@mkt | lane {lane} | trigger {crosses_txt}"
+        )
+    elif gates_ok:
+        zone_txt = f"${entry_low:.2f}-${entry_high:.2f}" if entry_low > 0 else "no stored zone"
+        reason = lane_label.get("note") or "no replay corpus yet"
+        message = (
+            f"[{ticker}] ran: gate clears at market (R:R {live_rr:.2f}@mkt, stop ${stop:.2f} below price) "
+            f"but lane {lane} ({lane_label['rule']}: {reason}) — watch-only, wait for pullback to "
+            f"{zone_txt} or a new level. Level stays armed; no buy instruction."
         )
     else:
         zone_txt = f"${entry_low:.2f}-${entry_high:.2f}" if entry_low > 0 else "no stored zone"
@@ -528,6 +554,9 @@ def _rescore_at_market(
     return {
         "outcome": outcome,
         "lane": lane,
+        "rule": lane_label["rule"],
+        "gates_ok": gates_ok,
+        "label_allows_actionable": lane_label["actionable_allowed"],
         "live_rr": live_rr,
         "stop": stop,
         "target_1": t1,
@@ -728,13 +757,19 @@ def _apply_running_rescore(
         "eval_verdict": "STAND_ASIDE",
         "outcome": res["outcome"],
     }
+
+    # E2/B4: the rule fired (gate + R:R at market). Forward-log the observation either way —
+    # that is how an UNMEASURED lane graduates — but only a corpus-measured rule may say
+    # "actionable"; everything else is watch-only wording.
+    if res["gates_ok"]:
+        _forward_log_runaway(ticker, res, cross_kinds)
+
     if res["outcome"] == "RUNNING_ACTIONABLE":
         out["new_status"] = "IN_TRADE"
         out["alert_fired"] = "RUNNING_ACTIONABLE"
         out["is_actionable_now"] = 1
         out["eval_verdict"] = "TAKE"
         _emit_level_alert(ticker, "RUNNING_ACTIONABLE", res["message"], live_price)
-        _forward_log_runaway(ticker, res, cross_kinds)
         return out
 
     # No room at market.
