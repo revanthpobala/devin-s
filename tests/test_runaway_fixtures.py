@@ -69,13 +69,12 @@ def _fixture_bars(fx):
     The audit's BACKFILL price pairs are the move; the levels come from the plan actually
     stored on disk, so nothing is invented.
     """
-    ticker, spot, live = fx["ticker"], fx["dossier_spot"], fx["live_spot"]
+    spot, live = fx["dossier_spot"], fx["live_spot"]
     plan = fx["plan"]
     setup = fx["dossier_date"]
     nxt = _next_session(setup)
     stop = float(plan["tactical_stop"])
     entry_high = float(plan.get("entry_zone_high") or 0.0)
-    t1 = float(plan.get("target_1") or 0.0)
     t2 = float(plan.get("target_2") or 0.0)
 
     # Two quiet prior bars so the 20-day-high and ADV20 windows have real data.
