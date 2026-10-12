@@ -682,6 +682,18 @@ def run_watch_loop(poll_interval: int = 60, sync_sheets: bool = True):
                 evaluate_watch_cycle(sync_sheets=sync_sheets)
             except Exception as e:
                 logger.error(f"Error in watch cycle: {e}", exc_info=True)
+            # Carry the thesis paper positions forward on live quotes and resolve any
+            # thesis that has now played out (target hit / stop hit / expiry).
+            try:
+                from src.tracking.thesis_evaluator import refresh_thesis_paper_trades
+                res = refresh_thesis_paper_trades()
+                if res.get("resolved"):
+                    logger.info(
+                        f"[PAPER] {res['resolved']} thesis paper position(s) resolved "
+                        f"({res.get('refreshed', 0)} refreshed)."
+                    )
+            except Exception as e_paper:
+                logger.debug(f"[PAPER] refresh failed: {e_paper}")
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         logger.info("Watchlist Alert Daemon stopped by user.")

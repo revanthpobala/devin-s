@@ -147,6 +147,7 @@ window.AppChat = {
     if (cal.real && (cal.real.scored || 0) > 0) {
       const r = cal.real, m = cal.model || {}, cov = cal.coverage || {};
       lines.push(`\n**🎓 CALIBRATION — SPLIT BY DATA POOL (never blended):**`);
+      lines.push(`   • PAPER (100 shares at the thesis spot, resolved on real bars): ${(ap.calibration.paper.aggregate || {}).resolved || 0} resolved | ${(ap.calibration.paper.aggregate || {}).thesis_correct_rate_pct}% of theses reached their target | avg ${(ap.calibration.paper.aggregate || {}).avg_r}R | PF ${(ap.calibration.paper.aggregate || {}).profit_factor} | total $${(ap.calibration.paper.aggregate || {}).total_pnl_dollars} | MFE/MAE ${(ap.calibration.paper.aggregate || {}).avg_mfe_pct}% / ${(ap.calibration.paper.aggregate || {}).avg_mae_pct}% — this is the screen's own hit rate, independent of the user's execution.`);
       lines.push(`   • REAL executed trades (${r.scored} scored, ${r.unmeasured} unmeasured): win rate ${r.win_rate_pct}% vs a ${r.breakeven_win_rate_pct}% breakeven implied by the payoff ratio | profit factor ${r.profit_factor} | expectancy ${r.expectancy}R | total ${r.total_realized_r}R`);
       if ((m.scored || 0) > 0) {
         lines.push(`   • MODEL simulated (${m.scored} scored): win rate ${m.win_rate_pct}% | profit factor ${m.profit_factor} | expectancy ${m.expectancy}R — this is a backtest with perfect fills, NOT evidence about the user's execution; do not size from it.`);

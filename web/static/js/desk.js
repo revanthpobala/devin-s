@@ -77,6 +77,7 @@ window.AppDesk = {
     const calib = panel.calibration || {};
     const real = calib.real || {};
     const model = calib.model || {};
+    const paper = calib.paper || {};
     const cov = calib.coverage || {};
     const split = calib.pool_split || {};
 
@@ -162,16 +163,33 @@ window.AppDesk = {
         ${covWarn}
 
         <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
-          <div style="flex:1 1 320px; min-width:280px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--cyan-glow); border-radius:0 8px 8px 0; padding:9px 12px;">
-            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px;">
+          <div style="flex:1 1 300px; min-width:270px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--emerald); border-radius:0 8px 8px 0; padding:9px 12px;">
+            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px; flex-wrap:wrap;">
+              <b style="font-size:10.5px; letter-spacing:0.5px; color:var(--emerald-light);">📄 PAPER · 100 SHARES AT THESIS SPOT</b>
+              <span style="font-size:9px; color:var(--text-dim); font-family:var(--font-mono);">${paper.open || 0} live · ${(paper.aggregate || {}).resolved || 0} resolved</span>
+            </div>
+            ${(paper.aggregate || {}).resolved ? `
+            ${poolStats(paper.aggregate || {}, 'var(--emerald-light)')}
+            <div style="display:flex; gap:7px; flex-wrap:wrap; margin-bottom:9px;">
+              ${stat('THESIS CORRECT', ((paper.aggregate || {}).thesis_correct_rate_pct !== null && (paper.aggregate || {}).thesis_correct_rate_pct !== undefined ? Number((paper.aggregate || {}).thesis_correct_rate_pct).toFixed(0) + '%' : '–'), 'var(--emerald-light)', 'reached T1')}
+              ${stat('TARGET HIT', (paper.aggregate || {}).target_hit || 0, 'var(--green)')}
+              ${stat('STOP HIT', (paper.aggregate || {}).stop_hit || 0, 'var(--rose-light)')}
+              ${stat('MFE / MAE', `${(paper.aggregate || {}).avg_mfe_pct !== null && (paper.aggregate || {}).avg_mfe_pct !== undefined ? Number((paper.aggregate || {}).avg_mfe_pct).toFixed(1) : '–'}% / ${(paper.aggregate || {}).avg_mae_pct !== null && (paper.aggregate || {}).avg_mae_pct !== undefined ? Number((paper.aggregate || {}).avg_mae_pct).toFixed(1) : '–'}%`, 'var(--text-main)', 'max fav / adv')}
+            </div>
+            <div style="font-size:9.5px; color:var(--text-dim); line-height:1.5;">A deterministic 100-share position opened at the spot captured when the thesis was generated, then walked forward on real daily bars (next-open fill, stop-first ambiguity) until the thesis resolved. This is the <b style="color:var(--text-muted)">screen's own hit rate</b>, independent of how you executed.</div>
+            ` : `<div style="font-size:11px; color:var(--text-muted);">${(paper.open || 0)} paper position(s) still carrying forward — no thesis has resolved yet, so the hit rate is not yet measurable.</div>`}
+          </div>
+
+          <div style="flex:1 1 300px; min-width:270px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--cyan-glow); border-radius:0 8px 8px 0; padding:9px 12px;">
+            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px; flex-wrap:wrap;">
               <b style="font-size:10.5px; letter-spacing:0.5px; color:var(--cyan-glow);">🟢 REAL TRADES</b>
               <span style="font-size:9px; color:var(--text-dim); font-family:var(--font-mono);">${split.real_rows || 0} rows — what the tracker actually opened/closed</span>
             </div>
             ${real.scored ? poolStats(real) : `<div style="font-size:11px; color:var(--text-muted);">No measurable real trades yet — they need both an exit price and a stop level.</div>`}
           </div>
 
-          <div style="flex:1 1 320px; min-width:280px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--purple); border-radius:0 8px 8px 0; padding:9px 12px;">
-            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px;">
+          <div style="flex:1 1 300px; min-width:270px; background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--purple); border-radius:0 8px 8px 0; padding:9px 12px;">
+            <div style="display:flex; align-items:center; gap:7px; margin-bottom:7px; flex-wrap:wrap;">
               <b style="font-size:10.5px; letter-spacing:0.5px; color:var(--purple-light);">🟣 MODEL (SIMULATED)</b>
               <span style="font-size:9px; color:var(--text-dim); font-family:var(--font-mono);">${split.model_rows || 0} rows — bar-walk backtest on suggested setups</span>
             </div>
@@ -179,6 +197,23 @@ window.AppDesk = {
             <div style="font-size:9.5px; color:var(--text-dim); line-height:1.5;">Shown for reference only. A backtest with perfect fills is not evidence about your live execution — do not size from this pool.</div>
           </div>
         </div>
+
+        ${((paper.recent || []).length) ? `
+        <div style="margin-bottom:11px;">
+          <div style="font-size:9px; font-weight:900; letter-spacing:0.6px; color:var(--text-dim); margin-bottom:6px;">RECENTLY RESOLVED PAPER THESES (100 shares from the thesis spot)</div>
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            ${paper.recent.slice(0, 6).map(r => `
+              <div style="display:flex; align-items:center; gap:9px; font-size:10.5px; font-family:var(--font-mono); background:var(--bg-main); border:1px solid var(--border); border-radius:6px; padding:5px 9px; flex-wrap:wrap;">
+                <b style="color:var(--cyan-glow); min-width:48px;">${r.ticker}</b>
+                <span style="color:var(--text-dim);">${r.side}</span>
+                <span>thesis $${Number(r.thesis_spot || 0).toFixed(2)} → exit $${Number(r.exit_spot || 0).toFixed(2)}</span>
+                <b style="color:${(r.pnl_dollars || 0) >= 0 ? 'var(--green)' : 'var(--rose-light)'};">${(r.pnl_dollars || 0) >= 0 ? '+' : ''}$${Number(r.pnl_dollars || 0).toFixed(0)}</b>
+                <span style="color:var(--text-dim);">${r.r_multiple !== null && r.r_multiple !== undefined ? Number(r.r_multiple).toFixed(2) + 'R' : '–'}</span>
+                <span style="padding:1px 6px; border-radius:3px; font-size:9px; font-weight:800; background:${r.outcome === 'TARGET_HIT' ? 'rgba(16,185,129,0.16)' : 'rgba(244,63,94,0.16)'}; color:${r.outcome === 'TARGET_HIT' ? 'var(--green)' : 'var(--rose-light)'};">${r.outcome}</span>
+                <span style="margin-left:auto; color:var(--text-dim); font-size:9px;">${r.created_date} → ${r.resolved_at}</span>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
 
         ${(calib.reasoning || []).length ? `
         <div style="background:var(--bg-subtle); border:1px solid var(--border); border-left:3px solid var(--purple); border-radius:0 7px 7px 0; padding:9px 12px;">

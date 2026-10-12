@@ -475,13 +475,26 @@ def get_calibration_panel() -> Dict[str, Any]:
 
         panel["real"] = real_sc
         panel["model"] = model_sc
+        try:
+            from src.tracking.thesis_evaluator import get_paper_trade_stats
+            paper = get_paper_trade_stats()
+        except Exception as e:
+            logger.debug(f"Paper trade stats failed: {e}")
+            paper = {}
+        if paper.get("available"):
+            panel["paper"] = paper
+        else:
+            panel.pop("paper", None)
         panel["pool_split"] = {
             "real_rows": len(real_rows),
             "model_rows": len(model_rows),
+            "paper_rows": (paper.get("open") or 0) + ((paper.get("aggregate") or {}).get("resolved") or 0),
             "note": (
                 "REAL = trades the tracker actually opened/closed. MODEL = the bar-walk lifecycle "
-                "simulator's backtest on suggested setups. These are different populations and are "
-                "no longer blended into one headline number."
+                "simulator's backtest on suggested setups. PAPER = a deterministic 100-share position "
+                "opened at the spot captured when the thesis was generated, then carried forward on "
+                "live quotes until the thesis resolves. These are different populations and are never "
+                "blended into one headline number."
             ),
         }
         panel["coverage"] = _real_trade_coverage()
@@ -523,6 +536,27 @@ def get_calibration_panel() -> Dict[str, Any]:
                 reasoning.append(f"Profit factor {pf:.2f} — the aggregate edge is not yet proven; treat every new lane as unmeasured.")
         if exp_r is not None:
             reasoning.append(f"Expectancy {exp_r:+.2f}R per trade across {scored} scored trades.")
+
+        # Thesis-attribution pool: the deterministic 100-share paper position taken at the
+        # thesis spot. This is the only pool that links a generated thesis to its outcome, so
+        # it is the one that can say whether the screen's calls were actually right.
+        paper = panel.get("paper") or {}
+        agg_p = paper.get("aggregate") or {}
+        if (agg_p.get("resolved") or 0) >= 5:
+            correct = agg_p.get("thesis_correct_rate_pct")
+            avg_r = agg_p.get("avg_r")
+            pf_p = agg_p.get("profit_factor")
+            reasoning.append(
+                f"THESIS ATTRIBUTION ({agg_p.get('resolved')} resolved paper trades at 100 shares from the thesis spot): "
+                f"{correct}% of theses reached their target, {agg_p.get('stop_hit')} hit their stop first, "
+                f"average {avg_r}R with a {pf_p} profit factor — this is the screen's own hit rate, "
+                f"independent of how you executed."
+            )
+        elif (paper.get("open") or 0) > 0 and not (agg_p.get("resolved") or 0):
+            reasoning.append(
+                f"THESIS ATTRIBUTION: {paper.get('open')} paper position(s) are still carrying forward on live quotes — "
+                f"no thesis has resolved yet, so the screen's hit rate is not yet measurable."
+            )
 
         cov = panel.get("coverage") or {}
         if cov.get("available") and cov.get("closed_total"):
@@ -587,6 +621,23 @@ def _holdings_by_underlying() -> Dict[str, Dict[str, Any]]:
 
 _EARN_CACHE: Dict[str, Optional[int]] = {}
 
+_PAPER_REFRESH_T: float = 0.0
+_PAPER_REFRESH_EVERY: float = 300.0
+
+
+def _maybe_refresh_paper() -> None:
+    """Throttled paper-thesis resolution so the desk shows fresh outcomes without blocking."""
+    global _PAPER_REFRESH_T
+    now_ts = time.time()
+    if (now_ts - _PAPER_REFRESH_T) < _PAPER_REFRESH_EVERY:
+        return
+    _PAPER_REFRESH_T = now_ts
+    try:
+        from src.tracking.thesis_evaluator import refresh_thesis_paper_trades
+        refresh_thesis_paper_trades()
+    except Exception as e:
+        logger.debug(f"Throttled paper refresh failed: {e}")
+
 
 def _days_to_earnings(sym: str) -> Optional[int]:
     """Cached days-to-next-earnings lookup. Never raises; None means 'unknown'."""
@@ -625,6 +676,10 @@ def build_action_panel(opportunities: Optional[List[Dict[str, Any]]] = None,
     movers = list(movers_raw.get("alerts") or [])
     movers += list(movers_raw.get("spikes") or [])
     movers += list(movers_raw.get("drops") or [])
+
+    # Resolve paper theses on a slower cadence than the panel cache: the bar walk is the
+    # expensive part (~1s per 5 positions) and the answer only changes once a day.
+    _maybe_refresh_paper()
 
     def _safe(fn, *a, **kw):
         try:
