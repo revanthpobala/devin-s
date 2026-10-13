@@ -77,15 +77,17 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
         "CONVICTION & VERDICT CALIBRATION RUBRIC:\n"
-        "- 8 to 10 / 10 (HIGH CONVICTION IMMEDIATE ENTRY): Structural support / 20 EMA confluence, measured R:R >= 3.0:1, Stage 1 base or Stage 2 trend, volume confirmation. Output VERDICT = 'ENTER (Limit @ Floor)' or 'ENTER (Breakout)'. Do NOT artificially downgrade to STALK if the trade has defined risk and edge.\n"
-        "- 6 to 7 / 10 (ACTIONABLE STALKING): High quality setup awaiting minor price pullback or trigger level. Output VERDICT = 'STALK' with realistic actionable limit price.\n"
-        "- 1 to 5 / 10 (AVOID / CASH SKIP): Unfavorable R:R (< 3.0:1), distribution / Stage 4 knife, or binary friction. Output VERDICT = 'CASH_SKIP'.\n"
+        "- 8 to 10 / 10 (ENTER — measured gate): ENTER requires the engine gate to pass: Long In Zone, Long RR At Market >= 2.0 (rr_config.min_rr() = 2.0), PB funnel, fade off, stop >= 0.7 ATR, Ext Z < 2.5. R:R >= 3.0 is the stronger tier. ENTER (Breakout) is allowed only when that gate passes. Output VERDICT = 'ENTER (Limit @ Floor)' or 'ENTER (Breakout)'.\n"
+        "- 6 to 7 / 10 (ACTIONABLE STALKING): Armed setup awaiting trigger: requires a non-zero breakout level or entry zone, a tactical stop, and T1/T2 strictly above the trigger. Never emit breakout_level = 0 on a STALK. Output VERDICT = 'STALK'. If the plan arms nothing, output CASH_SKIP instead.\n"
+        "- 1 to 5 / 10 (AVOID / CASH SKIP): R:R at market < 2.0 (gate floor), distribution / Stage 4 knife, or binary friction. Output VERDICT = 'CASH_SKIP'.\n"
+        "- WATCH (UNMEASURED MOMENTUM): A floor defense or level break on RVOL >= 1.0 that fails the measured gate. Start the summary with 'UNMEASURED MOMENTUM:' then RVOL, R:R at market, and a structural stop. Output VERDICT = 'WATCH' with the level armed. This lane has no measured edge and never receives high conviction or priority.\n"
+        "CONVICTION IS A LABEL: The conviction number has no measured basis of its own. It can only be lowered by cap_conviction — it must never drive entry priority. A WATCH or STALK card with conviction 8 is a badge mismatch, not actionable.\n"
         "CRITICAL CONSTRAINT: You CANNOT output ENTER if engine triage is 'no_setup' or the actionable gate fails. Output CASH_SKIP or STALK instead.\n\n"
         "Output in this exact markdown format (JSON BLOCK MUST COME FIRST):\n\n"
         "```json:watch_levels\n"
         "{\n"
         f'  "ticker": "{ticker}",\n'
-        '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|STALK|CASH_SKIP",\n'
+        '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|STALK|WATCH|CASH_SKIP",\n'
         '  "conviction": 8,\n'
         '  "side": "LONG|SHORT",\n'
         '  "shares_plan": {\n'
@@ -296,7 +298,7 @@ def run_arbitration(
         f"Long RR At Market={dw_dict.get('Long RR At Market', 'N/A')}\n"
         f"- EMPIRICAL PRIORS & EVIDENCE DISCIPLINE:\n"
         f"  * You must NOT cite or rely on Directional Probability or Buy Score (they are empirical noise).\n"
-        f"  * Evaluate solely based on measured structural zones, R:R tier (>= 3.0), and empirical priors.\n"
+        f"  * Evaluate solely based on measured structural zones, R:R gate 2.0, stronger tier 3.0, and empirical priors.\n"
         f"  * HARD CONSTRAINT: If engine triage is 'no_setup' or actionable gate fails, you CANNOT output ENTER."
     )
 
@@ -414,7 +416,7 @@ def run_arbitration(
 
         _panel_triage = (
             "PASS" if "ENTER" in verdict.upper()
-            else ("CUT" if "CASH_SKIP" in verdict.upper() else "WATCH")
+            else ("CUT" if "CASH_SKIP" in verdict.upper() else "WATCH")  # STALK and WATCH both → "WATCH" band
         )
         watch_data["conviction"] = cap_conviction(
             watch_data.get("conviction"), _panel_triage, [], has_plan=bool(plan)

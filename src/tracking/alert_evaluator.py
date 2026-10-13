@@ -834,7 +834,7 @@ Channel #ponytail ruthlessly:
 1. Measured risk/reward: Evaluate price action, broker volatility (Tastytrade IV/HV), and earnings proximity (STRICT RULE: always use earnings_proximity.days_remaining and earnings_gate; DO NOT guess or calculate days manually).
 2. Hard defensive anchor stop level (exact dollar value).
 3. Recommended vehicle (SHARES, BULL_PUT_SPREAD, BULL_CALL_SPREAD, BEAR_PUT_SPREAD, BEAR_CALL_SPREAD, DEEP_ITM_LEAPS, or STALK_CASH).
-4. Triage verdict: PASS (Deep Research), WATCH, or CUT.
+4. Triage verdict: PASS (Deep Research), WATCH, or CUT. PASS means the measured gate cleared (Long In Zone + Long RR At Market >= 2.0 + PB funnel + fade off + stop >= 0.7 ATR) OR action code is Code 20 (REVERSAL BUY). A break of a real level on RVOL >= 1.0 that fails the gate is WATCH with MOMENTUM_LONG (unmeasured — no measured edge, matching revanth-gem-local.md).
 
 Output strictly valid JSON matching the revanth-gem-local.md schema.
 """
