@@ -201,6 +201,28 @@ def sync_reports_to_watchlist(
                 rejected_list.append({"ticker": t, "reasons": fail_reasons})
                 continue
 
+            # STALK is only a label for armed levels: a plan that arms nothing has no
+            # cross to alert on, so it is rejected here rather than stored as a watch
+            # target that can never fire.
+            from src.tracking.level_engine import has_armed_level
+
+            if not has_armed_level(
+                {k: plan.get(k) for k in (
+                    "entry_zone_low", "entry_zone_high", "breakout_level", "breakout_stop",
+                    "tactical_stop", "target_1", "target_2", "invalidation_price",
+                    "breakout_demoted_reason",
+                )},
+                side=str(data.get("side") or "LONG").upper(),
+            ):
+                fail_reasons = ["STALK with no armed level — the plan arms nothing to watch"]
+                logger.warning(
+                    f"[{t}] Plan rejected: {fail_reasons[0]} — SKIPPING upsert to watch_targets."
+                )
+                from src.tracking.suggestions_ledger import log_rejected_plan
+                log_rejected_plan(t, date_str, plan, fail_reasons)
+                rejected_list.append({"ticker": t, "reasons": fail_reasons})
+                continue
+
             if not data.get("suggestion_id"):
                 try:
                     from src.tracking.watch_manager import _get_connection, _db_lock
@@ -326,7 +348,13 @@ def _live_datawindow(t: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _plan_view_from_row(t: Dict[str, Any]) -> Dict[str, Any]:
-    """The row's plan in the vocabulary build_armed_levels() reads."""
+    """The row's plan in the vocabulary build_armed_levels() reads.
+
+    The demotion bookkeeping rides along: a plan stored by the old gate (trigger
+    zeroed, reason recorded) re-arms through restore_demoted_trigger, and the
+    targets_rebuilt tag tells every surface the T1/T2 it reads were rebuilt above
+    the trigger rather than authored.
+    """
     sp = t.get("shares_plan") or {}
     return {
         "entry_type": sp.get("entry_type") or t.get("entry_type") or "LIMIT",
@@ -338,6 +366,10 @@ def _plan_view_from_row(t: Dict[str, Any]) -> Dict[str, Any]:
         "target_1": t.get("target_1") or sp.get("target_1"),
         "target_2": t.get("target_2") or sp.get("target_2"),
         "invalidation_price": t.get("invalidation_price") or sp.get("invalidation_price"),
+        "breakout_demoted_reason": t.get("breakout_demoted_reason") or sp.get("breakout_demoted_reason"),
+        "targets_rebuilt": t.get("targets_rebuilt") or sp.get("targets_rebuilt"),
+        "targets_rebuilt_basis": t.get("targets_rebuilt_basis") or sp.get("targets_rebuilt_basis"),
+        "setup_lane": t.get("setup_lane") or t.get("lane") or sp.get("setup_lane"),
     }
 
 
@@ -421,8 +453,10 @@ def _emit_level_alert(ticker: str, trigger_type: str, message: str, price: float
 def _level_cross_message(ticker: str, cross, t: Dict[str, Any], rvol: Optional[float]) -> str:
     """The cross alert: what crossed, at what price, on what volume, and the judgment.
 
-    A trigger cross states the R:R at market to the plan's (possibly rebuilt) T1/T2 and
-    whether the lane is MEASURED or UNMEASURED — never a bare price print.
+    A cross of a real level on RVOL >= 1.0 raises this alert whether or not the gate
+    passes. It states the R:R at market to the plan's (possibly rebuilt) T1/T2, the
+    lane's MEASURED / UNMEASURED tag, and that the level stays ARMED for a re-test —
+    never a bare price print.
     """
     side = str(t.get("side") or "LONG").upper()
     vol_txt = f"RVOL {rvol:.2f}" if rvol is not None else "RVOL unmeasured"
@@ -449,13 +483,12 @@ def _level_cross_message(ticker: str, cross, t: Dict[str, Any], rvol: Optional[f
             rr_bits.append(f"T2 ${t2:.2f} already above the print")
     rr_txt = (" | " + "; ".join(rr_bits)) if rr_bits else ""
 
-    lane_txt = ""
-    if cross.kind in ("ZONE_TOP", "BREAKOUT", "HIGH_20D") or rr_bits:
-        try:
-            lane_label = _runaway_rule_label(runaway_rule_for([cross.kind]))
-            lane_txt = f" | lane {lane_label['label']}"
-        except Exception:
-            lane_txt = " | lane UNMEASURED"
+    # Every cross carries its lane tag: an unmeasured lane says so, fail-closed.
+    try:
+        lane_label = _runaway_rule_label(runaway_rule_for([cross.kind]))
+        lane_txt = f" | lane {lane_label['rule']} [{lane_label['label']}]"
+    except Exception:
+        lane_txt = " | lane UNMEASURED"
 
     judge_txt = ""
     if cross.kind in ("ZONE_TOP", "BREAKOUT", "HIGH_20D"):
@@ -470,7 +503,7 @@ def _level_cross_message(ticker: str, cross, t: Dict[str, Any], rvol: Optional[f
         except Exception:
             judge_txt = ""
 
-    return f"{head}{rr_txt}{lane_txt}{judge_txt} | level armed for a re-test"
+    return f"{head}{rr_txt}{lane_txt}{judge_txt} | level ARMED for a re-test"
 
 
 _RULE_LABELS_PATH = config.BASE_DIR / "data" / "research" / "rule_labels.json"
@@ -878,6 +911,97 @@ def _forward_log_runaway(ticker: str, res: Dict[str, Any], cross_kinds: List[str
         )
     except Exception:
         pass
+
+
+def _engine_verdict(
+    ticker: str,
+    live_price: float,
+    t: Dict[str, Any],
+    side: str,
+    new_status: str,
+    alert_fired: Optional[str],
+    cross_kinds: List[str],
+    armed_levels: int,
+) -> Dict[str, Any]:
+    """The printed verdict, from the level engine and the gate — never the LLM's mood.
+
+    STALK is not a decision: it means the levels are armed. A STALKING row is printed
+    with its armed level count (and labelled ARMED when a trigger level is armed), and
+    a STALKING row with no armed level at all is labelled UNARMED — that plan is
+    rejected at write time, so seeing one here means a stored row outlived its levels.
+    """
+    from src.tracking.rr_config import min_rr
+
+    lane_label = _runaway_rule_label(runaway_rule_for(cross_kinds))
+    out: Dict[str, Any] = {
+        "verdict": new_status,
+        "lane": lane_label["label"],
+        "rr_at_market": None,
+        "gate_ok": None,
+        "gate_reasons": [],
+        "armed_levels": armed_levels,
+        "crosses": list(cross_kinds or []),
+    }
+
+    try:
+        res = _rescore_at_market(ticker, live_price, t, side, get_eastern_now(), cross_kinds)
+        out["rr_at_market"] = res.get("live_rr")
+        out["gate_ok"] = bool(res.get("gates_ok"))
+        out["gate_reasons"] = res.get("gate_reasons") or []
+        out["floor"] = round(min_rr(), 2)
+        pv = _plan_view_from_row(t)
+        z_low, z_high = _f(pv.get("entry_zone_low")), _f(pv.get("entry_zone_high"))
+        in_zone = bool(z_low > 0 and z_low <= live_price <= z_high)
+        above_zone = bool(z_high > 0 and live_price > z_high)
+        if alert_fired in ("RUNNING_ACTIONABLE", "RUNNING_NO_ROOM", "TARGET_HIT_NO_FILL"):
+            out["verdict"] = res["outcome"]
+        elif in_zone or new_status == "IN_ZONE":
+            # A deduped alert must not downgrade the verdict: the gate decides it.
+            out["verdict"] = (
+                "ACTIONABLE_BUY" if alert_fired == "ENTRY_ACTIONABLE_BUY" else "IN_ZONE_GATE_VETO"
+            )
+        elif above_zone:
+            # The name ran from its zone: the at-market re-score is the verdict even
+            # when the alert itself was already fired once today.
+            out["verdict"] = res["outcome"]
+    except Exception as e_v:
+        logger.debug(f"[{ticker}] engine verdict fell back to status {new_status}: {e_v}")
+
+    # A trigger level armed = the name is one trade-through from a decision.
+    try:
+        from src.tracking import level_engine as _le
+
+        trg = [lv.kind for lv in _le.build_armed_levels(
+            _plan_view_from_row(t), side=side
+        ) if lv.kind in ("BREAKOUT", "HIGH_20D", "ZONE_TOP")]
+        out["trigger_armed"] = bool(trg)
+        out["trigger_kinds"] = trg
+    except Exception:
+        out["trigger_armed"] = False
+        out["trigger_kinds"] = []
+    return out
+
+
+def _verdict_line(v: Dict[str, Any]) -> str:
+    """Render the engine verdict as one printed line."""
+    bits = [f"{v['verdict']} [{v.get('lane') or 'UNMEASURED'}]"]
+    rr = v.get("rr_at_market")
+    if rr is not None:
+        floor = v.get("floor")
+        bits.append(f"R:R@mkt {rr:.2f}" + (f" vs {floor:.2f} floor" if floor else ""))
+    if v.get("gate_reasons"):
+        bits.append(f"gate: {'; '.join(v['gate_reasons'])}")
+    elif v.get("gate_ok"):
+        bits.append("gate: clear")
+    armed = v.get("armed_levels") or 0
+    if armed:
+        tag = "ARMED" + (f" ({','.join(v['trigger_kinds'])} armed)" if v.get("trigger_armed") else "")
+        bits.append(f"{tag} {armed} levels")
+    else:
+        bits.append("UNARMED (no armed level)")
+    if v.get("crosses"):
+        bits.append(f"cross: {','.join(v['crosses'])}")
+    return " | ".join(bits)
 
 
 def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
@@ -1330,6 +1454,13 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             t_copy["last_alert_type"] = alert_fired
         t_copy["rvol"] = rvol
         t_copy["crosses"] = cross_kinds
+        # The printed verdict is the level engine's, not the judge's word.
+        engine_v = _engine_verdict(
+            ticker, live_price, t, side, new_status, alert_fired, cross_kinds,
+            armed_levels=len([lv for lv in state.levels if lv.armed]),
+        )
+        t_copy["verdict_line"] = _verdict_line(engine_v)
+        t_copy["engine_verdict"] = engine_v
         updated_targets.append(t_copy)
 
         status_icon = (
@@ -1341,7 +1472,8 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         )
         dist_str = f"{distance_pct:+.2f}%" if distance_pct is not None else "N/A"
         logger.info(
-            f"[{ticker}] ({side}) Spot: ${live_price:.2f} | Dist: {dist_str} | Status: {status_icon} {new_status}"
+            f"[{ticker}] ({side}) Spot: ${live_price:.2f} | Dist: {dist_str} | "
+            f"Status: {status_icon} {new_status} | Verdict: {t_copy['verdict_line']}"
         )
 
     # A5: armed-but-unstored names (dossiers from the last 21 sessions). They alert
@@ -1412,8 +1544,37 @@ if __name__ == "__main__":
     parser.add_argument("--loop", action="store_true", help="Run continuous monitoring loop")
     parser.add_argument("--interval", type=int, default=60, help="Polling interval in seconds (default: 60)")
     parser.add_argument("--no-sheets", action="store_true", help="Disable Google Sheets sync")
+    parser.add_argument(
+        "--repair-breakouts",
+        action="store_true",
+        help="One-time sweep: rebuild and re-arm stored plans whose breakout trigger was dropped (GOOGL case), then exit",
+    )
+    parser.add_argument(
+        "--repair-dry-run",
+        action="store_true",
+        help="With --repair-breakouts: report what would change without writing",
+    )
 
     args = parser.parse_args()
+
+    # One-time sweep: plans already stored with a dropped breakout are rebuilt and
+    # re-armed here so they arm without re-running research.
+    if args.repair_breakouts:
+        from src.tracking.plan_repair import sweep_stored_plans
+
+        report = sweep_stored_plans(write=not args.repair_dry_run)
+        logger.info(f"[repair-breakouts] {report['summary']}")
+        for entry in report.get("repaired", []):
+            logger.info(
+                f"[repair-breakouts] {entry.get('ticker')}: trigger "
+                f"${entry.get('breakout_level')} armed, T1 {entry.get('target_1')} / "
+                f"T2 {entry.get('target_2')} ({entry.get('targets_rebuilt_basis')})"
+            )
+        for entry in report.get("skipped", []):
+            logger.info(
+                f"[repair-breakouts] skipped {entry.get('ticker')}: {entry.get('reason')}"
+            )
+        raise SystemExit(0)
 
     # Index reports
     if args.sync or not get_all_watch_targets():
@@ -1432,8 +1593,11 @@ if __name__ == "__main__":
         print("=" * 60)
         for r in results:
             dist = f"{r.get('distance_to_entry_pct'):+.2f}%" if r.get('distance_to_entry_pct') is not None else "-"
+            # Verdict from the level engine and the gate: status, R:R at market, lane
+            # label, armed levels — the judge's conviction never prints here.
             print(
                 f"[{r.get('ticker')}] Spot: ${r.get('last_price', 0):.2f} | "
+                f"Verdict: {r.get('verdict_line') or r.get('status') or 'N/A'} | "
                 f"Status: {r.get('status')} | "
                 f"Dist to Entry: {dist} | "
                 f"Zone: ${r.get('entry_zone_low', 0):.2f}-${r.get('entry_zone_high', 0):.2f} | "

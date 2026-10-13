@@ -109,6 +109,7 @@ def check_breakout_geometry(
     target_1: float,
     side: str = "LONG",
     rr_floor: Optional[float] = None,
+    target_2: float = 0.0,
 ) -> Tuple[bool, List[str]]:
     """Validate a plan's breakout path at its own trigger.
 
@@ -120,8 +121,9 @@ def check_breakout_geometry(
     targets had already passed.
 
     Applies to ANY plan with breakout_level > 0, whatever its entry_type. Requires
-    target_1 >= breakout_level and R:R at the trigger
-    (target_1 - breakout_level) / (breakout_level - breakout_stop) >= rr_floor.
+    target_1 AND target_2 at or above breakout_level (at or below = broken) and
+    R:R at the trigger (target_1 - breakout_level) / (breakout_level - breakout_stop)
+    >= rr_floor. The GOOGL case (T1 356.73 vs trigger 356.83) is the same shape.
     """
     if (side or "LONG").upper() != "LONG":
         return True, []
@@ -134,13 +136,16 @@ def check_breakout_geometry(
 
     reasons: List[str] = []
     t1 = float(target_1 or 0.0)
+    t2 = float(target_2 or 0.0)
     if t1 <= 0:
         reasons.append(
             f"breakout trigger ${bl:.4f} has no target_1 — the trigger cannot be measured"
         )
-    elif t1 < bl:
+    elif (t1 > 0 and t1 <= bl) or (t2 > 0 and t2 <= bl):
+        # At or below the trigger — whichever target broke first, the trigger is broken.
+        broken_lvl, broken_val = ("target_1", t1) if (t1 > 0 and t1 <= bl) else ("target_2", t2)
         reasons.append(
-            f"target_1 ${t1:.4f} is below breakout trigger ${bl:.4f} — targets must sit above the trigger"
+            f"{broken_lvl} ${broken_val:.4f} is at or below breakout trigger ${bl:.4f} — targets must sit above the trigger"
         )
 
     bs = float(breakout_stop or 0.0)
@@ -449,6 +454,7 @@ def validate_levels(
             breakout_level=breakout_level,
             breakout_stop=float(plan.get("breakout_stop") or 0.0),
             target_1=target_1,
+            target_2=target_2,
             side=side,
         )
         if not bo_ok:

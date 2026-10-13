@@ -305,9 +305,56 @@ def test_judgment_at_market_states_run_terms_plainly():
 
 
 # ---------------------------------------------------------------------------
-# 5. The prior plan outcome block
+# 4b. The PRINTED verdict comes from the level engine and the gate
 # ---------------------------------------------------------------------------
 
+def test_printed_verdict_comes_from_the_engine_not_the_llm():
+    """The row's verdict line is the engine's: outcome, R:R at market, lane label,
+    armed levels — never the judge's conviction."""
+    watch_manager.upsert_watch_target(dict(GOOGL_PLAN))
+    bars = _synthetic_daily_bars()
+
+    results = []
+    for px in (353.30, 355.23):
+        with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
+             patch("src.clients.quote_router.quote_router.get_watchlist_quotes_batch",
+                   return_value={"GOOGL": _quote(px, volume=3_000_000)}), \
+             patch("src.tracking.execution_validator.get_bars_since_date", return_value=bars), \
+             patch("src.clients.schwab_client.get_intraday_candles", return_value=[]):
+            results = evaluate_watch_cycle(sync_sheets=False)
+
+    row = next(r for r in results if r["ticker"] == "GOOGL")
+    line = row["verdict_line"]
+    # The gate/engine verdict, R:R at market, the lane tag, and the armed set — no conviction.
+    assert "RUNNING_NO_ROOM" in line
+    assert "[UNMEASURED]" in line
+    assert "R:R@mkt" in line
+    assert "ARMED" in line
+    assert "cross: BREAKOUT" in line
+    assert "conviction" not in line.lower()
+    assert row["engine_verdict"]["armed_levels"] > 0
+    assert row["engine_verdict"]["trigger_armed"] is True
+
+
+def test_printed_verdict_labels_a_stalk_with_no_armed_level_unarmed():
+    """A row whose plan arms nothing prints UNARMED — and that plan is rejected at
+    write time (the DB gate and the sync/judge armed-level check), so this label is
+    the read-time backstop for rows stored before the rule existed."""
+    payload = dict(GOOGL_PLAN)
+    payload["shares_plan"] = {"entry_type": "LIMIT"}  # arms nothing
+    v = run_watch_alerts._engine_verdict(
+        "GOOGL", 353.30, payload, "LONG", "STALKING", None, [], armed_levels=0
+    )
+    line = run_watch_alerts._verdict_line(v)
+    assert "UNARMED" in line
+    assert "no armed level" in line
+    assert v["armed_levels"] == 0
+    assert v["trigger_armed"] is False
+
+
+# ---------------------------------------------------------------------------
+# 5. The prior plan outcome block
+# ---------------------------------------------------------------------------
 def test_prior_plan_outcome_block_states_crossed_when_and_held():
     watch_manager.upsert_watch_target(dict(GOOGL_PLAN))
     bars = _synthetic_daily_bars()

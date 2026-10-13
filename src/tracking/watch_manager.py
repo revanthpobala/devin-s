@@ -16,9 +16,9 @@ from typing import Any, Dict, List, Optional
 from src import config
 
 logger = logging.getLogger(__name__)
+from src.tracking.db_locks import watch_db_lock as _db_lock, get_readonly_connection
 
 DB_PATH = config.research_watch_db_path()
-_db_lock = threading.RLock()
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -508,23 +508,24 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
         with _get_connection() as conn:
             cursor = conn.cursor()
 
-            # Check if active unexpired thesis already exists: do not overwrite for the same open thesis
+            # Check if active unexpired thesis already exists: do not overwrite for the same open thesis unless force_update or new breakout_level
             existing = cursor.execute(
-                "SELECT date, thesis_id, expires_on, status, tactical_stop, entry_zone_low, entry_zone_high FROM watch_targets WHERE ticker = ?",
+                "SELECT date, thesis_id, expires_on, status, tactical_stop, entry_zone_low, entry_zone_high, breakout_level FROM watch_targets WHERE ticker = ?",
                 (ticker,)
             ).fetchone()
-            if existing:
+            if existing and not data.get("force_update"):
                 ex_dict = dict(existing)
                 ex_thesis_id = ex_dict.get("thesis_id") or f"{ticker}_{ex_dict.get('date')}"
                 ex_expires = ex_dict.get("expires_on") or ""
                 ex_status = str(ex_dict.get("status") or "").upper()
                 if ex_status in ("IN_TRADE", "IN_ZONE", "STALKING", "WATCH"):
-                    # If same thesis_id or active and within expiry with matching key stop level, preserve thesis
-                    stop_val = float(shares_plan.get("tactical_stop") or 0.0)
-                    ex_stop_val = float(ex_dict.get("tactical_stop") or 0.0)
-                    if ex_thesis_id == thesis_id or (ex_expires and date_str <= ex_expires and abs(stop_val - ex_stop_val) < 0.05):
-                        logger.info(f"[watch_manager] Open thesis {ex_thesis_id} for {ticker} still active (expires {ex_expires}). Skipping overwrite.")
-                        return
+                    has_new_bo = float(breakout_level or 0.0) > 0 and float(ex_dict.get("breakout_level") or 0.0) <= 0
+                    if not has_new_bo:
+                        stop_val = float(shares_plan.get("tactical_stop") or 0.0)
+                        ex_stop_val = float(ex_dict.get("tactical_stop") or 0.0)
+                        if ex_thesis_id == thesis_id or (ex_expires and date_str <= ex_expires and abs(stop_val - ex_stop_val) < 0.05):
+                            logger.info(f"[watch_manager] Open thesis {ex_thesis_id} for {ticker} still active (expires {ex_expires}). Skipping overwrite.")
+                            return
 
             from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
             dw_candidate = data.get("datawindow") or data.get("dw") or data.get("_datawindow") or {}
@@ -1088,16 +1089,32 @@ def get_active_watch_targets() -> List[Dict[str, Any]]:
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT * FROM watch_targets 
-                WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY')
-                  AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
-                ORDER BY date DESC,
-                         CASE status WHEN 'IN_TRADE' THEN 1 WHEN 'IN_ZONE' THEN 2 ELSE 3 END,
-                         distance_to_entry_pct
-                """
-            )
+            try:
+                cursor.execute(
+                    """
+                    SELECT * FROM watch_targets 
+                    WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY')
+                      AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
+                    ORDER BY date DESC,
+                             CASE status WHEN 'IN_TRADE' THEN 1 WHEN 'IN_ZONE' THEN 2 ELSE 3 END,
+                             distance_to_entry_pct
+                    """
+                )
+            except sqlite3.OperationalError as e:
+                if "no such table" in str(e).lower():
+                    init_watch_db()
+                    cursor.execute(
+                        """
+                        SELECT * FROM watch_targets 
+                        WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY')
+                          AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
+                        ORDER BY date DESC,
+                                 CASE status WHEN 'IN_TRADE' THEN 1 WHEN 'IN_ZONE' THEN 2 ELSE 3 END,
+                                 distance_to_entry_pct
+                        """
+                    )
+                else:
+                    raise
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
 
@@ -1107,7 +1124,14 @@ def get_all_watch_targets() -> List[Dict[str, Any]]:
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM watch_targets ORDER BY date DESC")
+            try:
+                cursor.execute("SELECT * FROM watch_targets ORDER BY date DESC")
+            except sqlite3.OperationalError as e:
+                if "no such table" in str(e).lower():
+                    init_watch_db()
+                    cursor.execute("SELECT * FROM watch_targets ORDER BY date DESC")
+                else:
+                    raise
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
 

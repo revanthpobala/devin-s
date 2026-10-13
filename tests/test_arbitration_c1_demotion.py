@@ -112,4 +112,7 @@ def test_judge_prompt_states_targets_above_trigger():
 
     prompt = _build_judge_sys_prompt("META")
     assert "ABOVE breakout_level" in prompt
-    assert "stripped" in prompt
+    # The prompt states the keep-and-rebuild rule, never the old strip behavior:
+    # a broken trigger stays armed and only its targets move above it.
+    assert "never zeroed" in prompt
+    assert "stripped" not in prompt

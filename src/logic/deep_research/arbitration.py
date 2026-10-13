@@ -150,8 +150,8 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "LEVEL GEOMETRY HARD RULE: for a LONG breakout, target_1 and target_2 MUST both sit strictly "
         "ABOVE breakout_level, and the R:R measured AT the trigger — (target_1 - breakout_level) / "
         "(breakout_level - breakout_stop) — must clear the R:R floor. A trigger whose targets sit at "
-        "or below it is not a breakout: that trigger will be stripped and only the limit-zone plan "
-        "will survive.\n\n"
+        "or below it is not a breakout: the trigger stays armed as a real watched level and its "
+        "targets are rebuilt above it (tagged targets_rebuilt) — the trigger itself is never zeroed.\n\n"
         f"# {ticker} | ⚖️ SENIOR PM ARBITRATION & FINAL DIRECTIVE\n\n"
         "## 🟢 THE CASE FOR (Bull Cross-Examination)\n"
         "[The strongest, evidence-backed arguments synthesized across both reports for why this trade should be taken]\n\n"
@@ -440,6 +440,22 @@ def run_arbitration(
                 f"[{ticker}] C1 trigger kept: ${_sp['breakout_level']} with rebuilt targets "
                 f"T1 ${_sp['target_1']} / T2 ${_sp['target_2']}"
             )
+
+        # STALK is only a label for armed levels: a judge plan that arms nothing has
+        # no cross to alert on and is rejected at write time like any other.
+        if _ok:
+            from src.tracking.level_engine import has_armed_level
+
+            if not has_armed_level(
+                {k: plan.get(k) for k in (
+                    "entry_zone_low", "entry_zone_high", "breakout_level", "breakout_stop",
+                    "tactical_stop", "target_1", "target_2", "invalidation_price",
+                    "breakout_demoted_reason",
+                )},
+                side=str(watch_data.get("side", "LONG")).upper(),
+            ):
+                _ok = False
+                _reasons.append("STALK with no armed level — the plan arms nothing to watch")
 
         if not _ok:
             logger.warning(

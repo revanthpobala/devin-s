@@ -108,7 +108,14 @@ def load_prior_plan(ticker: str, date_str: Optional[str] = None) -> Optional[Dic
             "targets_rebuilt_basis": shares.get("targets_rebuilt_basis"),
             "breakout_demoted_reason": shares.get("breakout_demoted_reason"),
             "setup_lane": row.get("verdict") and shares.get("setup_lane") or shares.get("setup_lane"),
+            "ticker": ticker.upper(),
         }
+        try:
+            from src.tracking.plan_repair import repair_shares_plan
+            repair_shares_plan(plan_view, ticker=ticker.upper(), date_str=str(row.get("date") or "")[:10])
+        except Exception as e_rep:
+            logger.debug(f"[plan_outcome] repair on read note for {ticker}: {e_rep}")
+
         return {
             "ticker": ticker.upper(),
             "plan_date": str(row.get("date") or "")[:10],
