@@ -531,6 +531,28 @@ window.AppChat = {
   },
 
   updateCollapseUi(isCollapsed) {
+    // Header chat toggle button
+    const headerBtn = document.getElementById('btn-header-chat');
+    const headerTxt = document.getElementById('txt-header-chat');
+    if (headerBtn) {
+      if (isCollapsed) {
+        headerBtn.classList.add('chat-collapsed-state');
+        headerBtn.title = "Open Rev Chat Sidebar";
+        if (headerTxt) headerTxt.innerText = "Show Chat";
+      } else {
+        headerBtn.classList.remove('chat-collapsed-state');
+        headerBtn.title = "Collapse Rev Chat (Full Screen Mode)";
+        if (headerTxt) headerTxt.innerText = "Hide Chat";
+      }
+    }
+
+    // Floating edge trigger on right screen margin
+    const floatTab = document.getElementById('floating-chat-trigger');
+    if (floatTab) {
+      floatTab.style.display = isCollapsed ? 'flex' : 'none';
+    }
+
+    // Modal / legacy toggle button if present
     const toggleBtn = document.getElementById('btn-toggle-chat');
     const toggleTxt = document.getElementById('txt-toggle-chat');
     if (toggleBtn) {

@@ -3,9 +3,18 @@
  */
 window.AppApi = {
   async request(url, options = {}) {
-    const res = await fetch(url, options);
-    if (!res.ok) throw new Error(`API request failed: ${res.status} ${res.statusText}`);
-    return await res.json();
+    const timeoutMs = options.timeoutMs || 10000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const fetchOpts = { ...options, signal: options.signal || controller.signal };
+      delete fetchOpts.timeoutMs;
+      const res = await fetch(url, fetchOpts);
+      if (!res.ok) throw new Error(`API request failed: ${res.status} ${res.statusText}`);
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
   },
 
   async getStatus() {

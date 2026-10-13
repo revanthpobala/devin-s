@@ -365,13 +365,16 @@ window.AppStatus = {
       if (mPill && mTxt) {
         if (data.market_open) {
           mPill.className = 'pill sys-pill green';
-          mTxt.innerText = data.market_status_text || `🟢 REGULAR MARKET OPEN (${(data.time_mt || '').split(' ')[1] || ''} MT)`;
+          mTxt.innerText = 'Market Open';
+          mPill.title = `Regular Market Open (${(data.time_mt || '').split(' ')[1] || ''} MT). Click for settings.`;
         } else if (data.market_phase === 'AFTER_HOURS' || data.market_phase === 'PRE_MARKET') {
           mPill.className = 'pill sys-pill amber';
-          mTxt.innerText = data.market_status_text || '🟡 EXTENDED HOURS';
+          mTxt.innerText = 'Extended';
+          mPill.title = `Extended Hours (${data.market_phase}). Click for settings.`;
         } else {
           mPill.className = 'pill sys-pill red';
-          mTxt.innerText = data.market_status_text || '🔴 MARKET CLOSED';
+          mTxt.innerText = 'Market Closed';
+          mPill.title = `Market Closed (${data.time_mt || ''} MT). Click for settings.`;
         }
       }
 
@@ -381,15 +384,16 @@ window.AppStatus = {
       if (llmPill && llmTxt) {
         if (data.llm_online) {
           llmPill.className = 'pill sys-pill green';
-          llmTxt.innerText = '🟢 LLM Online (Port 8000)';
+          llmTxt.innerText = 'LLM';
+          llmPill.title = 'LLM Server Online (Port 8000). Click for settings.';
         } else {
           llmPill.className = 'pill sys-pill red';
-          llmTxt.innerText = '🔴 LLM Offline';
+          llmTxt.innerText = 'LLM Off';
+          llmPill.title = 'LLM Server Offline. Click for settings.';
         }
       }
 
-      // 3. Tastytrade Status — the ribbon keeps a short label (status.js previously wrote the
-      // long form into the same node, which broke the compact header on every poll).
+      // 3. Tastytrade Status — compact ribbon label
       const tastyTxt = document.getElementById('txt-tasty');
       const tastyCount = Number(data.tasty_alert_count || 0);
       if (tastyTxt) tastyTxt.innerText = tastyCount > 0 ? `TT ${tastyCount}` : 'TT';
@@ -416,12 +420,14 @@ window.AppStatus = {
         window._lastSchwabStatus = s;
         if (!s.configured) {
           schwabPill.className = 'pill sys-pill';
-          schwabTxt.innerText = '⚪ Schwab Unset';
+          schwabTxt.innerText = 'Schwab Unset';
+          schwabPill.title = 'Schwab API not configured. Click for OAuth details.';
           if (schwabBanner) schwabBanner.style.display = 'none';
         } else if (s.valid) {
           if (s.status === 'EXPIRING_SOON') {
             schwabPill.className = 'pill sys-pill amber pulse';
-            schwabTxt.innerText = `⚠️ Schwab (${s.hours_remaining}h left)`;
+            schwabTxt.innerText = `Schwab (${s.hours_remaining}h)`;
+            schwabPill.title = `Schwab Token Expiring Soon (${s.hours_remaining}h left — expires ${s.expires_at || ''}). Click for OAuth details.`;
             if (schwabBanner) {
               schwabBanner.style.display = 'flex';
               if (schwabBannerTxt) {
@@ -430,12 +436,14 @@ window.AppStatus = {
             }
           } else {
             schwabPill.className = 'pill sys-pill green';
-            schwabTxt.innerText = `🟢 Schwab (${s.days_remaining}d)`;
+            schwabTxt.innerText = 'Schwab';
+            schwabPill.title = `Schwab API Connected (${s.days_remaining}d remaining). Click for OAuth details.`;
             if (schwabBanner) schwabBanner.style.display = 'none';
           }
         } else {
           schwabPill.className = 'pill sys-pill red';
-          schwabTxt.innerText = '🔴 Schwab Expired';
+          schwabTxt.innerText = 'Schwab Exp';
+          schwabPill.title = 'Schwab Token Expired. Run setup_schwab.py to reconnect.';
           if (schwabBanner) {
             schwabBanner.style.display = 'flex';
             if (schwabBannerTxt) {
@@ -453,8 +461,11 @@ window.AppStatus = {
       const trTxtIntraday = document.getElementById('val-ingestor-txt');
 
       if (data.tracker_running) {
-        if (trPill) trPill.className = 'pill sys-pill green';
-        if (trTxt) trTxt.innerText = `🟢 Ingestor (PID ${data.tracker_pid})`;
+        if (trPill) {
+          trPill.className = 'pill sys-pill green';
+          trPill.title = `Market Ingestor Running (PID ${data.tracker_pid}). Click for settings.`;
+        }
+        if (trTxt) trTxt.innerText = 'Ingestor';
         if (trBtn) {
           trBtn.className = 'btn danger';
           trBtn.innerText = '⏹ Stop Ingestor';
@@ -466,8 +477,11 @@ window.AppStatus = {
         }
         if (trTxtIntraday) trTxtIntraday.innerText = `Running (PID ${data.tracker_pid})`;
       } else {
-        if (trPill) trPill.className = 'pill sys-pill';
-        if (trTxt) trTxt.innerText = '⚪ Ingestor: Stopped';
+        if (trPill) {
+          trPill.className = 'pill sys-pill';
+          trPill.title = 'Market Ingestor Stopped. Click for settings.';
+        }
+        if (trTxt) trTxt.innerText = 'Ingestor Off';
         if (trBtn) {
           trBtn.className = 'btn';
           trBtn.innerText = '▶ Start Market Ingestor';

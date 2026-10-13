@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>REV TERMINAL — 0DTE Intraday Desk</title>
+<!-- Typography Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;family=Outfit:wght@400;600;700;800&amp;display=swap" rel="stylesheet"/>
+<!-- Markdown Parser & Canvas Capture -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<!-- Modular Stylesheets -->
+<link href="/static/css/base.css?v=88" rel="stylesheet"/>
+<link href="/static/css/layout.css?v=88" rel="stylesheet"/>
+<link href="/static/css/components.css?v=88" rel="stylesheet"/>
+<link href="/static/css/modals.css?v=88" rel="stylesheet"/>
+</head>
+<body>
+<!-- Top Navigation Ribbon -->
+<header>
+<div class="brand">
+<span class="brand-icon">⬡</span>
+<span class="brand-title">REV TERMINAL</span>
+<span class="brand-sub">Autonomous Trading Desk</span>
+<span class="pill purple" style="font-size:10px; padding:2px 7px; font-weight:800; font-family:var(--font-mono); margin-left:6px; letter-spacing:0.5px;">v2.5.0</span>
+</div>
+<!-- Main Navigation Header Bar -->
+<nav class="site-header-nav" id="site-header-nav">
+<a class="nav-item" href="/today" id="nav-item-today" onclick="event.preventDefault(); App.navigateTo('today')">
+<span class="nav-icon">⚡</span>
+<span class="nav-label">Today</span>
+</a>
+<a class="nav-item" href="/radar" id="nav-item-swing" onclick="event.preventDefault(); App.navigateTo('swing')">
+<span class="nav-icon">🎯</span>
+<span class="nav-label">Radar</span>
+</a>
+<a class="nav-item" href="/alerts" id="nav-item-alerts" onclick="event.preventDefault(); App.navigateTo('alerts')">
+<span class="nav-icon">🚨</span>
+<span class="nav-label">Alerts</span>
+</a>
+<a class="nav-item" href="/trades" id="nav-item-trades" onclick="event.preventDefault(); App.navigateTo('trades')">
+<span class="nav-icon">💡</span>
+<span class="nav-label">Trades</span>
+</a>
+<a class="nav-item" href="/portfolio" id="nav-item-portfolio" onclick="event.preventDefault(); App.navigateTo('portfolio')">
+<span class="nav-icon">💼</span>
+<span class="nav-label">Portfolio</span>
+</a>
+<a class="nav-item active" href="/intraday" id="nav-item-intraday" onclick="event.preventDefault(); App.navigateTo('intraday')">
+<span class="nav-icon">⚡</span>
+<span class="nav-label">0DTE</span>
+</a>
+<a class="nav-item" href="/watchlist" id="nav-item-watchlist" onclick="event.preventDefault(); App.navigateTo('watchlist')">
+<span class="nav-icon">📡</span>
+<span class="nav-label">Watchlist</span>
+</a>
+<a class="nav-item" href="/journal" id="nav-item-journal" onclick="event.preventDefault(); App.navigateTo('journal')">
+<span class="nav-icon">📖</span>
+<span class="nav-label">Ledger</span>
+</a>
+<a class="nav-item" href="/logs" id="nav-item-logs" onclick="event.preventDefault(); App.navigateTo('logs')">
+<span class="nav-icon">⚙️</span>
+<span class="nav-label">Ops</span>
+</a>
+</nav>
+<div class="status-ribbon" id="status-ribbon">
+<button class="btn header-chat-btn" id="btn-header-chat" onclick="AppChat.toggleCollapse()" title="Toggle Rev Chat Sidebar"><span class="chat-icon">💬</span> <span id="txt-header-chat">Rev Chat</span></button>
+<button class="pill sys-pill" id="pill-market" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
+<button class="pill sys-pill" id="pill-llm" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
+<button class="pill sys-pill" id="pill-schwab" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
+<button class="pill sys-pill" id="pill-tracker" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
+<button class="pill sys-pill" id="pill-tasty" onclick="AppSettings.open()" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
+<button class="btn secondary" id="btn-settings" onclick="AppSettings.open()" title="Settings, services &amp; diagnostics">⚙️</button>
+</div>
+</header>
+<!-- Settings / System Modal -->
+<div class="modal-overlay" id="settings-modal" onclick="if(event.target===this) AppSettings.close()" style="display:none;">
+<div class="modal-content" style="max-width:620px; width:92vw; max-height:86vh; overflow-y:auto;">
+<div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border);">
+<div style="display:flex; align-items:center; gap:9px;">
+<span style="font-size:17px;">⚙️</span>
+<span style="font-family:var(--font-display); font-size:15px; font-weight:800; letter-spacing:0.5px;">SETTINGS &amp; SYSTEM STATUS</span>
+</div>
+<button class="btn secondary" onclick="AppSettings.close()" style="padding:3px 10px; font-size:11px;">✕ Close</button>
+</div>
+<div style="padding:16px 18px; display:flex; flex-direction:column; gap:16px;">
+<!-- Services -->
+<div>
+<div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">SERVICES</div>
+<div style="display:flex; flex-direction:column; gap:8px;">
+<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+<div>
+<div style="font-size:12px; font-weight:800;">Market Ingestor</div>
+<div style="font-size:10.5px; color:var(--text-muted);">Gmail poller for TradingView alerts. Runs during market hours only.</div>
+</div>
+<button class="btn" id="btn-toggle-tracker" onclick="AppStatus.toggleTracker()" style="padding:6px 14px; font-size:11px; white-space:nowrap;">▶ Start</button>
+</div>
+<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+<div>
+<div style="font-size:12px; font-weight:800;">Sync Alerts</div>
+<div style="font-size:10.5px; color:var(--text-muted);">Pull the latest alert inbox and watch targets now.</div>
+</div>
+<button class="btn secondary" onclick="AppStatus.syncAlerts()" style="padding:6px 14px; font-size:11px; white-space:nowrap;">🔄 Sync</button>
+</div>
+<div onclick="AppStatus.showSchwabInfo()" style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:9px 12px; cursor:pointer;" title="Schwab OAuth status &amp; renewal instructions">
+<div>
+<div style="font-size:12px; font-weight:800;">Schwab API</div>
+<div style="font-size:10.5px; color:var(--text-muted);">Broker connection, quotes &amp; portfolio sync. Click for OAuth details.</div>
+</div>
+<span class="pill" id="pill-schwab-modal" style="font-size:10px;"><span class="dot"></span><span id="txt-schwab-modal">Schwab API</span></span>
+</div>
+</div>
+</div>
+<!-- Appearance -->
+<div>
+<div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">APPEARANCE</div>
+<div style="display:flex; gap:8px; flex-wrap:wrap;">
+<button class="btn secondary" id="btn-theme-toggle" onclick="App.toggleTheme()" style="padding:7px 14px; font-size:11.5px;">☀️ Light</button>
+</div>
+</div>
+<!-- Live status mirrors (same IDs are updated in place by the status poller) -->
+<div>
+<div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">LIVE STATUS</div>
+<div id="settings-status-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:7px; font-size:11px;">
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">MARKET</div><div id="st-market" style="font-weight:700;">–</div></div>
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">LLM SERVER</div><div id="st-llm" style="font-weight:700;">–</div></div>
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">TASTYTRADE</div><div id="st-tasty" style="font-weight:700;">–</div></div>
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">SCHWAB</div><div id="st-schwab" style="font-weight:700;">–</div></div>
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">INGESTOR</div><div id="st-tracker" style="font-weight:700;">–</div></div>
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:7px; padding:8px 10px;"><div style="font-size:9px; color:var(--text-dim); font-weight:800; letter-spacing:0.5px;">CLOCK</div><div id="st-clock" style="font-weight:700; font-family:var(--font-mono);">–</div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="schwab-expiry-banner" style="display:none; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.5); color:#d97706; padding:10px 20px; margin:10px 24px 0 24px; border-radius:8px; font-weight:700; font-size:13px; display:none; align-items:center; justify-content:space-between;">
+<div id="schwab-expiry-banner-text">⚠️ <strong>Schwab Token Expiring Soon:</strong> Please re-authenticate via <code>python setup_schwab.py</code></div>
+<button class="btn secondary" onclick="AppStatus.showSchwabInfo()" style="padding:3px 10px; font-size:11.5px; border-color:rgba(245,158,11,0.5);">View Details</button>
+</div>
+<!-- Main Multi-Column Container -->
+<div class="container">
+<!-- LEFT COLUMN: Main Trading Desks -->
+<div class="main-desks-column">
+<!-- Main Desk Switcher Bar (Sticky) -->
+
+<!-- ================================================================= -->
+<!-- TODAY DESK PANE                                                   -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- JOURNAL DESK PANE                                                 -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- RECORD DESK PANE                                                  -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- SWING STALKING & RESEARCH DESK PANE                               -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- DEDICATED ALERTS & PRE-MOVE SCREENERS DESK PANE                  -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- WATCHLIST & TRIGGER TABLE DESK PANE                               -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- SUGGESTED TRADES & PERFORMANCE / AUDIT DESK PANE                  -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- INTRADAY 0DTE & LIVE ALERTS DESK PANE                             -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- SCHWAB PORTFOLIO & INDIVIDUAL POSITIONS DESK PANE                 -->
+<!-- ================================================================= -->
+
+<!-- ================================================================= -->
+<!-- MULTI-CHANNEL TERMINAL & LOGS DESK PANE                           -->
+<!-- ================================================================= -->
+
+<div id="desk-pane-intraday" style="display:flex; flex-direction:column; gap:20px;">
+<!-- Market Tape & 0DTE Regime Ribbon -->
+<div class="station-card">
+<!-- 0DTE Governance & Risk Notice (Dismissible) -->
+<div id="zero-dte-research-banner" style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.35);
+                      border-radius:8px; padding:10px 14px; margin-bottom:14px;
+                      display:flex; justify-content:space-between; align-items:center;
+                      font-size:12px; line-height:1.4; color:var(--amber);">
+<div style="display:flex; align-items:center; gap:10px;">
+<span style="font-size:16px;">⚡</span>
+<div>
+<strong>0DTE DESK RISK ENGINE:</strong>
+                Sample size calibration in progress (n=20 / 200 gate) · Sizing strictly capped at 0.5R per trade · Tiered exit vetoes active.
+              </div>
+</div>
+<button class="btn secondary" onclick="AppIntraday.dismissBanner()" style="padding:2px 8px; font-size:11px; border-color:rgba(245,158,11,0.3); color:var(--amber); white-space:nowrap;" title="Dismiss notice">✕ Dismiss</button>
+</div>
+<div class="card-head">
+<span class="card-title">⚡ INTRADAY DESK REGIME &amp; 0DTE TAPE</span>
+<span class="pill green" id="intraday-regime-pill"><span class="dot pulse"></span><span id="intraday-regime-txt">Regime: Loading…</span></span>
+</div>
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
+<div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
+<div style="font-size:11px; color:var(--text-muted); font-weight:700;">VIX VOLATILITY</div>
+<div id="val-vix" style="font-size:18px; font-weight:700; color:#34d399; margin-top:4px;">--.-- (loading)</div>
+</div>
+<div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
+<div style="font-size:11px; color:var(--text-muted); font-weight:700;">NEW YORK SESSION TIME</div>
+<div id="val-et-clock" style="font-size:18px; font-weight:700; color:#38bdf8; margin-top:4px;">--:-- ET</div>
+</div>
+<div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
+<div style="font-size:11px; color:var(--text-muted); font-weight:700;">0DTE THETA WINDOW</div>
+<div id="val-theta-window" style="font-size:18px; font-weight:700; color:#fbbf24; margin-top:4px;">Prime (9:45 - 11:30 ET)</div>
+</div>
+<div style="background:var(--bg-subtle); padding:12px 16px; border-radius:10px; border:1px solid var(--border);">
+<div style="font-size:11px; color:var(--text-muted); font-weight:700;">GMAIL INGESTOR DAEMON</div>
+<div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
+<span id="val-ingestor-txt" style="font-size:13px; font-weight:700; color:var(--text-main);">main.py --loop</span>
+<button class="btn" id="btn-intraday-tracker" onclick="AppStatus.toggleTracker()" style="padding:2px 8px; font-size:11px;">▶ Start</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Today's 0DTE Grade-A Signals & Live Tape -->
+<div class="station-card">
+<div class="card-head">
+<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+<span class="card-title">⚡ TODAY'S 0DTE SIGNALS &amp; GRADE-A PLAYS (revanth-0dte.md)</span>
+<span class="pill green" id="odte-signals-count-pill">0 Signals</span>
+<span class="pill cyan" id="odte-targets-hit-pill" style="display:none;">🏁 0 Targets Hit</span>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" onclick="AppIntraday.loadIntradaySignals()" style="padding:4px 10px; font-size:11px;">🔄 Refresh 0DTE Tape</button>
+</div>
+</div>
+<div id="odte-signals-container">
+<div style="color:var(--text-muted); font-size:13px; text-align:center; padding:20px;">Scanning today's 0DTE Grade-A setups...</div>
+</div>
+</div>
+<!-- Active Intraday Positions & Live P&L Monitor -->
+<div class="station-card">
+<div class="card-head">
+<span class="card-title">💼 ACTIVE INTRADAY OPEN POSITIONS (data/positions.json)</span>
+<div style="display:flex; align-items:center; gap:8px;">
+<span class="pill cyan" id="intraday-pos-count">0 Open Positions</span>
+<button class="btn secondary" onclick="AppIntraday.queryAllPositions()" style="padding:4px 10px; font-size:11px; font-weight:700; color:var(--blue); border-color:var(--border);" title="Ask Copilot to review and manage all open positions">💬 Query All in Chat</button>
+<button class="btn danger" onclick="AppIntraday.flattenIntradayPositions()" style="padding:4px 10px; font-size:11px;">🧹 Flatten All (EOD)</button>
+</div>
+</div>
+<div id="intraday-positions-table">
+<div style="color:var(--text-muted); font-size:13px; text-align:center; padding:20px;">No intraday positions currently open.</div>
+</div>
+</div>
+<!-- Live Daily Alerts & Trigger Events Stream -->
+<div class="station-card">
+<div class="card-head">
+<span class="card-title">🚨 DAILY TRADINGVIEW &amp; TRIGGER ALERTS STREAM</span>
+<div style="display:flex; align-items:center; gap:10px;">
+<span class="pill green" id="intraday-alerts-count">0 Alerts Logged</span>
+<button class="btn secondary" onclick="AppIntraday.loadDailyAlerts()" style="padding:4px 10px; font-size:11px;">🔄 Refresh Feed</button>
+</div>
+</div>
+<div id="intraday-alerts-table" style="max-height:280px; overflow-y:auto;">
+<div style="color:var(--text-muted); font-size:13px; text-align:center; padding:20px;">No daily alerts received yet today.</div>
+</div>
+</div>
+<!-- 2-Column Intraday Station: 0DTE Simulator & Fast Rulebook -->
+<div class="two-col-grid">
+<!-- 0DTE Interactive LLM Decision Simulator -->
+<div class="station-card">
+<div class="card-head">
+<span class="card-title">⚡ 0DTE LOCAL LLM EVALUATOR (revanth-0dte.md)</span>
+<span class="pill green">Qwen3.8-27B Local</span>
+</div>
+<div style="display:flex; flex-direction:column; gap:12px;">
+<div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px;">
+<div>
+<label style="display:block; font-size:11px; color:var(--text-muted); margin-bottom:4px; font-weight:700;">TICKER</label>
+<input class="input-ticker" id="sim-ticker" style="width:100%; text-transform:uppercase;" type="text" value="SPY"/>
+</div>
+<div>
+<label style="display:block; font-size:11px; color:var(--text-muted); margin-bottom:4px; font-weight:700;">ACTION</label>
+<select class="select-mode" id="sim-action" style="width:100%;">
+<option value="ENTER_CALLS">ENTER_CALLS</option>
+<option value="ENTER_PUTS">ENTER_PUTS</option>
+<option value="WAIT_PULLBACK">WAIT_PULLBACK</option>
+<option value="STAND_ASIDE">STAND_ASIDE</option>
+</select>
+</div>
+<div>
+<label style="display:block; font-size:11px; color:var(--text-muted); margin-bottom:4px; font-weight:700;">TRIGGER PRICE ($)</label>
+<input class="input-ticker" id="sim-price" step="0.01" style="width:100%;" type="number" value="560.50"/>
+</div>
+</div>
+<div>
+<label style="display:block; font-size:11px; color:var(--text-muted); margin-bottom:4px; font-weight:700;">TRIGGER WHY NOW / CATALYST NOTE</label>
+<input class="input-ticker" id="sim-why" style="width:100%;" type="text" value="15m Squeeze Breakout + VWAP Reclaim + Calm Tape"/>
+</div>
+<button class="btn" onclick="AppIntraday.runSimulate0DTE()" style="justify-content:center; padding:10px; font-size:13px; font-weight:700;">⚡ Test 0DTE Decision Under 2 Sec</button>
+<!-- 0DTE Output Box -->
+<div id="sim-output-box" style="display:none; background:var(--bg-subtle); border:1px solid rgba(6,182,212,0.4); border-radius:8px; padding:14px; font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.5;">
+<div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+<span id="sim-res-decision" style="font-weight:700; color:#38bdf8;">GO — ENTER CALLS</span>
+<span class="pill green" style="font-size:10px;">LLM Verified</span>
+</div>
+<div id="sim-res-playbook" style="color:var(--text-main); white-space:pre-wrap;"></div>
+</div>
+</div>
+</div>
+<!-- 0DTE Execution Cheatsheet & Rules Summary -->
+<div class="station-card">
+<div class="card-head">
+<span class="card-title">📖 0DTE FAST RULES CHEATSHEET</span>
+<span class="pill amber">Strict Risk Gate</span>
+</div>
+<div style="font-size:12px; color:var(--text-muted); line-height:1.6; display:flex; flex-direction:column; gap:10px;">
+<div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border-left:3px solid var(--cyan);">
+<strong style="color:var(--text-main);">Validated Universe:</strong> SPY, SPX, QQQ, IWM, DIA + Mega-caps (AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, AMD).
+              </div>
+<div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border-left:3px solid var(--amber);">
+<strong style="color:var(--text-main);">Timing &amp; Theta Rules:</strong> Speed and timing outrank everything. Optimal entries fire 9:45 - 11:30 ET or 14:00 - 15:15 ET. Never enter into flat lunchtime chop (12:00 - 13:30 ET).
+              </div>
+<div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; border-left:3px solid var(--emerald);">
+<strong style="color:var(--text-main);">Scale-Out Ladder:</strong> Take 50% profit at Target 1, move Stop to Breakeven (+0.05c), let runners ride to Target 2. Hard exit EOD (15:55 ET).
+              </div>
+</div>
+</div>
+</div>
+</div></div> <!-- Close .main-desks-column -->
+<!-- ================================================================= -->
+<!-- PERMANENT RIGHT-SIDE REV CHAT SIDEBAR                             -->
+<!-- ================================================================= -->
+<div class="chat-resizer" id="chat-resizer" title="Drag left/right to resize Rev Chat"></div>
+<aside class="sidebar-rev-chat">
+<!-- Sidebar Header -->
+<div class="rev-chat-header" id="rev-chat-header">
+<div class="rev-chat-header-row">
+<div class="rev-chat-header-left">
+<span class="rev-chat-brand">
+<span class="rev-chat-brand-mark">⚡</span>
+<span class="rev-chat-title">REV CHAT</span>
+</span>
+<span class="pill rev-chat-mode-badge" id="rev-chat-mode-badge" style="display:none;" title="This thread is the dedicated Portfolio Copilot: it answers about your live Schwab book only">💼 Portfolio</span>
+<span class="pill rev-chat-focus-badge" id="rev-chat-focus-badge" onclick="AppChat.clearSidebarFocus()" title="Current chat scope: the desk you are on, or a single ticker. Tap to clear a ticker focus and return to desk scope.">🎯 Focus: Market</span>
+<!-- On-demand focus. Tap the badge above, or type here and press Enter.
+                 Blanking the box returns the chat to broad market mode. -->
+<input autocomplete="off" class="input-ticker rev-chat-focus-input" id="rev-chat-focus-input" maxlength="6" onblur="AppChat.applySidebarFocusInput()" onkeydown="if(event.key==='Enter'){ event.preventDefault(); AppChat.applySidebarFocusInput(); }" placeholder="FOCUS" spellcheck="false" title="Type a ticker and press Enter to focus the chat on it. Clear it and press Enter for broad market." type="text"/>
+</div>
+<div class="rev-chat-header-controls">
+<button class="btn secondary rev-chat-hdr-btn" id="btn-sidebar-prior-chats" onclick="AppChat.togglePriorChats('sidebar')" title="View prior chats from last 15 days">📜 <span class="rev-chat-btn-label">15d Chats</span></button>
+<button class="btn rev-chat-hdr-btn rev-chat-hdr-btn-portfolio" id="btn-rev-portfolio-copilot" onclick="AppChat.openPortfolioCopilot()" title="Open the dedicated Portfolio Copilot: a separate assistant for your live Schwab book (holdings, contracts, P&amp;L, covered calls)">💼 <span class="rev-chat-btn-label">Portfolio</span></button>
+<button class="btn secondary rev-chat-hdr-btn" onclick="AppChat.startNewChat('sidebar')" title="Start a fresh conversation">➕ <span class="rev-chat-btn-label">New</span></button>
+<button class="btn secondary rev-chat-hdr-btn" onclick="AppChat.clearRevChat()" title="Clear this conversation">Clear</button>
+<button class="btn secondary rev-chat-hdr-btn" id="btn-collapse-chat" onclick="AppChat.toggleCollapse()" title="Collapse Chat (Expand Trading Desk to 100% Full Screen)">⇥</button>
+</div>
+</div>
+</div>
+<!-- Collapsible Prior Chats Panel Overlay for Sidebar (Last 15 Days) -->
+<div id="sidebar-prior-chats-panel" style="display:none; max-height:240px; overflow-y:auto; background:var(--bg-surface); border-bottom:2px solid var(--blue); padding:10px 12px; flex-shrink:0; box-shadow:var(--shadow-card);">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+<span style="font-size:11px; font-weight:700; color:var(--blue); letter-spacing:0.5px;">📜 PRIOR CHATS (LAST 15 DAYS)</span>
+<button class="btn secondary" onclick="AppChat.togglePriorChats('sidebar')" style="padding:1px 6px; font-size:10px;">✕ Close</button>
+</div>
+<div id="sidebar-prior-chats-list" style="display:flex; flex-direction:column; gap:6px;">
+<div style="color:var(--text-muted); font-size:11.5px; text-align:center; padding:10px;">Loading 15-day chats...</div>
+</div>
+</div>
+<!-- Collapsible Quick Prompt Suggestions (Default Collapsed) -->
+<div class="chat-suggestions-container">
+<div class="chat-suggestions-header" onclick="AppChat.toggleSuggestions('sidebar')" title="Click to show/hide quick prompt suggestions">
+<div class="chat-suggestions-title">
+<span style="font-size:11px;">💡</span>
+<span>Quick Prompts</span>
+<span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.8;">10</span>
+</div>
+<div class="chat-suggestions-toggle-btn">
+<span id="rev-chat-suggestions-label">Show</span>
+<span class="suggestions-chevron" id="rev-chat-suggestions-icon">▼</span>
+</div>
+</div>
+<div class="chat-suggestions-body" id="rev-chat-suggestions-body" style="display:none;">
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Review all of my active open intraday positions from data/positions.json. Give me an executive management breakdown: which ones are working, which ones need trailing stops or trims, and which ones should be cut?')" style="font-size:10px; padding:2px 7px; color:var(--emerald-light); font-weight:700;">💼 Query Open Positions</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Based on the research done today, what was run today, what did we learn, and what should we do?')" style="font-size:10px; padding:2px 7px; color:var(--blue); font-weight:700;">📋 Today's Overview &amp; Actions</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Get live real-time price quotes, bid/ask, and day range.')" style="font-size:10px; padding:2px 7px; font-weight:600;">📊 Live Quotes</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Fetch live options chain, strikes, and volatility metrics.')" style="font-size:10px; padding:2px 7px; font-weight:600;">📈 Options Chain</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Trigger a fresh TradingView chart and Data Window scrape.')" style="font-size:10px; padding:2px 7px; font-weight:600;">🔄 Scrape Fresh Chart</button>
+<button class="ticker-pill-btn" onclick="AppSwing.openTradingViewModal((document.getElementById('ticker-input')?.value || 'SPY'), 'D')" style="font-size:10px; padding:2px 7px; font-weight:700; color:#059669; border-color:#a7f3d0;" title="Open interactive TradingView chart modal">📈 Live TV Chart</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Explain tactical levels, entry zone, stop, and R:R.')" style="font-size:10px; padding:2px 7px;">🎯 Tactical Levels</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Execute Python code to calculate exact 10,000-path Monte Carlo probability of touching target before stop, 14d ATR, and HV20 realized volatility.')" style="font-size:10px; padding:2px 7px; font-weight:600;">🐍 Python Monte Carlo &amp; Math</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Breakdown recommended options trade and strike geometry.')" style="font-size:10px; padding:2px 7px;">🛡️ Options Trade</button>
+<button class="ticker-pill-btn" onclick="AppChat.askRevChat('Why did Model A and Model B disagree?')" style="font-size:10px; padding:2px 7px;">⚖️ Model A vs B</button>
+</div>
+</div>
+<!-- Scrollable Message Stream -->
+<div id="rev-chat-thread" style="flex:1; min-height:0; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; font-size:12.5px; line-height:1.5; background:var(--bg-surface);">
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+<div style="font-weight:700; color:var(--blue); font-size:11px; margin-bottom:4px;">⚡ REV CHAT READY</div>
+<div style="color:var(--text-muted); font-size:12px;">Ask any question about today's research runs, what was learned, what to do today, tactical levels, or stock setups (<span class="tv-symbol-hover" data-ticker="WMT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$WMT</span>, <span class="tv-symbol-hover" data-ticker="MSFT" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$MSFT</span>, <span class="tv-symbol-hover" data-ticker="AMZN" style="cursor:pointer; color:var(--cyan-glow, #38bdf8); font-weight:700;">$AMZN</span>). Live quotes &amp; options available on demand!</div>
+</div>
+</div>
+<!-- Attached Context & Image Preview Bar -->
+<div id="rev-chat-attachments" style="display:none; padding:6px 14px; background:var(--bg-subtle); border-top:1px solid var(--border); align-items:center; gap:8px; flex-wrap:wrap;">
+<span class="pill cyan" id="rev-chat-badge-board" onclick="AppChat.removeBoardSync('sidebar')" style="display:none; font-size:10px; padding:2px 8px; font-weight:700; cursor:pointer;" title="Click to detach board context">
+<span>📌 Board: <span id="rev-chat-board-name">None</span></span>
+<span style="margin-left:4px; opacity:0.7;">✕</span>
+</span>
+<span class="pill blue" id="rev-chat-badge-image" onclick="AppChat.removeImageAttachment('sidebar')" style="display:none; font-size:10px; padding:2px 8px; font-weight:700; cursor:pointer;" title="Click to remove attached screenshot">
+<span>📸 Snapshot Attached</span>
+<span style="margin-left:4px; opacity:0.7;">✕</span>
+</span>
+</div>
+<!-- Chat Input Area (Draggable to top to see full paragraphs) -->
+<div class="rev-chat-input-container" id="rev-chat-input-container">
+<!-- Draggable Resizer Handle on Top -->
+<div class="chat-input-v-resizer" id="rev-chat-input-resizer" title="Drag up/down to resize text area (Double-click to toggle expand)">
+<div class="chat-resizer-handle-pill"></div>
+</div>
+<div class="chat-input-body">
+<!-- Multi-line Textarea for paragraphs, code, and questions -->
+<textarea class="chat-textarea" id="rev-chat-input" onkeydown="if(event.key==='Enter' &amp;&amp; !event.shiftKey){event.preventDefault(); AppChat.sendRevChatMsg();}" placeholder="Type question or paste paragraphs / screenshot (Ctrl+V)..."></textarea>
+<!-- Action Toolbar Row -->
+<div class="chat-input-toolbar">
+<div class="chat-input-toolbar-left">
+<button class="btn secondary" id="btn-rev-sync-board" onclick="AppChat.toggleActiveBoardSync('sidebar')" style="padding:3px 7px; font-size:11px;" title="Sync active dashboard/modal table to chat context">📌 <span style="font-size:10px;">Board</span></button>
+<button class="btn secondary" id="btn-rev-snap-view" onclick="AppChat.captureActiveBoardSnapshot('sidebar')" style="padding:3px 7px; font-size:11px;" title="Capture screenshot of active board/chart for Qwen 27B Vision">📸 <span style="font-size:10px;">Snap</span></button>
+<input accept="image/*" id="rev-chat-file-input" onchange="AppChat.handleImageFileUpload(event, 'sidebar')" style="display:none;" type="file"/>
+<span class="chat-input-hint">Shift+↵ Newline</span>
+</div>
+<div class="chat-input-toolbar-right">
+<button class="btn secondary" id="btn-rev-chat-expand" onclick="AppChat.toggleRevChatInputExpand()" style="padding:3px 7px; font-size:11px;" title="Toggle expand/collapse (or drag bar above)">⤢</button>
+<button class="btn" id="btn-rev-chat-send" onclick="AppChat.handleRevChatBtnClick()" style="padding:4px 13px; font-weight:700; font-size:11.5px; min-width:74px; justify-content:center;">💬 Send</button>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</div> <!-- Close .container -->
+<!-- High-Res Chart Lightbox Modal -->
+<div class="modal-overlay" id="chart-lightbox-modal" onclick="if(event.target===this) AppWatchlist.closeChartFullscreen()" style="display:none; align-items:center; justify-content:center; z-index:200;">
+<div style="background:#070b14; border:1px solid rgba(56,189,248,0.4); border-radius:12px; max-width:95vw; max-height:95vh; width:1350px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 10px 50px rgba(0,0,0,0.85);">
+<div style="padding:10px 16px; background:rgba(18,26,44,0.98); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+<div style="display:flex; align-items:center; gap:10px;">
+<span id="lightbox-chart-title" style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--cyan-glow);">TradingView Chart</span>
+<span class="pill" id="lightbox-chart-badge">90-Day Zoom</span>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="lightbox-btn-zoom" onclick="AppWatchlist.setLightboxType('zoom')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--cyan-glow); border-color:var(--cyan-glow);">🔍 90d Zoom</button>
+<button class="btn secondary" id="lightbox-btn-plain" onclick="AppWatchlist.setLightboxType('plain')" style="padding:3px 9px; font-size:11px;">🕯️ Plain</button>
+<button class="btn secondary" id="lightbox-btn-full" onclick="AppWatchlist.setLightboxType('full')" style="padding:3px 9px; font-size:11px;">📈 Full</button>
+<button class="btn secondary" onclick="AppWatchlist.closeChartFullscreen()" style="padding:3px 10px; font-size:11.5px; font-weight:700;">✕ Close</button>
+</div>
+</div>
+<div style="flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; padding:12px; background:#02050c; min-height:400px;">
+<img alt="High-Res Chart" id="lightbox-chart-img" src="" style="max-width:100%; max-height:86vh; object-fit:contain; border-radius:6px;"/>
+</div>
+</div>
+</div>
+<!-- TradingView Alert Details & JSON Modal -->
+<div class="modal-overlay" id="tv-alert-detail-modal" onclick="if(event.target===this) AppAlerts.closeAlertModal()" style="display:none; align-items:center; justify-content:center; z-index:1280;">
+<div class="modal-content" id="alert-modal-content-container" style="max-width:960px; width:92vw; height:92vh; display:flex; flex-direction:column; border-radius:12px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.6); background:var(--bg-surface); border:1px solid var(--border); transition: max-width 0.25s cubic-bezier(0.16, 1, 0.3, 1), width 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
+<!-- Modal Header -->
+<div class="modal-header" style="padding:14px 20px; background:var(--bg-subtle); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+<button class="btn secondary" id="alert-modal-btn-back" onclick="AppAlerts.closeAlertModal(true)" style="display:none; align-items:center; gap:6px; padding:4px 10px; font-size:11.5px; font-weight:700; border-color:var(--cyan-glow, #06b6d4); color:var(--cyan, #06b6d4);" title="Return to previous screen">
+<span id="alert-modal-btn-back-label">← Back</span>
+</button>
+<span id="alert-modal-ticker" style="font-family:'Outfit',sans-serif; font-size:20px; font-weight:800; color:var(--text-main);">BEN</span>
+<span id="alert-modal-company" style="font-size:13px; color:var(--text-muted); font-weight:500;">Franklin Resources Inc.</span>
+<span class="pill" id="alert-modal-action-badge" style="font-size:12px; font-weight:800; padding:3px 10px;">⚡ NEUTRAL</span>
+<span class="pill cyan" id="alert-modal-price" style="font-size:12px; font-family:var(--font-mono); font-weight:800;">$33.67</span>
+<span class="pill" id="alert-modal-time" style="font-size:11px; font-family:var(--font-mono); opacity:0.85;">16:01:29 ET</span>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" onclick="AppAlerts.copyAlertJson()" style="padding:4px 10px; font-size:11.5px; font-weight:700;" title="Copy JSON payload to clipboard">
+            📋 Copy JSON
+          </button>
+<button class="btn secondary" onclick="AppAlerts.closeAlertModal()" style="padding:4px 10px; font-size:12px; font-weight:700;">
+            ✕ Close
+          </button>
+</div>
+</div>
+<!-- Quick Action Toolbar -->
+<div style="padding:8px 20px; background:var(--bg-surface); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+<button class="btn secondary" id="alert-modal-btn-chart" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+          📈 Interactive TV Chart
+        </button>
+<button class="btn" id="alert-modal-btn-research" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+          🚀 1-Click Deep Research
+        </button>
+<button class="btn secondary" id="alert-modal-btn-copilot" onclick="AppAlerts.askCopilotFromModal()" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
+          💬 Ask Copilot About Setup
+        </button>
+<div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+<span class="pill" id="alert-modal-status-pill" style="font-size:10.5px;">Status: INGESTED</span>
+</div>
+</div>
+<!-- Modal Split Container -->
+<div id="alert-modal-split-container" style="display:flex; flex:1; overflow:hidden; min-height:0;">
+<!-- Left Side: Main Alert Details & Chart (Scrollable) -->
+<div id="alert-modal-main-pane" style="flex:1; min-width:0; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:16px; background:var(--bg-surface);">
+<!-- ⚡ LOCAL RESEARCH (#ponytail & revanth-gem-local) CARD -->
+<div id="alert-modal-local-research-card" style="background:linear-gradient(135deg, rgba(6,182,212,0.08) 0%, rgba(16,185,129,0.04) 100%); border:1px solid rgba(6,182,212,0.35); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:12px; box-shadow:0 4px 20px rgba(0,0,0,0.25);">
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+<div style="display:flex; align-items:center; gap:10px;">
+<span style="font-size:12.5px; font-weight:800; color:var(--cyan-glow); letter-spacing:0.5px; display:flex; align-items:center; gap:6px;">
+                ⚡ LOCAL RESEARCH (#ponytail &amp; revanth-gem-local)
+              </span>
+<span class="pill green" id="alert-modal-lr-verdict" style="font-size:11.5px; font-weight:800; padding:2px 10px;">
+                ⏳ PENDING EVALUATION
+              </span>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn" id="alert-modal-btn-run-lr" onclick="AppAlerts.runLocalResearchForModal()" style="padding:4px 12px; font-size:11px; font-weight:800; background:linear-gradient(135deg, #06b6d4, #0284c7); border:none; color:#fff; cursor:pointer;" title="Run local GPU triage with live Tastytrade metrics and news">
+                ⚡ Run Local Research (#ponytail)
+              </button>
+</div>
+</div>
+<!-- Ponytail PM Assessment -->
+<div id="alert-modal-lr-ponytail-box" style="background:rgba(0,0,0,0.25); border-left:3px solid var(--cyan); padding:12px 16px; border-radius:6px; font-size:12.5px; line-height:1.6;">
+<div style="font-size:10.5px; font-weight:800; color:var(--cyan); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;">
+              Senior PM Critique (#ponytail):
+            </div>
+<div class="critique-markdown" id="alert-modal-lr-ponytail-text" style="color:var(--text-main);">
+              Click "Run Local Research" above to evaluate floor defense, risk-reward edge, and tactical invalidation via local GPU LLM without scraping.
+            </div>
+</div>
+<!-- Tactical Levels & Vehicle Grid -->
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; font-size:11.5px; font-family:var(--font-mono);">
+<div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+<div style="font-size:10px; color:var(--text-muted); font-weight:700;">TACTICAL KILL STOP</div>
+<div id="alert-modal-lr-stop" style="font-size:13px; font-weight:800; color:var(--rose-light, #f43f5e); margin-top:2px;">--</div>
+</div>
+<div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+<div style="font-size:10px; color:var(--text-muted); font-weight:700;">PROFIT TARGET 1</div>
+<div id="alert-modal-lr-target" style="font-size:13px; font-weight:800; color:#10b981; margin-top:2px;">--</div>
+</div>
+<div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+<div style="font-size:10px; color:var(--text-muted); font-weight:700;">RECOMMENDED VEHICLE</div>
+<div id="alert-modal-lr-vehicle" style="font-size:12.5px; font-weight:800; color:var(--amber, #f59e0b); margin-top:2px;">--</div>
+</div>
+<div style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+<div style="font-size:10px; color:var(--text-muted); font-weight:700;">CONVICTION &amp; MODE</div>
+<div id="alert-modal-lr-mode" style="font-size:12px; font-weight:800; color:var(--cyan-glow); margin-top:2px;">--</div>
+</div>
+</div>
+<!-- Live Broker Context Strip (Tastytrade, News, Earnings) -->
+<div id="alert-modal-lr-broker-strip" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); padding-top:4px; border-top:1px solid rgba(255,255,255,0.05);">
+<span>📊 Tastytrade IV Rank: <strong id="alert-modal-lr-iv" style="color:var(--text-main);">--</strong></span>
+<span>📅 Expected Earnings: <strong id="alert-modal-lr-earnings" style="color:var(--text-main);">--</strong></span>
+<span>📰 Catalyst: <strong id="alert-modal-lr-catalyst" style="color:var(--text-main);">--</strong></span>
+</div>
+</div>
+<!-- 📅 TICKER SESSION TRADES & AI-ONLY P&L LIFECYCLE CARD -->
+<div id="alert-modal-ticker-day-trades-card" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:10px;">
+<!-- Dynamically populated by AppAlerts.renderAlertModalTickerTrades() -->
+</div>
+<!-- Chart Preview & Scraped Screenshot Station -->
+<div id="alert-modal-chart-section" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px;">
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+<div style="display:flex; align-items:center; gap:8px;">
+<span style="font-size:12px; font-weight:800; color:var(--cyan-glow);">📈 CHART PREVIEW</span>
+<span class="pill blue" id="alert-modal-chart-badge" style="font-size:9.5px; padding:2px 6px;">Daily Candlesticks</span>
+</div>
+<div style="display:flex; align-items:center; gap:6px;">
+<button class="btn secondary" id="alert-modal-chart-toggle-tv" onclick="AppAlerts.switchModalChartType('interactive')" style="padding:2px 8px; font-size:11px; font-weight:700;">Interactive TV</button>
+<button class="btn secondary" id="alert-modal-chart-toggle-img" onclick="AppAlerts.switchModalChartType('image')" style="padding:2px 8px; font-size:11px; font-weight:700;">Captured Screenshot</button>
+<button class="btn" id="alert-modal-btn-scrape-normal" onclick="AppAlerts.scrapeNormalChartForModal()" style="padding:2px 10px; font-size:11px; font-weight:800; background:linear-gradient(135deg, #059669, #0284c7); border:none; color:#fff;" title="Scrape normal daily TradingView chart via Playwright">
+                📸 Scrape Normal Chart
+              </button>
+</div>
+</div>
+<!-- Chart Container (Interactive TV Iframe or Scraped Screenshot) -->
+<div id="alert-modal-chart-host" style="width:100%; height:380px; min-height:360px; background:#040711; border-radius:8px; border:1px solid var(--border); overflow:hidden; position:relative; display:flex; align-items:center; justify-content:center;">
+<div style="color:var(--text-muted); font-size:12px;">Loading chart...</div>
+</div>
+</div>
+<!-- Grid of 4 Pure Market & Broker Telemetry Cards (NO WYCKOFF STAGES, NO SCREENER SCORES) -->
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px;">
+<!-- Card 1: Tactical Setup & Invalidation -->
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+<div style="font-size:11px; font-weight:800; color:var(--blue); letter-spacing:0.5px; display:flex; align-items:center; justify-content:space-between;">
+<span>🎯 TACTICAL SETUP &amp; RISK</span>
+<span class="pill green" id="alert-modal-grade-badge" style="font-size:10px; display:none;">Grade: --</span>
+</div>
+<div id="alert-modal-plan-content" style="font-size:12px; line-height:1.5; color:var(--text-main); font-family:var(--font-mono); background:rgba(0,0,0,0.15); padding:10px; border-radius:6px; word-break:break-word;">
+              No explicit trade plan in alert.
+            </div>
+<div style="font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:5px; margin-top:4px;">
+<div><strong>Invalidation (Wrong If):</strong> <span id="alert-modal-wrong-if" style="color:var(--rose-light, #f43f5e); font-family:var(--font-mono); font-weight:700;">--</span></div>
+<div><strong>Recommended Vehicle:</strong> <span id="alert-modal-option" style="color:var(--amber, #f59e0b); font-family:var(--font-mono); font-weight:800;">--</span></div>
+</div>
+</div>
+<!-- Card 2: Tastytrade Volatility & Options Edge -->
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+<div style="font-size:11px; font-weight:800; color:var(--emerald-light, #10b981); letter-spacing:0.5px; display:flex; align-items:center; justify-content:space-between;">
+<span>⚡ TASTYTRADE VOLATILITY &amp; OPTIONS</span>
+<span class="pill cyan" id="alert-modal-iv-regime-pill" style="font-size:10px;">VOL REGIME</span>
+</div>
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11.5px; font-family:var(--font-mono);">
+<div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9.5px; color:var(--text-muted);">IV RANK / PERCENTILE</div>
+<div id="alert-modal-iv-rank-box" style="font-weight:800; font-size:12.5px; color:var(--text-main); margin-top:2px;">--</div>
+</div>
+<div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9.5px; color:var(--text-muted);">30D REALIZED HV</div>
+<div id="alert-modal-hv30-box" style="font-weight:700; margin-top:2px; color:var(--text-main);">--</div>
+</div>
+<div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9.5px; color:var(--text-muted);">IV - HV SPREAD</div>
+<div id="alert-modal-spread-box" style="font-weight:700; margin-top:2px;">--</div>
+</div>
+<div style="background:rgba(0,0,0,0.15); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9.5px; color:var(--text-muted);">OPTION LIQUIDITY</div>
+<div id="alert-modal-liquidity-box" style="font-weight:700; margin-top:2px;">--</div>
+</div>
+</div>
+</div>
+<!-- Card 3: Catalysts & Earnings Calendar -->
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+<div style="font-size:11px; font-weight:800; color:var(--amber, #f59e0b); letter-spacing:0.5px;">
+              📅 EVENT CALENDAR &amp; CATALYSTS
+            </div>
+<div style="font-size:11.5px; display:flex; flex-direction:column; gap:6px;">
+<div><strong>Expected Earnings:</strong> <span id="alert-modal-card-earnings" style="font-family:var(--font-mono); font-weight:700; color:var(--text-main);">--</span></div>
+<div><strong>Material Catalyst:</strong> <span id="alert-modal-card-catalyst" style="color:var(--text-main);">--</span></div>
+<div><strong>Market Setup:</strong> <span id="alert-modal-why-now" style="color:var(--text-muted); font-size:11px;">--</span></div>
+</div>
+</div>
+<!-- Card 4: Price Action & Execution Telemetry -->
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:8px;">
+<div style="font-size:11px; font-weight:800; color:var(--purple-light, #a855f7); letter-spacing:0.5px;">
+              💵 PRICE ACTION &amp; EXECUTION STATS
+            </div>
+<div style="font-size:11.5px; display:flex; flex-direction:column; gap:6px;">
+<div><strong>Alert Trigger Spot:</strong> <span id="alert-modal-card-spot" style="font-family:var(--font-mono); font-weight:800; color:var(--emerald-light, #10b981);">$0.00</span></div>
+<div><strong>Action &amp; Bias:</strong> <span id="alert-modal-card-bias" style="font-weight:700; color:var(--text-main);">--</span></div>
+<div><strong>Strategy Type:</strong> <span id="alert-modal-card-strategy" style="color:var(--text-muted);">--</span></div>
+</div>
+</div>
+</div>
+<!-- AI Commentary & Playbook (if present) -->
+<div id="alert-modal-ai-box" style="display:none; background:rgba(6,182,212,0.06); border:1px solid rgba(6,182,212,0.3); border-radius:10px; padding:12px 16px;">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+<span style="font-size:11px; font-weight:800; color:var(--cyan-glow);">🤖 LOCAL AI ANALYSIS &amp; PLAYBOOK</span>
+<span class="pill green" id="alert-modal-ai-verdict" style="font-size:10px;">STAND ASIDE</span>
+</div>
+<div id="alert-modal-ai-playbook" style="font-size:12px; color:var(--text-main); line-height:1.5; white-space:pre-wrap;"></div>
+</div>
+<!-- Raw JSON Payload Viewer Station -->
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; overflow:hidden;">
+<div style="padding:10px 14px; background:rgba(0,0,0,0.2); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+<span style="font-size:11px; font-weight:700; color:var(--text-muted); font-family:var(--font-mono);">RAW ALERT JSON PAYLOAD</span>
+<button class="btn secondary" onclick="AppAlerts.copyAlertJson()" style="padding:2px 8px; font-size:10.5px;">📋 Copy JSON</button>
+</div>
+<pre id="alert-modal-raw-json" style="margin:0; padding:14px; font-family:var(--font-mono); font-size:11.5px; line-height:1.5; color:#38bdf8; background:#040711; overflow-x:auto; max-height:260px;"></pre>
+</div>
+</div>
+<!-- Draggable Resizer Splitter -->
+<div class="modal-chat-resizer" id="alert-modal-chat-resizer" style="display:none;" title="Drag left/right to resize Copilot drawer"></div>
+<!-- Right Side: Persistent Interactive AI Copilot Chat Drawer -->
+<div id="alert-modal-copilot-drawer" style="width: 440px; min-width: 320px; max-width: 55%; display:none; flex-direction:column; background: var(--bg-surface); border-left: 1px solid var(--border); overflow:hidden; flex-shrink:0;">
+<!-- Drawer Header -->
+<div style="padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+<div style="display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden;">
+<span style="font-family:'Outfit',sans-serif; font-size:13px; font-weight:800; color:var(--text-main); white-space:nowrap;">💬 COPILOT: <span id="alert-modal-copilot-ticker" style="color:var(--cyan-glow);">TICKER</span></span>
+<span class="pill cyan" style="font-size:9.5px; padding:1px 5px; font-weight:700;">LIVE SETUP</span>
+</div>
+<div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+<button class="btn secondary" onclick="AppAlerts.clearAlertCopilotChat()" style="padding:2px 7px; font-size:10.5px; font-weight:600;" title="Clear chat thread">🧹 Clear</button>
+<button class="btn secondary" onclick="AppAlerts.toggleAlertCopilotDrawer(false)" style="padding:2px 7px; font-size:11px; font-weight:700;" title="Close Copilot drawer">✕ Close</button>
+</div>
+</div>
+<!-- Collapsible Quick Question Suggestions (Default Collapsed) -->
+<div class="chat-suggestions-container">
+<div class="chat-suggestions-header" onclick="AppChat.toggleSuggestions('alert')" title="Click to show/hide quick prompt suggestions">
+<div class="chat-suggestions-title">
+<span style="font-size:11px;">💡</span>
+<span>Suggestions</span>
+<span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.8;">6</span>
+</div>
+<div class="chat-suggestions-toggle-btn">
+<span id="alert-chat-suggestions-label">Show</span>
+<span class="suggestions-chevron" id="alert-chat-suggestions-icon">▼</span>
+</div>
+</div>
+<div class="chat-suggestions-body" id="alert-chat-suggestions-body" style="display:none;">
+<button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('setup')" style="font-size:10px; padding:2px 7px; color:var(--cyan-glow); font-weight:700;">🎯 Setup &amp; R:R</button>
+<button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('stagnation')" style="font-size:10px; padding:2px 7px; color:var(--amber); font-weight:700;">⚡ Stagnation &amp; Income</button>
+<button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('volatility')" style="font-size:10px; padding:2px 7px; color:#10b981; font-weight:700;">📊 Volatility &amp; IV</button>
+<button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('catalysts')" style="font-size:10px; padding:2px 7px; font-weight:600;">📅 Catalysts &amp; Earnings</button>
+<button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('options')" style="font-size:10px; padding:2px 7px; font-weight:600;">📈 Options Chain</button>
+<button class="ticker-pill-btn" onclick="AppAlerts.sendQuickCopilotPrompt('math')" style="font-size:10px; padding:2px 7px; font-weight:600;">🐍 Python Math</button>
+</div>
+</div>
+<!-- Chat Messages Area (Scrollable) -->
+<div id="alert-modal-chat-thread" style="flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; background:var(--bg-surface);">
+<div id="alert-modal-chat-intro" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+<div style="font-weight:700; color:var(--cyan-glow); font-size:11px; margin-bottom:4px;">🤖 COPILOT GROUNDED IN ALERT</div>
+<div id="alert-modal-chat-intro-desc" style="font-size:11.5px; color:var(--text-muted); line-height:1.45;">
+                Ask anything about entry timing, floor defense, risk-reward, options spread pricing, or stagnation mechanics.
+              </div>
+</div>
+</div>
+<!-- Input Box Area -->
+<div style="padding:8px 12px; background:var(--bg-subtle); border-top:1px solid var(--border); display:flex; gap:8px; align-items:flex-end; flex-shrink:0;">
+<textarea class="chat-textarea" id="alert-modal-chat-input" onkeydown="if(event.key==='Enter' &amp;&amp; !event.shiftKey){event.preventDefault(); AppAlerts.sendModalCopilotMsg();}" placeholder="Ask Copilot about setup, stop, or options (Shift+Enter for newline)..." style="min-height:36px; height:38px; font-size:12px; padding:6px 10px;"></textarea>
+<button class="btn" id="alert-modal-chat-send" onclick="AppAlerts.handleAlertCopilotSendClick()" style="padding:7px 12px; font-size:11.5px; font-weight:700; background:linear-gradient(135deg, #06b6d4, #0284c7); border:none; color:#fff; white-space:nowrap; margin-bottom:2px;">💬 Send</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Tastytrade Alert Editor Modal -->
+<div class="modal-overlay" id="alert-editor-modal">
+<div class="modal-content" style="max-width:480px; height:auto;">
+<div class="modal-header">
+<div id="alert-modal-title" style="font-family:'Outfit',sans-serif; font-size:18px; font-weight:700;">EDIT CLOUD ALERT</div>
+<button class="btn secondary" onclick="AppSwing.closeAlertModal()" style="padding:4px 10px;">✕ Close</button>
+</div>
+<div style="padding:24px; display:flex; flex-direction:column; gap:16px;">
+<input id="modal-alert-id" type="hidden" value=""/>
+<div>
+<label style="display:block; font-size:12px; color:var(--text-muted); margin-bottom:6px; font-weight:600;">SYMBOL</label>
+<input class="input-ticker" id="modal-alert-sym" placeholder="e.g. WMT" style="width:100%; text-transform:uppercase;" type="text"/>
+</div>
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+<div>
+<label style="display:block; font-size:12px; color:var(--text-muted); margin-bottom:6px; font-weight:600;">CONDITION</label>
+<select class="select-mode" id="modal-alert-op" style="width:100%;">
+<option value="&lt;">Last &lt; (Less than / Support)</option>
+<option value="&gt;">Last &gt; (Greater than / Target)</option>
+</select>
+</div>
+<div>
+<label style="display:block; font-size:12px; color:var(--text-muted); margin-bottom:6px; font-weight:600;">PRICE THRESHOLD ($)</label>
+<input class="input-ticker" id="modal-alert-thresh" placeholder="104.50" step="0.01" style="width:100%;" type="number"/>
+</div>
+</div>
+<div>
+<label style="display:block; font-size:12px; color:var(--text-muted); margin-bottom:6px; font-weight:600;">EXPIRATION DATE (YYYY-MM-DD)</label>
+<input class="input-ticker" id="modal-alert-exp" placeholder="2026-10-02" style="width:100%;" type="text"/>
+</div>
+<button class="btn" onclick="AppSwing.submitAlertModal()" style="width:100%; justify-content:center; margin-top:8px;">💾 Save Cloud Alert</button>
+</div>
+</div>
+</div>
+<!-- Real-Time TradingView Interactive Chart Modal -->
+<div class="modal-overlay" id="tv-chart-modal" onclick="if(event.target === this) AppSwing.closeTradingViewModal()" style="z-index: 1050;">
+<div class="modal-content" style="max-width: 1440px; width: 95vw; height: 90vh; display:flex; flex-direction:column; padding:0; overflow:hidden; border-radius:12px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
+<div class="modal-header" style="padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--bg-surface); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+<span style="font-size:18px;">📈</span>
+<div id="tv-modal-ticker-title" style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--text-main);">$XYZ - TradingView Chart</div>
+<div id="tv-modal-live-quote-badge" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-subtle); border:1px solid var(--border); padding:2px 8px; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:12px;">
+<span class="dot pulse" style="background:#10b981;"></span>
+<span id="tv-modal-live-price" style="font-weight:800; color:#059669;">Live Spot</span>
+</div>
+<!-- Timeframe selector -->
+<div style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; background:var(--bg-subtle); padding:2px; border-radius:6px; border:1px solid var(--border);">
+<button class="btn secondary" id="tv-tf-15" onclick="AppSwing.setTradingViewModalInterval('15')" style="padding:2px 8px; font-size:11px; font-weight:700;">15m</button>
+<button class="btn secondary" id="tv-tf-60" onclick="AppSwing.setTradingViewModalInterval('60')" style="padding:2px 8px; font-size:11px; font-weight:700;">1h</button>
+<button class="btn secondary active" id="tv-tf-D" onclick="AppSwing.setTradingViewModalInterval('D')" style="padding:2px 8px; font-size:11px; font-weight:800; background:var(--blue); color:#fff; border-color:var(--blue);">Daily (Swing)</button>
+<button class="btn secondary" id="tv-tf-W" onclick="AppSwing.setTradingViewModalInterval('W')" style="padding:2px 8px; font-size:11px; font-weight:700;">Weekly</button>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn" id="tv-modal-btn-research" onclick="AppSwing.launchResearchFromTvModal()" style="padding:4px 12px; font-size:11.5px; font-weight:700;" title="Queue full deep research pipeline">
+            ⚡ Deep Research
+          </button>
+<a class="btn secondary" href="#" id="tv-modal-btn-external" style="padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--blue); text-decoration:none; display:inline-flex; align-items:center; gap:4px;" target="_blank" title="Open in your logged-in TradingView session with the Rev - Enhanced v2 &amp; R-VRVP layout">
+            📊 Open Rev v2 Indicators ↗
+          </a>
+<button class="btn secondary" onclick="AppSwing.closeTradingViewModal()" style="padding:4px 10px; font-size:13px; font-weight:700;" title="Close (Esc)">
+            ✕
+          </button>
+</div>
+</div>
+<!-- TV Embed Widget Container -->
+<div id="tv-modal-chart-host" style="flex:1; width:100%; height:calc(100% - 55px); background:var(--bg-surface); position:relative;">
+</div>
+</div>
+</div>
+<!-- ================================================================= -->
+<!-- SUGGESTED TRADE POSITION & STRUCTURE DETAIL MODAL                 -->
+<!-- ================================================================= -->
+<div class="modal-overlay" id="trade-plan-modal" onclick="if(event.target === this) AppTrades.closePlanModal()" style="z-index: 1060;">
+<div class="modal-content" style="max-width: 840px; width: 92vw; max-height: 88vh; display:flex; flex-direction:column; padding:0; overflow:hidden; border-radius:12px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.35); background:var(--bg-surface);">
+<!-- Modal Header -->
+<div class="modal-header" style="padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+<span style="font-size:20px;">⚡</span>
+<div>
+<div style="display:flex; align-items:center; gap:8px;">
+<span id="plan-modal-title" style="font-family:'Outfit',sans-serif; font-size:18px; font-weight:800; color:var(--text-main);">$TICKER</span>
+<span class="pill green" id="plan-modal-side-pill" style="font-size:10px; padding:2px 6px; font-weight:800;">LONG</span>
+<span class="pill cyan" id="plan-modal-struct-pill" style="font-size:10px; padding:2px 6px; font-weight:700;">BULL CALL SPREAD</span>
+</div>
+<div id="plan-modal-company" style="font-size:11.5px; color:var(--text-muted); font-weight:500;">Company Name</div>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<div id="plan-modal-live-badge" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); padding:3px 8px; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:11.5px;">
+<span class="dot pulse" style="background:#10b981;"></span>
+<span style="font-size:10px; color:var(--text-muted); font-weight:700;">SPOT:</span>
+<span id="plan-modal-spot-price" style="font-weight:800; color:var(--text-main);">$0.00</span>
+</div>
+<button class="modal-action-btn close" onclick="AppTrades.closePlanModal()" title="Close (Esc)">✕</button>
+</div>
+</div>
+<!-- Modal Body (Scrollable) -->
+<div id="plan-modal-body" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:16px;">
+<!-- Dynamically rendered by AppTrades.openPlanModal(ticker) -->
+</div>
+<!-- Modal Footer Toolbar -->
+<div style="padding:12px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="btn-copy-trade-order" onclick="AppTrades.copyOrderString()" style="padding:6px 14px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:5px;">
+            📋 Copy Broker Order String
+          </button>
+<div id="plan-modal-take-btn-container"></div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="btn-modal-open-chart" onclick="AppTrades.openSelectedChart()" style="padding:6px 14px; font-size:12px; font-weight:700;">
+            📈 Open Chart
+          </button>
+<button class="btn" id="btn-modal-open-dossier" onclick="AppTrades.openSelectedDossier()" style="padding:6px 16px; font-size:12px; font-weight:700;">
+            📖 Full Dossier ↗
+          </button>
+</div>
+</div>
+</div>
+</div>
+<!-- ================================================================= -->
+<!-- SUGGESTED TRADES PERFORMANCE & AUDIT TRAIL MODAL                  -->
+<!-- ================================================================= -->
+<div class="modal-overlay" id="modal-watchlist-audit" onclick="if(event.target === this) AppWatchlist.closeAuditModal()" style="z-index: 1070; display:none;">
+<div class="modal-content" style="max-width: 1200px; width: 94vw; max-height: 90vh; display:flex; flex-direction:column; padding:0; overflow:hidden; border-radius:4px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); background:var(--bg-surface); border:1px solid var(--border);">
+<!-- Modal Header -->
+<div class="modal-header" style="padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+<div style="display:flex; align-items:center; gap:12px;">
+<div style="width:34px; height:34px; border-radius:3px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); display:flex; align-items:center; justify-content:center; font-size:16px;">
+            📊
+          </div>
+<div>
+<div style="display:flex; align-items:center; gap:8px;">
+<span style="font-family:'Outfit',sans-serif; font-size:17px; font-weight:800; color:var(--text-main); letter-spacing:0.3px;">SUGGESTED TRADES AUDIT &amp; PERFORMANCE TRAIL</span>
+<span class="pill green" style="font-size:10px; padding:2px 6px; font-weight:800;">ON-DEMAND ENGINE</span>
+</div>
+<div style="font-size:11.5px; color:var(--text-muted); font-weight:500;">
+              Historical ledger of all Options Spreads &amp; Equity Shares prescribed by deep research • SQLite Backed
+            </div>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<div style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); padding:3px 8px; border-radius:6px;">
+<span style="font-size:11px; color:var(--text-muted); font-weight:700;">Window:</span>
+<select class="select-pagesize" id="select-audit-window" onchange="AppWatchlist.setAuditWindow(this.value)" style="font-weight:700; padding:2px 6px; font-size:11px; border:none; background:transparent;">
+<option selected="" value="100">Last 100 Trades</option>
+<option value="50">Last 50 Trades</option>
+<option value="200">Last 200 Trades</option>
+<option value="0">All Historical Trades</option>
+</select>
+</div>
+<div id="modal-audit-timestamp-badge" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-surface); border:1px solid var(--border); padding:4px 10px; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-muted);">
+<span class="dot pulse" style="background:#10b981;"></span>
+<span>Evaluated: <strong id="modal-audit-evaluated-time" style="color:var(--text-main);">Loading...</strong></span>
+</div>
+<button class="btn btn-sm btn-primary" id="btn-re-evaluate-audit" onclick="AppWatchlist.triggerAuditEvaluation()" style="padding:5px 12px; font-size:11.5px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">
+<span class="spinner-small" id="re-evaluate-spinner" style="display:none;"></span>
+<span id="re-evaluate-icon">🔄</span>
+<span>Re-Evaluate All</span>
+</button>
+<button class="modal-action-btn close" onclick="AppWatchlist.closeAuditModal()" title="Close (Esc)">✕</button>
+</div>
+</div>
+<!-- Modal Body (Scrollable) -->
+<div id="watchlist-audit-modal-body" style="flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:18px;">
+<!-- 5 KPI Cards Row (The Exact User Visual!) -->
+<div id="modal-audit-kpi-strip" style="margin:0;">
+<!-- Dynamically populated -->
+</div>
+<!-- Filter Pills & Search Bar -->
+<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; background:var(--bg-subtle); padding:10px 14px; border-radius:8px; border:1px solid var(--border);">
+<div class="filter-tabs-row" id="audit-modal-filter-tabs">
+<button class="tab-pill-btn active" data-audit-tab="ALL" onclick="AppWatchlist.setAuditTab('ALL')">
+              All Trades <span class="pill" id="audit-tab-count-all">0</span>
+</button>
+<button class="tab-pill-btn" data-audit-tab="OPTIONS" onclick="AppWatchlist.setAuditTab('OPTIONS')">
+              ⚡ Options Spreads <span class="pill cyan" id="audit-tab-count-options">0</span>
+</button>
+<button class="tab-pill-btn" data-audit-tab="SHARES" onclick="AppWatchlist.setAuditTab('SHARES')">
+              📈 Equity Shares <span class="pill blue" id="audit-tab-count-shares">0</span>
+</button>
+<button class="tab-pill-btn" data-audit-tab="WON" onclick="AppWatchlist.setAuditTab('WON')">
+              🏆 Won <span class="pill green" id="audit-tab-count-won">0</span>
+</button>
+<button class="tab-pill-btn" data-audit-tab="STOPPED" onclick="AppWatchlist.setAuditTab('STOPPED')">
+              🛑 Stopped <span class="pill red" id="audit-tab-count-stopped">0</span>
+</button>
+<button class="tab-pill-btn" data-audit-tab="ACTIVE" onclick="AppWatchlist.setAuditTab('ACTIVE')">
+              🎯 Active In Trade <span class="pill amber" id="audit-tab-count-active">0</span>
+</button>
+<button class="tab-pill-btn" data-audit-tab="STALKING" onclick="AppWatchlist.setAuditTab('STALKING')">
+              ⏳ Stalking <span class="pill" id="audit-tab-count-stalking">0</span>
+</button>
+<!-- INCOME rows exist in the ledger (covered calls / CSPs) and the backend already
+                 counts them; the button was missing, so the tab was unreachable. -->
+<button class="tab-pill-btn" data-audit-tab="INCOME" onclick="AppWatchlist.setAuditTab('INCOME')" title="Covered calls and cash-secured puts raised by the INCOME alert tier. Not R-scored.">
+              💵 Income <span class="pill green" id="audit-tab-count-income">0</span>
+</button>
+<!-- Rows the creation-time geometry gate quarantined. Without this button the
+                 INVALID_GEOMETRY status the backend writes is unreachable from the UI. -->
+<button class="tab-pill-btn" data-audit-tab="INVALID" onclick="AppWatchlist.setAuditTab('INVALID')" title="Quarantined by the options-geometry gate. Excluded from R statistics.">
+              ⛔ Quarantined <span class="pill red" id="audit-tab-count-invalid">0</span>
+</button>
+</div>
+<div class="search-filter-box" style="min-width:220px; max-width:300px;">
+<span class="search-filter-icon">🔍</span>
+<input class="search-filter-input" id="audit-search-input" oninput="AppWatchlist.setAuditSearch(this.value)" placeholder="Search Ticker, Trade, Notes..." type="text"/>
+</div>
+</div>
+<!-- Audit Table Container -->
+<div id="audit-table-container" style="overflow-x:auto; border:1px solid var(--border); border-radius:8px; background:var(--bg-surface);">
+<table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+<thead>
+<tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border); text-align:left;">
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">TICKER / DATE</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">TYPE &amp; STRUCTURE</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">PLAN LEVELS / STRIKES</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">STATUS</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">SPOT &amp; DIST</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">R-MULTIPLE</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted); text-align:right;">ROC %</th>
+<th style="padding:10px 14px; font-weight:800; color:var(--text-muted);">OUTCOME NOTES</th>
+</tr>
+</thead>
+<tbody id="audit-table-tbody">
+<tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted);">Loading audit records from SQLite...</td></tr>
+</tbody>
+</table>
+</div>
+<!-- Audit Pagination Bar -->
+<div class="audit-pagination-bar" id="audit-pagination-bar" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px;">
+<div style="display:flex; align-items:center; gap:10px;">
+<span style="font-size:11.5px; color:var(--text-muted); font-weight:700;">Page Size:</span>
+<select class="select-pagesize" id="select-audit-pagesize" onchange="AppWatchlist.setAuditPageSize(this.value)">
+<option selected="" value="10">10 per page</option>
+<option value="25">25 per page</option>
+<option value="50">50 per page</option>
+<option value="100">100 per page</option>
+</select>
+<span id="audit-pagination-range" style="font-size:11.5px; font-weight:700; color:var(--text-muted); margin-left:6px;">
+              Showing 1–10 of 37 Trades
+            </span>
+</div>
+<div style="display:flex; align-items:center; gap:6px;">
+<button class="pagination-btn" id="btn-audit-page-first" onclick="AppWatchlist.setAuditPage(1)" title="First Page">⏮ First</button>
+<button class="pagination-btn" id="btn-audit-page-prev" onclick="AppWatchlist.prevAuditPage()" title="Previous Page">◀ Prev</button>
+<div id="audit-page-indicator" style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; padding:3px 10px; background:var(--bg-surface); border:1px solid var(--border); border-radius:6px;">
+              Page <span id="audit-current-page">1</span> of <span id="audit-total-pages">4</span>
+</div>
+<button class="pagination-btn" id="btn-audit-page-next" onclick="AppWatchlist.nextAuditPage()" title="Next Page">Next ▶</button>
+<button class="pagination-btn" id="btn-audit-page-last" onclick="AppWatchlist.setAuditPage('last')" title="Last Page">Last ⏭</button>
+</div>
+</div>
+</div>
+<!-- Modal Footer Toolbar -->
+<div style="padding:12px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+<div style="font-size:11.5px; color:var(--text-muted); display:flex; align-items:center; gap:8px;">
+<span>💾 Database: <code>data/research_watch.db</code> (<code>suggested_trades_audit</code>)</span>
+<span>•</span>
+<span>Preserves complete attribution trail for reinforcement learning &amp; pipeline improvement</span>
+</div>
+<button class="btn secondary" onclick="AppWatchlist.closeAuditModal()" style="padding:6px 16px; font-size:12px; font-weight:700;">
+          Close
+        </button>
+</div>
+</div>
+</div>
+<!-- 3-Model Research Viewer Modal with Right-Side Copilot Chat -->
+<div class="modal-overlay" id="report-modal">
+<div class="modal-content" id="report-modal-content" onclick="AppSwing.handleModalHeaderClick(event)" style="max-width: 1480px; width: 96vw; height: 92vh;">
+<div class="modal-header" id="modal-header">
+<div style="display:flex; align-items:center; gap:10px; flex-wrap:nowrap; min-width:0;">
+<span class="dot pulse" id="modal-minimized-pulse" style="background:var(--blue); display:none;"></span>
+<div id="modal-ticker-title" style="font-family:'Outfit',sans-serif; font-size:15px; font-weight:800; color:var(--text-main); letter-spacing:0.3px; white-space:nowrap;">RESEARCH REPORT</div>
+<!-- Multi-Chat Active Tabs (Max 3) -->
+<div class="modal-active-chat-tabs" id="modal-active-chat-tabs"></div>
+<!-- Live Current Price Badge -->
+<div id="modal-live-quote-badge" style="display:inline-flex; align-items:center; gap:8px; background:var(--bg-subtle); border:1px solid var(--border); padding:3px 10px; border-radius:6px; font-family:'JetBrains Mono',monospace; white-space:nowrap; flex-shrink:0;">
+<span class="dot pulse" style="background:#10b981;"></span>
+<span style="font-size:10.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">LIVE:</span>
+<span id="modal-live-price-val" style="font-size:13px; font-weight:800; color:#059669;">Fetching...</span>
+<span id="modal-live-spot-diff" style="font-size:11px; font-weight:600; color:var(--text-muted);"></span>
+<button class="btn secondary" onclick="AppSwing.refreshModalLivePrice()" style="padding:1px 6px; font-size:10px; cursor:pointer;" title="Refresh live price">🔄</button>
+</div>
+</div>
+<div class="modal-window-actions" onclick="event.stopPropagation()" style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+<button class="btn" id="btn-modal-rerun-dr" onclick="AppSwing.rerunDeepResearchFromModal(event)" style="padding:3px 10px; font-size:11.5px; font-weight:700; background:linear-gradient(135deg, #7c3aed, #6d28d9); color:#fff; border:none; cursor:pointer; border-radius:4px;" title="Force a fresh Deep Research pass (Debate + Vision + PM Arbitration) for this ticker">⚡ Re-run Deep</button>
+<button class="btn secondary" id="btn-modal-sync-tt" onclick="AppSwing.syncTastytradeAlertsForCurrentDossier(event)" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#38bdf8; border-color:#0284c7; background:rgba(2, 132, 199, 0.12); cursor:pointer;" title="Register cloud quote alerts in Tastytrade for this reviewed setup">📲 Set TT Alerts</button>
+<button class="btn secondary" id="btn-toggle-positions-pane" onclick="AppSwing.togglePositionsPane()" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:#059669; border-color:#059669; background:rgba(5, 150, 105, 0.08); cursor:pointer;" title="Toggle Suggested Positions side pane">🎯 Trade Plan</button>
+<a class="btn secondary" href="#" id="btn-modal-direct-url" style="padding:3px 9px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:var(--cyan); background:rgba(6, 182, 212, 0.08); text-decoration:none; cursor:pointer; display:inline-flex; align-items:center; gap:4px;" target="_blank" title="Open dedicated standalone research URL: /research/{TICKER}">🔗 Direct URL</a>
+<button class="modal-action-btn primary" id="btn-modal-expand-full" onclick="AppSwing.restoreReportModal(event)" style="display:none; font-weight:700;" title="Maximize to full dossier modal">🗖 Maximize</button>
+<button class="modal-action-btn minimize" id="btn-modal-min-toggle" onclick="AppSwing.toggleMinimizeReportModal(event)" title="Float as bottom-right chat window">🗕 Float Chat</button>
+<button class="modal-action-btn close" onclick="AppSwing.closeReportModal(event)" title="Close dossier">✕ Close</button>
+</div>
+</div>
+<!-- 2-Column Split: Report Left (Flexible) | Draggable Resizer | Copilot Chat Right (Draggable) -->
+<div id="modal-split-container" style="display:flex; flex:1; overflow:hidden;">
+<!-- Left Side: Research Dossier (Arbitration / Summary / Independent / History / Charts) -->
+<div id="modal-report-pane" style="flex: 1; min-width: 320px; display:flex; flex-direction:column; overflow:hidden; background:var(--bg-surface);">
+<div class="tab-bar" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; background:var(--bg-subtle); padding:8px 12px; border-bottom:1px solid var(--border);">
+<div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+<button class="tab-btn" id="tab-plan-btn" onclick="AppSwing.switchDossierTab('plan')" style="font-weight:800; color:#059669; border-color:#059669; background:rgba(5, 150, 105, 0.08);">🎯 Suggested Position</button>
+<button class="tab-btn active" id="tab-local-btn" onclick="AppSwing.switchDossierTab('local')" style="font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.08);">📑 Local Dossier</button>
+<button class="tab-btn" id="tab-arb-btn" onclick="AppSwing.switchDossierTab('arb')">⚖️ Senior PM Arbitration</button>
+<button class="tab-btn" id="tab-sum-btn" onclick="AppSwing.switchDossierTab('sum')">📊 Model A (Synthesis)</button>
+<button class="tab-btn" id="tab-ind-btn" onclick="AppSwing.switchDossierTab('ind')">🧭 Model B (Independent)</button>
+<button class="tab-btn" id="tab-history-btn" onclick="AppSwing.switchDossierTab('history')">📜 History &amp; Drift (<span id="modal-hist-count">0</span>)</button>
+<button class="tab-btn" id="tab-chart-btn" onclick="AppSwing.switchDossierTab('chart')">📸 Scraped Charts</button>
+<button class="tab-btn" id="tab-tv-btn" onclick="AppSwing.switchDossierTab('tv')">📈 Live TradingView</button>
+<button class="tab-btn" id="tab-flow-btn" onclick="AppSwing.switchDossierTab('flow')">🔥 Options Flow</button>
+</div>
+<div id="modal-date-select-wrap" style="display:flex; align-items:center; gap:6px;">
+<span style="font-size:11px; color:var(--text-muted); font-weight:700;">📅 Switch Date:</span>
+<select class="select-mode" id="modal-report-date-select" onchange="AppSwing.switchReportDate(this.value)" style="font-size:11.5px; padding:3px 8px; font-family:'JetBrains Mono',monospace; font-weight:700;"></select>
+</div>
+</div>
+<div class="modal-body" id="modal-body">
+            Loading report...
+          </div>
+</div>
+<!-- Dedicated Tactical Suggested Positions Pane (Vertical, 340px) -->
+<div id="modal-positions-pane" style="width: 340px; min-width: 290px; max-width: 400px; display:flex; flex-direction:column; background: var(--bg-surface); border-left: 1px solid var(--border); overflow-y:auto; flex-shrink:0;">
+<!-- Pane Header -->
+<div style="padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-subtle); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+<div style="display:flex; align-items:center; gap:8px;">
+<span style="font-family:'Outfit',sans-serif; font-size:12.5px; font-weight:800; color:var(--text-main); letter-spacing:0.3px;">🎯 SUGGESTED POSITION</span>
+<span class="badge in_zone" id="pane-verdict-badge" style="font-size:10px; padding:1px 6px; font-weight:800;">ENTER</span>
+</div>
+<div style="display:flex; align-items:center; gap:4px;">
+<span class="pill green" id="pane-status-badge" style="font-size:9.5px; padding:1px 5px; font-weight:700;">IN_TRADE</span>
+<button class="btn secondary" onclick="AppSwing.togglePositionsPane(false)" style="padding:1px 6px; font-size:10px; margin-left:4px; cursor:pointer;" title="Collapse suggested positions pane">✕</button>
+</div>
+</div>
+<!-- Scrollable Pane Body -->
+<div id="modal-positions-pane-content" style="padding:14px; display:flex; flex-direction:column; gap:12px;">
+<!-- Quick Price Snapshot -->
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:6px; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; font-family:'JetBrains Mono',monospace;">
+<div>
+<div style="font-size:9.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Spot at Report</div>
+<div id="pane-spot-price" style="font-size:12.5px; font-weight:700; color:var(--text-main); margin-top:2px;">$0.00</div>
+</div>
+<div style="text-align:right;">
+<div style="font-size:9.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Live Current</div>
+<div id="pane-live-price" style="font-size:12.5px; font-weight:800; color:#059669; margin-top:2px;">$0.00</div>
+</div>
+</div>
+<!-- Options Structure Card -->
+<div id="pane-card-options" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:12px;">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+<span style="font-size:11px; font-weight:800; color:var(--blue); text-transform:uppercase; letter-spacing:0.5px;">🎯 Options Structure</span>
+<span class="pill green" id="pane-opt-actionable" style="font-size:9px; padding:1px 5px; font-weight:800;">ACTIONABLE</span>
+</div>
+<div id="pane-opt-name" style="font-family:'JetBrains Mono',monospace; font-size:12.5px; font-weight:800; color:var(--text-main); line-height:1.35; margin-bottom:6px;">
+                Bull Call Spread
+              </div>
+<div id="pane-opt-summary" style="font-size:11px; color:var(--text-muted); line-height:1.45; margin-bottom:10px;">
+                Loading options details...
+              </div>
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-family:'JetBrains Mono',monospace; font-size:11px;">
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--text-muted); text-transform:uppercase;">Expiry</div>
+<div id="pane-opt-expiry" style="font-weight:700; color:var(--text-main); margin-top:1px;">--</div>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--text-muted); text-transform:uppercase;">Target Debit</div>
+<div id="pane-opt-debit" style="font-weight:700; color:var(--text-main); margin-top:1px;">--</div>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--rose); text-transform:uppercase;">Max Loss</div>
+<div id="pane-opt-loss" style="font-weight:800; color:var(--rose); margin-top:1px;">--</div>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--emerald); text-transform:uppercase;">Max Profit</div>
+<div id="pane-opt-profit" style="font-weight:800; color:var(--emerald); margin-top:1px;">--</div>
+</div>
+</div>
+</div>
+<!-- Equity Execution Card -->
+<div id="pane-card-equity" style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:12px;">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+<span style="font-size:11px; font-weight:800; color:var(--emerald); text-transform:uppercase; letter-spacing:0.5px;">📊 Equity Plan</span>
+<span class="pill blue" id="pane-eq-side" style="font-size:9px; padding:1px 5px; font-weight:800;">LONG</span>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:5px; padding:8px 10px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+<span style="font-size:10px; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Limit Entry Zone</span>
+<span id="pane-eq-limit" style="font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:800; color:#059669;">--</span>
+</div>
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-family:'JetBrains Mono',monospace; font-size:11px;">
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--rose); text-transform:uppercase;">Stop Loss</div>
+<div id="pane-eq-stop" style="font-weight:800; color:var(--rose); margin-top:1px;">--</div>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--blue); text-transform:uppercase;">Breakout</div>
+<div id="pane-eq-breakout" style="font-weight:700; color:var(--blue); margin-top:1px;">--</div>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--emerald); text-transform:uppercase;">Target 1</div>
+<div id="pane-eq-t1" style="font-weight:800; color:var(--emerald); margin-top:1px;">--</div>
+</div>
+<div style="background:var(--bg-surface); border:1px solid var(--border); padding:6px 8px; border-radius:4px;">
+<div style="font-size:9px; color:var(--emerald); text-transform:uppercase;">Target 2</div>
+<div id="pane-eq-t2" style="font-weight:800; color:var(--emerald); margin-top:1px;">--</div>
+</div>
+</div>
+</div>
+<!-- Invalidation Card -->
+<div style="background:rgba(239, 68, 68, 0.04); border:1px solid rgba(239, 68, 68, 0.25); border-radius:8px; padding:10px 12px;">
+<div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+<span style="font-size:13px;">🛑</span>
+<span id="pane-inv-cond" style="font-size:10px; font-weight:800; color:var(--rose); text-transform:uppercase; letter-spacing:0.3px;">
+                  Invalidation: Daily Close &lt; $0.00
+                </span>
+</div>
+<div id="pane-inv-rationale" style="font-size:11px; color:var(--text-main); line-height:1.4;">
+                Thesis invalidation details...
+              </div>
+</div>
+<!-- Action Buttons -->
+<div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
+<button class="btn" id="btn-pane-sync-tt" onclick="AppSwing.syncTastytradeAlertsForCurrentDossier(event)" style="padding:7px 12px; font-size:11.5px; font-weight:800; background:linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color:#fff; border:1px solid #38bdf8; border-radius:6px; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:6px;" title="Register cloud quote alerts in Tastytrade for this setup">
+<span>📲</span> Set Tastytrade Alerts
+              </button>
+<button class="btn" onclick="AppSwing.askCopilotExecutionPlan(event)" style="padding:7px 12px; font-size:11.5px; font-weight:800; background:#059669; color:#fff; border-color:#059669; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:6px;" title="Ask Copilot for the exact order execution parameters">
+<span>⚡</span> Plan Execution with Copilot
+              </button>
+<button class="btn secondary" onclick="AppSwing.switchDossierTab('tv')" style="padding:6px 12px; font-size:11.5px; font-weight:700; cursor:pointer; width:100%; text-align:center;" title="Switch dossier tab to Live TradingView chart">
+                📈 View Levels on Live TV
+              </button>
+</div>
+</div>
+</div>
+<!-- Draggable Resizer Splitter -->
+<div class="modal-chat-resizer" id="modal-chat-resizer" title="Drag left/right to resize Copilot drawer"></div>
+<!-- Right Side: Persistent Interactive AI Copilot Chat Drawer -->
+<div id="modal-copilot-drawer" style="width: var(--modal-copilot-w, 420px); min-width: 280px; max-width: 65%; display:flex; flex-direction:column; background: var(--bg-surface); border-left: 1px solid var(--border); overflow:hidden;">
+<div style="padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+<div style="display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden;">
+<span style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main); white-space:nowrap;">💬 AI COPILOT</span>
+<div class="modal-active-chat-tabs" id="modal-copilot-active-tabs" style="display:inline-flex; align-items:center; gap:4px;"></div>
+</div>
+<div style="display:flex; align-items:center; gap:5px; flex-shrink:0;">
+<button class="btn secondary" id="btn-modal-prior-chats" onclick="AppChat.togglePriorChats('modal')" style="padding:3px 8px; font-size:11px; font-weight:700; color:var(--blue);" title="View prior chats from the last 15 days">📜 15d Chats</button>
+<button class="btn secondary" onclick="AppChat.startNewChat('modal')" style="padding:3px 8px; font-size:11px; font-weight:700;" title="Start a fresh chat thread">➕ New</button>
+<button class="btn secondary" onclick="AppChat.clearModalChat()" style="padding:3px 8px; font-size:11px;" title="Clear active chat view">Clear</button>
+</div>
+</div>
+<!-- Collapsible Prior Chats Panel Overlay for Modal (Last 15 Days) -->
+<div id="modal-prior-chats-panel" style="display:none; max-height:220px; overflow-y:auto; background:var(--bg-surface); border-bottom:2px solid var(--blue); padding:10px 12px; flex-shrink:0; box-shadow:var(--shadow-card);">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+<span style="font-size:11px; font-weight:700; color:var(--blue); letter-spacing:0.5px;">📜 PRIOR CHATS (LAST 15 DAYS)</span>
+<button class="btn secondary" onclick="AppChat.togglePriorChats('modal')" style="padding:1px 6px; font-size:10px;">✕ Close</button>
+</div>
+<div id="modal-prior-chats-list" style="display:flex; flex-direction:column; gap:6px;">
+<div style="color:var(--text-muted); font-size:11.5px; text-align:center; padding:10px;">Loading 15-day chats...</div>
+</div>
+</div>
+<!-- Collapsible Quick Question Suggestions (Default Collapsed) -->
+<div class="chat-suggestions-container">
+<div class="chat-suggestions-header" onclick="AppChat.toggleSuggestions('modal')" title="Click to show/hide quick prompt suggestions">
+<div class="chat-suggestions-title">
+<span style="font-size:11px;">💡</span>
+<span>Suggestions</span>
+<span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.8;">10</span>
+</div>
+<div class="chat-suggestions-toggle-btn">
+<span id="modal-chat-suggestions-label">Show</span>
+<span class="suggestions-chevron" id="modal-chat-suggestions-icon">▼</span>
+</div>
+</div>
+<div class="chat-suggestions-body" id="modal-chat-suggestions-body" style="display:none;">
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Get live real-time price quotes, bid/ask, and day range.')" style="font-size:10px; padding:3px 8px; color:var(--blue); font-weight:700;">📊 Live Quotes</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Compare today to prior research dates. What changed, what was the price then vs now, and was the earlier analysis right or wrong?')" style="font-size:10px; padding:3px 8px; font-weight:600;">📜 What Changed from Prior Research?</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Fetch live options chain, strikes, and volatility metrics.')" style="font-size:10px; padding:3px 8px; font-weight:600;">📈 Options Chain</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Trigger a fresh TradingView chart and Data Window scrape.')" style="font-size:10px; padding:3px 8px; font-weight:600;">🔄 Scrape Fresh Chart</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Explain the tactical entry zone, stop loss, and R:R math.')" style="font-size:10px; padding:3px 8px;">🎯 Tactical Levels &amp; R:R</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Analyze the latest unusual options flow, institutional sweeps, and large block trades on Schwab for this ticker.')" style="font-size:10px; padding:3px 8px; color:#d97706; font-weight:700;">🔥 Schwab Options Flow</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Execute Python code to compute exact 10,000-path Monte Carlo probabilities of touching target vs stop, 14d ATR, and HV20 realized volatility.')" style="font-size:10px; padding:3px 8px; font-weight:600;">🐍 Python Monte Carlo &amp; Math</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('What options structure is recommended and why?')" style="font-size:10px; padding:3px 8px;">🛡️ Options Trade</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('What are the key downside risks and invalidation triggers?')" style="font-size:10px; padding:3px 8px;">⚠️ Downside Risks</button>
+<button class="ticker-pill-btn" onclick="AppChat.sendModalCopilotMsg('Why did Model A and Model B disagree on this ticker?')" style="font-size:10px; padding:3px 8px;">⚖️ Model Disagreements</button>
+</div>
+</div>
+<!-- Chat Messages Area -->
+<div id="modal-chat-thread" style="flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; background:var(--bg-surface);">
+<div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+<div id="modal-chat-intro-title" style="font-weight:700; color:var(--blue); font-size:11px; margin-bottom:4px;">🤖 ACTIVE DOSSIER LOADED</div>
+<div style="font-size:12px; color:var(--text-muted); line-height:1.5;">Ask follow-up questions on this report. Grounded in the active dossier context.</div>
+</div>
+</div>
+<!-- Attached Context & Image Preview Bar -->
+<div id="modal-chat-attachments" style="display:none; padding:6px 16px; background:var(--bg-subtle); border-top:1px solid var(--border); align-items:center; gap:8px; flex-wrap:wrap;">
+<span class="pill cyan" id="modal-chat-badge-board" onclick="AppChat.removeBoardSync('modal')" style="display:none; font-size:10px; padding:2px 8px; font-weight:700; cursor:pointer;" title="Click to detach board context">
+<span>📌 Board: <span id="modal-chat-board-name">None</span></span>
+<span style="margin-left:4px; opacity:0.7;">✕</span>
+</span>
+<span class="pill blue" id="modal-chat-badge-image" onclick="AppChat.removeImageAttachment('modal')" style="display:none; font-size:10px; padding:2px 8px; font-weight:700; cursor:pointer;" title="Click to remove attached screenshot">
+<span>📸 Snapshot Attached</span>
+<span style="margin-left:4px; opacity:0.7;">✕</span>
+</span>
+</div>
+<!-- Input Bar (Draggable to top to see full paragraphs) -->
+<div class="rev-chat-input-container" id="modal-chat-input-container">
+<div class="chat-input-v-resizer" id="modal-chat-input-resizer" title="Drag up/down to resize text area (Double-click to toggle expand)">
+<div class="chat-resizer-handle-pill"></div>
+</div>
+<div class="chat-input-body">
+<textarea class="chat-textarea" id="modal-chat-input" onkeydown="if(event.key==='Enter' &amp;&amp; !event.shiftKey){event.preventDefault(); AppChat.sendModalCopilotMsg();}" placeholder="Ask follow-up on this dossier, or paste paragraphs / screenshot (Ctrl+V)..."></textarea>
+<div class="chat-input-toolbar">
+<div class="chat-input-toolbar-left">
+<button class="btn secondary" id="btn-modal-sync-board" onclick="AppChat.toggleActiveBoardSync('modal')" style="padding:3px 7px; font-size:11px;" title="Sync active dossier tab (Options Flow, Chart, Arbitration) to chat">📌 <span style="font-size:10px;">Tab</span></button>
+<button class="btn secondary" id="btn-modal-snap-view" onclick="AppChat.captureActiveBoardSnapshot('modal')" style="padding:3px 7px; font-size:11px;" title="Capture screenshot of active tab/chart for Qwen 27B Vision">📸 <span style="font-size:10px;">Snap</span></button>
+<input accept="image/*" id="modal-chat-file-input" onchange="AppChat.handleImageFileUpload(event, 'modal')" style="display:none;" type="file"/>
+<span class="chat-input-hint">Shift+↵ Newline</span>
+</div>
+<div class="chat-input-toolbar-right">
+<button class="btn secondary" id="btn-modal-chat-expand" onclick="AppChat.toggleModalChatInputExpand()" style="padding:3px 7px; font-size:11px;" title="Toggle expand/collapse (or drag bar above)">⤢</button>
+<button class="btn" id="btn-modal-chat-send" onclick="AppChat.handleModalCopilotBtnClick()" style="padding:4px 13px; font-weight:700; font-size:11.5px; min-width:74px; justify-content:center;">💬 Send</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- ================================================================
+       Intraday TradingView Alerts PnL & AI Attribution Modal
+       ================================================================ -->
+<div class="modal-overlay" id="modal-alerts-pnl" onclick="if(event.target===this) AppAlerts.closePnlModal()" style="display:none; align-items:flex-start; justify-content:center; z-index:1250; padding:24px 12px; overflow-y:auto; background:rgba(2,6,20,0.85); backdrop-filter:blur(8px);">
+<div class="pnl-modal-container" onclick="event.stopPropagation()">
+<!-- Header -->
+<div class="pnl-modal-header">
+<div style="display:flex; flex-direction:column; gap:2px;">
+<div class="pnl-modal-title">
+<span>📊 Intraday Alerts P&amp;L &amp; AI Triage Attribution</span>
+<span class="pill cyan" style="font-size:10px; padding:2px 7px; font-weight:800;">100 Shares Standard</span>
+</div>
+<span class="pnl-modal-subtitle">
+            Chronological entry-to-exit matching per intraday session · Evaluates AI Take vs Avoided losses.
+          </span>
+</div>
+<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+<button class="btn secondary" id="pnl-btn-back" onclick="AppAlerts.closePnlModal(true)" style="display:none; padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+            ← Back
+          </button>
+<button class="btn secondary" onclick="AppAlerts.refreshPnlModal()" style="padding:4px 10px; font-size:11.5px; font-weight:700;" title="Recalculate with latest spot prices and alerts">
+            🔄 Refresh
+          </button>
+<button class="btn secondary" onclick="AppAlerts.closePnlModal()" style="padding:4px 10px; font-size:13px; font-weight:800; color:#94a3b8;" title="Close Modal">✕</button>
+</div>
+</div>
+<!-- Institutional Session Calendar & Date Control Bar -->
+<div class="session-control-bar" style="margin: 0 16px 12px 16px;">
+<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+<span style="font-size:11px; font-weight:800; color:var(--text-muted); font-family:var(--font-mono); text-transform:uppercase; letter-spacing:0.5px;">📅 SESSION CALENDAR:</span>
+<div id="pnl-modal-date-pills" style="display:flex; gap:5px; flex-wrap:wrap;">
+<!-- Dynamically populated with session date buttons -->
+</div>
+<div style="display:flex; align-items:center; gap:5px; margin-left:4px;">
+<input class="session-date-input" id="pnl-modal-date-picker" onchange="AppAlerts.switchPnlSession(this.value)" title="Pick any calendar date" type="date"/>
+<select class="select-mode" id="pnl-modal-session-select" onchange="AppAlerts.switchPnlSession(this.value)" style="display:none;">
+<!-- Backwards compatibility -->
+</select>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="btn-pnl-open-postmortem" onclick="AppAlerts.openPostMortemModal(AppAlerts._pnlCurrentSession)" style="padding:4px 12px; font-size:11px; font-weight:800; color:#c084fc; border-color:rgba(168,85,247,0.4); background:rgba(168,85,247,0.08); border-radius:3px; display:inline-flex; align-items:center; gap:5px;" title="Open Closed-Loop Session Post-Mortem for currently active session date">
+<span>🧠</span> Session Post-Mortem
+          </button>
+</div>
+</div>
+<!-- 4 KPI Cards Strip -->
+<div class="pnl-kpi-grid">
+<div class="pnl-kpi-card ai-taken">
+<div class="pnl-kpi-title"><span>🟢 AI Realized P&amp;L</span></div>
+<div class="pnl-kpi-value" id="pnl-kpi-ai-taken" style="color:#10b981;">$0.00</div>
+<div class="pnl-kpi-sub" id="pnl-kpi-ai-taken-sub">0 trades (0% win rate)</div>
+</div>
+<div class="pnl-kpi-card ai-avoided">
+<div class="pnl-kpi-title"><span>🛡️ Losses Avoided (AI Filter)</span></div>
+<div class="pnl-kpi-value" id="pnl-kpi-avoided" style="color:#38bdf8;">$0.00</div>
+<div class="pnl-kpi-sub" id="pnl-kpi-avoided-sub">0 losing alerts vetoed by AI</div>
+</div>
+<div class="pnl-kpi-card tv-raw">
+<div class="pnl-kpi-title"><span>⚡ Raw TV Strategy P&amp;L</span></div>
+<div class="pnl-kpi-value" id="pnl-kpi-tv-raw" style="color:#f59e0b;">$0.00</div>
+<div class="pnl-kpi-sub" id="pnl-kpi-tv-raw-sub">Unfiltered baseline execution</div>
+</div>
+<div class="pnl-kpi-card net-alpha">
+<div class="pnl-kpi-title"><span>🏆 AI Net Edge / Alpha</span></div>
+<div class="pnl-kpi-value" id="pnl-kpi-net-alpha" style="color:#c084fc;">$0.00</div>
+<div class="pnl-kpi-sub" id="pnl-kpi-net-alpha-sub">AI Taken vs Unfiltered Baseline</div>
+</div>
+</div>
+<!-- Controls & Filter Bar -->
+<div class="pnl-controls-bar">
+<div class="pnl-tab-pills" id="pnl-modal-filter-tabs">
+<button class="pnl-tab-btn active" data-pnl-tab="ALL" onclick="AppAlerts.setPnlTab('ALL')">All Trades (<span id="pnl-count-all">0</span>)</button>
+<button class="pnl-tab-btn" data-pnl-tab="BY_TICKER" onclick="AppAlerts.setPnlTab('BY_TICKER')" style="font-weight:800; color:var(--cyan-glow);">🎴 By Ticker (<span id="pnl-count-by-ticker">0</span>)</button>
+<button class="pnl-tab-btn" data-pnl-tab="TAKEN" onclick="AppAlerts.setPnlTab('TAKEN')">🟢 AI Taken (<span id="pnl-count-taken">0</span>)</button>
+<button class="pnl-tab-btn" data-pnl-tab="AVOIDED" onclick="AppAlerts.setPnlTab('AVOIDED')">🛡️ AI Filtered (<span id="pnl-count-avoided">0</span>)</button>
+<button class="pnl-tab-btn" data-pnl-tab="OPEN" onclick="AppAlerts.setPnlTab('OPEN')">⚡ Live Open (<span id="pnl-count-open">0</span>)</button>
+<button class="pnl-tab-btn" data-pnl-tab="WIN" onclick="AppAlerts.setPnlTab('WIN')">🏆 Won (<span id="pnl-count-win">0</span>)</button>
+<button class="pnl-tab-btn" data-pnl-tab="LOSS" onclick="AppAlerts.setPnlTab('LOSS')">🛑 Loss (<span id="pnl-count-loss">0</span>)</button>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<input class="input-ticker" id="pnl-modal-search" oninput="AppAlerts.setPnlSearch(this.value)" placeholder="🔍 Filter ticker..." style="padding:4px 10px; font-size:11px; width:160px; text-transform:none;" type="text"/>
+</div>
+</div>
+<!-- Table Wrapper -->
+<div class="pnl-table-wrapper">
+<table class="pnl-table">
+<thead id="pnl-modal-table-head">
+<tr>
+<th style="width:115px;">Time / Duration</th>
+<th style="width:130px;">Ticker &amp; Setup</th>
+<th style="width:105px; text-align:center;">Direction</th>
+<th style="width:180px;">Execution (In ➔ Out)</th>
+<th style="width:90px; text-align:right;">Pts Diff</th>
+<th style="width:115px; text-align:right;">100-Sh P&amp;L</th>
+<th style="width:135px; text-align:center;">AI Triage Call</th>
+<th style="width:120px; text-align:center;">Attribution</th>
+</tr>
+</thead>
+<tbody id="pnl-modal-table-body">
+<tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted);">Loading session trades…</td></tr>
+</tbody>
+</table>
+</div>
+<!-- Footer -->
+<div style="padding:10px 20px; border-top:1px solid var(--border); background:var(--bg-subtle); display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-muted); font-family:var(--font-mono);">
+<div id="pnl-modal-footer-summary">Summary: 0 completed trades</div>
+<div>Standard calculation: 100 shares per signal</div>
+</div>
+</div>
+</div>
+<!-- ================================================================
+       Ticker Day Trades & AI-Only P&L Modal
+       Groups trade alerts for a specific ticker on that day only
+       ================================================================ -->
+<div class="modal-overlay" id="modal-ticker-day-trades" onclick="if(event.target===this) AppAlerts.closeTickerTradesModal()" style="display:none; align-items:flex-start; justify-content:center; z-index:1260; padding:24px 12px; overflow-y:auto;">
+<div class="ticker-trades-modal-container" onclick="event.stopPropagation()">
+<!-- Header -->
+<div class="tdm-header">
+<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+<span id="ttm-ticker-sym" style="font-family:'Outfit',sans-serif; font-size:22px; font-weight:900; color:var(--text-main);">MSFT</span>
+<span id="ttm-ticker-name" style="font-size:13px; color:var(--text-muted); font-weight:500;">Microsoft Corporation</span>
+<span class="pill cyan" id="ttm-session-date" style="font-family:var(--font-mono); font-weight:800; font-size:11px;">📅 Session: 2026-09-14</span>
+<span class="pill" id="ttm-alert-count" style="font-size:11px;">0 Alerts</span>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="ttm-btn-back" onclick="AppAlerts.closeTickerTradesModal(true)" style="display:none; padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+            ← Back
+          </button>
+<button class="btn secondary" id="ttm-btn-chart" onclick="AppAlerts.openChartFromTickerModal()" style="padding:4px 10px; font-size:11.5px; font-weight:700;">
+            📈 Chart
+          </button>
+<button class="btn secondary" onclick="AppAlerts.openPostMortemModal(AppAlerts._currentTickerTradesDate)" style="padding:4px 10px; font-size:11.5px; font-weight:800; color:#c084fc; border-color:rgba(168,85,247,0.4); background:rgba(168,85,247,0.08);" title="Open Session Post-Mortem &amp; 4-Quadrant Attribution Analysis">
+            🧠 Post-Mortem
+          </button>
+<button class="btn secondary" onclick="AppAlerts.closeTickerTradesModal()" style="padding:4px 12px; font-size:13px; font-weight:800;" title="Close Modal">✕</button>
+</div>
+</div>
+<!-- AI-Only P&L Hero Banner -->
+<div id="ttm-pnl-hero" style="padding:16px 22px; border-bottom:1px solid var(--border); background:var(--bg-surface);">
+<!-- Injected dynamically -->
+</div>
+<!-- Body: Trades Grouped by Trade Alerts -->
+<div id="ttm-trades-list" style="padding:18px 22px; display:flex; flex-direction:column; gap:14px; max-height:60vh; overflow-y:auto; background:var(--bg-base);">
+<!-- Injected dynamically -->
+</div>
+<!-- Footer -->
+<div class="tdm-footer">
+<div id="ttm-footer-stats" style="color:var(--text-muted);">P&amp;L calculated strictly on AI Suggested trades (100 shares basis)</div>
+<div style="color:var(--cyan); font-weight:700;">Grouped by Intraday Trade Alerts</div>
+</div>
+</div>
+</div>
+<!-- ================================================================
+       Intraday Session Post-Mortem & AI Attribution Modal
+       ================================================================ -->
+<div class="modal-overlay" id="modal-intraday-postmortem" onclick="if(event.target===this) AppAlerts.closePostMortemModal()" style="display:none; align-items:flex-start; justify-content:center; z-index:1260; padding:24px 12px; overflow-y:auto;">
+<div class="trade-detail-modal-container" onclick="event.stopPropagation()" style="max-width:1040px; width:100%;">
+<!-- Modal Header -->
+<div class="tdm-header" style="flex-direction:column; align-items:stretch; gap:10px;">
+<div style="display:flex; justify-content:space-between; align-items:center;">
+<div style="display:flex; align-items:center; gap:10px;">
+<span style="font-size:22px;">🧠</span>
+<div>
+<div style="font-family:'Outfit',sans-serif; font-size:18px; font-weight:900; color:var(--text-main); letter-spacing:-0.2px;">
+                INTRADAY SESSION POST-MORTEM &amp; ATTRIBUTION
+              </div>
+<div style="font-size:11px; color:var(--text-muted); font-weight:500;">
+                Closed-Loop Learning Engine · Telemetry Audit, 4-Quadrant Attribution &amp; System Optimization
+              </div>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="pm-btn-back" onclick="AppAlerts.closePostMortemModal(true)" style="display:none; padding:4px 10px; font-size:11.5px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+              ← Back
+            </button>
+<button class="btn secondary" onclick="AppAlerts.copyPostMortemMarkdown()" style="padding:4px 10px; font-size:11px; font-weight:700;" title="Copy Full Post-Mortem to Clipboard">📋 Copy Report</button>
+<button class="btn secondary" onclick="AppAlerts.downloadPostMortemJson()" style="padding:4px 10px; font-size:11px; font-weight:700;" title="Download Attribution Dataset JSON">📥 Export JSON</button>
+<button class="btn secondary" onclick="AppAlerts.closePostMortemModal()" style="padding:4px 10px; font-size:12px; font-weight:800; border-radius:var(--radius-sm);" title="Close Modal">✕</button>
+</div>
+</div>
+<!-- Session Date Audit & Calendar Navigation Bar -->
+<div class="session-control-bar">
+<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+<span style="font-size:11px; font-weight:800; color:var(--text-muted); font-family:var(--font-mono); text-transform:uppercase; letter-spacing:0.5px;">📅 SESSION AUDIT:</span>
+<div id="pm-modal-date-pills" style="display:flex; gap:5px; flex-wrap:wrap;">
+<!-- Dynamically populated with active date buttons -->
+</div>
+<div style="display:flex; align-items:center; gap:4px; margin-left:4px;">
+<input class="session-date-input" id="pm-modal-date-picker" onchange="AppAlerts.switchPostMortemDate(this.value)" title="Pick any calendar date for post-mortem audit" type="date"/>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" onclick="AppAlerts.openPnlModal(AppAlerts._currentPostMortemData ? AppAlerts._currentPostMortemData.dateKey : null)" style="padding:4px 10px; font-size:11px; font-weight:700; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.08); border-radius:3px; display:inline-flex; align-items:center; gap:4px;" title="View raw execution ladder and trade fills in P&amp;L Blotter">
+<span>📊</span> View Session P&amp;L Blotter
+            </button>
+</div>
+</div>
+<!-- Navigation Tabs inside Post-Mortem Modal -->
+<div style="display:flex; gap:6px; border-top:1px solid var(--border); padding-top:8px; margin-top:2px; flex-wrap:wrap;">
+<button class="intraday-ticker-chip-btn active" id="btn-pm-tab-summary" onclick="AppAlerts.switchPostMortemTab('summary')">📊 Executive Scorecard</button>
+<button class="intraday-ticker-chip-btn" id="btn-pm-tab-quadrants" onclick="AppAlerts.switchPostMortemTab('quadrants')">🎯 4-Quadrant Attribution</button>
+<button class="intraday-ticker-chip-btn" id="btn-pm-tab-rules" onclick="AppAlerts.switchPostMortemTab('rules')">🛠️ Rule Card Improvements</button>
+<button class="intraday-ticker-chip-btn" id="btn-pm-tab-raw" onclick="AppAlerts.switchPostMortemTab('raw')">📜 Full Report Markdown</button>
+</div>
+</div>
+<!-- Modal Body (Scrollable) -->
+<div class="tdm-body" id="ipm-modal-body" style="padding:16px;">
+<!-- Injected dynamically -->
+</div>
+<!-- Modal Footer -->
+<div class="tdm-footer">
+<span style="font-size:11px; color:var(--text-muted); font-family:var(--font-mono);">
+          Continuous system learning · Data feeds back into triage rule cards
+        </span>
+<button class="btn secondary" onclick="AppAlerts.closePostMortemModal()" style="padding:5px 14px; font-size:11px; font-weight:700;">
+          Close
+        </button>
+</div>
+</div>
+</div>
+<!-- ================================================================
+       Intraday Trade Intelligence & AI Decision Modal
+       Opens when clicking directly on any trade row
+       ================================================================ -->
+<div class="modal-overlay" id="modal-trade-detail" onclick="if(event.target===this) AppAlerts.closeTradeDetailModal()" style="display:none; align-items:flex-start; justify-content:center; z-index:1270; padding:24px 12px; overflow-y:auto;">
+<div class="trade-detail-modal-container" onclick="event.stopPropagation()">
+<!-- Modal Header -->
+<div class="tdm-header" style="flex-direction:column; align-items:stretch; gap:10px;">
+<!-- Top Row: Ticker Info & Close Button -->
+<div style="display:flex; justify-content:space-between; align-items:center;">
+<div style="display:flex; align-items:center; gap:12px;">
+<button class="btn secondary" id="tdm-btn-back" onclick="AppAlerts.closeTradeDetailModal(true)" style="display:none; align-items:center; gap:6px; padding:4px 10px; font-size:11.5px; font-weight:700; border-color:var(--cyan-glow, #06b6d4); color:var(--cyan, #06b6d4);" title="Return to previous screen">
+<span id="tdm-btn-back-label">← Back</span>
+</button>
+<div style="display:flex; align-items:baseline; gap:10px;">
+<span id="tdm-ticker-sym" style="font-family:'Outfit',sans-serif; font-size:24px; font-weight:900; color:var(--text-main); letter-spacing:-0.3px;">COST</span>
+<span id="tdm-ticker-name" style="font-size:13px; color:var(--text-muted); font-weight:500;">Costco Wholesale Corp</span>
+</div>
+</div>
+<div style="display:flex; align-items:center; gap:12px;">
+<div id="tdm-pnl-strip" style="font-family:var(--font-mono); font-size:16px; font-weight:900;">
+              +$158.00 (+1.58 pts)
+            </div>
+<button class="btn secondary" onclick="AppAlerts.closeTradeDetailModal()" style="padding:4px 10px; font-size:12px; font-weight:800; border-radius:var(--radius-sm);" title="Close Modal">✕</button>
+</div>
+</div>
+<!-- Sub Row: Status Badges -->
+<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+<span class="badge" id="tdm-dir-badge" style="font-size:10.5px; font-weight:800;">🟢 CALL</span>
+<span class="badge" id="tdm-ai-badge" style="font-size:10.5px; font-weight:800;">🤖 AI TAKEN</span>
+<span class="pill cyan" id="tdm-session-date" style="font-family:var(--font-mono); font-size:10.5px; padding:2px 8px;">📅 2026-09-16</span>
+</div>
+</div>
+<!-- Modal Body (Scrollable) -->
+<div class="tdm-body" id="tdm-modal-body">
+<!-- Injected dynamically -->
+</div>
+<!-- Modal Footer Actions -->
+<div class="tdm-footer">
+<div id="tdm-footer-left" style="display:flex; align-items:center; gap:8px;">
+<!-- Injected buttons (e.g. Inspect Entry Alert, Inspect Exit Alert) -->
+</div>
+<div style="display:flex; align-items:center; gap:8px;">
+<button class="btn secondary" id="tdm-btn-footer-back" onclick="AppAlerts.closeTradeDetailModal(true)" style="display:none; padding:5px 12px; font-size:11px; font-weight:700; color:var(--cyan, #06b6d4); border-color:var(--cyan, #06b6d4);">
+<span id="tdm-btn-footer-back-label">← Back</span>
+</button>
+<button class="btn secondary" id="tdm-btn-chart" style="padding:5px 12px; font-size:11px; font-weight:700;">
+            📈 Open Chart
+          </button>
+<button class="btn secondary" onclick="AppAlerts.closeTradeDetailModal()" style="padding:5px 14px; font-size:11px; font-weight:700;">
+            Close
+          </button>
+</div>
+</div>
+</div>
+</div>
+<!-- Floating Minimized Dossier Dock Widget -->
+<!-- Floating Edge Tab to Expand Rev Chat when Collapsed -->
+<div class="floating-chat-trigger" id="floating-chat-trigger" onclick="AppChat.toggleCollapse()" style="display:none;" title="Click to open Rev Chat sidebar">
+<span class="floating-chat-icon">💬</span>
+<span class="floating-chat-label">REV CHAT</span>
+</div>
+<div class="minimized-dossier-dock" id="minimized-dossier-dock" onclick="AppSwing.restoreReportModal()" style="display:none;">
+<div class="dock-content">
+<span class="dot pulse" style="background:var(--cyan-glow);"></span>
+<span class="dock-sym" id="dock-ticker-sym">--</span>
+<span class="dock-title" id="dock-ticker-title">Research Dossier</span>
+</div>
+<div class="dock-actions" onclick="event.stopPropagation()">
+<button class="dock-btn" onclick="AppSwing.restoreReportModal()">🗖 Restore</button>
+<button class="dock-btn close-btn" onclick="AppSwing.dismissMinimizedDock(event)">✕</button>
+</div>
+</div>
+<!-- Modular Scripts -->
+<script src="/static/js/state.js?v=88"></script>
+<script src="/static/js/utils.js?v=88"></script>
+<script src="/static/js/api.js?v=88"></script>
+<script src="/static/js/status.js?v=88"></script>
+<script src="/static/js/swing.js?v=88"></script>
+<script src="/static/js/watchlist.js?v=88"></script>
+<script src="/static/js/trades.js?v=88"></script>
+<script src="/static/js/intraday.js?v=88"></script>
+<script src="/static/js/portfolio.js?v=88"></script>
+<script src="/static/js/logs.js?v=88"></script>
+<script src="/static/js/alerts.js?v=88"></script>
+<script src="/static/js/chat.js?v=88"></script>
+<script src="/static/js/desk.js?v=88"></script>
+<script src="/static/js/tv_hover.js?v=88"></script>
+<script src="/static/js/app.js?v=88"></script>
+</body>
+</html>

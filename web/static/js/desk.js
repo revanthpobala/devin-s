@@ -704,7 +704,38 @@ window.AppDesk = {
   _lastTodayData: null,
   _lastCoverageData: null,
   _lastMissedMovesData: null,
+  _lastBriefingData: null,
+  _lastFeedbackData: null,
   _isPollingToday: false,
+  _pollingStartedAt: 0,
+
+  renderSkeleton() {
+    return `
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="station-card" style="padding:16px 20px; border-left:4px solid var(--cyan-glow); min-height:76px; display:flex; align-items:center; justify-content:space-between; animation:pulse 1.5s infinite ease-in-out;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="width:28px; height:28px; background:var(--bg-subtle); border-radius:6px;"></div>
+            <div>
+              <div style="width:220px; height:16px; background:var(--bg-subtle); border-radius:4px; margin-bottom:6px;"></div>
+              <div style="width:320px; height:12px; background:var(--bg-subtle); border-radius:4px;"></div>
+            </div>
+          </div>
+          <div style="width:160px; height:28px; background:var(--bg-subtle); border-radius:6px;"></div>
+        </div>
+        <div class="station-card" style="padding:20px; min-height:220px; animation:pulse 1.5s infinite ease-in-out;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
+            <div style="width:240px; height:18px; background:var(--bg-subtle); border-radius:4px;"></div>
+            <div style="width:120px; height:18px; background:var(--bg-subtle); border-radius:4px;"></div>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:12px;">
+            <div style="height:110px; background:var(--bg-subtle); border-radius:8px;"></div>
+            <div style="height:110px; background:var(--bg-subtle); border-radius:8px;"></div>
+            <div style="height:110px; background:var(--bg-subtle); border-radius:8px;"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  },
 
   // Feedback fields the user has typed into. The full re-render replaces the whole sub-tab
   // subtree, so their values are captured before the swap and put back after it; a controller
@@ -986,32 +1017,54 @@ window.AppDesk = {
   },
 
   async loadToday(silent = false) {
-    // In-flight guard (the flag existed and was never read): a poll must never commit over a
-    // controller reload. With one whole-desk swap that showed up as a full rollback; with partial
-    // updates it would be worse -- only some of the live areas would move.
-    if (this._isPollingToday) return;
+    const now = Date.now();
+    if (this._isPollingToday) {
+      if (this._pollingStartedAt && (now - this._pollingStartedAt) > 10000) {
+        console.warn('⚠️ Prior Today polling timed out after 10s. Resetting lock.');
+        this._isPollingToday = false;
+      } else {
+        // Skip poll because prior request is still in flight
+        return;
+      }
+    }
     if (silent && document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
       return;
     }
     this._isPollingToday = true;
-    try {
-      // The poll path never reads briefingData or feedbackData, so it does not fetch them either:
-      // morning-briefing rebuilds its panel with live quotes and feedback-loop builds the full
-      // post-mortem, and both were being paid for every 6s and thrown away.
-      const requests = [
-        window.AppApi.request('/api/desk/today'),
-        window.AppApi.request('/api/desk/coverage').catch(() => null),
-        window.AppApi.request('/api/desk/missed-moves').catch(() => null),
-      ];
-      if (!silent) {
-        requests.push(
-          window.AppApi.request('/api/desk/morning-briefing').catch(() => null),
-          window.AppApi.request('/api/desk/feedback-loop').catch(() => null),
-        );
-      }
-      const resolved = await Promise.all(requests);
-      const [todayData, coverageData, missedMovesData, briefingData = null, feedbackData = null] = resolved;
+    this._pollingStartedAt = now;
 
+    // Load skeleton into container if empty and not a background silent poll
+    const cont = document.getElementById('today-content-container');
+    if (cont && !cont.innerHTML.trim() && !silent) {
+      cont.innerHTML = this.renderSkeleton();
+    }
+
+    try {
+      // Primary fast operational feeds: all served from instant in-memory cache (<50ms)
+      const requests = [
+        window.AppApi.request('/api/desk/today', { timeoutMs: 8000 }),
+        window.AppApi.request('/api/desk/coverage', { timeoutMs: 6000 }).catch(() => null),
+        window.AppApi.request('/api/desk/missed-moves', { timeoutMs: 6000 }).catch(() => null),
+      ];
+
+      // Fetch feedback-loop lazily ONLY when on positions subtab
+      let feedbackPromise = Promise.resolve(this._lastFeedbackData || null);
+      if (this._todaySubTab === 'positions' && !silent) {
+        feedbackPromise = window.AppApi.request('/api/desk/feedback-loop', { timeoutMs: 8000 }).catch(() => null);
+      }
+
+      // Fetch morning-briefing lazily ONLY when on briefing subtab
+      let briefingPromise = Promise.resolve(this._lastBriefingData || null);
+      if (this._todaySubTab === 'briefing' && !silent) {
+        briefingPromise = window.AppApi.request('/api/desk/morning-briefing', { timeoutMs: 8000 }).catch(() => null);
+      }
+
+      const [todayData, coverageData, missedMovesData] = await Promise.all(requests);
+      const feedbackData = await feedbackPromise;
+      const briefingData = await briefingPromise;
+
+      if (feedbackData) this._lastFeedbackData = feedbackData;
+      if (briefingData) this._lastBriefingData = briefingData;
       this._lastTodayData = todayData;
       this._lastCoverageData = coverageData;
       this._lastMissedMovesData = missedMovesData;
@@ -1962,6 +2015,7 @@ window.AppDesk = {
         }
       } finally {
         this._isPollingToday = false;
+        this._pollingStartedAt = 0;
       }
     },
 

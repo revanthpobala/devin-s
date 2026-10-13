@@ -2,6 +2,31 @@
  * Main Application Bootstrap & Lifecycle Orchestrator
  */
 window.App = {
+  navigateTo(desk) {
+    if (!desk) return;
+    this.switchDesk(desk);
+    const path = (desk === 'swing') ? '/radar' : `/${desk}`;
+    try {
+      if (window.location.pathname !== path) {
+        window.history.pushState({ desk }, '', path);
+      }
+      const titleMap = {
+        today: 'Today Operations',
+        swing: 'Radar Screening',
+        radar: 'Radar Screening',
+        alerts: 'Alerts & Screener',
+        trades: 'Trade Ideas & Orders',
+        portfolio: 'Portfolio & Positions',
+        intraday: '0DTE Execution Desk',
+        watchlist: 'Target Watchlist',
+        journal: 'Trade Ledger & Journal',
+        record: 'Closed P&L Record',
+        logs: 'Operations & Telemetry'
+      };
+      document.title = `REV TERMINAL — ${titleMap[desk] || desk.toUpperCase()}`;
+    } catch (e) {}
+  },
+
   switchDesk(desk) {
     if (desk === 'screener') {
       desk = 'alerts';
@@ -20,6 +45,8 @@ window.App = {
       if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
       const btn = document.getElementById(`btn-desk-${d}`);
       if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
+      const navItem = document.getElementById(`nav-item-${d}`);
+      if (navItem) navItem.className = `nav-item ${d === desk || (d === 'journal' && desk === 'record') ? 'active' : ''}`;
     });
 
     const ledgerBtn = document.getElementById('btn-desk-ledger');
@@ -117,32 +144,28 @@ window.App = {
     // 0. Initialize theme (defaults to clean Light)
     this.initTheme();
 
-    // 0b. Initialize active desk
-    this.switchDesk('today');
-
     // 1. Initialize REV CHAT resize handlers
     if (window.AppChat) {
       window.AppChat.initChatResize();
     }
 
-    // 2. Initial Data Loading
+    // 2. Initial Data Loading: Status and Tickers
     if (window.AppUtils && window.AppUtils.initCompanyNames) {
       window.AppUtils.initCompanyNames();
     }
     if (window.AppStatus) window.AppStatus.updateStatus();
-    if (window.AppWatchlist) window.AppWatchlist.loadWatchlist();
-    if (window.AppTrades) window.AppTrades.loadSuggestedTrades();
-    if (window.AppSwing) {
-      window.AppSwing.refreshResearchQueue();
-      window.AppSwing.loadTastytradeAlerts();
-      window.AppSwing.loadReportArchive();
-      window.AppSwing.loadCalibrationScoreboard();
-      window.AppSwing.loadSchwabScreener();
-    }
-    if (window.AppLogs) window.AppLogs.loadLogs();
-    if (window.AppAlerts) window.AppAlerts.loadAlerts();
-    if (window.AppDesk) window.AppDesk.loadToday();
     this.loadAllTickersDatalist();
+
+    // Detect desk from current page path and load ONLY the active desk
+    const pathParts = window.location.pathname.split('/').filter(Boolean);
+    let activeDesk = 'today';
+    if (pathParts.length > 0) {
+      const p = pathParts[0].toLowerCase();
+      if (['today', 'swing', 'radar', 'alerts', 'screener', 'watchlist', 'trades', 'portfolio', 'intraday', 'journal', 'record', 'logs'].includes(p)) {
+        activeDesk = (p === 'radar') ? 'swing' : p;
+      }
+    }
+    this.switchDesk(activeDesk);
 
     // 3. Fast Poll Loop (2.5s) for Live Status, Logs, and Positions
     setInterval(() => {
@@ -200,6 +223,7 @@ window.App = {
 
     // 7. Deep Link Handler for Tickers & Research URLs (runs last so an explicit link can re-focus)
     this.handleDeepLinks();
+    window.addEventListener('popstate', () => this.handleDeepLinks());
   },
 
   handleDeepLinks() {

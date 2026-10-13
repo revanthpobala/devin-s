@@ -15,10 +15,10 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
   <!-- Modular Stylesheets -->
-  <link rel="stylesheet" href="/static/css/base.css?v=55">
-  <link rel="stylesheet" href="/static/css/layout.css?v=55">
-  <link rel="stylesheet" href="/static/css/components.css?v=55">
-  <link rel="stylesheet" href="/static/css/modals.css?v=55">
+  <link rel="stylesheet" href="/static/css/base.css?v=88">
+  <link rel="stylesheet" href="/static/css/layout.css?v=88">
+  <link rel="stylesheet" href="/static/css/components.css?v=88">
+  <link rel="stylesheet" href="/static/css/modals.css?v=88">
 </head>
 <body>
 
@@ -30,7 +30,49 @@
       <span class="brand-sub">Autonomous Trading Desk</span>
       <span class="pill purple" style="font-size:10px; padding:2px 7px; font-weight:800; font-family:var(--font-mono); margin-left:6px; letter-spacing:0.5px;">v2.5.0</span>
     </div>
+
+    <!-- Main Navigation Header Bar -->
+    <nav class="site-header-nav" id="site-header-nav">
+      <a href="/today" class="nav-item active" id="nav-item-today" onclick="event.preventDefault(); App.navigateTo('today')">
+        <span class="nav-icon">⚡</span>
+        <span class="nav-label">Today</span>
+      </a>
+      <a href="/radar" class="nav-item" id="nav-item-swing" onclick="event.preventDefault(); App.navigateTo('swing')">
+        <span class="nav-icon">🎯</span>
+        <span class="nav-label">Radar</span>
+      </a>
+      <a href="/alerts" class="nav-item" id="nav-item-alerts" onclick="event.preventDefault(); App.navigateTo('alerts')">
+        <span class="nav-icon">🚨</span>
+        <span class="nav-label">Alerts</span>
+      </a>
+      <a href="/trades" class="nav-item" id="nav-item-trades" onclick="event.preventDefault(); App.navigateTo('trades')">
+        <span class="nav-icon">💡</span>
+        <span class="nav-label">Trades</span>
+      </a>
+      <a href="/portfolio" class="nav-item" id="nav-item-portfolio" onclick="event.preventDefault(); App.navigateTo('portfolio')">
+        <span class="nav-icon">💼</span>
+        <span class="nav-label">Portfolio</span>
+      </a>
+      <a href="/intraday" class="nav-item" id="nav-item-intraday" onclick="event.preventDefault(); App.navigateTo('intraday')">
+        <span class="nav-icon">⚡</span>
+        <span class="nav-label">0DTE</span>
+      </a>
+      <a href="/watchlist" class="nav-item" id="nav-item-watchlist" onclick="event.preventDefault(); App.navigateTo('watchlist')">
+        <span class="nav-icon">📡</span>
+        <span class="nav-label">Watchlist</span>
+      </a>
+      <a href="/journal" class="nav-item" id="nav-item-journal" onclick="event.preventDefault(); App.navigateTo('journal')">
+        <span class="nav-icon">📖</span>
+        <span class="nav-label">Ledger</span>
+      </a>
+      <a href="/logs" class="nav-item" id="nav-item-logs" onclick="event.preventDefault(); App.navigateTo('logs')">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">Ops</span>
+      </a>
+    </nav>
+
     <div class="status-ribbon" id="status-ribbon">
+      <button class="btn header-chat-btn" id="btn-header-chat" onclick="AppChat.toggleCollapse()" title="Toggle Rev Chat Sidebar"><span class="chat-icon">💬</span> <span id="txt-header-chat">Rev Chat</span></button>
       <button class="pill sys-pill" id="pill-market" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
       <button class="pill sys-pill" id="pill-llm" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
       <button class="pill sys-pill" id="pill-schwab" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
@@ -86,7 +128,6 @@
           <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">APPEARANCE</div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn secondary" id="btn-theme-toggle" onclick="App.toggleTheme()" style="padding:7px 14px; font-size:11.5px;">☀️ Light</button>
-            <button class="btn secondary" id="btn-toggle-chat" onclick="AppChat.toggleCollapse()" style="padding:7px 14px; font-size:11.5px;">💬 <span id="txt-toggle-chat">Hide Chat</span></button>
           </div>
         </div>
 
@@ -2837,6 +2878,12 @@
 
   <!-- Floating Minimized Dossier Dock Widget -->
 
+  <!-- Floating Edge Tab to Expand Rev Chat when Collapsed -->
+  <div id="floating-chat-trigger" class="floating-chat-trigger" onclick="AppChat.toggleCollapse()" title="Click to open Rev Chat sidebar" style="display:none;">
+    <span class="floating-chat-icon">💬</span>
+    <span class="floating-chat-label">REV CHAT</span>
+  </div>
+
   <div class="minimized-dossier-dock" id="minimized-dossier-dock" style="display:none;" onclick="AppSwing.restoreReportModal()">
     <div class="dock-content">
       <span class="dot pulse" style="background:var(--cyan-glow);"></span>
@@ -2850,20 +2897,20 @@
   </div>
 
   <!-- Modular Scripts -->
-  <script src="/static/js/state.js?v=86"></script>
-  <script src="/static/js/utils.js?v=86"></script>
-  <script src="/static/js/api.js?v=86"></script>
-  <script src="/static/js/status.js?v=87"></script>
-  <script src="/static/js/swing.js?v=86"></script>
-  <script src="/static/js/watchlist.js?v=86"></script>
-  <script src="/static/js/trades.js?v=86"></script>
-  <script src="/static/js/intraday.js?v=86"></script>
-  <script src="/static/js/portfolio.js?v=2"></script>
-  <script src="/static/js/logs.js?v=86"></script>
-  <script src="/static/js/alerts.js?v=86"></script>
-  <script src="/static/js/chat.js?v=86"></script>
-  <script src="/static/js/desk.js?v=10"></script>
-  <script src="/static/js/tv_hover.js?v=5"></script>
-  <script src="/static/js/app.js?v=86"></script>
+  <script src="/static/js/state.js?v=88"></script>
+  <script src="/static/js/utils.js?v=88"></script>
+  <script src="/static/js/api.js?v=88"></script>
+  <script src="/static/js/status.js?v=88"></script>
+  <script src="/static/js/swing.js?v=88"></script>
+  <script src="/static/js/watchlist.js?v=88"></script>
+  <script src="/static/js/trades.js?v=88"></script>
+  <script src="/static/js/intraday.js?v=88"></script>
+  <script src="/static/js/portfolio.js?v=88"></script>
+  <script src="/static/js/logs.js?v=88"></script>
+  <script src="/static/js/alerts.js?v=88"></script>
+  <script src="/static/js/chat.js?v=88"></script>
+  <script src="/static/js/desk.js?v=88"></script>
+  <script src="/static/js/tv_hover.js?v=88"></script>
+  <script src="/static/js/app.js?v=88"></script>
 </body>
 </html>

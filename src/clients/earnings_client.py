@@ -31,32 +31,46 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
             if ref_date < date.today():
                 is_past = True
 
-        t = yf.Ticker(ticker)
+        import concurrent.futures
 
-        if is_past:
-            ed = t.get_earnings_dates(limit=12)
-            if ed is not None and not ed.empty:
-                ref_str = ref_date.strftime("%Y-%m-%d")
-                future_dates = []
-                for dt_idx in ed.index:
-                    d_str = str(dt_idx)[:10]
-                    if d_str >= ref_str:
-                        future_dates.append(d_str)
-                future_dates.sort()
-                if future_dates:
-                    next_earn_str = future_dates[0]
-                    b_range = pd.bdate_range(start=ref_str, end=next_earn_str)
-                    b_days = len(b_range) - 1
-                    return b_days
+        def _fetch_yf_dates():
+            t = yf.Ticker(ticker)
+            if is_past:
+                ed = t.get_earnings_dates(limit=12)
+                if ed is not None and not ed.empty:
+                    ref_str = ref_date.strftime("%Y-%m-%d")
+                    future_dates = []
+                    for dt_idx in ed.index:
+                        d_str = str(dt_idx)[:10]
+                        if d_str >= ref_str:
+                            future_dates.append(d_str)
+                    future_dates.sort()
+                    if future_dates:
+                        next_earn_str = future_dates[0]
+                        b_range = pd.bdate_range(start=ref_str, end=next_earn_str)
+                        b_days = len(b_range) - 1
+                        return b_days, None
+            cal = t.calendar
+            dates = None
+            if isinstance(cal, dict):
+                dates = cal.get("Earnings Date")
+            elif hasattr(cal, "get"):
+                dates = cal.get("Earnings Date")
+            elif hasattr(cal, "loc") and "Earnings Date" in getattr(cal, "index", []):
+                dates = cal.loc["Earnings Date"]
+            return None, dates
 
-        cal = t.calendar
-        dates = None
-        if isinstance(cal, dict):
-            dates = cal.get("Earnings Date")
-        elif hasattr(cal, "get"):
-            dates = cal.get("Earnings Date")
-        elif hasattr(cal, "loc") and "Earnings Date" in getattr(cal, "index", []):
-            dates = cal.loc["Earnings Date"]
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(_fetch_yf_dates)
+        try:
+            past_days, dates = fut.result(timeout=2.0)
+            if past_days is not None:
+                ex.shutdown(wait=False)
+                return past_days
+        except Exception:
+            dates = None
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
         if dates is not None:
             if hasattr(dates, "tolist"):

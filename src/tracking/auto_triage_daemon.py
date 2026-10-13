@@ -83,8 +83,8 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
                     (job_id, ticker, datetime.now(timezone.utc).isoformat(), date_str),
                 )
                 conn.commit()
-                dispatch_next_queued_job()
-                logger.info(f"🤖 [AutoTriageDaemon] Enqueued local research triage for {ticker}: {job_id}")
+        dispatch_next_queued_job()
+        logger.info(f"🤖 [AutoTriageDaemon] Enqueued local research triage for {ticker}: {job_id}")
     except Exception as e:
         logger.warning(f"Failed to dispatch research for {ticker}: {e}")
 
