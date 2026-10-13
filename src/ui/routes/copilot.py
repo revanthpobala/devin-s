@@ -221,7 +221,7 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
             llm_alive = False
 
         if not llm_alive:
-            response_text = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server_qwen38_27b_q4.bat` (or `start_market.bat`) to ask follow-up questions."
+            response_text = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server.bat` (or `start_market.bat`) to ask follow-up questions."
         else:
             try:
                 response_text = query_local_llm(
@@ -312,7 +312,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                 llm_alive = False
 
             if not llm_alive:
-                offline_msg = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server_qwen38_27b_q4.bat` to stream responses in real time."
+                offline_msg = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server.bat` to stream responses in real time."
                 yield f"data: {json.dumps({'token': offline_msg})}\n\n"
                 yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
                 yield "data: [DONE]\n\n"

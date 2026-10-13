@@ -291,7 +291,7 @@ python run_watch_alerts.py --sync --date 2026-08-29
 **Profiles** (all in `scripts/launchers/`):
 - `start_llm_server.bat` — Qwen3.5-9B-Q8_0, `-c 32768`, `--parallel 3` (~10923 ctx/slot). The tracker/triage default.
 - `start_llm_server_markewt_orch.bat` — Qwen3.5-9B, `-c 130000`, `--parallel 1` (single 130k slot; for very large deep-research payloads; serializes concurrency)
-- `start_llm_server_qwen38_27b_q4.bat` / `_q6.bat` — Qwen3.8-27B UD-Q4/Q6_K + `--mmproj` vision projector, full `-c 262144` (256k slot), `-b 2048 -ub 2048`, `--split-mode row`, `-ctk q4_0 -ctv q4_0` (fits inside 32GB dual GPU VRAM with ~8.5GB headroom; high-throughput 30k+ token prompt ingestion). Used for local vision deep research.
+- `start_llm_server_qwen38_27b_q6.bat` / `_q4_uncensored.bat` / `_q3_mtp.bat` — Qwen3.8-27B UD-Q6_K / UD-Q4_K / Q3_K_M + `--mmproj` vision projector, full `-c 262144` (256k slot), `-b 2048 -ub 2048`, `--split-mode row`, `-ctk q4_0 -ctv q4_0` (fits inside 32GB dual GPU VRAM with ~8.5GB headroom; high-throughput 30k+ token prompt ingestion). Used for local vision deep research.
 
 **Common flags**: `--host 127.0.0.1 --port 8000 -fa on -ctk q8_0 -ctv q8_0 -ngl 999 --reasoning off --jinja`. `--reasoning off` is required so clean JSON + GBNF `json_schema` response formats work (no thinking trace to conflict).
 
