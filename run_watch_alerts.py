@@ -146,6 +146,35 @@ def sync_reports_to_watchlist(
                 # Fallback to minimal dict with spot price so validate_levels can still run
                 dw_dict = {"Close": data.get("current_price") or data.get("spot") or 0.0}
 
+            # THE PLAN'S TRIGGER WINS. The stored plan for this (ticker, date) is the
+            # arbitration's binding directive, so where the row already carries a
+            # different breakout level the plan's trigger overwrites it here, before
+            # the gate runs on it — the live GOOGL case: the row held 355.00 (the
+            # options put wall a manual cockpit save picked out of the GEX block)
+            # while the plan's own directive is 356.83. Without this the open-thesis
+            # guard would keep the row's number and the name would alert on a level
+            # the research never authorized, and the gate would validate the wrong
+            # trigger. Only the trigger is corrected: the row's own zone, stop and
+            # targets are a live record and stay as they are.
+            try:
+                from src.tracking import plan_repair
+
+                _existing = next(
+                    (r for r in get_all_watch_targets()
+                     if r.get("ticker") == t and str(r.get("date") or "") == date_str),
+                    None,
+                )
+                _recon = plan_repair.reconcile_row_with_plan(_existing) if _existing else None
+                if _recon:
+                    _plan_trigger = _f(_recon["_data"].get("breakout_level"))
+                    if _plan_trigger > 0 and isinstance(data.get("shares_plan"), dict):
+                        data["shares_plan"]["breakout_level"] = _plan_trigger
+                        data["breakout_level"] = _plan_trigger
+                        data["force_update"] = True
+                        logger.info(f"[{t}] {_recon['reason']} — the plan wins.")
+            except Exception as e_recon:
+                logger.debug(f"[{t}] trigger reconciliation skipped: {e_recon}")
+
             from src.logic.level_validation import validate_levels
             plan = {
                 **data.get("shares_plan", {}),

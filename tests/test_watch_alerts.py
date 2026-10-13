@@ -786,3 +786,106 @@ def test_sweep_expired_watch_targets(tmp_path):
 
 
 
+
+def _write_stored_plan(tmp_path, ticker, date_str, breakout_level):
+    """A plan of record on disk, as deep research writes it."""
+    plan_dir = tmp_path / "data" / "raw" / date_str / ticker
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan = {
+        "ticker": ticker,
+        "date": date_str,
+        "side": "LONG",
+        "shares_plan": {
+            "entry_type": "LIMIT",
+            "entry_zone_low": 349.0,
+            "entry_zone_high": 351.0,
+            "breakout_level": breakout_level,
+            "breakout_stop": 344.0,
+            "tactical_stop": 344.0,
+            "target_1": 357.3803,
+            "target_2": 363.971,
+        },
+    }
+    (plan_dir / f"{ticker}_watch_levels.json").write_text(json.dumps(plan), encoding="utf-8")
+    return plan
+
+
+def _sync_fixture_reconciling_plan_trigger(tmp_path, row_trigger, plan_trigger):
+    """Run the sync for one ticker whose row carries a disagreeing breakout level."""
+    import run_watch_alerts as rwa
+    from unittest.mock import patch as _patch
+
+    ticker, date_str = "GOOGLTEST", "2026-10-12"
+    _write_stored_plan(tmp_path, ticker, date_str, plan_trigger)
+    stored_row = {
+        "ticker": ticker,
+        "date": date_str,
+        "status": "STALKING",
+        "breakout_level": row_trigger,
+        "tactical_stop": 343.5,
+        "target_1": 360.0,
+        "target_2": 377.16,
+    }
+    fake_data = {
+        "ticker": ticker,
+        "date": date_str,
+        "side": "LONG",
+        "current_price": 356.0,
+        "atr_14": 4.0,
+        "shares_plan": {
+            "entry_type": "LIMIT",
+            "entry_zone_low": 100.0,
+            "entry_zone_high": 101.0,
+            "tactical_stop": 95.0,
+            "target_1": 115.0,
+        },
+    }
+
+    with _patch("src.config.BASE_DIR", tmp_path), \
+         _patch.object(rwa, "get_all_watch_targets", return_value=[stored_row]), \
+         _patch.object(rwa, "extract_watch_levels_from_report", return_value=fake_data), \
+         _patch.object(rwa, "upsert_watch_target") as mock_upsert, \
+         _patch("src.logic.level_validation.validate_levels", return_value=(True, [])):
+        count = rwa.sync_reports_to_watchlist(target_date=date_str, target_ticker=ticker)
+
+    return count, stored_row, fake_data, mock_upsert
+
+
+def test_sync_makes_the_stored_plan_trigger_win_over_the_rows_level(tmp_path):
+    """The live GOOGL case: the row held 355.00 (an options put wall) while the stored
+    plan's directive is 356.83, so the sync must correct the trigger and force the
+    upsert instead of letting the open-thesis guard keep the row's number."""
+    count, stored_row, fake_data, mock_upsert = _sync_fixture_reconciling_plan_trigger(
+        tmp_path, row_trigger=355.0, plan_trigger=356.83
+    )
+
+    assert count == 1
+    mock_upsert.assert_called_once()
+    assert fake_data["shares_plan"]["breakout_level"] == 356.83
+    assert fake_data["force_update"] is True
+    # Only the trigger is corrected: the row's own zone, stop and targets stay live.
+    assert fake_data["shares_plan"]["tactical_stop"] == 95.0
+    assert fake_data["shares_plan"]["target_1"] == 115.0
+    assert stored_row["target_1"] == 360.0
+
+
+def test_sync_leaves_the_trigger_alone_when_row_and_plan_agree(tmp_path):
+    count, stored_row, fake_data, mock_upsert = _sync_fixture_reconciling_plan_trigger(
+        tmp_path, row_trigger=356.83, plan_trigger=356.83
+    )
+
+    assert count == 1
+    mock_upsert.assert_called_once()
+    assert not fake_data.get("force_update")
+    assert "breakout_level" not in fake_data["shares_plan"]
+
+
+def test_sync_never_invents_a_trigger_when_the_plan_has_none(tmp_path):
+    count, stored_row, fake_data, mock_upsert = _sync_fixture_reconciling_plan_trigger(
+        tmp_path, row_trigger=355.0, plan_trigger=0.0
+    )
+
+    assert count == 1
+    mock_upsert.assert_called_once()
+    assert "breakout_level" not in fake_data["shares_plan"]
+    assert not fake_data.get("force_update")
