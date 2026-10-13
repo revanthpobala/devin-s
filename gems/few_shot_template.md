@@ -13,6 +13,8 @@
 | **Equity (Shares)** | **[ENTER (Limit @ Floor) / ENTER (Breakout) / SKIP]** | [Resting Limit @ $[Floor] OR Buy Stop @ $[BreakoutTrigger]] | [X/10] |
 | **Options (Derivatives)** | **[ENTER NOW (Credit Spread) / ENTER (LEAPS) / CASH]** | [Specific structure, e.g. Sep 18 $240P/$250P Bull Put @ $1.80 credit] | [X/10] |
 
+**PRIOR PLAN OUTCOME:** [Per prior level: crossed or not, first time, held on close; then the position at the live quote. "No prior plan" if none.]
+**LABEL:** [MEASURED lane (gate passed) / UNMEASURED (floor defense or level break that fails the gate) / ARMED STALK (trigger + stop + T1/T2 above it)]
 **EARNINGS GATE:** PASS ([XX] Days Remaining | Next Earnings Date: ~YYYY-MM-DD)
 **PRIMARY VEHICLE:** [OPTIONS CREDIT SPREAD is Primary ONLY when IV Rank ≥ 50% AND the short strike sits at ≥1.25× Expected Move AND outside the major GEX Put/Call wall; if IV Rank < 30%, EQUITY LIMIT or DEBIT SPREAD is Primary. High IV Rank alone does NOT justify a credit — an unscaled/rich-IV setup defaults to debit/equity by side.]
 **(If User Owns Shares):** [HOLD — no CC (Stage 2 Advancing, IV Rank elevated) / SELL COVERED CALL (Stage 4 / Climax)]
@@ -22,7 +24,7 @@
 ## 🛠️ THE 4-PILLAR DATA AUDIT & FORENSICS
 
 ### Pillar 1: Quantitative Engine State & Calibration
-* **Engine Codes & Stage:** Long Action Code [X], Short Action Code [X], Weinstein Stage [0-5] (0=UNSTAGED, 5=RECOVERY, pine:2231/6009-6024), Stage Age [X] bars.
+* **Engine Codes & Stage:** Long Action Code [X], Short Action Code [X], Weinstein Stage [0-5] (0=UNSTAGED, 5=RECOVERY), Stage Age [X] bars.
 * **Scores & Evidence:** Buy Score [XX.XX] / Sell Score [XX.XX], Buy Evidence [±X.XX]σ.
 * **R:R & Floor Geometry:** 
   * *Zone Baseline:* $[ZoneBot] - $[ZoneTop] (At-Market Zone R:R: [X.XX]:1).

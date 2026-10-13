@@ -170,7 +170,7 @@ Master levels are only admitted when they are on the correct side of price **and
 ### 3.1 Context State Table (Row 8)
 
 Row 8 is structural/risk **context**, not an entry directive. Score-only PRIME/ACTION/POWER/ACCELERATION,
-STALK, FORMING and SCREEN states were retired after next-open, gap-aware replay found no edge.
+STALK, FORMING and SCREEN indicator states (Pine Row 8 codes, not the research verdict) were retired after next-open, gap-aware replay found no edge.
 
 | State | Code | Meaning |
 |-------|------|---------|
@@ -1872,6 +1872,18 @@ from). On that basis, at 1.0× / 1.25× / 1.5× ExpMove:
   and make no claim about expectancy.
 
 ---
+
+## 18. Research Verdicts, Armed Levels, and Prior Plan Outcome
+
+This section governs the research/desk layer (verdicts and alerts), not the Pine Row 8 codes.
+
+**18.1 STALK means armed.** The research verdict `STALK` is valid only as a set of armed levels that alert on cross: a non-zero `breakout_level` or entry zone, a `tactical_stop`, and T1/T2 strictly above the trigger. If T1 or T2 sits at or below the trigger the targets are rebuilt above it; the trigger is never zeroed. A STALK with no armed level is invalid (`CASH_SKIP`). The value of a stalk is the alert at the cross, not the label.
+
+**18.2 Levels and crosses.** Armed levels per plan: ZONE_LOW, ZONE_TOP, BREAKOUT, HIGH_20D, T1, T2, STOP, INVALIDATION. A cross is detected on intraday highs/lows, needs RVOL >= 1.0 to confirm (UNMEASURED if ADV20 is missing), alerts once per level per day, and re-arms after a close back through the level. A name that runs away from its zone is re-scored at the market price (`RUNNING_ACTIONABLE` / `RUNNING_NO_ROOM`), not left as a dead limit.
+
+**18.3 Prior plan outcome.** New research and chat evaluate the previous plan's levels against what price did before judging the position: per level crossed or not, first time, and held on close. Outcomes: `broke_and_holding`, `failed_breakout_closed_back_below`, `broke_and_pulled_back_retest_entry`, `stopped_stop_crossed`, `invalidated`, `not_triggered`, `target_reached`. A level that traded through intraday and closed back is a failed break, not "did not happen". "Did it break out" is never answered from spot alone. Source: the `PRIOR PLAN OUTCOME` block and the `get_prior_plan_outcome` tool. For any user-named level the chat uses `get_candles(ticker, levels=[...])`: day high/low/close, first-touch time or "never touched", held on close, distance, live quote.
+
+**18.4 Measured vs unmeasured.** The engine gate (`is_actionable`) is: in zone, `Long RR At Market` >= `rr_config.min_rr()` (default 2.0, unrounded), PB funnel (Signal Pack bit 5), fade off (Signal Pack bit 2 set), stop width >= 0.7 ATR, `Ext Z Self Relative` < 2.5, action code not 17/18, long only. Only that lane is a measured long lane (see §16 and the repo audit notes). A break of a real level (20-day high, Darvas Top, plan trigger) on RVOL >= 1.0 that fails that gate is reported as **UNMEASURED MOMENTUM**: RVOL, R:R at market to rebuilt T1/T2, and a structural stop, as a take-or-pass call at market. It carries no measured edge, never PRIME, never high conviction. Measured on 1.75M corpus bars (`breakout_lane_replay.py`): a generic break of the 20/60-day high on RVOL >= 1.0 lags the tape (-0.09% excess at 21 bars, negative in 3 of 4 eras, 39% of tickers positive) and RVOL does not discriminate; the lane's positive net R is market beta. A break alert is therefore an information event, not an edge. Conviction numbers are labels; the printed number has no measured basis and is only ever capped downward.
 
 ## Verification Record
 
