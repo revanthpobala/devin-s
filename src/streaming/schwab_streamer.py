@@ -59,11 +59,44 @@ class SchwabStreamer:
 
     def stop(self) -> None:
         """Stop the streaming daemon."""
+        loop = None
         with self._lock:
             self._is_running = False
-            if self._loop and self._loop.is_running():
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            logger.info("SchwabStreamer stop requested.")
+            loop = self._loop
+
+        if loop and loop.is_running():
+            async def _shutdown():
+                try:
+                    tasks = [
+                        t
+                        for t in asyncio.all_tasks(loop)
+                        if t is not asyncio.current_task(loop=loop)
+                    ]
+                    for t in tasks:
+                        t.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    client = self._stream_client
+                    if client:
+                        close_coro = getattr(client, "close", None) or getattr(
+                            client, "aclose", None
+                        )
+                        if close_coro:
+                            try:
+                                res = close_coro()
+                                if asyncio.iscoroutine(res):
+                                    await res
+                            except Exception:
+                                pass
+                finally:
+                    loop.stop()
+
+            try:
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+            except Exception as e:
+                logger.debug(f"SchwabStreamer shutdown scheduling error: {e}")
+
+        logger.info("SchwabStreamer stop requested.")
 
     def add_tick_listener(self, listener: Callable[[QuoteData], None]) -> None:
         """Register a callback for every incoming tick."""
@@ -222,23 +255,40 @@ class SchwabStreamer:
                 self._stream_client = stream_client
 
                 async def _stream_worker():
-                    await stream_client.login()
-                    logger.info("SchwabStreamer connected and authenticated.")
+                    try:
+                        await stream_client.login()
+                        logger.info("SchwabStreamer connected and authenticated.")
 
-                    with self._lock:
-                        syms = list(self._subscribed_symbols)
-                    if syms:
-                        await stream_client.level_one_equity_subs(syms)
+                        with self._lock:
+                            syms = list(self._subscribed_symbols)
+                        if syms and self._is_running:
+                            await stream_client.level_one_equity_subs(syms)
 
-                    while self._is_running:
-                        await stream_client.handle_message()
+                        while self._is_running:
+                            await stream_client.handle_message()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"SchwabStreamer connection dropped: {e}. Reconnecting in 5s...")
 
-                self._loop.run_until_complete(_stream_worker())
+                try:
+                    self._loop.run_until_complete(_stream_worker())
+                except asyncio.CancelledError:
+                    logger.info("SchwabStreamer worker cancelled.")
+                    break
+                except Exception as e:
+                    logger.warning(f"SchwabStreamer loop error: {e}. Reconnecting in 5s...")
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.warning(f"SchwabStreamer connection dropped: {e}. Reconnecting in 5s...")
-                time.sleep(5)
             finally:
                 self._stream_client = None
+
+            if not self._is_running:
+                break
+
+            time.sleep(5)
 
         logger.info("SchwabStreamer event loop terminated.")
 
