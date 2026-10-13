@@ -165,13 +165,17 @@ def sync_reports_to_watchlist(
                 rejected_list.append({"ticker": t, "reasons": [f"Gate validation error: {e_gate}"]})
                 continue
 
-            # C1 demotion must reach the stored plan: `plan` is a copy of shares_plan, and
-            # upsert_watch_target persists data["shares_plan"] (META stored a trigger whose
-            # targets sat at/below it because this propagation did not exist).
+            # C1's keep-and-rebuild must reach the stored plan: `plan` is a copy of
+            # shares_plan, and upsert_watch_target persists data["shares_plan"]. The
+            # trigger is never zeroed — it is kept with its targets rebuilt above it.
             if plan.get("breakout_demoted_reason") and isinstance(data.get("shares_plan"), dict):
                 _sp = data["shares_plan"]
-                _sp["breakout_level"] = 0
-                _sp["breakout_stop"] = 0
+                _sp["breakout_level"] = plan.get("breakout_level") or _sp.get("breakout_level") or 0.0
+                _sp["breakout_stop"] = plan.get("breakout_stop") or _sp.get("breakout_stop") or 0.0
+                _sp["target_1"] = plan.get("target_1", _sp.get("target_1"))
+                _sp["target_2"] = plan.get("target_2", _sp.get("target_2"))
+                _sp["targets_rebuilt"] = bool(plan.get("targets_rebuilt"))
+                _sp["targets_rebuilt_basis"] = plan.get("targets_rebuilt_basis")
                 _sp["breakout_demoted_reason"] = plan["breakout_demoted_reason"]
 
             if not _ok:
@@ -415,13 +419,58 @@ def _emit_level_alert(ticker: str, trigger_type: str, message: str, price: float
 
 
 def _level_cross_message(ticker: str, cross, t: Dict[str, Any], rvol: Optional[float]) -> str:
+    """The cross alert: what crossed, at what price, on what volume, and the judgment.
+
+    A trigger cross states the R:R at market to the plan's (possibly rebuilt) T1/T2 and
+    whether the lane is MEASURED or UNMEASURED — never a bare price print.
+    """
     side = str(t.get("side") or "LONG").upper()
     vol_txt = f"RVOL {rvol:.2f}" if rvol is not None else "RVOL unmeasured"
     verb = "crossed up through" if (side == "LONG") == (cross.kind not in ("STOP", "INVALIDATION")) else "crossed down through"
-    return (
+    head = (
         f"[{ticker}] {cross.kind} {verb} ${cross.price:.2f} "
-        f"(${cross.prev_price:.2f} -> ${cross.curr_price:.2f}) | {vol_txt} | level armed, re-scored at market"
+        f"(${cross.prev_price:.2f} -> ${cross.curr_price:.2f}) | {vol_txt}"
     )
+
+    pv = _plan_view_from_row(t)
+    stop = _f(pv.get("tactical_stop")) or _f(pv.get("invalidation_price"))
+    t1 = _f(pv.get("target_1"))
+    t2 = _f(pv.get("target_2"))
+    px = _f(cross.curr_price)
+    rr_bits = []
+    if stop > 0 and px > stop:
+        if t1 > px:
+            rr_bits.append(f"R:R to T1 ${t1:.2f} = {(t1 - px) / (px - stop):.2f}")
+        elif t1 > 0:
+            rr_bits.append(f"T1 ${t1:.2f} already above the print")
+        if t2 > px:
+            rr_bits.append(f"R:R to T2 ${t2:.2f} = {(t2 - px) / (px - stop):.2f}")
+        elif t2 > 0:
+            rr_bits.append(f"T2 ${t2:.2f} already above the print")
+    rr_txt = (" | " + "; ".join(rr_bits)) if rr_bits else ""
+
+    lane_txt = ""
+    if cross.kind in ("ZONE_TOP", "BREAKOUT", "HIGH_20D") or rr_bits:
+        try:
+            lane_label = _runaway_rule_label(runaway_rule_for([cross.kind]))
+            lane_txt = f" | lane {lane_label['label']}"
+        except Exception:
+            lane_txt = " | lane UNMEASURED"
+
+    judge_txt = ""
+    if cross.kind in ("ZONE_TOP", "BREAKOUT", "HIGH_20D"):
+        try:
+            from src.tracking.rr_config import min_rr
+
+            res = _rescore_at_market(ticker, px, t, side, get_eastern_now(), [cross.kind])
+            judge_txt = (
+                f" | at market: {res['outcome']} "
+                f"(best R:R {res['live_rr']:.2f}@mkt vs {min_rr():.2f} floor)"
+            )
+        except Exception:
+            judge_txt = ""
+
+    return f"{head}{rr_txt}{lane_txt}{judge_txt} | level armed for a re-test"
 
 
 _RULE_LABELS_PATH = config.BASE_DIR / "data" / "research" / "rule_labels.json"
@@ -956,10 +1005,10 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             cross_kinds.append(_c.kind)
         state.last_price = live_price
 
-        # A4: after the close, a level whose price closed back through it re-arms, so
-        # tomorrow's session can fire it again. STOP / INVALIDATION stay single-fire.
-        if is_after_close:
-            state.rearm_on_close(live_price)
+        # A4: the poll price is the close proxy — a level whose price closed back through
+        # it re-arms immediately (intraday), so tomorrow's session can fire it again and a
+        # failed breakout is recognised the moment price gives the level back.
+        state.rearm_on_close(live_price)
 
         # 3. Evaluate State Transitions & Alerts
         new_status = "STALKING"

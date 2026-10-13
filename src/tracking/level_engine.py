@@ -1,5 +1,5 @@
 """
-src/tracking/level_engine.py — Universal level engine (plan/no-lost-movers.md, A).
+src/tracking/level_engine.py — Universal level engine (plan/no-lost-movers).
 
 STALK is not a decision: it means "these levels are armed". The old watch loop
 was a top-down elif cascade that declared a strong stock dead (MISSED_RUNAWAY)
@@ -19,11 +19,17 @@ Level kinds (LONG semantics; SHORT is mirrored):
     INVALIDATION  invalidation price  thesis death
 
 Re-arm rules: trigger/resistance levels re-arm after a close back through the
-level; STOP and INVALIDATION are single-fire per day.
+level (the poll price is the close proxy for an intraday poll); STOP and
+INVALIDATION are single-fire per day.
 
 Volume pace (A3): a cross is confirmed when RVOL (today's print / 20-day average
 daily volume) is >= 1.0. When ADV20 is unavailable the cross still fires, tagged
 UNMEASURED — never silently dropped.
+
+A demoted trigger is never zeroed: a plan whose breakout was demoted because its
+targets sat at/below the trigger still arms the BREAKOUT — the trigger value is
+recovered from the recorded demotion reason — and the targets themselves are
+rebuilt above it by the plan gate (level_validation._rebuild_targets_above_trigger).
 
 Absent means absent: a level with no real price is omitted, never fabricated
 (the repo's fails-closed convention, same as arbitration's pb_funnel handling).
@@ -32,11 +38,45 @@ Absent means absent: a level with no real price is omitted, never fabricated
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# The machine-written demotion reason carries the trigger it stripped:
+# "target_1 $742.0900 is below breakout trigger $747.6000 — ...".
+_DEMOTED_TRIGGER_RE = re.compile(r"breakout trigger \$([0-9]+(?:\.[0-9]+)?)")
+
+
+def restore_demoted_trigger(plan: Dict[str, Any]) -> Tuple[float, Optional[str]]:
+    """Recover a stripped trigger from its recorded demotion reason.
+
+    A plan written before the "never zero the trigger" fix carries
+    ``breakout_level = 0`` plus ``breakout_demoted_reason``. The trigger value is
+    still in that reason, so the BREAKOUT re-arms instead of silently vanishing —
+    the stored GOOGL plan is exactly this case. Returns (trigger, reason).
+    """
+    try:
+        if _num(plan.get("breakout_level")) > 0:
+            return _num(plan.get("breakout_level")), None
+        reason = plan.get("breakout_demoted_reason")
+        if not reason:
+            return 0.0, None
+        m = _DEMOTED_TRIGGER_RE.search(str(reason))
+        if not m:
+            return 0.0, str(reason)
+        trigger = float(m.group(1))
+        if trigger <= 0:
+            return 0.0, str(reason)
+        logger.info(
+            f"[level_engine] restored a demoted breakout trigger ${trigger:.4f} from its recorded reason; "
+            f"the trigger is armed and its targets are rebuilt above it."
+        )
+        return trigger, str(reason)
+    except Exception:
+        return 0.0, None
 
 # Level kinds. The alert trigger_type for a cross is "LEVEL_<KIND>".
 KIND_ZONE_LOW = "ZONE_LOW"
@@ -132,6 +172,10 @@ def build_armed_levels(
         z_low, z_high = z_high, z_low
 
     breakout = _num(plan.get("breakout_level"))
+    if breakout <= 0:
+        # A demoted trigger is never zeroed: re-arm it from the recorded reason so the
+        # plan's own trigger is armed (its targets were rebuilt above it by the gate).
+        breakout, _restored_reason = restore_demoted_trigger(plan)
     stop = _num(plan.get("tactical_stop") or plan.get("stop"))
     t1 = _num(plan.get("target_1") or plan.get("target"))
     t2 = _num(plan.get("target_2"))

@@ -90,10 +90,10 @@ def _run_meta_arbitration(tmp_path: Path) -> dict:
         assert wf.exists(), f"{wf} not written"
         data = json.loads(wf.read_text(encoding="utf-8"))
         sp = data.get("shares_plan", {})
-        # The broken trigger must not survive on ANY persisted surface.
-        assert sp.get("breakout_level", 0) in (0, 0.0), f"{wf} kept breakout_level {sp.get('breakout_level')}"
-        assert sp.get("breakout_stop", 0) in (0, 0.0), f"{wf} kept breakout_stop {sp.get('breakout_stop')}"
-        assert "below breakout trigger" in sp.get("breakout_demoted_reason", "")
+        # A broken trigger is never zeroed: it stays armed with targets rebuilt above it.
+        assert sp.get("breakout_level", 0) == 747.6, f"{wf} lost the trigger"
+        assert sp.get("targets_rebuilt") is True
+        assert sp.get("target_1", 0) > 747.6
         # The limit-zone path is untouched.
         assert sp.get("entry_zone_low") == 710.43
         assert sp.get("entry_zone_high") == 715.95
@@ -101,10 +101,9 @@ def _run_meta_arbitration(tmp_path: Path) -> dict:
     return persisted
 
 
-def test_arbitration_strips_meta_trigger_on_every_surface(tmp_path):
+def test_arbitration_persisted_mega_plan_is_not_gate_rejected(tmp_path):
     persisted = _run_meta_arbitration(tmp_path)
-    # META still fails its own gate (planned R:R 1.97 < 2.0) — the demotion is
-    # orthogonal to that rejection and must not mask it.
+    # META still fails its own gate — the rebuilt targets do not rescue the zone R:R.
     assert persisted["level_gate_rejected"] is True
 
 

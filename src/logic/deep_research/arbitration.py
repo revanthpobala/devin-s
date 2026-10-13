@@ -57,9 +57,20 @@ def _record_research_completed(ticker: str, date_str: str, dw_dict: Dict[str, An
         logger.debug(f"[{ticker}] Failed recording last_researched: {e_rec}")
 
 
-def _build_judge_sys_prompt(ticker: str) -> str:
+def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> str:
+    prior_plan_section = ""
+    if prior_plan_outcome_block:
+        prior_plan_section = (
+            "PRIOR PLAN OUTCOME (history — what the previous plan's levels actually did):\n"
+            f"{prior_plan_outcome_block}\n\n"
+            "Adjudicate with this history in view: a trigger that broke and held, a failed breakout that closed "
+            "back below, a retest of the entry zone, an untouched level, or a crossed stop are facts about the "
+            "levels — never conclusions from the spot price alone. Judge your binding levels against what those "
+            "levels have already done, and keep any still-relevant trigger armed rather than dropping it.\n\n"
+        )
     return (
-        "You are the Chief Investment Officer & Senior Portfolio Manager operating under Ponytail Finance rules "
+        prior_plan_section
+        + "You are the Chief Investment Officer & Senior Portfolio Manager operating under Ponytail Finance rules "
         "(Occam's Razor, minimal bloat, hard math, ruthless risk management).\n\n"
         "You have received two independent reports for this ticker:\n"
         "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
@@ -208,6 +219,7 @@ def run_arbitration(
     triage_reason: str = "",
     lane_prior_win: float | None = None,
     lane_prior_ev: float | None = None,
+    prior_plan_outcome_block: str = "",
 ) -> str:
     """Run Pass 2-JUDGE locally, write ``{ticker}_arbitration.md``, extract watch_levels.
 
@@ -223,7 +235,7 @@ def run_arbitration(
 
     logger.info(f"[{ticker}] Running Senior PM Ponytail Judge (Cross-Examining Report A vs Report B)...")
 
-    judge_sys_prompt = _build_judge_sys_prompt(ticker)
+    judge_sys_prompt = _build_judge_sys_prompt(ticker, prior_plan_outcome_block=prior_plan_outcome_block)
 
     atr14_val = (
         dw_dict.get("RSI2 ATR14")
@@ -410,17 +422,23 @@ def run_arbitration(
 
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
 
-        # C2: C1's demotion happens inside validate_levels on `plan`, but the plan that
+        # C2: the C1 rebuild happens inside validate_levels on `plan`, but the plan that
         # gets persisted (upsert_watch_target, append_suggestion, and the display-only
-        # watch_levels.json files) is watch_data["shares_plan"]. Propagate the stripped
-        # trigger so no surface keeps a trigger whose targets sat at/below it (META).
+        # watch_levels.json files) is watch_data["shares_plan"]. Propagate the kept
+        # trigger and its rebuilt targets so no surface keeps stale values — a trigger is
+        # never zeroed, and the rebuild tag rides with it.
         if plan.get("breakout_demoted_reason") and isinstance(watch_data.get("shares_plan"), dict):
             _sp = watch_data["shares_plan"]
-            _sp["breakout_level"] = 0
-            _sp["breakout_stop"] = 0
+            _sp["breakout_level"] = plan.get("breakout_level") or _sp.get("breakout_level") or 0.0
+            _sp["breakout_stop"] = plan.get("breakout_stop") or _sp.get("breakout_stop") or 0.0
+            _sp["target_1"] = plan.get("target_1", _sp.get("target_1"))
+            _sp["target_2"] = plan.get("target_2", _sp.get("target_2"))
+            _sp["targets_rebuilt"] = bool(plan.get("targets_rebuilt"))
+            _sp["targets_rebuilt_basis"] = plan.get("targets_rebuilt_basis")
             _sp["breakout_demoted_reason"] = plan["breakout_demoted_reason"]
             logger.info(
-                f"[{ticker}] C1 breakout trigger demoted: {plan['breakout_demoted_reason']}"
+                f"[{ticker}] C1 trigger kept: ${_sp['breakout_level']} with rebuilt targets "
+                f"T1 ${_sp['target_1']} / T2 ${_sp['target_2']}"
             )
 
         if not _ok:

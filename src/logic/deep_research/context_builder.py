@@ -387,7 +387,21 @@ def build_user_prompt(
     options_block: str = "",
     active_pos_block: str = "",
     stale: bool = False,
+    prior_plan_outcome_block: str = "",
 ) -> str:
+    prior_plan_section = (
+        f"""
+--- 0a. PRIOR PLAN OUTCOME (what the previous plan's levels actually did) ---
+{prior_plan_outcome_block}
+⚠️ This is HISTORY, not levels to copy: it tells you which levels were crossed, when,
+and whether they held on close — including whether a breakout trigger fired and held,
+failed and closed back, or was never reached. Derive your fresh levels from the CURRENT
+Data Window below; never conclude a level was untriggered from the spot price alone.
+
+"""
+        if prior_plan_outcome_block
+        else ""
+    )
     return f"""
         RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
         VERIFY every macro, CPI, Fed, and earnings reference against this date. Do NOT assume
@@ -397,6 +411,7 @@ def build_user_prompt(
 
         {active_pos_block}
 
+{prior_plan_section}
         --- 1. DATA WINDOW (Exact Math State from TradingView — the last CLOSED bar) ---
         {data_window_str}
 

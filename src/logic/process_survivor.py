@@ -1594,6 +1594,25 @@ Output:
         few_shot_example.strip() + "\n\n---\n\nActual Data:\n" + json.dumps(llm_input, indent=2)
     )
 
+    # MID/local tier: the prior plan outcome goes in with the triage input. It is history
+    # (what the stored plan's levels actually did — crossed / when / held on close), so the
+    # triage never judges a level from the spot price alone.
+    try:
+        from src.tracking.plan_outcome import build_prior_plan_outcome, plan_outcome_markdown
+
+        prior_plan_outcome_block = plan_outcome_markdown(
+            build_prior_plan_outcome(ticker, plan_date=today_str)
+        )
+        if "PRIOR PLAN OUTCOME" in prior_plan_outcome_block:
+            user_prompt += (
+                "\n\n---\n\nPRIOR PLAN OUTCOME (history — what the previous plan's levels actually did):\n"
+                + prior_plan_outcome_block
+                + "\n\nJudge your fresh levels against what those levels have already done; never conclude a "
+                "level was untriggered from the spot price alone."
+            )
+    except Exception as e_ppo:
+        logger.debug(f"[{ticker}] prior plan outcome unavailable for mid tier: {e_ppo}")
+
     if enrich:
         user_prompt += (
             "\n\nTRAJECTORY INSTRUCTION:\n"

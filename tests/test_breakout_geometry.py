@@ -74,8 +74,9 @@ def test_breakout_geometry_no_trigger_is_vacuous():
     assert reasons == []
 
 
-def test_validate_levels_strips_meta_trigger_but_keeps_zone_path():
-    """The demotion must not reject the limit-zone plan: trigger stripped, reason recorded."""
+def test_validate_levels_keeps_the_meta_trigger_and_rebuilds_targets():
+    """A broken trigger is never zeroed: the trigger stays armed and T1/T2 are
+    rebuilt above it, tagged targets_rebuilt — the limit-zone path survives untouched."""
     plan = dict(META)
     plan["spot"] = 718.67
     plan["setup_lane"] = "JUDGE"
@@ -83,15 +84,13 @@ def test_validate_levels_strips_meta_trigger_but_keeps_zone_path():
 
     ok, reasons = validate_levels(plan, dw, "LONG")
 
-    # The trigger is gone, and no failure reason claims the trigger is fine.
-    assert plan["breakout_level"] == 0.0
-    assert plan["breakout_stop"] == 0.0
-    assert "below breakout trigger" in plan["breakout_demoted_reason"]
-    assert not any("below breakout trigger" in r for r in reasons)
-    # ... even though the plan still fails its other checks (the zone path's own R:R floor).
-    assert ok is False
-    assert any("planned r:r" in r.lower() or "at-market r:r" in r.lower() for r in reasons)
-    # The zone itself is untouched — that is the path that survives.
+    # The trigger is kept, and the demotion reason now records what was rebuilt.
+    assert plan["breakout_level"] == 747.60
+    assert plan["targets_rebuilt"] is True
+    assert plan["target_1"] > 747.60
+    assert plan["target_2"] > plan["target_1"]
+    assert "targets rebuilt above it" in plan["breakout_demoted_reason"]
+    # ... and the zone itself is untouched.
     assert plan["entry_zone_low"] == 710.43
     assert plan["entry_zone_high"] == 715.95
 
@@ -112,20 +111,22 @@ def test_validate_levels_records_rr_at_trigger_for_a_valid_breakout():
     ok, reasons = validate_levels(plan, dw, "LONG")
 
     assert plan["breakout_level"] == 747.60  # valid trigger survives
+    assert "targets_rebuilt" not in plan    # nothing to rebuild
     expected_rr = (775.00 - 747.60) / (747.60 - 735.00)
     assert plan["rr_at_trigger"] == pytest.approx(expected_rr, abs=1e-4)
     # Not a rejection reason: the geometry at the trigger is sound.
     assert not any("below breakout trigger" in r for r in reasons)
 
 
-def test_validate_levels_pure_breakout_plan_fails_when_trigger_demoted():
-    """A plan whose breakout IS the entry cannot survive the demotion — no entry is left."""
+def test_validate_levels_pure_breakout_plan_keeps_its_entry_after_rebuild():
+    """A plan whose breakout IS the entry no longer loses it: the targets rebuild
+    above the trigger and the entry survives."""
     plan = {
         "entry_type": "BREAKOUT",
         "breakout_level": 747.60,
         "breakout_stop": 735.00,
         "tactical_stop": 735.00,
-        "target_1": 742.09,   # at/below trigger -> demote
+        "target_1": 742.09,   # at/below trigger -> targets rebuild above it
         "target_2": 747.60,
         "spot": 740.00,
         "setup_lane": "JUDGE",
@@ -134,6 +135,7 @@ def test_validate_levels_pure_breakout_plan_fails_when_trigger_demoted():
 
     ok, reasons = validate_levels(plan, dw, "LONG")
 
-    assert ok is False
-    assert any("breakout demoted, no entry left" in r for r in reasons)
-    assert plan["breakout_level"] == 0.0
+    assert plan["breakout_level"] == 747.60
+    assert plan["targets_rebuilt"] is True
+    assert not any("no entry left" in r for r in reasons)
+    assert not any("missing required levels" in r for r in reasons)

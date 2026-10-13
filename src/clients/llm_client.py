@@ -460,6 +460,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_prior_plan_outcome",
+            "description": (
+                "Deterministic prior-plan outcome for a ticker's STORED plan: for every armed level "
+                "(breakout trigger, entry zone low/top, prior 20-day high, T1, T2, tactical stop, "
+                "invalidation) it states crossed-or-not, WHEN it first crossed (daily date + latest-session "
+                "intraday timestamp), and whether it HELD on close — plus the position judged at the live "
+                "price (in zone / running / stopped / invalidated, R:R at market to T1 and T2, and "
+                "RUNNING_ACTIONABLE vs RUNNING_NO_ROOM). ALWAYS use this tool — never the spot price alone — "
+                "when the user asks whether a level broke out, held, retested, or stopped out."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'GOOGL', 'AAPL', 'NVDA')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "detect_candlestick_patterns",
             "description": (
                 "Scans the 1-year OHLCV dataset for high-conviction candlestick and price action patterns:\n"
@@ -1091,6 +1116,8 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
     elif function_name == "fetch_prior_research":
         lookback_slug = re.sub(r'[^\w\-]', '_', str(args.get("lookback_days", 14))).strip('_')
         cache_key = f"prior_research_{lookback_slug}"
+    elif function_name == "get_prior_plan_outcome":
+        cache_key = "prior_plan_outcome"
     elif function_name == "fetch_sec_filings":
         form_slug = re.sub(r'[^\w\-]', '_', str(args.get("form_type", "ALL")).upper()).strip('_')
         limit_slug = re.sub(r'[^\w\-]', '_', str(args.get("limit", 5))).strip('_')
@@ -1223,6 +1250,20 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         lookback = int(args.get("lookback_days", 14))
         logger.info(f"LLM executed tool: fetch_prior_research(ticker='{ticker}', lookback_days={lookback})")
         res_str = fetch_prior_research_tool(ticker=ticker, lookback_days=lookback, date_str=date_str, is_independent=is_independent)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "get_prior_plan_outcome":
+        logger.info(f"LLM executed tool: get_prior_plan_outcome(ticker='{ticker}')")
+        try:
+            from src.tracking.plan_outcome import build_prior_plan_outcome, plan_outcome_markdown
+
+            outcome = build_prior_plan_outcome(ticker=ticker, plan_date=date_str)
+            res_str = plan_outcome_markdown(outcome)
+            if outcome.get("judgment"):
+                j = outcome["judgment"]
+                res_str += f"\n\nSTRUCTURED: {json.dumps({'levels': outcome.get('levels'), 'judgment': j}, default=str)}"
+        except Exception as e_ppo:
+            res_str = f"Prior plan outcome unavailable for {ticker}: {e_ppo}"
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "detect_candlestick_patterns":

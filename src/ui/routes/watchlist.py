@@ -104,6 +104,43 @@ def get_watch_targets():
 
                 sym = item.get("ticker", "").upper()
 
+                # The armed level set for this row (plan/no-lost-movers): the level engine's
+                # view of the stored plan — zone low/top, BREAKOUT (restored from a recorded
+                # demotion, never zeroed), HIGH_20D, T1, T2, STOP, INVALIDATION.
+                try:
+                    from src.tracking.level_engine import build_armed_levels
+
+                    plan_view = {
+                        "entry_type": item.get("entry_type"),
+                        "entry_zone_low": item.get("entry_zone_low"),
+                        "entry_zone_high": item.get("entry_zone_high"),
+                        "breakout_level": item.get("breakout_level"),
+                        "breakout_stop": item.get("breakout_stop"),
+                        "tactical_stop": item.get("tactical_stop"),
+                        "target_1": item.get("target_1"),
+                        "target_2": item.get("target_2"),
+                        "invalidation_price": item.get("invalidation_price"),
+                        "breakout_demoted_reason": (item.get("parsed_json") or {}).get("shares_plan", {}).get("breakout_demoted_reason"),
+                        "targets_rebuilt": bool((item.get("parsed_json") or {}).get("shares_plan", {}).get("targets_rebuilt")),
+                    }
+                    high_20d = None
+                    try:
+                        from src.tracking.level_engine import bars_high_20d_and_adv20
+
+                        high_20d, _adv = bars_high_20d_and_adv20(sym)
+                    except Exception:
+                        high_20d = None
+                    armed = build_armed_levels(plan_view, side=str(item.get("side") or "LONG"), high_20d=high_20d)
+                    item["armed_levels"] = [
+                        {"kind": lv.kind, "price": round(lv.price, 4), "direction": lv.direction}
+                        for lv in armed
+                    ]
+                    item["armed_kinds"] = [lv.kind for lv in armed]
+                except Exception as e:
+                    logger.debug(f"[watch-targets] armed levels unavailable for {sym}: {e}")
+                    item["armed_levels"] = []
+                    item["armed_kinds"] = []
+
                 d_str = item.get("date", "")
                 target_mtime = None
 

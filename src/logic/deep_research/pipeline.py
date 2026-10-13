@@ -668,6 +668,19 @@ def run_deep_research(
         daily_alerts_block, alerts_list = build_daily_alerts_block(ticker, raw_dir)
         pine_benchmark_block = build_pine_benchmark_block(ticker, dw_dict)
 
+        # 8b. PRIOR PLAN OUTCOME — what the previous plan's levels actually did
+        # (crossed / when / held on close + the live-price judgment), built from daily and
+        # intraday highs/lows since the prior plan's date. Injected into the pass-2 and
+        # judge prompts below; history, never levels to copy.
+        prior_plan_outcome_block = ""
+        try:
+            from src.tracking.plan_outcome import build_prior_plan_outcome, plan_outcome_markdown
+
+            prior_plan_outcome = build_prior_plan_outcome(ticker, plan_date=date_str)
+            prior_plan_outcome_block = plan_outcome_markdown(prior_plan_outcome)
+        except Exception as e_ppo:
+            logger.debug(f"[{ticker}] prior plan outcome unavailable: {e_ppo}")
+
         # 10. Assemble prompts
         user_prompt = build_user_prompt(
             ticker=ticker, date_str=date_str, data_window_str=data_window_str,
@@ -683,6 +696,7 @@ def run_deep_research(
             pine_setup_benchmark_block=pine_benchmark_block,
             csv_path=paths["dw_csv"], dw_path=paths["dw_json"],
             options_block=options_block, active_pos_block=active_pos_block, stale=stale,
+            prior_plan_outcome_block=prior_plan_outcome_block,
         )
 
         independent_dw_str = sanitize_dw_for_independent(dw_dict)
@@ -847,6 +861,7 @@ def run_deep_research(
                 triage_reason=triage_reason,
                 lane_prior_win=lane_prior_win,
                 lane_prior_ev=lane_prior_ev,
+                prior_plan_outcome_block=prior_plan_outcome_block,
             )
             arb_sec = round(time.time() - t_arb_start, 3)
             record_research_timing(

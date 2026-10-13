@@ -161,6 +161,80 @@ def check_breakout_geometry(
     return (len(reasons) == 0), reasons
 
 
+def _rebuild_targets_above_trigger(
+    trigger: float,
+    old_t1: float,
+    old_t2: float,
+    stop: float,
+    atr: float,
+    ticker: str = "",
+    date_str: str = "",
+) -> Tuple[float, float, str]:
+    """Rebuild T1/T2 ABOVE a trigger whose targets sat at or below it.
+
+    A broken trigger is never zeroed (plan/no-lost-movers follow-up): the trigger
+    stays armed and its targets are rebuilt above it, tagged ``targets_rebuilt``.
+    Order of preference, each one a real number rather than an invented one:
+      1. the next daily-bar resistance above the trigger (a level price actually
+         reached, from the same bars source as _compute_atr14_from_bars)
+      2. an ATR multiple: T1 = trigger + 2x ATR, T2 = trigger + 4x ATR
+      3. the plan's own stop distance: T1 = trigger + 2x risk, T2 = trigger + 4x risk
+    Returns (t1, t2, basis) — basis names which rule produced the numbers.
+    """
+    basis = "atr_multiple"
+    t1 = t2 = 0.0
+    if trigger <= 0:
+        return max(old_t1, 0.0), max(old_t2, 0.0), "none"
+
+    # 1. Next resistance from daily bars.
+    if ticker:
+        try:
+            from datetime import datetime, timedelta
+
+            from src.tracking.execution_validator import get_bars_since_date
+
+            start = (datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date() - timedelta(days=120)).strftime("%Y-%m-%d") if date_str else ""
+            bars = get_bars_since_date(ticker, start) if start else get_bars_since_date(ticker, date_str or "")
+            if bars is not None and len(bars) > 0:
+                highs = []
+                for i in range(len(bars)):
+                    row = bars.iloc[i]
+                    h = _f(row.get("High") if hasattr(row, "get") else None)
+                    if h > trigger:
+                        highs.append(h)
+                if highs:
+                    highs.sort()
+                    t1 = highs[0]
+                    higher = [h for h in highs if h > t1]
+                    t2 = higher[len(higher) // 2] if higher else t1 + (t1 - trigger)
+                    basis = "next_resistance"
+        except Exception:
+            t1 = t2 = 0.0
+            basis = "atr_multiple"
+
+    # 2. ATR multiple.
+    if t1 <= 0 and atr > 0:
+        t1 = round(trigger + 2.0 * atr, 4)
+        t2 = round(trigger + 4.0 * atr, 4)
+        basis = "atr_multiple"
+
+    # 3. The plan's own stop distance.
+    if t1 <= 0 and stop > 0 and trigger > stop:
+        risk = trigger - stop
+        t1 = round(trigger + 2.0 * risk, 4)
+        t2 = round(trigger + 4.0 * risk, 4)
+        basis = "stop_distance_multiple"
+
+    if t1 <= 0:
+        # Nothing real to measure against: keep the old targets with the trigger armed
+        # and say so, rather than inventing levels.
+        return max(old_t1, 0.0), max(old_t2, 0.0), "none"
+
+    if t2 <= t1:
+        t2 = round(t1 + max(t1 - trigger, 0.01 * trigger), 4)
+    return round(t1, 4), round(t2, 4), basis
+
+
 def _zone_midpoint(entry_low: float, entry_high: float) -> float:
     if entry_low and entry_high:
         return (entry_low + entry_high) / 2.0
@@ -334,6 +408,14 @@ def validate_levels(
         reasons.append("SHORT side rejected — measured edge is long-only post-COVID")
         return False, reasons
 
+    # ── 2. ATR14 presence (hard fail if missing) ───────────────
+    # Computed before the geometry passes: the trigger rebuild falls back to ATR multiples.
+    atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR", "wilder_atr14")
+    if atr <= 0:
+        atr = _compute_atr14_from_bars(ticker, date_str)
+    if atr <= 0:
+        reasons.append("missing ATR14 — hard fail")
+
     # ── 1. Level ordering & geometry ───────────────────────────
     spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
     if spot <= 0:
@@ -357,9 +439,10 @@ def validate_levels(
 
     # ── C1. Breakout geometry for ANY plan carrying a trigger ───────────
     # META slipped through because this check only ran for entry_type ==
-    # "BREAKOUT". Demote, don't reject: a trigger whose targets sit at/below it
-    # is stripped (breakout_level = 0, reason recorded) so the limit-zone path
-    # survives; a plan whose breakout IS the entry fails outright with no entry left.
+    # "BREAKOUT". A trigger whose targets sit at/below it is NOT zeroed: the trigger
+    # stays armed (it is a real level the desk is watching) and T1/T2 are rebuilt
+    # above it from the next resistance or an ATR multiple, tagged targets_rebuilt.
+    # A pure-breakout plan keeps its entry; a limit-zone plan keeps its zone path.
     rr_at_trigger = 0.0
     if breakout_level > 0:
         bo_ok, bo_reasons = check_breakout_geometry(
@@ -369,24 +452,30 @@ def validate_levels(
             side=side,
         )
         if not bo_ok:
-            demote_reason = "; ".join(bo_reasons)
-            plan["breakout_level"] = 0.0
-            plan["breakout_stop"] = 0.0
-            plan["breakout_demoted_reason"] = demote_reason
-            breakout_level = 0.0
-            if entry_type == "BREAKOUT":
-                reasons.append(f"breakout demoted, no entry left: {demote_reason}")
-            else:
-                logger.info(
-                    f"[LEVEL_GATE] {ticker or 'plan'}: breakout trigger demoted to no-room "
-                    f"({demote_reason}); limit-zone path retained."
-                )
-        else:
-            bs_val = float(plan.get("breakout_stop") or 0.0)
-            if bs_val > 0 and target_1 > breakout_level:
-                rr_at_trigger = round(
-                    (target_1 - breakout_level) / (breakout_level - bs_val), 4
-                )
+            rebuilt_t1, rebuilt_t2, basis = _rebuild_targets_above_trigger(
+                trigger=breakout_level,
+                old_t1=target_1,
+                old_t2=target_2,
+                stop=stop,
+                atr=atr,
+                ticker=ticker,
+                date_str=date_str,
+            )
+            plan["target_1"] = rebuilt_t1
+            plan["target_2"] = rebuilt_t2
+            plan["targets_rebuilt"] = True
+            plan["targets_rebuilt_basis"] = basis
+            plan["breakout_demoted_reason"] = (
+                f"{'; '.join(bo_reasons)}; trigger kept, targets rebuilt above it via {basis}"
+            )
+            target_1, target_2 = rebuilt_t1, rebuilt_t2
+            logger.info(
+                f"[LEVEL_GATE] {ticker or 'plan'}: trigger ${breakout_level:.4f} kept, targets rebuilt "
+                f"to T1 ${rebuilt_t1:.2f} / T2 ${rebuilt_t2:.2f} via {basis}."
+            )
+        bs_val = float(plan.get("breakout_stop") or 0.0)
+        if bs_val > 0 and target_1 > breakout_level and breakout_level > bs_val:
+            rr_at_trigger = round((target_1 - breakout_level) / (breakout_level - bs_val), 4)
     plan["rr_at_trigger"] = rr_at_trigger
 
     has_shares_entry = entry_type not in ("NO_ENTRY", "NONE", "")
@@ -401,13 +490,6 @@ def validate_levels(
         missing_required.append("target_1")
     if missing_required:
         reasons.append(f"missing required levels ({', '.join(missing_required)})")
-
-    # ── 2. ATR14 presence (hard fail if missing) ───────────────
-    atr = _dw_num(dw, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR", "wilder_atr14")
-    if atr <= 0:
-        atr = _compute_atr14_from_bars(ticker, date_str)
-    if atr <= 0:
-        reasons.append("missing ATR14 — hard fail")
 
     # ── Lanes classification ──────────────────────────────────
     setup_lane = str(plan.get("setup_lane") or plan.get("lane") or dw.get("setup_lane") or "").upper()

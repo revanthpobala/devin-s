@@ -2096,6 +2096,34 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
 
             if dossier_lines:
                 parts.append(f"### ⚖️ SENIOR PM ARBITRATION DIRECTIVES & TACTICAL THESES ({active_date}):\n" + "\n\n".join(dossier_lines))
+
+            # 2a. PRIOR PLAN OUTCOMES for the desk's tickers — what each stored plan's levels
+            # actually did (crossed / when / held on close) plus the live-price judgment.
+            # Bounded to the desk's first tickers: each block costs a daily+intraday bars read.
+            try:
+                from src.tracking.plan_outcome import build_prior_plan_outcome, plan_outcome_markdown
+
+                ppo_blocks = []
+                for sym in today_tickers[:6]:
+                    if not sym or not str(sym).isalpha():
+                        continue
+                    try:
+                        outcome = build_prior_plan_outcome(str(sym).upper(), as_of=active_date)
+                        block = plan_outcome_markdown(outcome)
+                        if "PRIOR PLAN OUTCOME" in block and "unavailable" not in block.split("\n")[1].lower():
+                            ppo_blocks.append(block)
+                    except Exception:
+                        continue
+                if ppo_blocks:
+                    parts.append(
+                        "### 📐 PRIOR PLAN OUTCOMES (what the stored plans' levels actually did):\n"
+                        + "\n\n".join(ppo_blocks)
+                        + "\n\n⚠️ These are facts about LEVELS, not the spot price. Never tell the user a "
+                        "breakout did or did not happen from the spot price alone — use these blocks or "
+                        "the get_prior_plan_outcome tool."
+                    )
+            except Exception as ppo_e:
+                logger.debug(f"prior plan outcomes for chat context unavailable: {ppo_e}")
     except Exception as de:
         logger.debug(f"Error parsing arbitration dossiers: {de}")
 
@@ -2459,6 +2487,7 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
             "    - Show each row in this order: gate result (measured pass or the reason it failed), R:R at market, lane, and the MEASURED/UNMEASURED tag LAST. Conviction is a trailing label, never a ranking key and never a reason to act.\n"
             "    - Use each row's own numbers (entry zone, stop, target, live R:R, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
             "    - An UNMEASURED row is labelled, not hidden: say plainly that the lane is UNMEASURED (no replay corpus behind it) rather than promoting it.\n"
+            "    - NEVER say a level did or did not trigger from the spot price alone. Breakout / zone / stop / target questions are answered from the PRIOR PLAN OUTCOMES section or the get_prior_plan_outcome tool, which state per level: crossed or not, when, and whether it held on close.\n"
             "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
             "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
         )
@@ -2617,6 +2646,7 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
             "    - Show each row in this order: gate result (measured pass or the reason it failed), R:R at market, lane, and the MEASURED/UNMEASURED tag LAST. Conviction is a trailing label, never a ranking key and never a reason to act.\n"
             "    - Use each row's own numbers (entry zone, stop, target, live R:R, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
             "    - An UNMEASURED row is labelled, not hidden: say plainly that the lane is UNMEASURED (no replay corpus behind it) rather than promoting it.\n"
+            "    - NEVER say a level did or did not trigger from the spot price alone. Breakout / zone / stop / target questions are answered from the PRIOR PLAN OUTCOMES section or the get_prior_plan_outcome tool, which state per level: crossed or not, when, and whether it held on close.\n"
             "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
             "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
         )
