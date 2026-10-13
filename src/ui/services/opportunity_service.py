@@ -1,4 +1,4 @@
-"""
+﻿"""
 src/ui/services/opportunity_service.py
 
 Real-Time Opportunity Synthesis & Live Market Dynamics Engine.
