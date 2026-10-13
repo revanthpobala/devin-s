@@ -701,9 +701,11 @@ def build_action_panel(opportunities: Optional[List[Dict[str, Any]]] = None,
     movers += list(movers_raw.get("spikes") or [])
     movers += list(movers_raw.get("drops") or [])
 
-    # Resolve paper theses on a slower cadence than the panel cache: the bar walk is the
-    # expensive part (~1s per 5 positions) and the answer only changes once a day.
-    _maybe_refresh_paper()
+    # NOTE: `_maybe_refresh_paper()` deliberately does NOT run here. This function is the
+    # desk's READ path and the repo's GET-purity invariant forbids a GET from spawning a
+    # DB writer (it created thesis_paper_trades mid-request, which the purity test caught).
+    # The paper-thesis refresh is a scheduled writer: the TodayBackgroundService cycle
+    # calls it on its own cadence, throttled to _PAPER_REFRESH_EVERY.
 
     def _safe(fn, *a, **kw):
         try:

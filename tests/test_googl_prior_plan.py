@@ -42,11 +42,15 @@ GOOGL_PLAN = {
         "side": "LONG",
         "entry_zone_low": 349.0,
         "entry_zone_high": 351.0,
-        "breakout_level": 355.0,     # the level the user is watching
-        "breakout_stop": 350.0,
+        # The plan's own trigger is 356.83 — the arbitration's binding directive
+        # ("Buy Stop at $356.83, Daily Close > $356.83 with RVOL > 1.0"). The stored
+        # row once carried 355.0, which is the options PUT WALL, not the breakout.
+        "breakout_level": 356.83,
+        "breakout_stop": 353.22,
         "tactical_stop": 344.0,
-        "target_1": 356.73,
-        "target_2": 370.0,
+        "target_1": 357.3803,
+        "target_2": 363.971,
+        "targets_rebuilt": True,
     },
     "options_plan": {"structure": "NONE", "summary": "None"},
     "invalidation": {"condition": "DAILY_CLOSE_BELOW", "price_level": 344.0, "rationale": "Floor"},
@@ -132,13 +136,13 @@ def _synthetic_daily_bars():
 
 
 def _synthetic_intraday_bars():
-    """The user's tick: 353.3 -> 355.23 (cross) -> 356 -> 353 (close back below)."""
+    """The user's tick: 353.3 -> 357.02 (cross) -> 357.6 -> 353 (close back below)."""
     seq = [
         ("2026-10-13T09:30", 353.0, 353.6, 352.8, 353.30),
         ("2026-10-13T09:35", 353.3, 354.0, 353.1, 353.80),
-        ("2026-10-13T09:40", 353.8, 355.5, 353.7, 355.23),   # the cross
-        ("2026-10-13T09:45", 355.2, 356.4, 355.0, 356.00),   # holding above
-        ("2026-10-13T09:50", 355.9, 356.0, 353.0, 353.10),   # back below
+        ("2026-10-13T09:40", 353.8, 357.1, 353.7, 357.02),   # the cross of 356.83
+        ("2026-10-13T09:45", 357.0, 357.6, 356.9, 357.60),   # holding above
+        ("2026-10-13T09:50", 357.5, 357.6, 353.0, 353.10),   # back below
         ("2026-10-13T09:55", 353.1, 353.4, 352.9, 353.00),   # the close
     ]
     out = []
@@ -204,14 +208,14 @@ def test_demoted_plan_still_arms_a_breakout():
 # ---------------------------------------------------------------------------
 
 def test_googl_breakout_cross_fires_one_alert_and_rearms():
-    """The synthetic replay: 353.3 -> 355.23 -> 356 -> 353 produces exactly one
+    """The synthetic replay: 353.3 -> 357.02 -> 357.6 -> 353 produces exactly one
     BREAKOUT alert, one re-arm, and a plan outcome that says failed breakout."""
     watch_manager.upsert_watch_target(dict(GOOGL_PLAN))
 
     bars = _synthetic_daily_bars()
     intraday = _synthetic_intraday_bars()
 
-    prices = [353.30, 355.23, 356.00, 353.00]
+    prices = [353.30, 357.02, 357.60, 353.00]
     for px in prices:
         with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
              patch("run_watch_alerts.get_current_price", return_value=px), \
@@ -226,7 +230,7 @@ def test_googl_breakout_cross_fires_one_alert_and_rearms():
     assert len(bo) == 1, f"exactly one BREAKOUT alert, got {[r['trigger_type'] for r in rows]}"
 
     msg = bo[0]["message"]
-    assert "$355.00" in msg                       # which level crossed
+    assert "$356.83" in msg                      # which level crossed
     assert "RVOL" in msg                          # volume pace stated
     assert "R:R to T1" in msg and "R:R to T2" in msg  # R:R at market to the plan targets
     assert "lane" in msg                          # MEASURED / UNMEASURED tag
@@ -240,7 +244,7 @@ def test_googl_breakout_cross_fires_one_alert_and_rearms():
 
     # The re-score at the cross price is said plainly, and is not STALK.
     res = run_watch_alerts._rescore_at_market(
-        "GOOGL", 355.23, dict(GOOGL_PLAN), "LONG", _mock_et(), ["BREAKOUT"]
+        "GOOGL", 357.02, dict(GOOGL_PLAN), "LONG", _mock_et(), ["BREAKOUT"]
     )
     assert res["outcome"] == "RUNNING_NO_ROOM"    # best R:R ~1.32 < 2.0 floor
     assert res["live_rr"] < 2.0
@@ -270,7 +274,7 @@ def test_googl_alert_visible_via_watch_alerts_api():
          patch("src.tracking.execution_validator.get_bars_since_date", return_value=_synthetic_daily_bars()):
         evaluate_watch_cycle(sync_sheets=False)
     with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
-         patch("run_watch_alerts.get_current_price", return_value=355.23), \
+         patch("run_watch_alerts.get_current_price", return_value=357.02), \
          patch("src.tracking.execution_validator.get_bars_since_date", return_value=_synthetic_daily_bars()):
         evaluate_watch_cycle(sync_sheets=False)
 
@@ -289,11 +293,12 @@ def test_googl_alert_visible_via_watch_alerts_api():
 
 def test_judgment_at_market_states_run_terms_plainly():
     plan = GOOGL_PLAN["shares_plan"]
-    # Entry 355, stop 344, T2 370 -> R:R ~1.32 at the 355.23 print: below the 2.0 floor
-    # -> RUNNING_NO_ROOM, said plainly.
-    j = judge_at_market(plan, 355.23)
+    # Zone 349-351, trigger 356.83, stop 344, T1 357.38 / T2 363.97 (rebuilt above the
+    # trigger) -> at the 357.02 print the R:R to T1 is thin and to T2 below the 2.0
+    # floor -> RUNNING_NO_ROOM, said plainly.
+    j = judge_at_market(plan, 357.02)
     assert j["position"] == "ABOVE_ZONE_RUNNING"
-    assert j["rr_at_market_to_t2"] == pytest.approx(1.32, abs=0.02)
+    assert j["rr_at_market_to_t2"] == pytest.approx(0.53, abs=0.02)
     assert j["outcome"] == "RUNNING_NO_ROOM"
     assert "RUNNING_NO_ROOM" in j["verdict"]
     assert "STALK" != j["outcome"]
@@ -315,7 +320,7 @@ def test_printed_verdict_comes_from_the_engine_not_the_llm():
     bars = _synthetic_daily_bars()
 
     results = []
-    for px in (353.30, 355.23):
+    for px in (353.30, 357.02):
         with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
              patch("src.clients.quote_router.quote_router.get_watchlist_quotes_batch",
                    return_value={"GOOGL": _quote(px, volume=3_000_000)}), \
@@ -369,7 +374,7 @@ def test_prior_plan_outcome_block_states_crossed_when_and_held():
     assert set(by_kind) >= {"ZONE_LOW", "ZONE_TOP", "BREAKOUT", "T1", "T2", "STOP"}
 
     bo = by_kind["BREAKOUT"]
-    assert bo["level"] == 355.0
+    assert bo["level"] == 356.83
     assert bo["crossed"] is True                       # crossed...
     assert bo["first_cross"] is not None               # ...when...
     assert bo["held_on_close"] is False                 # ...but the 353 close gave it back
@@ -381,7 +386,7 @@ def test_prior_plan_outcome_block_states_crossed_when_and_held():
     # The stop and invalidation levels are distinct facts.
     j = outcome["judgment"]
     assert j["live_price"] == 353.00
-    assert j["position"] == "ABOVE_ZONE_RUNNING"  # above the 349-351 zone, below the 355 trigger
+    assert j["position"] == "ABOVE_ZONE_RUNNING"  # above the 349-351 zone, below the 356.83 trigger
     assert j["outcome"] == "RUNNING_NO_ROOM"
 
     md = plan_outcome_markdown(outcome)
@@ -403,10 +408,10 @@ def test_prior_plan_outcome_uses_the_stored_plan_when_none_given():
     assert outcome["ticker"] == "GOOGL"
     assert outcome["plan_date"] == "2026-10-12"
     by_kind = {lv["kind"]: lv["level"] for lv in outcome["levels"]}
-    assert by_kind["BREAKOUT"] == 355.0
+    assert by_kind["BREAKOUT"] == 356.83
     assert by_kind["ZONE_TOP"] == 351.0
-    assert by_kind["T1"] == 356.73
-    assert by_kind["T2"] == 370.0
+    assert by_kind["T1"] == pytest.approx(357.3803)
+    assert by_kind["T2"] == pytest.approx(363.971)
     assert by_kind["STOP"] == 344.0
 
 

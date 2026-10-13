@@ -423,14 +423,17 @@ def get_paper_trade_stats(force: bool = False) -> Dict[str, Any]:
 
     out: Dict[str, Any] = {"available": False}
     try:
-        init_thesis_paper_db()
+        # READ PATH: never create the table here. A GET that reaches this aggregate
+        # would otherwise CREATE the ledger mid-request — a GET-purity violation the
+        # desk purity test catches by snapshotting sqlite_master around the call.
+        # Creation belongs to the writers (record_thesis_paper_trade, refresh).
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = [dict(r) for r in conn.cursor().execute(
                 "SELECT * FROM thesis_paper_trades"
             ).fetchall()]
     except Exception as e:
-        logger.debug(f"paper stats failed: {e}")
+        logger.debug(f"paper stats unavailable (ledger not created yet): {e}")
         return out
 
     if not rows:

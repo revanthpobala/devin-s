@@ -103,11 +103,24 @@ async def _drain(generator, limit: int = 500) -> str:
     return "".join(out)
 
 
+class _FakeSocketConn:
+    """A live port-8000 probe result: the stream must not depend on whether a real
+    llama-server happens to be running on this machine when the test runs."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def _run_chat(monkeypatch, delay: float, session_id: str, limit: int = 500) -> str:
     async def _drive():
         # The patch must stay active while the generator streams, not just while
         # the endpoint coroutine is awaited: the SSE body is produced afterwards.
-        with patch("openai.AsyncOpenAI", lambda *a, **k: _FakeOpenAI(delay)):
+        # `socket` is imported inside the handler, so the patch targets the module
+        # object the handler resolves at call time.
+        with patch("openai.AsyncOpenAI", lambda *a, **k: _FakeOpenAI(delay)), \
+             patch("socket.create_connection", lambda *a, **k: _FakeSocketConn()):
             response = await cop.copilot_chat_stream_endpoint(
                 CopilotChatRequest(
                     prompt="Did GOOGL break 355?",

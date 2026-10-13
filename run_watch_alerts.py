@@ -1554,6 +1554,11 @@ if __name__ == "__main__":
         action="store_true",
         help="With --repair-breakouts: report what would change without writing",
     )
+    parser.add_argument(
+        "--reconcile-rows",
+        action="store_true",
+        help="With --repair-breakouts: enforce each active row's trigger on the stored plan of record (the GOOGL 355-vs-356.83 case)",
+    )
 
     args = parser.parse_args()
 
@@ -1562,7 +1567,7 @@ if __name__ == "__main__":
     if args.repair_breakouts:
         from src.tracking.plan_repair import sweep_stored_plans
 
-        report = sweep_stored_plans(write=not args.repair_dry_run)
+        report = sweep_stored_plans(write=not args.repair_dry_run, reconcile_rows=args.reconcile_rows)
         logger.info(f"[repair-breakouts] {report['summary']}")
         for entry in report.get("repaired", []):
             logger.info(

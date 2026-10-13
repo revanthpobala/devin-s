@@ -195,12 +195,18 @@ def test_entry_gate_failure_message_reflects_the_live_floor():
 
 def test_desk_uses_the_live_floor(monkeypatch):
     """The desk's needs-you gate and the ENTRY gate are the same number."""
+    from src.ui.services import today_service
+
     rc.set_rr_config(rr_market_min=3.0)
     assert rc.min_rr() == 3.0
-    # The floor is read per request; there is no longer a second copy to drift.
+    # The floor is read per request; there is no longer a second copy to drift. The
+    # desk route delegates to the background service's payload builder, so the live
+    # read lives there (and the dial is part of the cache fingerprint, so a change
+    # re-buckets the next response instead of waiting out the TTL).
     assert not hasattr(desk_mod, "RR_MKT_ACTIONABLE"), \
         "the desk must not keep its own mirror of a tunable threshold"
-    assert "rr_config.min_rr()" in inspect.getsource(desk_mod.get_today)
+    assert "rr_config.min_rr()" in inspect.getsource(today_service._build_today_payload_sync)
+    assert "rr_config" in inspect.getsource(today_service._data_fingerprint)
 
 
 def test_stop_atr_floor_has_exactly_one_definition():

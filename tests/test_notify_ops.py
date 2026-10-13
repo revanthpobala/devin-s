@@ -515,13 +515,16 @@ def test_desk_reports_the_same_core_gaps_as_the_ops_check():
 
 def test_a_failing_coverage_probe_is_reported_not_rendered_as_healthy(monkeypatch):
     """Swallowing a probe failure would turn a broken check into a board that looks fine."""
-    from src.ui.routes import desk
+    from src.ui.services import today_service
 
     def _boom():
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(desk, "core_coverage_gaps", _boom)
-    payload = desk.get_today()
+    # The probe is reached from the payload builder, and the cache must never serve an
+    # older payload over a failing probe: force the rebuild so the failure has to be
+    # visible in this request's payload.
+    monkeypatch.setattr(today_service, "core_coverage_gaps", _boom)
+    payload = today_service.get_today_payload(force=True)
     assert payload["missing_symbols_core_gaps"] == []
     assert payload["core_coverage_error"], "a failed probe must be visible to the caller"
     assert "locked" in payload["core_coverage_error"]

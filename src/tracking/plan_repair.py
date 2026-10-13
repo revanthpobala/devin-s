@@ -170,7 +170,7 @@ def _stored_plan_files() -> List[Tuple[Path, str, str]]:
     return files
 
 
-def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None) -> Dict[str, Any]:
+def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None, reconcile_rows: bool = False) -> Dict[str, Any]:
     """The one-time sweep: rebuild and re-arm every stored plan with a dropped or
     broken breakout. Returns a report (repaired / skipped / errors) and, when
     ``write`` is true, persists the repaired plans back to their file and DB row.
@@ -178,6 +178,10 @@ def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None) -> D
     Files are grouped by (ticker, date): the same plan is stored under both
     reports/<date>/ and data/raw/<date>/<T>/, and the repair (which may fetch daily
     bars for the next-resistance basis) runs once per plan, not once per copy.
+
+    ``reconcile_rows`` additionally enforces the stored plan's trigger on any active
+    watch_targets row that disagrees with it (the GOOGL 355-vs-356.83 case). It is
+    opt-in because a row can hold a deliberate manual override.
     """
     if base_dir is not None:
         config.BASE_DIR = base_dir
@@ -243,7 +247,7 @@ def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None) -> D
         except Exception as e:
             errors.append({"ticker": ticker, "error": str(e)})
 
-    db_changes = repair_watch_targets(write=write)
+    db_changes = repair_watch_targets(write=write, reconcile_rows=reconcile_rows)
 
     return {
         "repaired": repaired,
@@ -258,7 +262,92 @@ def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None) -> D
     }
 
 
-def repair_watch_targets(write: bool = True) -> Dict[str, Any]:
+def _stored_plan_for(ticker: str, date_str: str) -> Optional[Dict[str, Any]]:
+    """The shares_plan of the stored plan file for one (ticker, date), if any."""
+    if not ticker or not date_str:
+        return None
+    safe = ticker.replace(":", "_").upper()
+    candidates = [
+        config.BASE_DIR / "reports" / date_str / f"{safe}_watch_levels.json",
+        config.BASE_DIR / "data" / "raw" / date_str / safe / f"{safe}_watch_levels.json",
+        config.BASE_DIR / "data" / "triage" / date_str / "_DEEP_RESEARCH" / safe / f"{safe}_watch_levels.json",
+        config.BASE_DIR / "data" / "triage" / date_str / "force" / safe / f"{safe}_watch_levels.json",
+    ]
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            sp = doc.get("shares_plan")
+            if isinstance(sp, dict):
+                return sp
+        except Exception:
+            continue
+    return None
+
+
+def _apply_plan_to_row(row: Dict[str, Any], shares_plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Rebuild a row's plan fields from the stored plan of record."""
+    rj_raw = row.get("raw_json")
+    rj = json.loads(rj_raw) if isinstance(rj_raw, str) and rj_raw else {}
+    if not isinstance(rj, dict):
+        rj = {}
+    merged = {k: v for k, v in shares_plan.items() if v not in (None, "")}
+    data = dict(row)
+    rj["shares_plan"] = merged
+    data["raw_json"] = json.dumps(rj, default=str)
+    data["shares_plan"] = merged
+    data["force_update"] = True
+    for key in ("entry_zone_low", "entry_zone_high", "breakout_level", "breakout_stop", "tactical_stop", "target_1", "target_2"):
+        if merged.get(key) is not None:
+            data[key] = merged.get(key)
+    return data
+
+
+def reconcile_row_with_plan(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Reconcile one watch_targets row with the stored plan of record for its date.
+
+    THE PLAN WINS. The plan file is the arbitration's binding directive for that name
+    and date; a row that carries a different breakout level arms a level the research
+    never authorized. The live GOOGL case is exactly this: the row's 355.00 is the
+    options put wall (a gamma level from the summary's GEX block), while the plan's
+    trigger is 356.83 — so the level that alerts is 356.83.
+
+    This is opt-in (``reconcile_rows=True``): a row can also hold a deliberate manual
+    override, and overwriting that is a data change, never a background side effect.
+    """
+    ticker = str(row.get("ticker") or "").upper()
+    date = str(row.get("date") or "")
+    status = str(row.get("status") or "").upper()
+    if not ticker or not date:
+        return None
+    if status in ("CLOSED", "INVALIDATED", "TARGET_HIT"):
+        return None
+    shares_plan = _stored_plan_for(ticker, date)
+    if not shares_plan:
+        return None
+    plan_trigger = _num(shares_plan.get("breakout_level"))
+    if plan_trigger <= 0:
+        # The plan itself has no trigger to reconcile against (a zeroed-and-
+        # unrecoverable plan) — leave the row alone rather than invent a level.
+        return None
+    row_trigger = _num(row.get("breakout_level"))
+    if abs(row_trigger - plan_trigger) < 0.005:
+        return None  # they already agree
+    return {
+        "ticker": ticker,
+        "date": date,
+        "row_breakout_level": row_trigger,
+        "plan_breakout_level": plan_trigger,
+        "reason": (
+            f"the row's trigger ${row_trigger} disagrees with the plan's ${plan_trigger}; "
+            "the stored plan (the arbitration directive) is the level that alerts"
+        ),
+        "_data": _apply_plan_to_row(row, shares_plan),
+    }
+
+
+def repair_watch_targets(write: bool = True, reconcile_rows: bool = False) -> Dict[str, Any]:
     """Repair stored watch_targets rows whose trigger is broken (targets at/below
     the trigger, or a dropped breakout recorded in the row's shares_plan).
 
@@ -266,6 +355,10 @@ def repair_watch_targets(write: bool = True) -> Dict[str, Any]:
     of a finished position, not a live plan, and the write gate refuses it (its
     entry_type is usually NO_ENTRY) — re-deriving a repair for it every run would
     never persist. Those rows are reported as skipped with their reason.
+
+    ``reconcile_rows`` makes the stored plan's trigger win where the row disagrees
+    with it (the GOOGL 355-vs-356.83 case); it is opt-in because a row can hold a
+    deliberate manual override.
     """
     repaired: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
@@ -275,7 +368,7 @@ def repair_watch_targets(write: bool = True) -> Dict[str, Any]:
 
         rows = watch_manager.get_all_watch_targets()
     except Exception as e:
-        return {"repaired": [], "errors": [{"error": f"watch_targets read failed: {e}"}]}
+        return {"repaired": [], "skipped": [], "errors": [{"error": f"watch_targets read failed: {e}"}]}
 
     for row in rows:
         ticker = str(row.get("ticker") or "")
@@ -289,6 +382,36 @@ def repair_watch_targets(write: bool = True) -> Dict[str, Any]:
                 "reason": f"history row (status={status or 'UNKNOWN'}, is_active={is_active}) — a finished position is not re-armed",
             })
             continue
+
+        if reconcile_rows:
+            try:
+                recon = reconcile_row_with_plan(row)
+            except Exception as e_rec:
+                recon = None
+                errors.append({"ticker": ticker, "date": date, "error": f"reconcile failed: {e_rec}"})
+            if recon:
+                entry = {k: v for k, v in recon.items() if k != "_data"}
+                if write:
+                    data = recon["_data"]
+                    before_trigger = row.get("breakout_level")
+                    watch_manager.upsert_watch_target(data)
+                    try:
+                        after = next(
+                            (r for r in watch_manager.get_all_watch_targets()
+                             if r.get("ticker") == ticker and str(r.get("date") or "") == date),
+                            None,
+                        )
+                    except Exception:
+                        after = None
+                    entry["persisted"] = bool(
+                        after is not None
+                        and abs(_num(after.get("breakout_level")) - _num(entry["plan_breakout_level"])) < 0.005
+                    )
+                    if not entry["persisted"]:
+                        entry["note"] = "reconciled plan did not persist — row left as stored"
+                repaired.append(dict(entry, kind="reconciled"))
+                continue
+
         try:
             raw = row.get("raw_json")
             rj = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
@@ -358,7 +481,7 @@ def repair_watch_targets(write: bool = True) -> Dict[str, Any]:
     return {"repaired": repaired, "skipped": skipped, "errors": errors}
 
 
-if __name__ == "__main__":  # python -m src.tracking.plan_repair [--dry-run]
+if __name__ == "__main__":  # python -m src.tracking.plan_repair [--dry-run] [--reconcile-rows]
     import sys
 
     logging.basicConfig(level=logging.INFO)
@@ -366,5 +489,5 @@ if __name__ == "__main__":  # python -m src.tracking.plan_repair [--dry-run]
     # An unrecognised flag is NOT a write run: repairs are opt-in (--write), so a
     # stray invocation like --help or a typo reports a dry run instead of writing.
     dry = "--dry-run" in argv or "--write" not in argv
-    report = sweep_stored_plans(write=not dry)
+    report = sweep_stored_plans(write=not dry, reconcile_rows="--reconcile-rows" in argv)
     print(json.dumps(report, indent=2, default=str))

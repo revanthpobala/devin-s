@@ -262,8 +262,10 @@ def test_code20_keeps_its_lane_and_its_ratio_at_every_floor(seeded_desk):
 def test_rr_at_market_is_recomputed_per_request_not_stored():
     """The ratio itself is derived from live price + persisted stop/target, never cached."""
     import inspect
-    src = inspect.getsource(desk_mod.get_today)
-    assert 'rr_at_market = round((target - last_px)' in src
+    from src.ui.services import today_service
+
+    src = inspect.getsource(today_service._build_today_payload_sync)
+    assert 'rr_at_market = round((target - last_px' in src
     assert '"rr_at_market_source"' in src, "each row must say whether its R:R is signal or live"
 
 

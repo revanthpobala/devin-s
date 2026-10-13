@@ -23,10 +23,12 @@ import pytest
 
 from src.tracking import level_engine, watch_manager
 from src.tracking.plan_repair import (
+    reconcile_row_with_plan,
     repair_shares_plan,
     repair_watch_targets,
     sweep_stored_plans,
 )
+from src.tracking import plan_repair as plan_repair_mod
 from src.tracking.level_engine import build_armed_levels, has_armed_level
 
 GOOGL_STORED = {
@@ -202,6 +204,98 @@ def test_repair_shares_plan_is_a_noop_on_a_sound_plan():
 # ---------------------------------------------------------------------------
 # 5. STALK with no armed level is rejected at write time
 # ---------------------------------------------------------------------------
+
+def test_reconciliation_makes_the_plan_trigger_win_over_a_mis_scraped_row():
+    """The GOOGL question, pinned: the plan's trigger is the level that alerts.
+
+    The stored row carried 355.00 (the options put wall, scraped into the row); the
+    plan of record — the arbitration directive — is 356.83. Reconciliation follows
+    the plan, and reports the disagreement instead of leaving two different armed
+    breakouts for one name.
+    """
+    payload = {
+        "ticker": "GOOGL",
+        "date": "2026-10-12",
+        "verdict": "STALK",
+        "side": "LONG",
+        "shares_plan": {
+            "entry_type": "LIMIT",
+            "entry_zone_low": 349.0,
+            "entry_zone_high": 351.0,
+            "breakout_level": 355.0,          # the put wall, not the trigger
+            "breakout_stop": 350.0,
+            "tactical_stop": 344.0,
+            "target_1": 360.0,
+            "target_2": 377.16,
+        },
+        "status": "STALKING",
+    }
+    watch_manager.upsert_watch_target(payload)
+
+    plan = {
+        "entry_type": "LIMIT",
+        "entry_zone_low": 349.0,
+        "entry_zone_high": 351.0,
+        "breakout_level": 356.83,             # the arbitration's binding directive
+        "breakout_stop": 353.22,
+        "tactical_stop": 344.0,
+        "target_1": 357.3803,
+        "target_2": 363.971,
+    }
+    rows = watch_manager.get_all_watch_targets()
+    row = next(r for r in rows if r["ticker"] == "GOOGL")
+
+    with patch.object(plan_repair_mod, "_stored_plan_for", return_value=plan):
+        recon = reconcile_row_with_plan(row)
+
+    assert recon is not None, "a disagreeing row must be reported"
+    assert recon["row_breakout_level"] == 355.0
+    assert recon["plan_breakout_level"] == 356.83
+
+    # Dry run first: the row is untouched until the sweep is asked to write.
+    changes = plan_repair_mod.repair_watch_targets(write=False, reconcile_rows=True)
+    assert any(c.get("ticker") == "GOOGL" and c.get("kind") == "reconciled" for c in changes["repaired"])
+    unchanged = next(r for r in watch_manager.get_all_watch_targets() if r["ticker"] == "GOOGL")
+    assert unchanged["breakout_level"] == 355.0, "a dry run never writes"
+
+    with patch.object(plan_repair_mod, "_stored_plan_for", return_value=plan):
+        changes = plan_repair_mod.repair_watch_targets(write=True, reconcile_rows=True)
+
+    after = next(r for r in watch_manager.get_all_watch_targets() if r["ticker"] == "GOOGL")
+    assert after["breakout_level"] == 356.83
+    assert after["target_1"] == pytest.approx(357.3803)
+    assert after["target_2"] == pytest.approx(363.971)
+    assert changes["repaired"], changes
+
+    # And the reconciled row arms the plan's trigger — not the put wall.
+    from run_watch_alerts import _plan_view_from_row
+    from src.tracking import level_engine
+
+    armed = level_engine.build_armed_levels(_plan_view_from_row(after), side="LONG")
+    by_kind = {lv.kind: lv for lv in armed}
+    assert by_kind["BREAKOUT"].price == 356.83
+
+
+def test_reconciliation_leaves_a_manual_row_alone_in_a_dry_run_and_agrees_when_equal():
+    """A row that already holds the plan's trigger reconciles to nothing."""
+    payload = {
+        "ticker": "MSFT", "date": "2026-10-12", "verdict": "STALK", "side": "LONG",
+        "shares_plan": {
+            "entry_type": "BREAKOUT", "entry_zone_low": 500.0, "entry_zone_high": 510.0,
+            "breakout_level": 525.0, "breakout_stop": 505.0, "tactical_stop": 505.0,
+            "target_1": 545.0, "target_2": 570.0,
+        },
+        "status": "STALKING",
+    }
+    watch_manager.upsert_watch_target(payload)
+    row = next(r for r in watch_manager.get_all_watch_targets() if r["ticker"] == "MSFT")
+
+    with patch.object(plan_repair_mod, "_stored_plan_for", return_value=dict(payload["shares_plan"])):
+        assert reconcile_row_with_plan(row) is None, "an agreeing row reconciles to nothing"
+        # A plan with no trigger at all is never reconciled against (nothing real).
+        with patch.object(plan_repair_mod, "_stored_plan_for", return_value={"entry_type": "LIMIT"}):
+            assert reconcile_row_with_plan(row) is None
+
 
 def test_sync_rejects_a_stalk_with_no_armed_level():
     """A plan that arms nothing has no cross to alert on: upsert is skipped."""

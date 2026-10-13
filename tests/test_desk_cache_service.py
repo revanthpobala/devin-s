@@ -64,8 +64,10 @@ def test_cached_payload_is_served_without_rebuilding():
 
 def test_cold_burst_builds_once(monkeypatch):
     """20 concurrent cold GETs + a background build = ONE build, no pile-up."""
-    monkeypatch.setattr(ts, "_COLD_GET_WAIT_S", 3.0)
-    started = threading.Event()
+    monkeypatch.setattr(ts, "_COLD_GET_WAIT_S", 5.0)
+    # Event-driven hand-off, never sleep: the builder blocks until the burst is in
+    # flight, and the burst waits until the builder is provably in flight.
+    build_entered = threading.Event()
     release = threading.Event()
     calls = {"n": 0}
     calls_lock = threading.Lock()
@@ -73,8 +75,8 @@ def test_cold_burst_builds_once(monkeypatch):
     def _slow_builder():
         with calls_lock:
             calls["n"] += 1
-        started.set()
-        assert release.wait(timeout=5.0)
+        build_entered.set()
+        assert release.wait(5.0)
         return {"value": 42}
 
     results = []
@@ -89,12 +91,13 @@ def test_cold_burst_builds_once(monkeypatch):
     # The background cycle starts the build first: the cold GETs must wait on it.
     worker = threading.Thread(target=ts._run_build, args=("coverage", _slow_builder), daemon=True)
     worker.start()
-    assert started.wait(timeout=5.0)
+    assert build_entered.wait(5.0), "the background build never entered the builder"
 
     threads = [threading.Thread(target=_getter, daemon=True) for _ in range(20)]
     for t in threads:
         t.start()
-    time.sleep(0.3)
+    # The burst threads are now running and blocked on the in-flight build's lock;
+    # releasing the builder lets exactly one payload land for all of them.
     release.set()
     for t in threads:
         t.join(timeout=10.0)

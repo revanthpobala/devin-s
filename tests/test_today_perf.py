@@ -82,23 +82,26 @@ def test_load_test_20_requests_no_pileup(client: TestClient):
 
 def test_stale_cache_serves_while_writer_blocked(client: TestClient):
     """Pass criterion 3: Read path never waits; cache serves while a writer holds _db_lock."""
+    import threading
+
     # Ensure cache has valid payload
     today_service.rebuild_today_cache()
 
-    # Background thread acquires the writer lock for 1.2 seconds
-    writer_finished = False
+    # A writer holds the lock until the reads are done: the hand-off is event-driven,
+    # not sleep-driven, so the result is a function of the code and not of machine load.
+    lock_held = threading.Event()
+    release = threading.Event()
 
     def simulate_heavy_writer():
-        nonlocal writer_finished
         with watch_db_lock:
-            time.sleep(1.2)
-        writer_finished = True
+            lock_held.set()
+            assert release.wait(5.0)
+        return True
 
     writer_thread = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     writer_fut = writer_thread.submit(simulate_heavy_writer)
 
-    # Give thread time to acquire the lock
-    time.sleep(0.1)
+    assert lock_held.wait(5.0), "writer never acquired the lock"
     assert watch_db_lock.acquire_time is not None, "Writer lock should be actively held"
 
     # Make multiple read requests while the lock is actively held
@@ -115,9 +118,9 @@ def test_stale_cache_serves_while_writer_blocked(client: TestClient):
     assert dur_today < 0.5, f"/api/desk/today blocked on writer! Took {dur_today:.3f}s"
     assert dur_cov < 0.5, f"/api/desk/coverage blocked on writer! Took {dur_cov:.3f}s"
 
-    # Wait for writer to finish cleanly
-    writer_fut.result()
-    assert writer_finished is True
+    # Let the writer finish cleanly now that the reads are proven
+    release.set()
+    assert writer_fut.result() is True, "the writer must exit with the lock still held"
     print(f"\n[CONCURRENCY] Read path served while writer blocked in {dur_today*1000:.2f}ms (today) and {dur_cov*1000:.2f}ms (coverage)")
 
 

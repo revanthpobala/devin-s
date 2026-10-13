@@ -4,8 +4,9 @@ tests/test_candle_tool.py
 Chat-tool acceptance tests (rig item 3). The chat answers a level question with
 deterministic numbers, never model arithmetic:
 
-  1. GOOGL 355 — the tool returns the day's high, whether 355 was crossed, the
-     FIRST TOUCH time, whether it held on close, and R:R at market — all as numbers.
+  1. GOOGL 356.83 — the tool returns the day's high, whether the plan's own trigger
+     was crossed, the FIRST TOUCH time, whether it held on close, and R:R at market —
+     all as numbers. (The number is 356.83, not the 355.00 put wall the row carried.)
   2. The META replay — the same contract on the META plan's levels.
   3. A level above the day's high reports "never touched" rather than a guess.
   4. Intraday candles reuse schwab_client.get_intraday_candles (5m and 1m).
@@ -26,14 +27,16 @@ from src.clients.llm_client import TOOLS, execute_tool_call
 from src.tracking import candle_service, watch_manager
 from src.tracking.candle_service import evaluate_levels_against_candles, fetch_candles, get_candles_tool
 
-# A GOOGL session whose high traded through 355 and gave it back on the last bar:
-# first touch 10:05 ET, close 353.10 below 355 -> failed breakout.
+# A GOOGL session whose high traded through the plan's trigger 356.83 and gave it
+# back on the last bar: first touch 10:05 ET, close 353.10 below -> failed breakout.
+# (356.83 is the plan's own trigger from the arbitration directive; 355.00 in the
+# stored row is the options put wall, not the breakout.)
 _GOOGL_SESSION = [
     ("2026-10-13T13:35", 353.0, 353.6, 352.8, 353.30),
     ("2026-10-13T13:50", 353.3, 354.4, 353.1, 354.00),
-    ("2026-10-13T14:05", 354.0, 355.5, 353.9, 355.23),   # the first touch of 355
-    ("2026-10-13T14:20", 355.2, 356.4, 355.0, 356.00),   # holding above
-    ("2026-10-13T14:35", 355.9, 356.0, 353.0, 353.10),   # back below -> failed
+    ("2026-10-13T14:05", 354.0, 356.9, 353.9, 356.90),   # the first touch of 356.83
+    ("2026-10-13T14:20", 356.9, 357.4, 356.0, 357.00),   # holding above
+    ("2026-10-13T14:35", 356.9, 357.0, 353.0, 353.10),   # back below -> failed
     ("2026-10-13T14:50", 353.1, 353.4, 352.9, 353.00),
 ]
 
@@ -94,44 +97,46 @@ def _patch_swab(monkeypatch, session, daily, quote):
 
 
 # ---------------------------------------------------------------------------
-# 1. GOOGL 355
+# 1. GOOGL: the plan's own trigger (356.83, the arbitration's binding directive).
+#    The stored row once carried 355.00 — that is the options put wall, and it is
+#    NOT the trigger, so it must not be the level this question is answered against.
 # ---------------------------------------------------------------------------
 
-def test_googl_355_states_cross_when_held_and_rr_at_market(monkeypatch):
+def test_googl_plan_trigger_states_cross_and_rr_at_market(monkeypatch):
     calls = _patch_swab(
         monkeypatch, _GOOGL_SESSION, _DAILY,
-        {"last_price": 353.00, "high": 356.0, "low": 352.8, "open": 353.0,
+        {"last_price": 353.00, "high": 357.4, "low": 352.8, "open": 353.0,
          "close": 353.30, "volume": 2_400_000, "source": "SCHWAB"},
     )
-    # The stored GOOGL plan: the levels the desk is actually watching.
+    # The stored GOOGL plan of record: the levels the desk actually watches.
     payload = {
         "ticker": "GOOGL", "date": "2026-10-12", "verdict": "STALK", "conviction": 6,
         "side": "LONG", "setup_lane": "COIL",
         "shares_plan": {
             "entry_type": "LIMIT", "entry_zone_low": 349.0, "entry_zone_high": 351.0,
-            "breakout_level": 355.0, "breakout_stop": 350.0, "tactical_stop": 344.0,
-            "target_1": 356.73, "target_2": 370.0,
+            "breakout_level": 356.83, "breakout_stop": 353.22, "tactical_stop": 344.0,
+            "target_1": 357.3803, "target_2": 363.971,
         },
         "status": "STALKING",
     }
     watch_manager.upsert_watch_target(payload)
 
-    out = get_candles_tool("GOOGL", interval="5m", days=5, levels=[355.0, 344.0])
+    out = get_candles_tool("GOOGL", interval="5m", days=5, levels=[356.83, 344.0])
 
     # The day's high is a number in the answer, not a model estimate.
-    assert "Day High: $356.00" in out
+    assert "Day High: $357.40" in out
     assert "Day Low: $352.80" in out
     assert "Live Quote: $353.00" in out
 
-    # 355 crossed, when it first touched, and that it did NOT hold on close.
-    row = next(r for r in evaluate_levels_against_candles(fetch_candles("GOOGL"), [355.0]))
+    # The trigger crossed, when it first touched, and that it did NOT hold on close.
+    row = next(r for r in evaluate_levels_against_candles(fetch_candles("GOOGL"), [356.83]))
     assert row["crossed"] is True
     assert "10:05 AM ET" in row["first_touch_time"]
     assert row["held_on_close"] is False
     assert row["outcome"] == "failed_breakout_closed_back_below"
-    assert "$355.00 | YES | 10:05 AM ET | NO" in out
+    assert "$356.83 | YES | 10:05 AM ET | NO" in out
 
-    # 344 never came into play: never touched, said plainly.
+    # 344 is the plan's stop and never came into play: never touched, said plainly.
     assert "never touched" in out
     stop_row = next(r for r in evaluate_levels_against_candles(fetch_candles("GOOGL"), [344.0]))
     assert stop_row["crossed"] is False
@@ -141,7 +146,7 @@ def test_googl_355_states_cross_when_held_and_rr_at_market(monkeypatch):
     assert "R:R at market" in out
     assert "STRUCTURED_CANDLES:" in out
     payload_json = json.loads(out.split("STRUCTURED_CANDLES: ", 1)[1].strip())
-    assert payload_json["day_high"] == 356.0
+    assert payload_json["day_high"] == 357.4
     assert payload_json["live_price"] == 353.00
     assert payload_json["rr_at_market"]["position"] in ("BELOW_ZONE", "ABOVE_ZONE_RUNNING", "IN_ZONE", "NO_ZONE_STORED")
     assert payload_json["rr_at_market"]["stop"] == 344.0
@@ -234,7 +239,7 @@ def test_execute_tool_call_routes_get_candles(monkeypatch):
 
         class _Fn:
             name = "get_candles"
-            arguments = json.dumps({"ticker": "GOOGL", "levels": [355.0], "interval": "5m", "days": 3})
+            arguments = json.dumps({"ticker": "GOOGL", "levels": [356.83], "interval": "5m", "days": 3})
 
         class _Tc:
             function = _Fn()
@@ -251,7 +256,7 @@ def test_chat_prompt_mandates_get_candles_for_named_levels():
     from run_ui import _build_copilot_context_and_tools
 
     system_prompt, _messages, _user_prompt, _ticker, _date = _build_copilot_context_and_tools(
-        question="Did GOOGL break 355 today?",
+        question="Did GOOGL break its 356.83 trigger today?",
         explicit_ticker="GOOGL",
         date_str="2026-10-13",
     )

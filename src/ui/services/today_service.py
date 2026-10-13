@@ -10,6 +10,7 @@ import concurrent.futures
 from datetime import datetime, timedelta
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -841,18 +842,20 @@ def _cached_snapshot(name: str) -> Tuple[Optional[Dict[str, Any]], float]:
 
 
 def _data_fingerprint() -> Tuple[Any, ...]:
-    """Identity of the data a desk payload was built from: the session date plus
-    the alerts and watch DBs (path, mtime, size).
+    """Identity of the data a desk payload was built from: the session date, the live
+    R:R dial, and the alerts and watch DBs (path, mtime, size).
 
     A cached payload is only served while this fingerprint is unchanged. A swapped
     or rewritten DB (a fresh isolated instance, a restore, a new trading day)
-    invalidates the cache instead of serving the previous day's numbers.
+    invalidates the cache instead of serving the previous day's numbers — and so does
+    a dial change: moving the R:R floor must re-bucket the very next request.
     """
     try:
-        import os
-
-        today_str = get_eastern_date_str()
-        parts: List[Any] = [today_str]
+        rr_cfg = rr_config.get_rr_config()
+        parts: List[Any] = [
+            get_eastern_date_str(),
+            ("rr_config", tuple(sorted(((k, round(float(v), 6)) for k, v in rr_cfg.items())))),
+        ]
         for path in (config.alerts_db_path(), config.research_watch_db_path()):
             try:
                 st = os.stat(path)
@@ -860,7 +863,11 @@ def _data_fingerprint() -> Tuple[Any, ...]:
             except OSError:
                 parts.append((str(path), None, None))
         return tuple(parts)
-    except Exception:
+    except Exception as e_fp:
+        # A fingerprint failure must be LOUD, not silent: the constant fallback would
+        # freeze every cached payload behind a fingerprint that never changes, and a
+        # DB or dial change would stop invalidating the cache.
+        logger.error(f"[serve_payload] data fingerprint failed ({e_fp}); cache invalidation is degraded")
         return ("unknown",)
 
 
@@ -918,6 +925,50 @@ def _run_build(name: str, builder) -> Optional[Dict[str, Any]]:
         lock.release()
 
 
+def _serve_cached(name: str, fingerprint) -> Optional[Dict[str, Any]]:
+    """The cached payload when it is still valid for this fingerprint."""
+    cached, cache_ts = _cached_snapshot(name)
+    if cached is None:
+        return None
+    with _CACHE_LOCK:
+        fp = _CACHE.get(f"{name}_fp")
+    if fp != fingerprint:
+        return None
+    payload = {**cached, "stale_s": round(time.time() - cache_ts, 1), "from_cache": True}
+    payload["build_s"] = _CACHE.get(f"{name}_build_s")
+    return payload
+
+
+def _build_and_store(name: str, builder, fingerprint) -> Dict[str, Any]:
+    """Run the builder once, store it under this fingerprint, and serve it fresh."""
+    t0 = time.time()
+    payload = builder()
+    _store_payload(name, payload, t0, fingerprint)
+    return {**payload, "stale_s": 0.0, "from_cache": False, "build_s": round(time.time() - t0, 2)}
+
+
+def _wait_for_inflight(name: str, fingerprint) -> Optional[Dict[str, Any]]:
+    """Wait (bounded) for the build another thread is running, then serve its result.
+
+    Never duplicates the build: the payload is whatever that thread stored, and only
+    when it was stored under this same fingerprint.
+    """
+    lock = _PAYLOAD_LOCKS.get(name)
+    if lock is None:
+        return None
+    if not lock.acquire(blocking=False):
+        if not lock.acquire(timeout=_COLD_GET_WAIT_S):
+            return None
+        try:
+            return _serve_cached(name, fingerprint)
+        finally:
+            lock.release()
+    try:
+        return None
+    finally:
+        lock.release()
+
+
 def serve_payload(name: str, builder, force_refresh: bool = False) -> Dict[str, Any]:
     """Serve a desk payload: cache first, and build exactly once on a cold cache.
 
@@ -925,44 +976,47 @@ def serve_payload(name: str, builder, force_refresh: bool = False) -> Dict[str, 
     duplicating it; if none is running it builds itself and caches. The response
     always carries `stale_s` so the UI can show the payload's age, and `from_cache`
     so a repeat is diagnosable. The cache is fingerprint-checked: a payload built
-    from a different DB (or a different session) is rebuilt, never served.
+    from a different DB, a different dial, or a different session is rebuilt, never
+    served. ``force_refresh`` means THIS response is rebuilt now — a caller that
+    asked for fresh data is never handed the previous payload.
     """
-    now_ts = time.time()
     fingerprint = _data_fingerprint()
-    if force_refresh:
-        trigger_today_refresh()
 
-    cached, cache_ts = _cached_snapshot(name)
-    if cached is not None:
-        with _CACHE_LOCK:
-            fp = _CACHE.get(f"{name}_fp")
-        if fp == fingerprint:
-            payload = {**cached, "stale_s": round(now_ts - cache_ts, 1), "from_cache": True}
-            payload["build_s"] = _CACHE.get(f"{name}_build_s")
-            return payload
-        logger.info(
-            f"[serve_payload] {name} cache invalidated: the data it was built from changed."
-        )
+    if not force_refresh:
+        cached = _serve_cached(name, fingerprint)
+        if cached is not None:
+            return cached
+        if _PAYLOAD_LOCKS.get(name) is not None and _PAYLOAD_LOCKS[name].locked():
+            logger.debug(
+                f"[serve_payload] {name} cache miss; a build is in flight, waiting for it."
+            )
+    elif _PAYLOAD_LOCKS.get(name) is not None:
+        # force_refresh still does not queue a second build behind an in-flight one:
+        # it waits for that build and serves what it just stored.
+        pass
 
     lock = _PAYLOAD_LOCKS.get(name)
+
+    if force_refresh:
+        # Still wake the worker: it may have a broader refresh to run next cycle.
+        trigger_today_refresh()
+
     if lock is not None and not lock.acquire(blocking=False):
-        # Another thread (usually the background cycle) is already building this
-        # payload: wait a bounded time for it rather than duplicating the work.
-        if lock.acquire(timeout=_COLD_GET_WAIT_S):
+        served = _wait_for_inflight(name, fingerprint)
+        if served is not None:
+            return served
+        if force_refresh:
+            # The in-flight build belongs to another fingerprint (stale): build now.
+            if not lock.acquire(timeout=_COLD_GET_WAIT_S):
+                return {
+                    "error": f"{name} build in flight; retry shortly",
+                    "stale_s": None,
+                    "from_cache": False,
+                }
             try:
-                cached, cache_ts = _cached_snapshot(name)
+                return _build_and_store(name, builder, fingerprint)
             finally:
                 lock.release()
-            if cached is not None:
-                with _CACHE_LOCK:
-                    fp = _CACHE.get(f"{name}_fp")
-                if fp == fingerprint:
-                    return {
-                        **cached,
-                        "stale_s": round(time.time() - cache_ts, 1),
-                        "from_cache": True,
-                        "build_s": _CACHE.get(f"{name}_build_s"),
-                    }
         return {
             "error": f"{name} build in flight; retry shortly",
             "stale_s": None,
@@ -971,17 +1025,11 @@ def serve_payload(name: str, builder, force_refresh: bool = False) -> Dict[str, 
 
     if lock is not None:
         try:
-            t0 = time.time()
-            payload = builder()
-            _store_payload(name, payload, t0, fingerprint)
-            return {**payload, "stale_s": 0.0, "from_cache": False, "build_s": round(time.time() - t0, 2)}
+            return _build_and_store(name, builder, fingerprint)
         finally:
             lock.release()
 
-    t0 = time.time()
-    payload = builder()
-    _store_payload(name, payload, t0, fingerprint)
-    return {**payload, "stale_s": 0.0, "from_cache": False, "build_s": round(time.time() - t0, 2)}
+    return _build_and_store(name, builder, fingerprint)
 
 
 def get_cache_stats() -> Dict[str, Any]:
@@ -1000,17 +1048,29 @@ def get_cache_stats() -> Dict[str, Any]:
     return out
 
 
-def _background_cycle(force_all: bool = False):
+def _background_cycle(force: bool = False):
     """Run one synthesis cycle across the desk payloads that are due.
 
     today / coverage / missed-moves run every cycle; briefing and feedback follow
     their own lazy TTL. A payload already building elsewhere (in-flight) is skipped,
     not queued behind it.
+
+    This cycle is the desk's WRITER half: the read path (GET endpoints) never spawns a
+    DB write, so the scheduled writers that a payload's data depends on are triggered
+    from here instead.
     """
     global _IS_UPDATING
     _IS_UPDATING = True
     start_ts = time.time()
     now_ts = start_ts
+
+    # Scheduled writer: resolve paper theses on a 5-minute throttle, off the read path.
+    try:
+        from src.ui.services.action_engine import _maybe_refresh_paper
+
+        _maybe_refresh_paper()
+    except Exception as e_paper:
+        logger.debug(f"[TodayBackgroundService] paper refresh dispatch skipped: {e_paper}")
 
     builders = {
         "today": _build_today_payload_sync,
@@ -1019,7 +1079,7 @@ def _background_cycle(force_all: bool = False):
         "morning_briefing": _build_morning_briefing_sync,
         "feedback_loop": _build_feedback_loop_sync,
     }
-    due = [name for name, builder in builders.items() if _due(name, now_ts, force=force_all)]
+    due = [name for name, builder in builders.items() if _due(name, now_ts, force=force)]
     if not due:
         _IS_UPDATING = False
         return
@@ -1051,7 +1111,7 @@ def _worker_loop():
     global _FORCE_NEXT_CYCLE
     logger.info("🚀 [TodayBackgroundService] Daemon thread started.")
     # Run initial cycle immediately
-    _background_cycle(force_all=True)
+    _background_cycle(force=True)
 
     while not _STOP_EVENT.is_set():
         # Sleep for 15s or wake up on trigger
@@ -1060,9 +1120,9 @@ def _worker_loop():
             break
         if triggered:
             _TRIGGER_EVENT.clear()
-        force_all = _FORCE_NEXT_CYCLE
+        force_next = _FORCE_NEXT_CYCLE
         _FORCE_NEXT_CYCLE = False
-        _background_cycle(force_all=force_all)
+        _background_cycle(force=force_next)
 
     logger.info("🛑 [TodayBackgroundService] Daemon thread terminated.")
 

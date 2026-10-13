@@ -104,8 +104,19 @@ def test_actionable_gate_rules():
 # f2: Take Trade & Position Management
 # =====================================================================
 
-def test_take_trade_opens_position_and_computes_r():
+def test_take_trade_opens_position_and_computes_r(tmp_path, monkeypatch):
     """Verify that taking a trade opens a position in position_state and compute_r tracks realized R."""
+    import json as _json
+
+    import src.tracking.position_state as ps
+
+    # Isolated positions file: the production data/positions.json holds live open
+    # positions (NVDA, META), and open_position() on an existing ticker returns the
+    # stored one instead of the trade this test just asked for.
+    iso_file = tmp_path / "positions.json"
+    iso_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ps, "POSITIONS_FILE", iso_file)
+
     ticker = "NVDA"
     entry_px = 120.0
     stop_px = 110.0

@@ -216,8 +216,12 @@ def test_needs_you_gate_follows_the_live_rr_config():
 
     from src.tracking import rr_config
     from src.ui.routes import desk as desk_mod
+    from src.ui.services import today_service
 
     assert not hasattr(desk_mod, "RR_MKT_ACTIONABLE"), \
         "the desk must not carry a second copy of a tunable threshold"
-    assert "rr_config.min_rr()" in inspect.getsource(desk_mod.get_today)
+    # The desk route only delegates now: the payload builder in the background service
+    # reads the live floor, and the dial is part of the cache fingerprint.
+    assert "rr_config.min_rr()" in inspect.getsource(today_service._build_today_payload_sync)
+    assert "rr_config" in inspect.getsource(today_service._data_fingerprint)
     assert rr_config.min_rr() == 2.0, "the shipped default is the measured floor"
