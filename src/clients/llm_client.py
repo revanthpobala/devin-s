@@ -485,6 +485,46 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_candles",
+            "description": (
+                "Deterministic candle and level evaluation for a ticker. Returns the day's "
+                "high/low/close and the live quote, plus for EVERY level you name: crossed or "
+                "not, the FIRST TOUCH time (or 'never touched'), and whether it HELD on close — "
+                "and R:R at market from the stored plan. ALWAYS use this tool — never the report's "
+                "spot price or your own arithmetic — when the user names a price level, asks "
+                "whether price crossed / broke / touched / held / retested a level, or asks for "
+                "the day's high or low. Intraday candles reuse the Schwab intraday history; daily "
+                "bars come from Schwab price history. Pass the user's exact levels in `levels`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'GOOGL', 'AAPL', 'NVDA')",
+                    },
+                    "interval": {
+                        "type": "string",
+                        "enum": ["1m", "5m"],
+                        "description": "Which intraday series drives the first-touch time (default 5m). Daily, 5m and 1m candles are all returned either way.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "How many daily bars to include (default 5, max 60)",
+                    },
+                    "levels": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": "The exact price levels to evaluate (e.g. [355.0, 344.0]). Pass every level the user named, plus the plan's stop and targets when relevant.",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "detect_candlestick_patterns",
             "description": (
                 "Scans the 1-year OHLCV dataset for high-conviction candlestick and price action patterns:\n"
@@ -583,6 +623,69 @@ TOOLS = [
                     },
                 },
                 "required": ["skill_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_candles",
+            "description": (
+                "Deterministic lookup for daily, 5-minute, and 1-minute OHLCV candles from Schwab. "
+                "Returns the session Open, High, Low, Close, and current live quote. "
+                "When 'levels' are provided (e.g. [355.0]), it deterministically calculates and returns for each level: "
+                "crossed or not ('crossed: yes/no'), exact first touch timestamp ('first_touch_time' or 'never touched'), "
+                "whether it held on close ('held_on_close: yes/no'), distance ($ and %), and current position at live quote. "
+                "ALWAYS call this deterministic tool whenever the user asks about a price level or candle history."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., 'GOOGL', 'AAPL', 'NVDA')",
+                    },
+                    "interval": {
+                        "type": "string",
+                        "description": "Candle timeframe interval ('5m', '1m', 'daily', default: '5m')",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of days of daily history to fetch (default: 5)",
+                    },
+                    "levels": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": "Optional list of price levels to evaluate against candles (e.g. [355.0]). Returns crossed status, first touch time, and close holding status.",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_python_code",
+            "description": (
+                "Executes arbitrary Python code in a secure sandboxed environment with read-only market data. "
+                "Preloads pandas as pd, numpy as np, the 300-bar dataframe `df`, `df_daily`, `df_intraday`, "
+                "and Data Window `dw`. Use print(...) to output calculated quantitative values. "
+                "Has a 5-second timeout and security filter."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The Python code snippet to execute. Must use print(...) to output results.",
+                    },
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'GOOGL')",
+                    },
+                },
+                "required": ["code"],
             },
         },
     },
@@ -742,22 +845,27 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
 
 
 def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = None, is_independent: bool = False) -> str:
-    """Safely executes a Python code snippet with pre-loaded df, dw, and math/pandas modules (user approval required)."""
+    """Safely executes a Python code snippet with pre-loaded read-only df, df_daily, df_intraday, dw, and math/pandas modules with a 5-second timeout."""
     import io
     import sys
     import math
     import json
+    import concurrent.futures
     import numpy as np
     import pandas as pd
     from datetime import datetime
 
-    # Security check: Block destructive OS commands or file modifications
-    forbidden_terms = ["os.system", "os.remove", "os.rmdir", "shutil.rmtree", "subprocess", "socket", "write_text", "to_csv", "__import__('os')"]
+    # Security check: Block destructive OS commands, network calls, or file modifications
+    forbidden_terms = [
+        "os.system", "os.remove", "os.rmdir", "shutil.rmtree", "subprocess", "socket",
+        "write_text", "to_csv", "__import__('os')", "open(", "eval(", "exec(",
+        "__import__", "requests", "urllib", "http.client",
+    ]
     for term in forbidden_terms:
         if term in code:
             return f"Security Error: '{term}' is not permitted in the quantitative sandbox."
 
-    ticker = ticker.upper()
+    ticker = (ticker or "AMD").upper()
     date_str = date_str or time.strftime("%Y-%m-%d")
 
     csv_name = f"{ticker}_datawindow_independent.csv" if is_independent else f"{ticker}_datawindow.csv"
@@ -796,6 +904,22 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         df = df[keep_cols]
         dw = {}
 
+    # Preload df_daily and df_intraday from live Schwab candle service
+    df_daily = pd.DataFrame()
+    df_intraday = pd.DataFrame()
+    try:
+        from src.tracking.candle_service import fetch_candles
+        candle_res = fetch_candles(ticker, interval="5m", days=5)
+        if candle_res.get("df_daily") is not None and not candle_res["df_daily"].empty:
+            df_daily = candle_res["df_daily"].copy(deep=True)
+        if candle_res.get("df_intraday") is not None and not candle_res["df_intraday"].empty:
+            df_intraday = candle_res["df_intraday"].copy(deep=True)
+    except Exception as e_c:
+        logger.debug(f"Could not preload live candles into sandbox for {ticker}: {e_c}")
+
+    if df_daily.empty and not df.empty:
+        df_daily = df.copy(deep=True)
+
     try:
         import scipy
         import scipy.stats as stats
@@ -808,6 +932,7 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
     except ImportError:
         talib = None
 
+    # Sandbox environment with read-only copies
     sandbox_globals = {
         "pd": pd,
         "np": np,
@@ -817,26 +942,36 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         "math": math,
         "json": json,
         "datetime": datetime,
-        "df": df,
-        "dw": dw,
+        "df": df.copy(deep=True),
+        "df_daily": df_daily.copy(deep=True),
+        "df_intraday": df_intraday.copy(deep=True),
+        "dw": json.loads(json.dumps(dw)),
         "ticker": ticker,
         "print": print,
     }
 
-    stdout_buf = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = stdout_buf
+    def _run_sandbox():
+        stdout_buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = stdout_buf
+        try:
+            exec(code, sandbox_globals)
+            output = stdout_buf.getvalue()
+            if not output.strip():
+                output = "(Code executed successfully with no print output. Tip: Use print(...) to return calculated values.)"
+            return output.strip()
+        finally:
+            sys.stdout = old_stdout
 
-    try:
-        exec(code, sandbox_globals)
-        output = stdout_buf.getvalue()
-        if not output.strip():
-            output = "(Code executed successfully with no print output. Tip: Use print(...) to return calculated values.)"
-        return output.strip()
-    except Exception as e:
-        return f"Python Execution Error: {type(e).__name__}: {str(e)}"
-    finally:
-        sys.stdout = old_stdout
+    # Strict 5.0-second timeout
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_sandbox)
+        try:
+            return future.result(timeout=5.0)
+        except concurrent.futures.TimeoutError:
+            return "Execution Timeout Error: Python execution exceeded 5.0 second sandbox limit."
+        except Exception as e:
+            return f"Python Execution Error: {type(e).__name__}: {str(e)}"
 
 
 def fetch_historical_zone_and_regime_analytics_tool(ticker: str, lookback_bars: int = 60, date_str: str = None, is_independent: bool = False) -> str:
@@ -1118,10 +1253,17 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         cache_key = f"prior_research_{lookback_slug}"
     elif function_name == "get_prior_plan_outcome":
         cache_key = "prior_plan_outcome"
+    elif function_name == "get_candles":
+        lvls = args.get("levels") or []
+        lvls_slug = "-".join(f"{float(x):.4f}" for x in lvls if str(x).replace(".", "", 1).replace("-", "", 1).isdigit()) if lvls else ""
+        cache_key = f"candles_{args.get('interval', '5m')}_{args.get('days', 5)}" + (f"_{lvls_slug}" if lvls_slug else "")
     elif function_name == "fetch_sec_filings":
         form_slug = re.sub(r'[^\w\-]', '_', str(args.get("form_type", "ALL")).upper()).strip('_')
         limit_slug = re.sub(r'[^\w\-]', '_', str(args.get("limit", 5))).strip('_')
         cache_key = f"sec_filings_{form_slug}_{limit_slug}"
+    elif function_name == "get_candles":
+        levels_slug = "_".join(str(lvl) for lvl in args.get("levels", []))
+        cache_key = f"candles_{args.get('interval', '5m')}_{args.get('days', 5)}_{levels_slug}"
     elif function_name == "execute_python_code":
         import hashlib
         code_hash = hashlib.md5(str(args.get("code", "")).encode("utf-8")).hexdigest()[:8]
@@ -1238,8 +1380,22 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         res_str = fetch_historical_zone_and_regime_analytics_tool(ticker, lookback_bars=lookback, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
+    elif function_name == "get_candles":
+        from src.tracking.candle_service import get_candles_tool
+        t = (args.get("ticker") or ticker or "").upper()
+        interval = args.get("interval", "5m")
+        days = int(args.get("days", 5))
+        levels = args.get("levels", [])
+        logger.info(f"LLM executed deterministic tool: get_candles(ticker='{t}', interval='{interval}', days={days}, levels={levels})")
+        res_str = get_candles_tool(ticker=t, interval=interval, days=days, levels=levels)
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
     elif function_name == "execute_python_code":
-        return "Security Error: execute_python_code tool has been permanently disabled for security."
+        code = args.get("code", "")
+        t = (args.get("ticker") or ticker or "").upper()
+        logger.info(f"Chat executed tool: execute_python_code(ticker='{t}', code_len={len(code)})")
+        res_str = execute_python_code_tool(code=code, ticker=t, date_str=date_str, is_independent=is_independent)
+        return res_str
     elif function_name == "run_quantitative_plugin":
         plugin_name = args.get("plugin_name", "all")
         logger.info(f"LLM executed tool: run_quantitative_plugin(ticker='{ticker}', plugin='{plugin_name}')")
@@ -1264,6 +1420,28 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
                 res_str += f"\n\nSTRUCTURED: {json.dumps({'levels': outcome.get('levels'), 'judgment': j}, default=str)}"
         except Exception as e_ppo:
             res_str = f"Prior plan outcome unavailable for {ticker}: {e_ppo}"
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "get_candles":
+        logger.info(
+            f"LLM executed tool: get_candles(ticker='{ticker}', interval={args.get('interval', '5m')}, "
+            f"days={args.get('days', 5)}, levels={args.get('levels')})"
+        )
+        from src.tracking.candle_service import get_candles_tool
+
+        raw_levels = args.get("levels") or []
+        levels = []
+        for lv in raw_levels:
+            try:
+                levels.append(float(lv))
+            except (TypeError, ValueError):
+                continue
+        res_str = get_candles_tool(
+            ticker=ticker,
+            interval=str(args.get("interval") or "5m"),
+            days=int(args.get("days") or 5),
+            levels=levels,
+        )
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "detect_candlestick_patterns":
@@ -1686,7 +1864,7 @@ def query_local_llm(
             tool_mandate = (
                 "\n\n[QUANTITATIVE EXECUTION & AUTONOMOUS RESEARCH MANDATE]:\n"
                 "You have full access to real-time market data, quantitative execution, and analytical tools:\n"
-                "- `execute_python_code`: Run arbitrary Python on the 300-bar dataframe `df` (Monte Carlo simulations, EV modeling, volatility spreads, VP levels).\n"
+                "- `get_candles`: Deterministic daily/5m/1m candles plus, per named level, crossed-or-not, first-touch time, held-on-close, and R:R at market. Use it for every level question — never compute crossings yourself.\n"
                 "- `fetch_options_chain`: Look up live bid/ask, Greeks, open interest, and strike geometry.\n"
                 "- `get_realtime_quote`: Live spot price, bid/ask, and intraday range.\n"
                 "- `run_quantitative_plugin`: Run institutional plugins (order flow, squeeze expansion, candlestick patterns, tastytrade volatility).\n"

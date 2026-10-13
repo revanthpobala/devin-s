@@ -1749,6 +1749,22 @@ if not df.empty:
     except Exception as pe:
         logger.debug(f"Python quantitative baseline error for {ticker_u}: {pe}")
 
+    # 3b. Deterministic Candle & Level Evaluation (Schwab 1m/5m/Daily + First-Touch Times)
+    try:
+        from src.tracking.candle_service import get_candles_tool
+        potential_levels = []
+        for m in re.finditer(r'(?:level\s*|target\s*|strike\s*|touch\s*|cross\s*|\$)?\b(\d{2,4}(?:\.\d{1,2})?)\b', question, re.I):
+            val = float(m.group(1))
+            if 2020 <= val <= 2030:
+                continue
+            if val not in potential_levels:
+                potential_levels.append(val)
+        candles_block = get_candles_tool(ticker=ticker_u, interval="5m", days=5, levels=potential_levels)
+        if candles_block:
+            parts.append(candles_block)
+    except Exception as ce:
+        logger.debug(f"Candle & level pre-evaluation error for {ticker_u}: {ce}")
+
     # 4. SEC EDGAR Audit & Financial Facts (On-Demand or when fundamentals asked)
     is_fundamental_req = bool(re.search(r'\b(sec|edgar|10-k|10-q|filing|balance sheet|debt|revenue|fundamental|cash flow)\b', question, re.I))
     if is_fundamental_req:
@@ -2487,7 +2503,7 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
             "    - Show each row in this order: gate result (measured pass or the reason it failed), R:R at market, lane, and the MEASURED/UNMEASURED tag LAST. Conviction is a trailing label, never a ranking key and never a reason to act.\n"
             "    - Use each row's own numbers (entry zone, stop, target, live R:R, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
             "    - An UNMEASURED row is labelled, not hidden: say plainly that the lane is UNMEASURED (no replay corpus behind it) rather than promoting it.\n"
-            "    - NEVER say a level did or did not trigger from the spot price alone. Breakout / zone / stop / target questions are answered from the PRIOR PLAN OUTCOMES section or the get_prior_plan_outcome tool, which state per level: crossed or not, when, and whether it held on close.\n"
+            "    - NEVER say a level did or did not trigger from the spot price alone. Breakout / zone / stop / target questions are answered from the PRIOR PLAN OUTCOMES section, the get_prior_plan_outcome tool, or the deterministic get_candles tool, which state per level: crossed or not, when, and whether it held on close.\n"
             "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
             "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
         )
@@ -2646,7 +2662,7 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
             "    - Show each row in this order: gate result (measured pass or the reason it failed), R:R at market, lane, and the MEASURED/UNMEASURED tag LAST. Conviction is a trailing label, never a ranking key and never a reason to act.\n"
             "    - Use each row's own numbers (entry zone, stop, target, live R:R, spot, distance to entry). Do not invent setups that are not in the telemetry, and do not fall back to generic market commentary.\n"
             "    - An UNMEASURED row is labelled, not hidden: say plainly that the lane is UNMEASURED (no replay corpus behind it) rather than promoting it.\n"
-            "    - NEVER say a level did or did not trigger from the spot price alone. Breakout / zone / stop / target questions are answered from the PRIOR PLAN OUTCOMES section or the get_prior_plan_outcome tool, which state per level: crossed or not, when, and whether it held on close.\n"
+            "    - NEVER say a level did or did not trigger from the spot price alone. Breakout / zone / stop / target questions are answered from the PRIOR PLAN OUTCOMES section, the get_prior_plan_outcome tool, or the deterministic get_candles tool, which state per level: crossed or not, when, and whether it held on close.\n"
             "    - If the telemetry shows market pulse (SPY/QQQ/VIX), open with it for 'what's the tape / market doing' questions.\n"
             "    - If the user names a ticker from that page, answer about that specific setup using its levels, then relate it to the rest of the page."
         )
@@ -2692,6 +2708,16 @@ Guidelines:
    - Do NOT produce section numbering, H1/H2 report scaffolding, revenue-guidance history, or investor-day recaps unless the user asked for that structure. The context below is SOURCE MATERIAL, not an outline to reproduce.
    - Never pad with restating the question, disclaimers, or "let me walk you through" preamble.
 2. You have FULL ACCESS to real-time live market data, options chains, SEC EDGAR filings, breaking news, daily research briefings, Senior PM arbitration rulings, watch triggers, and open positions provided in the context below for {symbols_list_str}.
+3. LEVEL & CANDLE VERIFICATION MANDATE (FIRST PRIORITY - DETERMINISTIC):
+   - When the user names a price level or asks about a level cross / breakout (e.g. "GOOGL 355", "355 on GOOGL", "did it cross 355?"):
+     * ALWAYS CALL OR USE THE DETERMINISTIC TOOL `get_candles(ticker, levels=[...])` AS YOUR FIRST PRIORITY!
+     * DO NOT attempt to write custom Python scripts or do mental arithmetic to guess if a level crossed — `get_candles` computes Day High, Day Low, Day Close, crossed status, first-touch times, and close hold status deterministically from verified candles.
+     * In your answer, YOU MUST EXPLICITLY INCLUDE:
+       (1) The Day High (plus Day Low, Day Close, and current live quote).
+       (2) For each named level: crossed or not ('Crossed: YES' or 'NO').
+       (3) When: exact first-touch time (e.g. '07:43:00 ET'), or explicitly "never touched".
+       (4) Held on close: whether price held on close or closed back through ('failed_breakout_closed_back_below').
+       (5) Position at live quote: currently ABOVE or BELOW the level, and distance in $ and %.
 {desk_briefing_directive}
 4. When the user asks about a correlated stock, sector peer, or comparison (e.g. comparing EIX to PCG, AMD to NVDA), analyze the real-time quotes, options, and catalysts for BOTH tickers directly from the active context. NEVER claim you lack data when it is provided.
 5. Cite exact real-time spot prices, bid/ask spreads, Greeks, and strikes when discussing levels. ALWAYS treat the LIVE REAL-TIME MARKET QUOTE as the sole authoritative current spot price. Never repeat historical report spot prices as today's price.
@@ -2768,6 +2794,11 @@ Guidelines:
      - Cloud Quote Alert: `[🔔 Set Alert at $XX.XX](action:alert?ticker=${primary_ticker}&price=XX.XX&op=<=)`
      - SQLite Watchlist Radar: `[🎯 Add to Watch Targets](action:watch?ticker=${primary_ticker}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`
      Clicking these buttons instantly triggers cloud push notifications via Tastytrade mobile or saves the target into the SQLite radar without requiring any typing!
+ 15b. LEVEL QUESTIONS ARE DETERMINISTIC — CALL get_candles, NEVER MENTAL ARITHMETIC:
+    - When the user names a price level (e.g. "did GOOGL break 355?", "is 344 still support?", "did it hold 720?"), call the `get_candles` tool in your FIRST response with that exact level in `levels=[...]` (add the plan's stop/targets when the question spans them). Emit the call before any prose.
+    - Then report, for each level: CROSSED or not, the FIRST TOUCH time (or "never touched"), whether it HELD on close, the DAY'S HIGH, and R:R at market from the tool's output. Quote the tool's numbers verbatim.
+    - ALWAYS quote the LIVE price from the tool or the context's real-time quote card — never the report's historical spot price — and stamp it `$X.XX (spot, HH:MM ET)`.
+    - NEVER answer a level question from the spot price alone, and never compute a crossing, a first-touch time, or an R:R in your head. If the tool data is missing, say what is missing.
  16. Real Schwab Brokerage Portfolio Advisory Mandate:
     - When the user asks about their portfolio, holdings, asset allocation, P&L, covered calls, or overall risk posture:
       Ground your response EXCLUSIVELY in their real Schwab brokerage data (the 'COMPLETE LIVE SCHWAB PORTFOLIO DOSSIER' and 'USER\'S LIVE SCHWAB PORTFOLIO & WEALTH CONTEXT' sections below).

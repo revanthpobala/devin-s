@@ -53,6 +53,8 @@ class CreateWatchTargetRequest(BaseModel):
     ticker: str
     entry_zone_low: Optional[float] = None
     entry_zone_high: Optional[float] = None
+    breakout_level: Optional[float] = None
+    breakout_stop: Optional[float] = None
     tactical_stop: Optional[float] = None
     target_1: Optional[float] = None
     target_2: Optional[float] = None
@@ -77,24 +79,25 @@ def get_watch_targets():
         rep_root = config.BASE_DIR / "reports"
         raw_root = config.BASE_DIR / "data" / "raw"
 
-        with get_db() as conn:
+        from src.tracking.db_locks import get_readonly_connection
+        from src.ui.state import db_path
+
+        conn = get_readonly_connection(db_path(), timeout=2.0)
+        try:
             c = conn.cursor()
-            # Placeholder universe rows are NOT re-created on read any more, and are not returned
-            # either. They are `ticker + date='' + status='UNRESEARCHED' + verdict=UNMEASURED`
-            # spawn jobs that book every constituent slot for a 1s run and write no artifact:
-            # 993 rows, 844 placeholders, which is 85% of the row count on the Watchlist tab and in
-            # the trades view. The universe now lives in `tracked_universe`; `watch_targets` only
-            # holds rows with a real thesis behind them, and that definition is the same predicate
-            # the migration and the identity backfill use.
             rows = c.execute(
                 "SELECT rowid as id, * FROM watch_targets "
                 "WHERE (is_active IS NULL OR is_active = 1) "
                 f"AND NOT ({placeholder_rows_sql(active_only=False)})"
             ).fetchall()
+            raw_items = [dict(r) for r in rows]
+        finally:
+            conn.close()
 
+        if True:
             targets = []
 
-            for r in rows:
+            for r in raw_items:
                 item = dict(r)
                 if item.get("raw_json"):
                     try:
@@ -123,13 +126,7 @@ def get_watch_targets():
                         "breakout_demoted_reason": (item.get("parsed_json") or {}).get("shares_plan", {}).get("breakout_demoted_reason"),
                         "targets_rebuilt": bool((item.get("parsed_json") or {}).get("shares_plan", {}).get("targets_rebuilt")),
                     }
-                    high_20d = None
-                    try:
-                        from src.tracking.level_engine import bars_high_20d_and_adv20
-
-                        high_20d, _adv = bars_high_20d_and_adv20(sym)
-                    except Exception:
-                        high_20d = None
+                    high_20d = item.get("high_20d")
                     armed = build_armed_levels(plan_view, side=str(item.get("side") or "LONG"), high_20d=high_20d)
                     item["armed_levels"] = [
                         {"kind": lv.kind, "price": round(lv.price, 4), "direction": lv.direction}
@@ -683,6 +680,21 @@ def create_watch_target_endpoint(req: CreateWatchTargetRequest):
         t1 = req.target_1
         t2 = req.target_2 if req.target_2 is not None else (round(t1 * 1.05, 2) if t1 else None)
 
+        bo_level = req.breakout_level
+        bo_stop = req.breakout_stop
+
+        shares_plan = {
+            "side": req.side.upper(),
+            "entry_type": "BREAKOUT" if bo_level and not ez_high else "LIMIT",
+            "entry_zone_low": ez_low,
+            "entry_zone_high": ez_high,
+            "breakout_level": bo_level or 0.0,
+            "breakout_stop": bo_stop or 0.0,
+            "tactical_stop": stop,
+            "target_1": t1,
+            "target_2": t2,
+        }
+
         payload = {
             "ticker": sym,
             "date": today_str,
@@ -690,16 +702,11 @@ def create_watch_target_endpoint(req: CreateWatchTargetRequest):
             "conviction": req.conviction,
             "actionable": 1,
             "side": req.side.upper(),
-            "shares_plan": {
-                "side": req.side.upper(),
-                "entry_type": "LIMIT",
-                "entry_zone_low": ez_low,
-                "entry_zone_high": ez_high,
-                "tactical_stop": stop,
-                "target_1": t1,
-                "target_2": t2,
-            },
+            "breakout_level": bo_level or 0.0,
+            "breakout_stop": bo_stop or 0.0,
+            "shares_plan": shares_plan,
             "status": "STALKING",
+            "force_update": True,
         }
         upsert_watch_target(payload)
 
@@ -708,13 +715,14 @@ def create_watch_target_endpoint(req: CreateWatchTargetRequest):
 
         # If requested, also register Tastytrade cloud alert for entry
         cloud_alert = None
-        if req.create_cloud_alert and ez_high:
+        alert_thresh = ez_high or bo_level
+        if req.create_cloud_alert and alert_thresh:
             try:
                 from src.clients.tastytrade_client import TastytradeClient
                 tt = TastytradeClient()
                 cloud_alert = tt.create_quote_alert(
                     symbol=sym,
-                    threshold=ez_high,
+                    threshold=alert_thresh,
                     operator="<=" if req.side.upper() == "LONG" else ">="
                 )
             except Exception as te:
@@ -725,6 +733,8 @@ def create_watch_target_endpoint(req: CreateWatchTargetRequest):
             "ticker": sym,
             "entry_zone_high": ez_high,
             "entry_zone_low": ez_low,
+            "breakout_level": bo_level,
+            "breakout_stop": bo_stop,
             "tactical_stop": stop,
             "target_1": t1,
             "cloud_alert_created": bool(cloud_alert),

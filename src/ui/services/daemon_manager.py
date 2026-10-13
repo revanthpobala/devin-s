@@ -176,6 +176,14 @@ def stop_edge_scanner_process():
 
 def start_all_daemons():
     """Initialize and start all background daemons on UI server launch."""
+    # 0. Multi-Threaded Today Desk Background Service (15s cache refresh)
+    try:
+        from src.ui.services.today_service import start_today_service
+        start_today_service()
+        append_log("⚡ [Startup] Multi-Threaded Today Desk Background Service active (15s cache refresh).")
+    except Exception as e_today:
+        logger.warning(f"Failed to start TodayBackgroundService: {e_today}")
+
     # 1. Email Alert Ingestor
     try:
         pid = find_running_tracker_pid()
@@ -260,6 +268,12 @@ def stop_all_daemons():
         except Exception:
             state.TRACKER_PROCESS.kill()
         state.TRACKER_PROCESS = None
+
+    try:
+        from src.ui.services.today_service import stop_today_service
+        stop_today_service()
+    except Exception:
+        pass
 
     try:
         from src.tracking.auto_triage_daemon import _daemon_instance

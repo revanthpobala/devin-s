@@ -259,11 +259,14 @@ def test_get_record_scoped_keys(client):
     assert "scope" in data
 
 def test_get_record_gated_zero_keys(client):
-    from unittest.mock import patch
-    with patch("src.ui.routes.desk._get_connection") as mock_conn:
-        mock_cursor = mock_conn.return_value.__enter__.return_value.cursor.return_value
-        mock_cursor.execute.return_value.fetchall.return_value = []
-        mock_cursor.execute.return_value.fetchone.return_value = None
+    from unittest.mock import MagicMock, patch
+    # The record scorecard reads through the lock-free read-only WAL connection;
+    # an empty result set must score zero keys, not fall back to the real DB.
+    fake_conn = MagicMock()
+    fake_cursor = fake_conn.__enter__.return_value.cursor.return_value
+    fake_cursor.execute.return_value.fetchall.return_value = []
+    fake_cursor.execute.return_value.fetchone.return_value = None
+    with patch("src.ui.routes.desk.readonly_connection", return_value=fake_conn):
         response = client.get("/api/desk/record?from=2026-09-01&scope=gated")
     assert response.status_code == 200
     data = response.json()
@@ -486,7 +489,7 @@ def test_rr_at_market_never_scores_the_planned_entry(client):
     path's R:R at entry_high, stated beside the breakout path's), so the guard is scoped to
     the rr_at_market block: the formula must never flow into that field's assignment.
     """
-    import src.ui.routes.desk as desk_mod
+    import src.ui.services.today_service as desk_mod
 
     desk_src = (desk_mod.__file__ and open(desk_mod.__file__, encoding="utf-8").read()) or ""
     start = desk_src.index("if rr_at_signal is not None:")

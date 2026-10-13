@@ -51,6 +51,17 @@ class ExecutePythonRequest(BaseModel):
     approved: bool = False
 
 
+# A silent chat stream is a failure: when no token has arrived after this long the
+# request is queued behind deep research on the shared GPU, and the user is told
+# "GPU busy, queued" instead of watching an empty stream. A mid-stream stall past
+# CHAT_STALL_BUSY_S raises the same notice (once; tokens clear it).
+CHAT_FIRST_TOKEN_BUSY_S = 45.0
+CHAT_STALL_BUSY_S = 60.0
+# The stream's poll cadence: how often the not-yet-arrived chunk check runs (and how
+# often the busy-notice budget is re-evaluated).
+CHAT_WAIT_TICK_S = 3.0
+
+
 def _save_chat_turn(session_id: str, ticker: str, date_str: str, role: str, content: str):
     """Saves a chat message turn directly to SQLite database."""
     try:
@@ -384,6 +395,13 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
             turn = 0
             tools_enabled = True
             stream_response = None
+            # A silent stream is a failure: if no token has arrived after this long the
+            # request is queued behind deep research on the shared GPU, and the user is
+            # told "GPU busy, queued" instead of watching an empty stream.
+            stream_t0 = time.monotonic()
+            first_token_t = None
+            last_token_t = None
+            busy_notice_sent = False
 
             try:
                 while turn < max_turns:
@@ -434,11 +452,20 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     while True:
                         if next_chunk_task is None:
                             next_chunk_task = asyncio.create_task(aiter.__anext__())
-                        done, _ = await asyncio.wait([next_chunk_task], timeout=3.0)
+                        done, _ = await asyncio.wait([next_chunk_task], timeout=CHAT_WAIT_TICK_S)
                         if not done:
                             if await request.is_disconnected():
                                 next_chunk_task.cancel()
                                 break
+                            now_t = time.monotonic()
+                            waiting_on_first = first_token_t is None
+                            idle_for = now_t - (last_token_t or stream_t0)
+                            if not busy_notice_sent and (
+                                (waiting_on_first and now_t - stream_t0 >= CHAT_FIRST_TOKEN_BUSY_S)
+                                or (not waiting_on_first and idle_for >= CHAT_STALL_BUSY_S)
+                            ):
+                                busy_notice_sent = True
+                                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees.'})}\n\n"
                             if not full_answer_chunks:
                                 yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⚡ Generating response on GPU Slot 0 (shared compute)...'})}\n\n"
                             else:
@@ -457,6 +484,11 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         if chunk.choices and len(chunk.choices) > 0:
                             delta = chunk.choices[0].delta
                             if hasattr(delta, "content") and delta.content:
+                                now_t = time.monotonic()
+                                if first_token_t is None:
+                                    first_token_t = now_t
+                                last_token_t = now_t
+                                busy_notice_sent = False
                                 turn_content_chunks.append(delta.content)
                                 # Suppress streaming raw <tool_call> XML markup to client
                                 if "<tool_call>" not in delta.content and "<function=" not in delta.content:

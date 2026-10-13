@@ -38,6 +38,8 @@ def get_schwab_client(force_new: bool = False):
             SCHWAB_API_CLIENT_ID, 
             SCHWAB_API_CLIENT_SECRET
         )
+        if hasattr(_SCHWAB_CLIENT, "session"):
+            _SCHWAB_CLIENT.session.timeout = 4.0
         _SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
         return _SCHWAB_CLIENT
     except FileNotFoundError:
@@ -251,12 +253,17 @@ def get_intraday_candles(symbol: str, frequency: int = 5, lookback_bars: int = 3
     except Exception as e_schwab:
         logger.debug(f"Schwab get_intraday_candles error for {sym}: {e_schwab}")
 
-    # Fallback to yfinance
+    # Fallback to yfinance with 2.5s timeout
     try:
+        import concurrent.futures
         import yfinance as yf
         yf_sym = sym.replace("/", "-")
         interval = "1m" if frequency == 1 else "5m"
-        df = yf.download(yf_sym, period="2d", interval=interval, progress=False)
+        def _fetch_yf():
+            return yf.download(yf_sym, period="2d", interval=interval, progress=False)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            f = ex.submit(_fetch_yf)
+            df = f.result(timeout=2.5)
         if not df.empty:
             candles = []
             for idx, row in df.tail(lookback_bars).iterrows():

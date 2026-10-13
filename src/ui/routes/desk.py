@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
+import functools
 import logging
 import sqlite3
 import json
@@ -14,6 +15,7 @@ from src.tracking.alert_db import (
     _get_connection as _get_alert_conn,
     get_eastern_date_str,
 )
+from src.tracking.db_locks import readonly_connection, no_lock, get_all_lock_stats
 from src.tracking.suggestion_scorer import get_main_record_stats
 from src.tracking import rr_config
 from src.logic.actionable_gate import is_actionable
@@ -79,6 +81,38 @@ def _is_job_active_in_db(ticker: str, date_str: str) -> bool:
 
 from zoneinfo import ZoneInfo
 
+
+def _timed_desk_get(endpoint: str):
+    """Decorator: time a cached desk GET and log the slow ones.
+
+    A repeat of the measured 120s regression is diagnosable from the log line
+    alone: the elapsed time and the current lock-hold stats for every DB the
+    endpoint can touch (the today payload's cache age/build time rides on the
+    payload itself).
+    """
+    def _wrap(fn):
+        @functools.wraps(fn)  # FastAPI introspects the signature: *args/**kwargs reads as no params
+        def _inner(*args, **kwargs):
+            import time as _time
+
+            t0 = _time.time()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                dt = _time.time() - t0
+                if dt > 1.0:
+                    extra = ""
+                    try:
+                        extra = f" | locks={get_all_lock_stats()}"
+                    except Exception:
+                        pass
+                    logger.warning(
+                        f"[desk] SLOW GET {endpoint} {dt:.2f}s (force={kwargs.get('force')}){extra}"
+                    )
+        return _inner
+    return _wrap
+
+
 def _has_deep_report(ticker: str, date_str: str) -> bool:
     """Check if a deep research report already exists for ticker on date."""
     from pathlib import Path
@@ -93,29 +127,15 @@ def _has_deep_report(ticker: str, date_str: str) -> bool:
 @router.get("/morning-briefing")
 def get_morning_briefing(date: Optional[str] = None, force_refresh: bool = False):
     """Return synthesized morning executive briefing with real-time quotes."""
-    import json
-    from src import config
-    from src.logic.morning_briefing import generate_morning_briefing
-
-    date_str = date or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
-    briefing_file = config.BASE_DIR / "data" / "briefings" / f"briefing_{date_str}.json"
-
-    if briefing_file.exists() and not force_refresh:
-        try:
-            return json.loads(briefing_file.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"Failed reading briefing cache: {e}")
-
-    return generate_morning_briefing(target_date=date_str, force_live_quotes=True)
+    from src.ui.services import today_service
+    return today_service.get_morning_briefing_payload(date=date, force_refresh=force_refresh)
 
 
 @router.post("/morning-briefing/refresh")
 def refresh_morning_briefing(date: Optional[str] = None):
     """Force real-time quote refresh and re-score of the morning briefing."""
-    from src.logic.morning_briefing import generate_morning_briefing
-
-    date_str = date or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
-    return generate_morning_briefing(target_date=date_str, force_live_quotes=True)
+    from src.ui.services import today_service
+    return today_service.get_morning_briefing_payload(date=date, force_refresh=True)
 
 
 class RRConfigUpdate(BaseModel):
@@ -166,699 +186,11 @@ def reset_rr_config_endpoint():
 
 
 @router.get("/today")
-def get_today():
-    try:
-        today_str = get_eastern_date_str()
-
-        with _alert_db_lock:
-            with _get_alert_conn() as alert_conn:
-                alert_conn.row_factory = sqlite3.Row
-                ac = alert_conn.cursor()
-
-                ac.execute("""
-                    SELECT setup, GROUP_CONCAT(symbol) as tickers_str, COUNT(*) as cnt, source, status, reason
-                    FROM research_queue
-                    WHERE date = ?
-                    GROUP BY setup
-                    ORDER BY id ASC
-                """, (today_str,))
-                found_rows = ac.fetchall()
-                found = []
-                for row in found_rows:
-                    r = dict(row)
-                    tickers_str = r.pop("tickers_str", "") or ""
-                    tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
-                    r["tickers"] = tickers
-                    setup_name = r.get("setup") or ""
-                    if r.get("reason") == f"Screener candidate setup: {setup_name}":
-                        r.pop("reason", None)
-                    found.append(r)
-
-                ac.execute("""
-                    SELECT LOWER(symbol) as sym, UPPER(symbol) as ticker, date, llm_decision, llm_playbook, setup, alert_price, market_price, score
-                    FROM alerts
-                    WHERE date = ?
-                      AND llm_decision IS NOT NULL
-                      AND llm_decision != ''
-                    ORDER BY rowid ASC
-                """, (today_str,))
-                alert_rows = ac.fetchall()
-
-        with _db_lock:
-            with _get_connection() as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-
-                cursor.execute("PRAGMA journal_mode=WAL;")
-                cursor.execute("PRAGMA busy_timeout=30000;")
-
-                cursor.execute("""
-                    WITH ranked_suggestions AS (
-                        SELECT
-                            s.*,
-                            w.status,
-                            w.distance_to_entry_pct as dist,
-                            w.last_price,
-                            w.action_long as w_action_long,
-                            w.signal_pack as w_signal_pack,
-                            w.fade as w_fade,
-                            w.ext_z as w_ext_z,
-                            w.atr_at_signal as w_atr_at_signal,
-                            w.rr_at_market_at_signal as w_rr_at_market_at_signal,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY LOWER(s.ticker)
-                                ORDER BY s.id DESC
-                            ) as rn
-                        FROM suggestions s
-                        LEFT JOIN watch_targets w
-                            ON LOWER(s.ticker) = LOWER(w.ticker)
-                        WHERE s.gate_status = 'PASS'
-                          AND s.date >= date('now', '-21 days')
-                    )
-                    SELECT * FROM ranked_suggestions
-                    WHERE rn = 1
-                    ORDER BY
-                        CASE
-                            WHEN status = 'IN_TRADE' THEN 1
-                            WHEN status = 'IN_ZONE' THEN 2
-                            WHEN dist IS NOT NULL AND ABS(dist) <= 1.5 THEN 3
-                            ELSE 4
-                        END,
-                        (last_price - stop) / NULLIF(entry_high - stop, 0) DESC
-                """)
-                suggestion_rows = cursor.fetchall()
-
-                cursor.execute("""
-                    SELECT LOWER(ticker) as sym, status as job_status, stage, stage_detail
-                    FROM active_research_jobs
-                    WHERE status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')
-                      AND target_date = ?
-                """, (today_str,))
-                job_rows = cursor.fetchall()
-
-                def _decision_rank(dec: str) -> int:
-                    d = (dec or "").upper()
-                    if "PASS" in d:
-                        return 3
-                    if "WATCH" in d:
-                        return 2
-                    if "CUT" in d:
-                        return 1
-                    return 0
-
-                alert_map = {}
-                for ar in alert_rows:
-                    ar = dict(ar)
-                    sym = ar.get("sym")
-                    if not sym:
-                        continue
-                    if sym not in alert_map:
-                        alert_map[sym] = ar
-                    else:
-                        existing_rank = _decision_rank(alert_map[sym].get("llm_decision"))
-                        new_rank = _decision_rank(ar.get("llm_decision"))
-                        if new_rank > existing_rank:
-                            alert_map[sym] = ar
-                        elif new_rank == existing_rank and ar.get("score") and not alert_map[sym].get("score"):
-                            alert_map[sym] = ar
-
-                job_map = {}
-                for jr in job_rows:
-                    jr = dict(jr)
-                    sym = jr.get("sym")
-                    if sym:
-                        job_map[sym] = jr
-
-                actionable = []
-                stalking = []
-                watch_list = []
-                cut_list = []
-                needs_you = []
-                unmeasured = []
-                closest_to_gate = []
-                missing_symbols = set()
-                processed_syms = set()
-
-                triaged_syms = set(alert_map.keys())
-                all_sugg_syms = set(((dict(r) or {}).get("ticker") or "").lower() for r in suggestion_rows)
-
-                for sym in all_sugg_syms:
-                    if sym not in triaged_syms:
-                        missing_symbols.add(sym.upper())
-
-                for row in suggestion_rows:
-                    r = dict(row)
-                    ticker = r.get("ticker", "")
-                    sym = (ticker or "").lower()
-                    processed_syms.add(sym)
-
-                    local = alert_map.get(sym, {})
-                    r["date"] = (local.get("date") if local else None) or today_str
-                    r["llm_decision"] = local.get("llm_decision")
-                    r["llm_playbook"] = (local.get("llm_playbook") or "")[:120]
-                    r["local_score"] = _normalized_local_score(local.get("score"))
-
-                    job = job_map.get(sym)
-                    has_real_deep = _has_deep_report(sym, today_str)
-                    local_dec_raw = (local.get("llm_decision") or "").upper()
-                    if job:
-                        job_st = job.get("job_status", "none")
-                        job_stage = job.get("stage", "none")
-                        if job_st == "COMPLETED" and (job_stage == "LOCAL_DONE" or not has_real_deep):
-                            if "CUT" in local_dec_raw or "SKIP" in local_dec_raw:
-                                r["deep_status"] = "CUT_BY_LOCAL"
-                            elif "WATCH" in local_dec_raw:
-                                r["deep_status"] = "WATCH_NO_DEEP"
-                            else:
-                                r["deep_status"] = "DEEP_CAP_DEFERRED"
-                        else:
-                            r["deep_status"] = job_st
-                        r["deep_stage"] = job_stage
-                        r["deep_stage_detail"] = job.get("stage_detail", "")
-                    else:
-                        if has_real_deep:
-                            r["deep_status"] = "COMPLETED"
-                            r["deep_stage"] = "DONE"
-                        elif "CUT" in local_dec_raw or "SKIP" in local_dec_raw:
-                            r["deep_status"] = "CUT_BY_LOCAL"
-                            r["deep_stage"] = "LOCAL_DONE"
-                        elif "WATCH" in local_dec_raw:
-                            r["deep_status"] = "WATCH_NO_DEEP"
-                            r["deep_stage"] = "LOCAL_DONE"
-                        elif "PASS" in local_dec_raw:
-                            r["deep_status"] = "AWAITING_QUEUE"
-                            r["deep_stage"] = "LOCAL_DONE"
-                        else:
-                            r["deep_status"] = "none"
-                            r["deep_stage"] = "none"
-                        r["deep_stage_detail"] = ""
-
-
-                    entry_h = r.get("entry_high") or 0.0
-                    entry_l = r.get("entry_low") or 0.0
-                    stop = r.get("stop") or 0.0
-                    target = r.get("target_1") or 0.0
-                    last_px = r.get("last_price") or 0.0
-
-                    room_to_stop = 0.0
-                    if last_px and entry_h and entry_h > stop:
-                        room_to_stop = (last_px - stop) / (entry_h - stop)
-                    r["room_to_stop"] = round(room_to_stop, 3)
-
-                    # Stop width in ATR if available
-                    atr_at_signal = r.get("atr_at_signal") if r.get("atr_at_signal") is not None else r.get("w_atr_at_signal")
-                    if atr_at_signal and atr_at_signal > 0 and entry_h and stop:
-                        r["stop_width_atr"] = round(abs(entry_h - stop) / atr_at_signal, 2)
-                    else:
-                        r["stop_width_atr"] = None
-
-                    # Measured lane, split by the PB bit when the split was measured.
-                    r["setup_lane"] = r.get("setup_lane") or None
-                    r["pb_bucket"] = _pb_bucket(r.get("pb_funnel"))
-
-                    # R:R measured at the market. rr_at_market_at_signal is only persisted when the signal bar carried
-                    # a spot (7 of 177 rows today), so when it is absent we compute the same ratio
-                    # from the live print and the persisted stop/target, and say which one it is.
-                    # A row with neither is genuinely unmeasured and must not be ranked.
-                    #
-                    # Deliberately NO plan-geometry fallback: a ratio measured at the planned
-                    # entry is not "at the market". It scored a $1 risk sliver as "RR 29" and
-                    # ranked stop-inside-noise rows above real ones, so it lives nowhere now --
-                    # the planned entry's own view is the gate's job, not this field's.
-                    rr_at_signal = r.get("rr_at_market_at_signal") if r.get("rr_at_market_at_signal") is not None else r.get("w_rr_at_market_at_signal")
-                    try:
-                        rr_at_signal = float(rr_at_signal) if rr_at_signal else None
-                    except (TypeError, ValueError):
-                        rr_at_signal = None
-
-                    if rr_at_signal is not None:
-                        rr_at_market, rr_source = rr_at_signal, "signal"
-                    elif last_px and stop and last_px > stop and target and target > last_px:
-                        rr_at_market = round((target - last_px) / (last_px - stop), 2)
-                        rr_source = "live"
-                    else:
-                        rr_at_market, rr_source = None, None
-
-                    r["rr_at_market_at_signal"] = rr_at_signal
-                    r["rr_at_market"] = rr_at_market
-                    r["rr_at_market_source"] = rr_source
-
-                    # C3: two paths, two R:R. A name with a limit zone below market AND a
-                    # live breakout path states both numbers instead of one blended ratio:
-                    # the zone's R:R measured at entry_high, and the breakout's R:R measured
-                    # at its own trigger (with the trigger's own stop when the plan carries
-                    # one, else the row's tactical stop). A trigger whose targets sit at or
-                    # below it is flagged broken — the META defect, demoted, never blended.
-                    rr_zone_at_entry_high = None
-                    if entry_h and stop and entry_h > stop and target and target > entry_h:
-                        rr_zone_at_entry_high = round((target - entry_h) / (entry_h - stop), 2)
-                    r["rr_zone_at_entry_high"] = rr_zone_at_entry_high
-
-                    breakout_lvl = 0.0
-                    rr_breakout_at_trigger = None
-                    breakout_trigger_broken = False
-                    try:
-                        breakout_lvl = float(r.get("breakout_level") or 0.0)
-                    except (TypeError, ValueError):
-                        breakout_lvl = 0.0
-                    bstop = 0.0
-                    try:
-                        bstop = float(r.get("breakout_stop") or stop or 0.0)
-                    except (TypeError, ValueError):
-                        bstop = 0.0
-                    if breakout_lvl > 0:
-                        if bstop and breakout_lvl > bstop and target and target > breakout_lvl:
-                            rr_breakout_at_trigger = round(
-                                (target - breakout_lvl) / (breakout_lvl - bstop), 2
-                            )
-                        else:
-                            # Targets at/below the trigger (or no stop below it): the trigger
-                            # path is not measurable. Say so; never show a blended number.
-                            breakout_trigger_broken = True
-                    r["breakout_level"] = breakout_lvl
-                    r["rr_breakout_at_trigger"] = rr_breakout_at_trigger
-                    r["breakout_trigger_broken"] = breakout_trigger_broken
-
-                    _path_bits = []
-                    if rr_zone_at_entry_high is not None:
-                        _path_bits.append(f"zone R:R {rr_zone_at_entry_high:.2f} @ ${entry_h:.2f}")
-                    if rr_breakout_at_trigger is not None:
-                        _path_bits.append(f"breakout R:R {rr_breakout_at_trigger:.2f} @ ${breakout_lvl:.2f}")
-                    elif breakout_trigger_broken:
-                        _path_bits.append("breakout path broken (targets at/below trigger — demoted)")
-                    r["rr_paths_text"] = " | ".join(_path_bits)
-
-                    status = r.get("status") or "STALKING"
-                    dist = r.get("dist")
-                    near = dist is not None and abs(float(dist)) <= 1.5
-
-                    # Single actionable gate using real stored fields only
-                    min_rr_floor = rr_config.min_rr()
-                    from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
-                    in_zone_flag = 1.0 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0.0
-                    entry_px = r.get("entry_high") or last_px or r.get("entry_low")
-
-                    # Robust indicator fallbacks so missing SQLite cached columns do not synthesize phantom rejections
-                    sig_pack_val = r.get("signal_pack") if r.get("signal_pack") is not None else (r.get("w_signal_pack") if r.get("w_signal_pack") is not None else (36.0 if r.get("pb_funnel") else 4.0))
-                    fade_val = r.get("fade") if r.get("fade") is not None else (r.get("w_fade") if r.get("w_fade") is not None else ((0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else 0.0))
-                    action_long_val = r.get("action_long") if r.get("action_long") is not None else (r.get("w_action_long") if r.get("w_action_long") is not None else (r.get("action_code") if r.get("action_code") is not None else 10.0))
-                    ext_z_val = r.get("ext_z") if r.get("ext_z") is not None else (r.get("w_ext_z") if r.get("w_ext_z") is not None else 0.0)
-                    atr_val = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else ((abs(entry_h - stop)) if (entry_h and stop and entry_h > stop) else 1.0)
-
-                    dw_dict = {
-                        "long_in_zone": in_zone_flag,
-                        "long_rr_at_market": rr_at_market,
-                        "long_stop_loss": stop,
-                        "atr14": atr_val,
-                        "price": last_px or r.get("price") or entry_px,
-                        "signal_pack": float(sig_pack_val),
-                        "fade_long": float(fade_val),
-                        "action_long": float(action_long_val),
-                        "ext_z_self": float(ext_z_val),
-                    }
-                    gate_in = gate_inputs_from_datawindow(dw_dict)
-                    is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": entry_px})
-                    r["measured"] = is_act
-                    r["measured_actionable"] = is_act
-                    r["gate_reasons"] = gate_fails
-
-                    # setup_lane is PERSISTED at triage time by the Pine's own thresholds, so it
-                    # does not follow a UI change to the R:R floor. Re-tier the R:R lanes from the
-                    # live number so the badge agrees with the bucket the row just landed in;
-                    # CODE20 / OVERSOLD / RSI2 / WATCH_SHADOW keep their identity untouched.
-                    r["lane"] = _live_lane_tier(r["setup_lane"], rr_at_market)
-                    r["lane_persisted"] = r["setup_lane"]
-                    prior_win, prior_ev = _lane_priors(r["lane"], r.get("pb_funnel"))
-                    r["lane_prior_win"] = prior_win
-                    r["lane_prior_ev"] = prior_ev
-
-                    # A stop inside daily noise makes any R:R an artifact. The corpus median is
-                    # 0.69 ATR and 65% of stops get hit; 0.2 ATR produces "RR 14" and nothing else.
-                    r["stop_tight"] = bool(
-                        r["stop_width_atr"] is not None and r["stop_width_atr"] < STOP_ATR_NOISE_FLOOR
-                    )
-                    # Sorting on raw RR promotes exactly these rows. Never sort on it.
-                    r["sort_rr"] = -1.0 if r["stop_tight"] else (rr_at_market or -1.0)
-
-                    # Calculate wait-for limit price if RR < min_rr_floor (Task d6)
-                    r["limit_price"] = None
-                    r["wait_for"] = None
-                    entry_l = float(r.get("entry_low") or 0.0)
-                    entry_h = float(r.get("entry_high") or 0.0)
-                    is_geo_valid = (
-                        stop and target and target > stop
-                        and (entry_h == 0.0 or entry_h > stop)
-                        and (entry_l == 0.0 or entry_l > stop)
-                    )
-                    is_terminal_row = (last_px and stop and last_px <= stop) or (last_px and target and last_px >= target)
-                    if not is_terminal_row and is_geo_valid and (rr_at_market is None or rr_at_market < min_rr_floor):
-                        calc_limit = round((target + min_rr_floor * stop) / (1.0 + min_rr_floor), 2)
-                        atr_chk = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else 1.0
-                        if calc_limit > stop and (not last_px or calc_limit < last_px) and (calc_limit - stop) / max(0.01, atr_chk) >= 0.7:
-                            r["limit_price"] = calc_limit
-                            r["wait_for"] = f"wait for ${calc_limit:.2f}"
-
-                    if not is_act and gate_fails:
-                        dist_val = abs(float(dist)) if dist is not None else 999.0
-                        is_close = False
-                        missing_cond = None
-
-                        if len(gate_fails) == 1:
-                            is_close = True
-                            missing_cond = gate_fails[0]
-                        elif len(gate_fails) == 2 and "not PB funnel" in gate_fails:
-                            other_fail = [f for f in gate_fails if f != "not PB funnel"][0]
-                            if other_fail == "not in the long zone":
-                                if dist_val <= 3.0 or near or in_zone_flag == 1.0:
-                                    is_close = True
-                                    missing_cond = f"Entry Zone ({dist:+.1f}%)" if dist is not None else "Entry Zone"
-                            else:
-                                is_close = True
-                                missing_cond = other_fail
-
-                        if is_close:
-                            if missing_cond == "not PB funnel":
-                                missing_cond_display = "Pullback confirmation"
-                            elif "RR@mkt" in str(missing_cond):
-                                missing_cond_display = f"R:R < {min_rr_floor:.1f}"
-                            elif "stop width" in str(missing_cond):
-                                missing_cond_display = "Stop width < 0.7 ATR"
-                            elif "not in the long zone" in str(missing_cond):
-                                missing_cond_display = f"Entry Zone ({dist:+.1f}%)" if dist is not None else "Entry Zone"
-                            else:
-                                missing_cond_display = missing_cond
-
-                            r_close = dict(r)
-                            r_close["missing_condition"] = missing_cond_display
-                            r_close["raw_missing_condition"] = missing_cond
-                            r_close["dist"] = dist
-                            r_close["rr_at_market"] = rr_at_market
-                            closest_to_gate.append(r_close)
-
-                    live_rr = None
-                    flag = None
-                    if last_px and last_px > stop and target and target > last_px:
-                        live_rr = round((target - last_px) / (last_px - stop), 2)
-                    if last_px and last_px <= stop:
-                        live_rr = None
-                        flag = "BELOW_STOP"
-                    elif room_to_stop < 0.25:
-                        live_rr = None
-                        flag = "AT_STOP"
-                    r["live_rr"] = live_rr
-                    r["live_rr_flag"] = flag
-
-                    if not r.get("llm_decision"):
-                        continue
-
-                    local_dec = (local.get("llm_decision") or "").upper()
-                    deep_status = r.get("deep_status") or "none"
-                    r["setup"] = local.get("setup") or r.get("setup") or ""
-                    r["llm_playbook"] = local.get("llm_playbook") or r.get("llm_playbook") or ""
-
-                    # Task A3: Ran since CUT / WATCH check (>1 ATR move since triage price)
-                    triage_px = float(local.get("alert_price") or local.get("market_price") or r.get("alert_price") or r.get("entry_high") or 0.0)
-                    atr_val = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else None
-                    if last_px and triage_px > 0 and atr_val and atr_val > 0:
-                        delta_p = last_px - triage_px
-                        if abs(delta_p) >= atr_val:
-                            pct_move = (delta_p / triage_px) * 100.0
-                            sign_str = "+" if pct_move >= 0 else ""
-                            dec_label = "CUT" if "CUT" in local_dec else ("WATCH" if "WATCH" in local_dec else "TRIAGE")
-                            r["ran_since_cut"] = f"ran since {dec_label} {sign_str}{pct_move:.1f}%"
-                            r["needs_retriage"] = True
-
-                    if "PASS" in local_dec:
-                        if not r["measured"]:
-                            # Fails actionable gate -> unmeasured group
-                            r["unmeasured_reason"] = "; ".join(gate_fails) if gate_fails else "below_bar"
-                            unmeasured.append(r)
-                        elif has_real_deep and deep_status == "COMPLETED":
-                            if status in ("IN_ZONE", "IN_TRADE") or near:
-                                actionable.append(r)
-                            else:
-                                stalking.append(r)
-                        elif is_act:
-                            # Needs-you is a work queue, not a backlog. Only gate-passing rows qualify!
-                            needs_you.append(r)
-                        else:
-                            r["unmeasured_reason"] = "; ".join(gate_fails) if gate_fails else "below_bar"
-                            unmeasured.append(r)
-                    elif "WATCH" in local_dec:
-                        watch_list.append(r)
-                    elif "CUT" in local_dec:
-                        cut_list.append(r)
-
-                # Process alerts for symbols that do not yet have suggestion records
-                for sym, local in alert_map.items():
-                    if sym in processed_syms:
-                        continue
-                    processed_syms.add(sym)
-                    local_dec = (local.get("llm_decision") or "").upper()
-                    job = job_map.get(sym, {})
-                    deep_st = job.get("job_status", "none")
-                    job_stg = job.get("stage", "none")
-                    has_real_deep = _has_deep_report(sym, today_str)
-                    if deep_st == "COMPLETED" and (job_stg == "LOCAL_DONE" or not has_real_deep):
-                        if "CUT" in local_dec or "SKIP" in local_dec:
-                            deep_st = "CUT_BY_LOCAL"
-                        elif "WATCH" in local_dec:
-                            deep_st = "WATCH_NO_DEEP"
-                        else:
-                            deep_st = "DEEP_CAP_DEFERRED"
-                    elif has_real_deep and deep_st == "none":
-                        deep_st = "COMPLETED"
-                    elif deep_st == "none":
-                        if "CUT" in local_dec or "SKIP" in local_dec:
-                            deep_st = "CUT_BY_LOCAL"
-                        elif "WATCH" in local_dec:
-                            deep_st = "WATCH_NO_DEEP"
-                        elif "PASS" in local_dec:
-                            deep_st = "AWAITING_QUEUE"
-
-                    item = {
-                        "ticker": local.get("ticker") or sym.upper(),
-                        "date": local.get("date") or today_str,
-                        "setup": local.get("setup") or "",
-                        "llm_decision": local.get("llm_decision"),
-                        "llm_playbook": local.get("llm_playbook") or "",
-                        "local_score": _normalized_local_score(local.get("score")),
-                        "deep_status": deep_st,
-                        "deep_stage": job_stg,
-                        "deep_stage_detail": job.get("stage_detail", ""),
-                        "status": "NEEDS_DEEP" if "PASS" in local_dec else ("WATCH" if "WATCH" in local_dec else "CUT"),
-                        "last_price": local.get("alert_price") or local.get("market_price"),
-                        "entry_low": None,
-                        "entry_high": None,
-                        "stop": None,
-                        "target_1": None,
-                        "dist": None,
-                        "room_to_stop": 0.0,
-                        "live_rr": None,
-                        "live_rr_flag": None,
-                        "stop_width_atr": None,
-                        # An alert with no suggestion row has no lane and no measured R:R.
-                        "setup_lane": None,
-                        "lane": None,
-                        "lane_prior_win": None,
-                        "lane_prior_ev": None,
-                        "pb_bucket": "unmeasured",
-                        "rr_at_market_at_signal": None,
-                        "rr_at_market": None,
-                        "rr_at_market_source": None,
-                        "measured": False,
-                        "measured_actionable": False,
-                        "gate_reasons": ["No suggestion record or tactical levels"],
-                        "unmeasured_reason": "no_levels",
-                        "stop_tight": False,
-                        "sort_rr": -1.0,
-                    }
-
-                    if "PASS" in local_dec:
-                        unmeasured.append(item)
-                    elif "WATCH" in local_dec:
-                        watch_list.append(item)
-                    elif "CUT" in local_dec:
-                        cut_list.append(item)
-
-                # Build Section 0a Inbox (one row per symbol with latest alert)
-                inbox = []
-                for sym, local in alert_map.items():
-                    job = job_map.get(sym, {})
-                    s_match = next((s for s in suggestion_rows if ((s["ticker"] or "").lower() == sym)), None)
-                    score_match = re.search(r"\((\d+(?:/\d+)?)\)", local.get("llm_decision") or "")
-                    score_val = _normalized_local_score(
-                        score_match.group(1) if score_match else local.get("score")
-                    )
-                    j_st = job.get("job_status", "none")
-                    j_stg = job.get("stage", "none")
-                    has_real_deep = _has_deep_report(sym, today_str)
-                    if j_st == "COMPLETED" and (j_stg == "LOCAL_DONE" or not has_real_deep):
-                        if "CUT" in (local.get("llm_decision") or "").upper():
-                            ib_deep_status = "CUT_BY_LOCAL"
-                        elif "WATCH" in (local.get("llm_decision") or "").upper():
-                            ib_deep_status = "WATCH_NO_DEEP"
-                        else:
-                            ib_deep_status = "DEEP_CAP_DEFERRED"
-                    elif has_real_deep and j_st == "none":
-                        ib_deep_status = "COMPLETED"
-                    elif j_st == "none":
-                        if "CUT" in (local.get("llm_decision") or "").upper():
-                            ib_deep_status = "CUT_BY_LOCAL"
-                        elif "WATCH" in (local.get("llm_decision") or "").upper():
-                            ib_deep_status = "WATCH_NO_DEEP"
-                        elif "PASS" in (local.get("llm_decision") or "").upper():
-                            ib_deep_status = "AWAITING_QUEUE"
-                        else:
-                            ib_deep_status = "none"
-                    else:
-                        ib_deep_status = j_st
-                    setup_name = (s_match["setup_lane"] if s_match and s_match["setup_lane"] else None) or local.get("setup") or ""
-                    lane_map = inbox_row_mapping(setup_name)
-
-                    inbox.append({
-                        "ticker": local.get("ticker") or sym.upper(),
-                        "date": local.get("date") or today_str,
-                        "setup": setup_name,
-                        # A+ Trend Long / Early Action Long are never labelled "measured".
-                        "lane": lane_map.get("lane"),
-                        "setup_tag": lane_map.get("tag"),
-                        "setup_tag_label": lane_map.get("label"),
-                        "setup_prior_win": lane_map.get("prior_win"),
-                        "setup_prior_ev": lane_map.get("prior_ev"),
-                        "measured": lane_map.get("tag") == "measured",
-                        "llm_decision": local.get("llm_decision") or "",
-                        "local_score": score_val,
-                        "llm_playbook": (local.get("llm_playbook") or "")[:120],
-                        "deep_status": ib_deep_status,
-                        "gate_status": s_match["gate_status"] if s_match else None,
-                        "suggestion_id": s_match["id"] if s_match else None,
-                        "last_price": (s_match["last_price"] if s_match else None) or local.get("alert_price") or local.get("market_price"),
-                    })
-
-                # The inbox is a list of unmeasured names wearing the same typography as measured
-                # ones. Partition it so the counts are honest.
-                inbox_measured = [r for r in inbox if r.get("measured")]
-                inbox_unmeasured = [r for r in inbox if not r.get("measured")]
-
-                actionable.sort(key=lambda x: (
-                    1 if x.get("status") == "IN_TRADE" else
-                    2 if x.get("status") == "IN_ZONE" else 3,
-                    # sort_rr demotes stop-inside-noise rows below every measurable one, so a
-                    # "RR 250" off a 0.02-ATR stop can never sit at the top of the desk.
-                    -(x.get("sort_rr") if x.get("sort_rr") is not None else -9999.0),
-                ))
-                unmeasured.sort(key=lambda x: (x.get("ticker") or ""))
-
-                def _sort_closest_key(x):
-                    in_z = 1 if (x.get("in_zone") or (x.get("dist") is not None and abs(float(x.get("dist"))) <= 1.5)) else 0
-                    d = abs(float(x.get("dist"))) if x.get("dist") is not None else 999.0
-                    rr = float(x.get("rr_at_market") or 0.0)
-                    return (-in_z, d, -rr)
-
-                closest_to_gate.sort(key=_sort_closest_key)
-
-                # Fixture tickers are not coverage gaps. GOODTICKER sat in missing_symbols next
-                # to SPY/QQQ/AMZN and made the list unreadable. They are separated out rather than
-                # counted; ops_alerts.purge_test_rows() removes the underlying rows on request.
-                missing_all = sorted(missing_symbols)
-                missing_test = sorted(s for s in missing_all if is_test_ticker(s))
-                missing_real = [s for s in missing_all if not is_test_ticker(s)]
-                # Genuine coverage gaps come from the same probe the OPS tier uses, NOT from
-                # missing_real: that list is inbox-derived, so it flags every core name absent
-                # from today's alerts. On live data all six core names were triaged (6-54 alerts
-                # and live watch_targets each) while this field claimed all six were gaps.
-                core_probe_error = None
-                try:
-                    core_gaps, core_covered = core_coverage_gaps()
-                except Exception as exc:
-                    core_gaps, core_covered = [], list(CORE_SYMBOLS)
-                    core_probe_error = str(exc)[:200]
-
-                # Synthesize dynamic deep research opportunities and actionable streams
-                from src.ui.services.opportunity_service import (
-                    get_live_market_pulse,
-                    collect_active_deep_research_opportunities,
-                    get_actionable_alerts_stream,
-                    get_market_regime,
-                )
-                from src.ui.services.action_engine import build_action_panel
-                from src.ui.services.feedback_service import get_feedback_loop_data
-
-                market_pulse = get_live_market_pulse()
-                market_regime = get_market_regime()
-                top_opportunities = collect_active_deep_research_opportunities(lookback_days=3)
-                actionable_alerts = get_actionable_alerts_stream(limit=30)
-                feedback_data = get_feedback_loop_data()
-                action_panel = build_action_panel(
-                    opportunities=top_opportunities,
-                    regime=market_regime,
-                    open_positions=feedback_data.get("open_positions") or [],
-                )
-
-                return {
-                    "market_pulse": market_pulse,
-                    "market_regime": market_regime,
-                    "action_panel": action_panel,
-                    "top_opportunities": top_opportunities,
-                    "actionable_alerts": actionable_alerts,
-                    "feedback_loop": feedback_data,
-                    "found": found,
-                    "inbox": inbox,
-                    "measured_count": len(actionable) + len(stalking) + len(needs_you),
-                    "inbox_measured_count": len(inbox_measured),
-                    "inbox_unmeasured_count": len(inbox_unmeasured),
-                    "actionable": actionable,
-                    "stalking": stalking,
-                    "watch": watch_list,
-                    "cut": cut_list,
-                    "needs_you": needs_you,
-                    "unmeasured": unmeasured,
-                    "closest_to_gate": closest_to_gate,
-                    "missing_symbols": missing_real,
-                    "missing_symbols_excluded_test_rows": missing_test,
-                    "missing_symbols_core_gaps": core_gaps,
-                    "core_symbols_covered": core_covered,
-                    "core_coverage_error": core_probe_error,
-                    # The card labels are generated server-side, so they always state the
-                    # threshold actually in force rather than a hardcoded ">= 2".
-                    "rr_gates": rr_config.as_ui_payload(),
-                    # Rows held back purely because of the dial, split out so the unmeasured group
-                    # does not imply they were never measured.
-                    "below_bar_count": sum(
-                        1 for r in unmeasured if r.get("unmeasured_reason") == "below_bar"
-                    ),
-                    "funnel": {
-                        "alerts": len(alert_map),
-                        "local_done": sum(1 for a in alert_map.values() if a.get("llm_decision")),
-                        "local_pass": sum(1 for a in alert_map.values() if "PASS" in (a.get("llm_decision") or "").upper()),
-                        "measured": len(actionable) + len(stalking) + len(needs_you),
-                        "deep_queued": sum(1 for j in job_map.values() if j.get("job_status") in ("QUEUED", "RUNNING")),
-                        "deep_done": sum(1 for sym in alert_map.keys() if _has_deep_report(sym, today_str)),
-                        "actionable": len(actionable),
-                    },
-                    "coverage": {
-                        "found_count": len(found_rows) if found_rows else 0,
-                        "inbox_count": len(inbox),
-                        "actionable_count": len(actionable),
-                        "stalking_count": len(stalking),
-                        "watch_count": len(watch_list),
-                        "cut_count": len(cut_list),
-                        "needs_you_count": len(needs_you),
-                        "unmeasured_count": len(unmeasured),
-                        "closest_to_gate_count": len(closest_to_gate),
-                        "measured_count": len(actionable) + len(stalking) + len(needs_you),
-                        "missing_symbols_count": len(missing_real),
-                        "missing_symbols_test_rows_excluded": len(missing_test),
-                        "missing_symbols_core_gaps": len(core_gaps),
-                        "core_symbols_covered": len(core_covered),
-                    },
-                }
-
-
-    except Exception as e:
-        import traceback
-        return {"error": traceback.format_exc()}
+@_timed_desk_get("today")
+def get_today(force: bool = False):
+    """Return Today desk operational payload instantly from background cache."""
+    from src.ui.services import today_service
+    return today_service.get_today_payload(force=force)
 
 
 from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior
@@ -927,13 +259,9 @@ def get_journal(
     status_upper = status.upper() if status else None
 
     try:
-        with _db_lock:
-            with _get_connection() as conn:
-                conn.row_factory = sqlite3.Row
+        with no_lock:
+            with readonly_connection(config.research_watch_db_path(), timeout=2.0) as conn:
                 cursor = conn.cursor()
-
-                cursor.execute("PRAGMA journal_mode=WAL;")
-                cursor.execute("PRAGMA busy_timeout=30000;")
 
                 derived_status_sql = (
                     "CASE"
@@ -1239,13 +567,9 @@ def get_record(
     scope = str(scope or "gated").lower()
 
     try:
-        with _db_lock:
-            with _get_connection() as conn:
-                conn.row_factory = sqlite3.Row
+        with no_lock:
+            with readonly_connection(config.research_watch_db_path(), timeout=2.0) as conn:
                 cursor = conn.cursor()
-
-                cursor.execute("PRAGMA journal_mode=WAL;")
-                cursor.execute("PRAGMA busy_timeout=30000;")
 
                 # A DB that has not run ensure_suggestions_schema() yet has no pb_funnel.
                 # Read it as NULL rather than 500-ing the scorecard; NULL groups as "pre-PB".
@@ -1441,175 +765,19 @@ def get_record(
 
 
 @router.get("/coverage")
-def get_coverage():
-    try:
-        today_str = get_eastern_date_str()
-
-        with _alert_db_lock:
-            with _get_alert_conn() as alert_conn:
-                alert_conn.row_factory = sqlite3.Row
-                ac = alert_conn.cursor()
-
-                ac.execute("SELECT COUNT(*) as total FROM alerts WHERE date = ?", (today_str,))
-                alerts = ac.fetchone()
-                alerts_count = alerts["total"] if alerts else 0
-
-                ac.execute("""
-                    SELECT COUNT(*) as done
-                    FROM alerts
-                    WHERE date = ?
-                      AND llm_decision IS NOT NULL
-                      AND llm_decision != ''
-                """, (today_str,))
-                local_done = ac.fetchone()
-                local_done_count = local_done["done"] if local_done else 0
-
-                ac.execute("""
-                    SELECT DISTINCT UPPER(symbol) as sym
-                    FROM alerts
-                    WHERE date = ?
-                      AND (
-                          llm_decision LIKE 'PASS%'
-                          OR llm_decision = 'PASS'
-                          OR (llm_decision LIKE '%PASS%')
-                      )
-                """, (today_str,))
-                pass_rows = ac.fetchall()
-                local_pass_symbols = set(r["sym"] for r in pass_rows if r["sym"])
-                local_pass_count = len(local_pass_symbols)
-
-                ac.execute("""
-                    SELECT DISTINCT UPPER(symbol) as sym
-                    FROM alerts
-                    WHERE date = ?
-                      AND (
-                          llm_decision IS NULL
-                          OR llm_decision = ''
-                      )
-                """, (today_str,))
-                missing_alert_syms = set(r["sym"] for r in ac.fetchall() if r["sym"])
-
-                # Check research_queue for un-evaluated symbols
-                ac.execute("""
-                    SELECT DISTINCT UPPER(symbol) as sym
-                    FROM research_queue
-                    WHERE date = ?
-                """, (today_str,))
-                queue_syms = set(r["sym"] for r in ac.fetchall() if r["sym"])
-
-                ac.execute("""
-                    SELECT DISTINCT UPPER(symbol) as sym
-                    FROM alerts
-                    WHERE date = ?
-                      AND llm_decision IS NOT NULL
-                      AND llm_decision != ''
-                """, (today_str,))
-                evaluated_syms = set(r["sym"] for r in ac.fetchall() if r["sym"])
-
-                # Any symbol that already has an evaluated decision today is not missing
-                missing_alert_syms = missing_alert_syms - evaluated_syms
-                un_evaluated_queue = queue_syms - evaluated_syms
-                local_missing = sorted(list(missing_alert_syms | un_evaluated_queue))
-
-        with _db_lock:
-            with _get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT DISTINCT UPPER(ticker) as sym
-                    FROM active_research_jobs
-                    WHERE target_date = ?
-                      AND status = 'COMPLETED'
-                """, (today_str,))
-                done_job_syms = set(r["sym"] for r in cursor.fetchall() if r["sym"])
-
-                cursor.execute("""
-                    SELECT DISTINCT UPPER(ticker) as sym
-                    FROM active_research_jobs
-                    WHERE target_date = ?
-                      AND status = 'QUEUED'
-                """, (today_str,))
-                queued_jobs = cursor.fetchall()
-                deep_queued = [r["sym"] for r in queued_jobs if r["sym"]]
-
-        # Also check reports folder for completed deep research
-        deep_done_symbols = set()
-        for sym in local_pass_symbols:
-            if sym in done_job_syms or _has_deep_report(sym, today_str):
-                deep_done_symbols.add(sym)
-
-        deep_missing = sorted(list(local_pass_symbols - deep_done_symbols))
-        deep_done_count = len(deep_done_symbols)
-
-        # Collect DEEP_CAP_DEFERRED and WATCH_NO_DEEP with reason
-        deep_cap_deferred: List[Dict[str, str]] = []
-        watch_no_deep: List[Dict[str, str]] = []
-
-        with _alert_db_lock:
-            with _get_alert_conn() as alert_conn:
-                alert_conn.row_factory = sqlite3.Row
-                ac = alert_conn.cursor()
-                ac.execute("""
-                    SELECT symbol, llm_decision, llm_playbook
-                    FROM alerts
-                    WHERE date = ?
-                """, (today_str,))
-                for row in ac.fetchall():
-                    s = (row["symbol"] or "").upper()
-                    dec = (row["llm_decision"] or "").upper()
-                    reas = (row["llm_playbook"] or "").strip()
-                    if len(reas) > 120:
-                        reas = reas[:117] + "..."
-                    has_report = _has_deep_report(s, today_str) or s in done_job_syms
-                    if "PASS" in dec and not has_report and s not in deep_queued:
-                        deep_cap_deferred.append({"ticker": s, "reason": reas or "Deferred by daily research cap"})
-                    elif "WATCH" in dec and not has_report:
-                        watch_no_deep.append({"ticker": s, "reason": reas or "Stalking watch - awaiting zone trigger"})
-
-        triage_dir = config.BASE_DIR / "data" / "triage" / today_str
-        if triage_dir.exists():
-            for th_f in triage_dir.glob("**/*_thesis.json"):
-                sym = th_f.name.replace("_thesis.json", "").upper()
-                if any(x["ticker"] == sym for x in deep_cap_deferred) or any(x["ticker"] == sym for x in watch_no_deep):
-                    continue
-                try:
-                    with open(th_f, "r", encoding="utf-8") as f:
-                        t_data = json.load(f)
-                    t_triage = t_data.get("triage", {})
-                    t_dec = (t_triage.get("triage") or "").upper()
-                    t_reas = t_triage.get("reason") or t_data.get("llm_data", {}).get("reason") or ""
-                    has_report = _has_deep_report(sym, today_str) or sym in done_job_syms
-                    if t_dec == "PASS" and not has_report and sym not in deep_queued:
-                        deep_cap_deferred.append({"ticker": sym, "reason": t_reas or "Deferred by daily research cap"})
-                    elif t_dec == "WATCH" and not has_report:
-                        watch_no_deep.append({"ticker": sym, "reason": t_reas or "Stalking watch - awaiting zone trigger"})
-                except Exception:
-                    pass
-
-        return {
-            "alerts": alerts_count,
-            "local_done": local_done_count,
-            "local_pass": local_pass_count,
-            "deep_done": deep_done_count,
-            "deep_queued": deep_queued,
-            "deep_missing": deep_missing,
-            "local_missing": local_missing,
-            "deep_cap_deferred": deep_cap_deferred,
-            "watch_no_deep": watch_no_deep,
-        }
-    except Exception as e:
-        import traceback
-        return {"error": traceback.format_exc()}
+@_timed_desk_get("coverage")
+def get_coverage(force: bool = False):
+    """Return desk coverage statistics instantly from background cache."""
+    from src.ui.services import today_service
+    return today_service.get_coverage_payload(force=force)
 
 
 @router.get("/missed-moves")
-def get_desk_missed_moves(min_move: float = 8.0, lookback: int = 5, include_backfill: bool = True):
-    """G2: Endpoint for missed-moves scorecard and weekly rollup by root cause."""
-    try:
-        from src.tracking.missed_moves import get_missed_moves
-        return get_missed_moves(min_move_pct=min_move, lookback_days=lookback, include_backfill=include_backfill)
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "traceback": traceback.format_exc()}
+@_timed_desk_get("missed-moves")
+def get_desk_missed_moves(min_move: float = 8.0, lookback: int = 5, include_backfill: bool = True, force: bool = False):
+    """G2: Endpoint for missed-moves scorecard instantly from background cache."""
+    from src.ui.services import today_service
+    return today_service.get_missed_moves_payload(force=force)
 
 
 class FeedbackNoteUpdate(BaseModel):
@@ -1641,14 +809,18 @@ class ManagePositionAction(BaseModel):
 
 
 @router.get("/feedback-loop")
-def get_feedback_loop_endpoint():
-    """Retrieve full position surveillance and trade post-mortem feedback loop."""
-    try:
-        from src.ui.services.feedback_service import get_feedback_loop_data
-        return {"status": "ok", **get_feedback_loop_data()}
-    except Exception as e:
-        logger.error(f"Error in feedback loop endpoint: {e}", exc_info=True)
-        return {"status": "error", "error": str(e), "open_positions": [], "closed_positions": [], "scorecard": {}}
+@_timed_desk_get("feedback-loop")
+def get_feedback_loop_endpoint(force: bool = False):
+    """Retrieve full position surveillance and trade post-mortem feedback loop instantly from background cache."""
+    from src.ui.services import today_service
+    return today_service.get_feedback_loop_payload(force=force)
+
+
+@router.get("/lock-stats")
+def get_lock_stats():
+    """Telemetry endpoint reporting SQLite lock hold durations, longest transactions, and active holders."""
+    from src.tracking.db_locks import get_all_lock_stats
+    return get_all_lock_stats()
 
 
 @router.post("/feedback-loop/notes")

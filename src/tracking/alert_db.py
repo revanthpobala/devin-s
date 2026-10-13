@@ -25,7 +25,7 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 DB_PATH = config.alerts_db_path()
-_db_lock = threading.Lock()
+from src.tracking.db_locks import alert_db_lock as _db_lock, get_readonly_connection
 
 
 def set_db_path(new_path: Path | str):
