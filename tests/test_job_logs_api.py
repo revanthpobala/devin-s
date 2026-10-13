@@ -66,19 +66,82 @@ def sample_job_and_log():
         with get_db() as conn:
             conn.cursor().execute("DELETE FROM active_research_jobs WHERE job_id = ?", (job_id,))
             conn.commit()
-
-
 def test_jobs_collection_includes_log_urls(client, sample_job_and_log):
     job_id, ticker, _, _ = sample_job_and_log
+
     resp = client.get("/api/jobs")
     assert resp.status_code == 200
     data = resp.json()
+
     assert "jobs" in data
     matching = [j for j in data["jobs"] if j.get("job_id") == job_id]
     assert len(matching) == 1
     job_item = matching[0]
     assert job_item["log_url"] == f"/api/jobs/{job_id}/logs"
     assert job_item["raw_log_url"] == f"/api/jobs/{job_id}/logs?raw=true"
+
+
+@pytest.fixture
+def two_clock_jobs():
+    """One job stamped UTC (the codebase's write convention) and one stamped local.
+
+    After ~5pm local the two stamps fall on different dates, which is exactly the window
+    where /api/jobs used to drop a job: it filtered today's panel on the LOCAL date while
+    matching against a UTC-stored timestamp. Distinct tickers because /api/jobs dedupes
+    each ticker to one row (RUNNING > QUEUED > latest finished).
+    """
+    utc_id, utc_ticker = "test_job_utc_clock_1", "TESTTICKERA"
+    local_id, local_ticker = "test_job_local_clock_1", "TESTTICKERB"
+    past_id, past_ticker = "test_job_past_dated_1", "TESTTICKERC"
+    seeds = (
+        (utc_id, utc_ticker, datetime.now(timezone.utc).isoformat(), "2026-10-08"),
+        (local_id, local_ticker, datetime.now().isoformat(), "2026-10-08"),
+        (past_id, past_ticker, "2020-01-02T15:00:00+00:00", "2020-01-02"),
+    )
+    with get_db() as conn:
+        c = conn.cursor()
+        for jid, tick, ts, tdate in seeds:
+            c.execute(
+                """
+                INSERT OR REPLACE INTO active_research_jobs
+                (job_id, ticker, mode, stage, status, started_at, log_file, target_date, stage_detail, tier)
+                VALUES (?, ?, 'full', 'DONE', 'COMPLETED', ?, ?, ?, 'Completed research', 'FULL')
+                """,
+                (jid, tick, ts, "", tdate),
+            )
+        conn.commit()
+    try:
+        yield utc_id, local_id, past_id
+    finally:
+        with get_db() as conn:
+            conn.cursor().execute(
+                "DELETE FROM active_research_jobs WHERE job_id IN (?, ?, ?)", (utc_id, local_id, past_id)
+            )
+            conn.commit()
+
+
+def test_jobs_collection_lists_both_clocks_and_keeps_past_filters_exact(client, two_clock_jobs):
+    """A UTC-stamped and a locally-stamped job both list under today regardless of the
+    local hour, while a genuinely past-dated job stays out of today's panel."""
+    utc_id, local_id, past_id = two_clock_jobs
+
+    resp = client.get("/api/jobs")
+    assert resp.status_code == 200
+    ids = [j["job_id"] for j in resp.json()["jobs"]]
+    assert utc_id in ids, "the UTC-stamped job must list under today (evening-clock regression)"
+    assert local_id in ids, "the locally-stamped job must list under today"
+    assert past_id not in ids, "a past-dated job must not leak into today's panel"
+
+    # The date picker offers today under both clocks as well.
+    dates = resp.json().get("available_dates") or []
+    assert datetime.now().strftime("%Y-%m-%d") in dates
+
+    # A past-date filter stays exact: today's jobs do not leak into the past view.
+    resp_past = client.get("/api/jobs?date=2020-01-02")
+    past_ids = [j["job_id"] for j in resp_past.json()["jobs"]]
+    assert past_id in past_ids
+    assert utc_id not in past_ids
+    assert local_id not in past_ids
 
 
 def test_get_single_job_metadata(client, sample_job_and_log):

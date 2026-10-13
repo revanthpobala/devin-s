@@ -1920,6 +1920,7 @@ def get_research_jobs(date: Optional[str] = None):
     with get_db() as conn:
         c = conn.cursor()
         today_str = datetime.now().strftime("%Y-%m-%d")
+        utc_today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         eff_date = (date or "").strip()
         if not eff_date:
             eff_date = today_str
@@ -1927,6 +1928,16 @@ def get_research_jobs(date: Optional[str] = None):
         if eff_date.lower() == "all":
             where = ""
             params: tuple = ()
+        elif eff_date == today_str:
+            # `started_at` is written in UTC across the codebase, so after ~5pm local the
+            # UTC date is already tomorrow: filtering today's panel on the LOCAL date alone
+            # dropped every evening job out of the list. When viewing today, accept either
+            # clock; a past-date filter stays exact.
+            where = (
+                "WHERE (target_date = ? OR substr(started_at, 1, 10) IN (?, ?)) "
+                "OR status IN ('RUNNING', 'QUEUED')"
+            )
+            params = (eff_date, eff_date, utc_today)
         else:
             where = "WHERE (target_date = ? OR substr(started_at, 1, 10) = ?) OR status IN ('RUNNING', 'QUEUED')"
             params = (eff_date, eff_date)
@@ -1936,7 +1947,7 @@ def get_research_jobs(date: Optional[str] = None):
                 "SELECT DISTINCT COALESCE(target_date, substr(started_at, 1, 10)) FROM active_research_jobs "
                 "WHERE (target_date IS NOT NULL AND TRIM(target_date) != '') OR started_at IS NOT NULL "
                 "ORDER BY 1 DESC LIMIT 60"
-            ).fetchall() if r[0] and r[0] <= today_str
+            ).fetchall() if r[0] and (r[0] <= today_str or r[0] == utc_today)
         ]
         if today_str not in available_dates:
             available_dates.insert(0, today_str)
