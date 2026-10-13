@@ -1,10 +1,13 @@
 import json
 import logging
 import os
+import shutil
+import sqlite3
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Iterable, List
 
 from playwright.sync_api import sync_playwright
 
@@ -44,6 +47,96 @@ ZOOM_OUT_TIMES = 3
 DEFAULT_LOOKBACK_DAYS = 90
 SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
 
+
+def profile_tv_session_state(profile_dir: Path) -> str:
+    """``'in'`` / ``'out'`` / ``'unknown'`` for this EXISTING Chrome profile.
+
+    The saved chart layout (``TV_CHART_URL``, default ``chart/jPAQSlZC/``) is
+    private to the account that created it. A signed-out profile is served
+    TradingView's "Can't open this chart layout" page — no canvas at all — so
+    every scrape on that profile dies on the canvas wait. Measured 2026-10-13:
+    of the six existing ``tv_chrome_profile*`` dirs only ``_1`` and ``_2`` carry
+    a session, which is exactly the intermittent "Scrape failed for <TICKER>"
+    pattern (workers land on a signed-out profile and fail).
+
+    Cookie values are DPAPI-encrypted, but the host/name rows are plaintext, so
+    the presence of a ``sessionid`` row is a reliable read-only probe. The live
+    Cookies DB is locked by Chrome, so it is copied (with its WAL) to a scratch
+    file first.
+
+    ``'unknown'`` is the honest answer when the file cannot be read at all: a
+    browser still running on that profile locks it, and every killed scrape
+    leaves such a browser behind for a while. Calling that "signed out" makes a
+    good profile unusable and pushes the job onto a broken one, so it is never
+    read as a confident "out".
+    """
+    profile_dir = Path(profile_dir)
+    for rel in ("Default/Network/Cookies", "Default/Cookies"):
+        live = profile_dir / rel
+        if not live.exists():
+            continue
+        try:
+            scratch = Path(tempfile.mkdtemp(prefix="tv_cookie_probe_")) / live.name
+            shutil.copyfile(live, scratch)
+            for suffix in ("-wal", "-shm", "-journal"):
+                side = live.with_name(live.name + suffix)
+                if side.exists():
+                    shutil.copyfile(side, scratch.with_name(scratch.name + suffix))
+            conn = sqlite3.connect(str(scratch))
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM cookies "
+                    "WHERE host_key LIKE '%tradingview%' AND name = 'sessionid' LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            return "in" if row else "out"
+        except Exception:
+            return "unknown"
+    return "unknown"
+
+
+def profile_has_tv_session(profile_dir: Path) -> bool:
+    """True only when a TradingView login session is positively found."""
+    return profile_tv_session_state(profile_dir) == "in"
+
+
+def signed_in_profiles(names: Optional[Iterable[str]] = None) -> List[str]:
+    """Existing ``tv_chrome_profile*`` names that are signed into TradingView.
+
+    ``names`` defaults to every existing profile in ``BASE_DIR``. Nothing is
+    ever created here: these are the profiles already on disk.
+    """
+    if names is None:
+        names = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    return [n for n in names if profile_has_tv_session(config.BASE_DIR / n)]
+
+
+def usable_profiles(names: Optional[Iterable[str]] = None) -> List[str]:
+    """Existing profiles that are NOT known signed-out.
+
+    A worker must never be handed a profile that is provably signed out — its
+    scrape fails. Sign-in proven ("in") and unprovable ("unknown": a live browser
+    locks the Cookies DB) are both usable; provably signed-out is not.
+    """
+    if names is None:
+        names = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    keep = set()
+    for n in names:
+        if profile_tv_session_state(config.BASE_DIR / n) in ("in", "unknown"):
+            keep.add(n)
+    return [n for n in names if n in keep]
+
+
+def rank_profiles_signed_in_first(names: List[str]) -> List[str]:
+    """The same existing profiles: signed-in, then unprovable, then signed-out."""
+    keep_in, unknown, out = [], [], []
+    for n in names:
+        state = profile_tv_session_state(config.BASE_DIR / n)
+        (keep_in if state == "in" else unknown if state == "unknown" else out).append(n)
+    return keep_in + unknown + out
+
+
 class TVScraper:
     def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None, headless: bool = True):
         env_chart = (os.getenv("TV_CHART_URL") or "").strip()
@@ -67,7 +160,11 @@ class TVScraper:
         elif worker_id is not None:
             self.user_data_dir = str(config.BASE_DIR / f"tv_chrome_profile_{worker_id}")
         else:
-            self.user_data_dir = str(config.BASE_DIR / "tv_chrome_profile")
+            # No profile assigned: use an existing one that is actually signed
+            # into TradingView, because the saved layout needs a session.
+            existing = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+            ranked = rank_profiles_signed_in_first(existing)
+            self.user_data_dir = str(config.BASE_DIR / (ranked[0] if ranked else "tv_chrome_profile"))
 
         # Create a date-specific subfolder for today's screenshots
         today_str = target_date or datetime.now().strftime("%Y-%m-%d")
@@ -134,6 +231,26 @@ class TVScraper:
         page.keyboard.press("Escape")
         time.sleep(1.0)
 
+    def _raise_no_canvas(self, symbol: str, err: Exception, error_screenshot: Path) -> None:
+        """Fail loudly and diagnosably when the chart never renders.
+
+        The saved layout is private to the TradingView account, so a signed-out
+        profile is served the "Can't open this chart layout" page (no canvas)
+        and the raw Playwright timeout says nothing about why. Name the profile
+        and its sign-in state, and point at the screenshot that proves it.
+        """
+        profile = Path(self.user_data_dir).name
+        signed = profile_has_tv_session(self.user_data_dir)
+        reason = (
+            f"profile '{profile}' is NOT signed into TradingView, so the private "
+            f"saved layout cannot open"
+            if not signed
+            else f"layout {self.chart_url} did not render for profile '{profile}'"
+        )
+        raise RuntimeError(
+            f"{symbol}: no chart canvas — {reason}. Screenshot: {error_screenshot}"
+        ) from err
+
     def capture_normal_chart(self, symbol: str) -> Dict[str, str]:
         """
         Scrapes a standard TradingView daily candlestick chart with the Rev layout
@@ -170,6 +287,7 @@ class TVScraper:
                     pr.name for pr in config.BASE_DIR.glob("tv_chrome_profile_*")
                     if pr.is_dir() and pr.name != Path(self.user_data_dir).name
                 ]
+                avail_profs = rank_profiles_signed_in_first(avail_profs)
                 for alt in avail_profs:
                     try:
                         context = p.chromium.launch_persistent_context(
@@ -190,7 +308,19 @@ class TVScraper:
             url = f"{self.chart_url}{sep}symbol={safe_symbol}&interval=D"
             logger.info(f"Navigating to normal chart: {url}")
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_selector("canvas", timeout=25000)
+            try:
+                page.wait_for_selector("canvas", timeout=25000)
+            except Exception as e_canvas:
+                error_screenshot = self.screenshots_dir / f"{safe_symbol}_error.png"
+                try:
+                    page.screenshot(path=str(error_screenshot))
+                except Exception:
+                    pass
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                self._raise_no_canvas(safe_symbol, e_canvas, error_screenshot)
             time.sleep(4.0)
 
             try:
@@ -245,6 +375,7 @@ class TVScraper:
                         pr.name for pr in config.BASE_DIR.glob("tv_chrome_profile_*")
                         if pr.is_dir() and pr.name != Path(self.user_data_dir).name
                     ]
+                    avail_profs = rank_profiles_signed_in_first(avail_profs)
                     random.shuffle(avail_profs)
                     for alt in avail_profs:
                         try:
@@ -275,9 +406,18 @@ class TVScraper:
                 page.wait_for_selector("canvas", timeout=30000)
             except Exception as e:
                 error_screenshot = self.screenshots_dir / f"{symbol}_error.png"
-                page.screenshot(path=str(error_screenshot))
+                try:
+                    page.screenshot(path=str(error_screenshot))
+                except Exception:
+                    pass
                 logger.error(f"Failed to find canvas, screenshot saved to {error_screenshot}")
-                raise e
+                # Close the browser before failing: a leaked context keeps the
+                # profile's Singleton lock held and blocks every later job.
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                self._raise_no_canvas(symbol, e, error_screenshot)
 
             logger.info(
                 "Chart loaded. Waiting 60 seconds for indicators and Data Window to fully populate..."
@@ -602,14 +742,13 @@ if __name__ == "__main__":
     import sys
 
     # Fixed, pre-logged-in Chrome profiles (one per parallel worker so sessions
-    # never collide on the Singleton lock). Order matters only for assignment.
-    CHROME_PROFILES = [
-        "tv_chrome_profile_1",
-        "tv_chrome_profile_2",
-        "tv_chrome_profile_4",
-        "tv_chrome_profile_3",
-        "tv_chrome_profile_5",
-    ]
+    # never collide on the Singleton lock). Only the existing profiles are used,
+    # signed-in ones first — the saved layout is private and a signed-out
+    # profile gets TradingView's "Can't open this chart layout" page.
+    CHROME_PROFILES = rank_profiles_signed_in_first(
+        [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    ) or ["tv_chrome_profile_1"]
+    logger.info(f"Chrome profiles (signed-in first): {CHROME_PROFILES}")
 
     symbols = []
     target_date = None

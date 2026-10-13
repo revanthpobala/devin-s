@@ -102,10 +102,27 @@ def run_swing_pipeline(
         logger.info("Preserving existing survivor manifest at %s (single ticker override: %s)", manifest_path, target_ticker)
 
     # 2. Assign Chrome profiles across survivors
-    CHROME_PROFILES = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    # Only the profiles that already exist are used. The saved chart layout is
+    # private to the TradingView account, so a profile without a login session
+    # gets "Can't open this chart layout" and its scrape fails — so a worker is
+    # never handed a profile that is PROVABLY signed out. Signed-out profiles
+    # stay on disk (never deleted), they are just never assigned.
+    from src.data.tv_scraper import rank_profiles_signed_in_first, usable_profiles
+
+    existing_profiles = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    usable = usable_profiles(existing_profiles)
+    signed_out = [n for n in existing_profiles if n not in set(usable)]
+    if signed_out:
+        logger.warning(
+            f"Not signed into TradingView — the private saved layout will not open there. "
+            f"Never assigning these existing profiles: {signed_out}"
+        )
+    CHROME_PROFILES = rank_profiles_signed_in_first(existing_profiles)
     if not CHROME_PROFILES:
         CHROME_PROFILES = ["tv_chrome_profile_1"]
-    logger.info(f"Using {len(CHROME_PROFILES)} existing Chrome profile(s): {CHROME_PROFILES}")
+    if usable:
+        CHROME_PROFILES = [n for n in CHROME_PROFILES if n in set(usable)]
+    logger.info(f"Using {len(CHROME_PROFILES)} assignable Chrome profile(s): {CHROME_PROFILES}")
 
     num_workers = min(len(survivors), len(CHROME_PROFILES), 4)
 

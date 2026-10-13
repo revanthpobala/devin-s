@@ -253,7 +253,10 @@ def test_reconciliation_makes_the_plan_trigger_win_over_a_mis_scraped_row():
     assert recon["plan_breakout_level"] == 356.83
 
     # Dry run first: the row is untouched until the sweep is asked to write.
-    changes = plan_repair_mod.repair_watch_targets(write=False, reconcile_rows=True)
+    # The plan of record is the test's own: reports/ is git-ignored, so reading
+    # the live tree here would make the report depend on this machine's state.
+    with patch.object(plan_repair_mod, "_stored_plan_for", return_value=plan):
+        changes = plan_repair_mod.repair_watch_targets(write=False, reconcile_rows=True)
     assert any(c.get("ticker") == "GOOGL" and c.get("kind") == "reconciled" for c in changes["repaired"])
     unchanged = next(r for r in watch_manager.get_all_watch_targets() if r["ticker"] == "GOOGL")
     assert unchanged["breakout_level"] == 355.0, "a dry run never writes"
@@ -294,6 +297,10 @@ def test_reconciliation_leaves_a_manual_row_alone_in_a_dry_run_and_agrees_when_e
         assert reconcile_row_with_plan(row) is None, "an agreeing row reconciles to nothing"
         # A plan with no trigger at all is never reconciled against (nothing real).
         with patch.object(plan_repair_mod, "_stored_plan_for", return_value={"entry_type": "LIMIT"}):
+            assert reconcile_row_with_plan(row) is None
+        # No stored plan of record (missing file) is the same fail-closed answer:
+        # the row is left alone rather than reconciled against an invented level.
+        with patch.object(plan_repair_mod, "_stored_plan_for", return_value=None):
             assert reconcile_row_with_plan(row) is None
 
 

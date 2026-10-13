@@ -1481,11 +1481,18 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
 
         # Pick a Chrome profile that is NOT currently in use by another scraper,
         # so we never collide on the Singleton lock with a running batch scrape.
+        # Among the existing profiles prefer one signed into TradingView: the
+        # saved chart layout is private, so a signed-out profile lands on
+        # TradingView's "Can't open this chart layout" page with no canvas.
         chrome_profile = None
         try:
             import psutil
 
-            profiles = sorted(p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()) or ["tv_chrome_profile_1"]
+            from src.data.tv_scraper import rank_profiles_signed_in_first
+
+            profiles = rank_profiles_signed_in_first(
+                sorted(p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir())
+            ) or ["tv_chrome_profile_1"]
 
             def _locked(p_name: str) -> bool:
                 for proc in psutil.process_iter(["name", "cmdline"]):

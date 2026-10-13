@@ -12,7 +12,7 @@ import concurrent.futures
 # Set up project path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src import config
-from src.data.tv_scraper import TVScraper
+from src.data.tv_scraper import TVScraper, rank_profiles_signed_in_first, usable_profiles
 from src.data.csv_adapter import MIN_COLS
 
 logging.basicConfig(
@@ -197,9 +197,16 @@ def main():
         logger.info("No tickers need rescraping!")
         return
 
-    profiles = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
-    if not profiles:
-        profiles = ["tv_chrome_profile_1"]
+    # Existing profiles only, signed-in ones first: the saved chart layout is
+    # private to the TradingView account, so a signed-out profile is served
+    # "Can't open this chart layout" (no canvas) and the rescrape fails. A
+    # profile that is provably signed out is never assigned.
+    existing_profiles = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+    usable = usable_profiles(existing_profiles)
+    profiles = rank_profiles_signed_in_first(usable) or usable or ["tv_chrome_profile_1"]
+    signed_out = [n for n in existing_profiles if n not in set(usable)]
+    if signed_out:
+        logger.warning(f"Not signed into TradingView, never assigned: {signed_out}")
 
     successful = []
     failed = []

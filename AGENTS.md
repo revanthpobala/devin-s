@@ -75,7 +75,7 @@ scripts\launchers\start_market.bat
 **Capabilities**:
 - Deterministic Cascade (`src/logic/deterministic_cascade.py`) → survivor list from the Trades sheet
 - SPX mode: load all S&P 500 constituents from `EveryDay/SPX-constituents.csv` (1-year history) into the SWING-SPX sheet
-- Parallel TradingView chart scraping via Playwright + Chrome profiles (`src/data/tv_scraper.py`, `src/logic/process_survivor.py:scrape_survivor_task`)
+- Parallel TradingView chart scraping via Playwright + Chrome profiles (`src/data/tv_scraper.py`, `src/logic/process_survivor.py:scrape_survivor_task`) — only the EXISTING profiles are used, and only the ones signed into TradingView are assigned: the saved chart layout (`chart/jPAQSlZC/`) is private, so a signed-out profile gets "Can't open this chart layout" (no canvas) and its scrape fails. `tv_scraper.signed_in_profiles()`/`rank_profiles_signed_in_first()` detect the `sessionid` cookie read-only and rank accordingly; signed-out profiles are never deleted, just never assigned (and the canvas failure names the profile)
 - Writes `data/raw/<date>/` artifacts per ticker: chart png (naked + 90d zoom), datawindow json/csv, news dossier
 - Supports single-ticker override (`--ticker AAPL`) and forced re-scrape (`--force`)
 

@@ -248,6 +248,7 @@ def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None, reco
             errors.append({"ticker": ticker, "error": str(e)})
 
     db_changes = repair_watch_targets(write=write, reconcile_rows=reconcile_rows)
+    reconciled_rows = [r for r in db_changes.get("repaired", []) if r.get("kind") == "reconciled"]
 
     return {
         "repaired": repaired,
@@ -256,8 +257,9 @@ def sweep_stored_plans(write: bool = True, base_dir: Optional[Path] = None, reco
         "errors": errors,
         "summary": (
             f"{len(repaired)} stored plan(s) repaired across {sum(len(r['files']) for r in repaired)} file(s), "
-            f"{len(db_changes['repaired'])} watch_targets row(s) repaired, "
-            f"{len(skipped)} skipped (trigger not recoverable), {len(errors)} error(s)"
+            f"{len(db_changes['repaired'])} watch_targets row(s) repaired"
+            + (f" ({len(reconciled_rows)} reconciled to the stored plan's trigger)" if reconciled_rows else "")
+            + f", {len(skipped)} skipped (trigger not recoverable), {len(errors)} error(s)"
         ),
     }
 
