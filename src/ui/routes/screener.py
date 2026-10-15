@@ -41,13 +41,13 @@ def _pb_lane_prior(rr: float, pb) -> Optional[tuple]:
     than a long-side prior it has no claim to.
     """
     from src.logic.data_window_filter import lane_prior
-    from src.tracking.rr_config import hi_rr
+    from src.tracking.rr_config import GREEN_RR, hi_rr
 
     if rr is None or rr <= 0:
         return None
     if pb is None:
         return None          # not measured -> no prior, rather than borrowing the long-side one
-    reason = "rr_at_market_lane_strong" if rr >= hi_rr() else "rr_at_market_lane"
+    reason = "rr_at_market_lane_strong" if rr >= hi_rr() else "rr_at_market_lane" if rr >= GREEN_RR else "rr_at_market_lane_marginal"
     return lane_prior(reason, bool(pb))
 
 

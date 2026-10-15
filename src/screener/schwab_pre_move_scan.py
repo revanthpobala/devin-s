@@ -65,6 +65,7 @@ except ImportError:
 
 from src import config
 from src.clients.schwab_client import get_schwab_client
+from src.screener.universe import price_band_reject
 
 
 def _get_python_exe() -> str:
@@ -183,31 +184,15 @@ SP500_CSV = config.BASE_DIR / "data" / "SP500.csv"
 
 
 def load_schwab_1000_tickers() -> List[str]:
-    """Load and sanitize valid tickers from the Schwab 1000 constituents CSV."""
-    if not SCHWAB_1000_CSV.exists():
-        logger.error(f"Schwab 1000 CSV not found at {SCHWAB_1000_CSV}")
-        return []
+    """Screener universe: Schwab 1000 plus S&P 400/600 ETF holdings (see src/screener/universe.py)."""
+    from src.screener.universe import load_tickers
 
-    try:
-        df = pd.read_csv(SCHWAB_1000_CSV)
-        raw_tickers = df["Ticker"].dropna().tolist()
-        clean = []
-        for t in raw_tickers:
-            sym = str(t).strip().upper().replace(".", "/")
-            if sym and not sym.startswith("^") and sym != "NAN":
-                clean.append(sym)
-        # Deduplicate while preserving index order
-        seen = set()
-        deduped = []
-        for s in clean:
-            if s not in seen:
-                seen.add(s)
-                deduped.append(s)
-        logger.info(f"Loaded {len(deduped)} valid tickers from Schwab 1000 Index.")
-        return deduped
-    except Exception as e:
-        logger.error(f"Failed to read Schwab 1000 CSV: {e}")
-        return []
+    tickers = load_tickers()
+    logger.info(f"Loaded {len(tickers)} tickers (Schwab 1000 + S&P 400/600 holdings).")
+    return tickers
+
+
+EXCLUDE_BIOTECH = False
 
 
 def load_biotech_exclusion_set() -> set[str]:
@@ -321,7 +306,7 @@ def stage1_fast_filter(
 ) -> List[Dict[str, Any]]:
     """
     Stage 1 Filter across the universe with multi-lane discovery:
-      - Common: Price >= $15.00, 10d Vol >= 800k, non-clinical biotech.
+      - Common: Price $10-$500 (above $500 only if large cap), 10d Vol >= 800k, non-clinical biotech.
       - Lane A (Basing): pos_52w between 18% and 68%, headroom_52w >= 15%, -4.5% <= pct_chg <= 2.0%
       - Lane B (Continuation): pos_52w > 68%, headroom_52w < 15% (near-high leaders), -4.5% <= pct_chg <= 3.5%
     """
@@ -329,14 +314,14 @@ def stage1_fast_filter(
 
     for sym, val in raw_quotes.items():
         clean_sym = sym.replace("/", ".")
-        if clean_sym in biotech_set:
+        if EXCLUDE_BIOTECH and clean_sym in biotech_set:
             if funnel_tracker:
                 funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
 
         ref = val.get("reference") or {}
         desc = str(ref.get("description", "")).lower()
-        if "biotech" in desc or "therapeutics" in desc:
+        if EXCLUDE_BIOTECH and any(k in desc for k in ("biotech", "therapeutics", "pharma", "biosciences", "oncology")):
             if funnel_tracker:
                 funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
@@ -350,9 +335,10 @@ def stage1_fast_filter(
             or val.get("regular", {}).get("regularMarketLastPrice")
             or 0.0
         )
-        if last_px < 15.0:
+        band = price_band_reject(sym, last_px)
+        if band:
             if funnel_tracker:
-                funnel_tracker["rejections"]["price_under_15"] = funnel_tracker["rejections"].get("price_under_15", 0) + 1
+                funnel_tracker["rejections"][band] = funnel_tracker["rejections"].get(band, 0) + 1
             continue
 
         high_52 = quote.get("52WeekHigh") or 0.0
@@ -437,7 +423,7 @@ def stage1_short_filter(
 ) -> List[Dict[str, Any]]:
     """
     Stage 1 Filter for Prime Short Candidates:
-      - Price >= $15.00
+      - Price $10-$500 (above $500 only if large cap)
       - 10-day Average Volume >= 800,000 shares
       - Sitting at 52-Week High Top: pos_52w >= 88.0%
       - Bumping against ceiling: Headroom to 52w High <= 4.5%
@@ -448,14 +434,14 @@ def stage1_short_filter(
 
     for sym, val in raw_quotes.items():
         clean_sym = sym.replace("/", ".")
-        if clean_sym in biotech_set:
+        if EXCLUDE_BIOTECH and clean_sym in biotech_set:
             if funnel_tracker:
                 funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
 
         ref = val.get("reference") or {}
         desc = str(ref.get("description", "")).lower()
-        if "biotech" in desc or "therapeutics" in desc:
+        if EXCLUDE_BIOTECH and any(k in desc for k in ("biotech", "therapeutics", "pharma", "biosciences", "oncology")):
             if funnel_tracker:
                 funnel_tracker["rejections"]["biotech_exclusion"] = funnel_tracker["rejections"].get("biotech_exclusion", 0) + 1
             continue
@@ -469,9 +455,10 @@ def stage1_short_filter(
             or val.get("regular", {}).get("regularMarketLastPrice")
             or 0.0
         )
-        if last_px < 15.0:
+        band = price_band_reject(sym, last_px)
+        if band:
             if funnel_tracker:
-                funnel_tracker["rejections"]["price_under_15"] = funnel_tracker["rejections"].get("price_under_15", 0) + 1
+                funnel_tracker["rejections"][band] = funnel_tracker["rejections"].get(band, 0) + 1
             continue
 
         high_52 = quote.get("52WeekHigh") or 0.0
@@ -779,7 +766,8 @@ def print_funnel_summary(funnel_tracker: Dict[str, Any]):
     print("=" * 95)
     print(f"  Total Constituents Evaluated:      {total:>5}")
     print(f"  • Rejected - Biotech Exclusion:    {rej.get('biotech_exclusion', 0):>5}")
-    print(f"  • Rejected - Price < $15.00:       {rej.get('price_under_15', 0):>5}")
+    print(f"  • Rejected - Price < $10.00:       {rej.get('price_under_min', 0):>5}")
+    print(f"  • Rejected - > $500, not large cap:{rej.get('price_over_max_not_large_cap', 0):>5}")
     print(f"  • Rejected - Volume < 500k:        {rej.get('low_volume', 0):>5}")
     print(f"  • Rejected - Missing 52w Data:     {rej.get('missing_52w_data', 0):>5}")
     print(f"  • Rejected - Out of Bounds / Chg:  {rej.get('out_of_bounds_or_excess_chg', 0):>5}")
@@ -1597,6 +1585,17 @@ def run_autonomous_screener_pipeline(
             else:
                 send_to_deep = False
 
+            explore_hit = False
+            if not send_to_deep and thesis_path.exists():
+                try:
+                    from src.tracking.explore_arm import pick as _explore_pick
+                    explore_hit = _explore_pick(sym, t_date, rec.get("triage") if isinstance(rec.get("triage"), dict) else {})
+                except Exception as e_exp:
+                    logger.debug(f"[{sym}] Exploration arm check failed: {e_exp}")
+                if explore_hit:
+                    send_to_deep = True
+                    logger.info(f"[{sym}] EXPLORE arm: gate-blocked name sampled for deep research (measurement only).")
+
             logger.info(f"[{sym}] Local triage verdict: {triage_verdict} (send_for_deep_research={send_to_deep})")
 
             # =========================================================================
@@ -1630,6 +1629,8 @@ def run_autonomous_screener_pipeline(
                 deep_timeout_s = int(os.getenv("DEEP_RESEARCH_TIMEOUT_S", "5400"))
                 try:
                     cmd_deep = [py_exe, "run_deep_research.py", t_date, "--ticker", sym]
+                    if explore_hit:
+                        cmd_deep += ["--force", sym]
                     subprocess.run(cmd_deep, cwd=config.BASE_DIR, check=True, timeout=deep_timeout_s)
 
                     logger.info(f"[{sym}] Syncing research watch levels & Tastytrade cloud quote alerts...")

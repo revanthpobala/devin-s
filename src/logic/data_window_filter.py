@@ -87,6 +87,7 @@ _RR_STRONG_ENV = os.getenv("RR_MKT_STRONG")
 # live value; these are the values as of import.
 from src.tracking.rr_config import (  # noqa: E402
     STOP_ATR_MIN,   # noqa: F401  re-exported: the measured stop-width floor lives there now
+    GREEN_RR,
     hi_rr,
     min_rr,
 )
@@ -108,6 +109,8 @@ RR_LANE_ENABLED = os.getenv("RR_LANE_ENABLED", "1") not in ("0", "false", "False
 LANE_PRIORS = {
     "rr_at_market_lane_strong": (25.0, 0.13),
     "rr_at_market_lane": (30.0, 0.08),
+    # R:R 1.5-2.0, in zone, fade off, 1.7M bars (full_v4_av2): +0.021R, 40.7% win, era 1 negative, 54% of tickers positive
+    "rr_at_market_lane_marginal": (40.7, 0.02),
     "reversal_buy_lane": (45.0, 0.08),
     "oversold_lane": (51.0, 0.06),
     "rsi2_setup_lane": (61.0, 0.06),
@@ -142,6 +145,7 @@ def lane_prior(reason: Optional[str], pb: Optional[bool]) -> Optional[Tuple[floa
 LANE_TO_SETUP_LANE = {
     "rr_at_market_lane_strong": "RR_SETUP_STRONG",
     "rr_at_market_lane": "RR_SETUP",
+    "rr_at_market_lane_marginal": "RR_SETUP",
     "reversal_buy_lane": "CODE20",
     "oversold_lane": "OVERSOLD",
     "rsi2_setup_lane": "RSI2",
@@ -932,7 +936,8 @@ def run_data_window_filter(
 
         if gate_ok:
             triage = "PASS"
-            reason = "rr_at_market_lane_strong" if rr_mkt >= rr_strong_floor() else "rr_at_market_lane"
+            reason = ("rr_at_market_lane_strong" if rr_mkt >= rr_strong_floor()
+                      else "rr_at_market_lane" if rr_mkt >= GREEN_RR else "rr_at_market_lane_marginal")
         else:
             triage = "WATCH"
             is_pb = bool(gate_in.get("signal_pack") and (int(round(float(gate_in["signal_pack"]))) & 32))
@@ -1201,6 +1206,36 @@ def _plan(f: Dict[str, Optional[float]], side: str) -> Dict[str, Optional[float]
         "stop": f["short_stop_loss"],
         "target": f["short_target"],
     }
+def datawindow_gate(ticker: str, date_str: Optional[str] = None) -> Tuple[bool, List[str]]:
+    """Canonical gate on the Data Window's own Long Entry/Stop/Target (R:R derived at market)."""
+    from src.data.datawindow_loader import load_datawindow
+    from src.logic.actionable_gate import (
+        dw_long_levels,
+        dw_rr_at_market,
+        gate_inputs_from_datawindow,
+        is_actionable,
+    )
+
+    dw = load_datawindow(ticker, date_str)
+    if not dw:
+        return False, ["no Data Window"]
+    lv = dw_long_levels(dw)
+    rr = dw_rr_at_market(lv)
+    gate_in = gate_inputs_from_datawindow(dw)
+    gate_in["long_rr_at_market"] = rr
+    if lv["stop"] is not None:
+        gate_in["long_stop_loss"] = lv["stop"]
+    ok, fails = is_actionable(
+        gate_in,
+        {"side": "long", "entry": lv["entry"] or lv["price"], "stop": lv["stop"], "t1": lv["target"], "rr": rr},
+    )
+    fails = list(fails)
+    if rr is None:
+        ok = False
+        fails.append("R:R at market undefined from Data Window levels")
+    return ok, fails
+
+
 # ---------------------------------------------------------------------------
 # 5. RANK — sort candidates for deep research selection
 # ---------------------------------------------------------------------------

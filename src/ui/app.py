@@ -17,6 +17,7 @@ from src.ui.routes import (
     copilot,
     edge_scanner,
     intraday,
+    notifications,
     portfolio,
     research,
     screener,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(copilot.router)
     app.include_router(edge_scanner.router)
     app.include_router(desk.router)
+    app.include_router(notifications.router)
 
     # 5. Lifecycle Event Handlers
     @app.on_event("startup")

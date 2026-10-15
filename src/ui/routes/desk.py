@@ -229,6 +229,85 @@ def _pb_bucket(pb_funnel) -> str:
     return "PB" if bool(pb_funnel) else "no PB"
 
 
+@router.get("/macro")
+def get_macro_board():
+    """High-impact US releases in the next 48h and which open options they can hit."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from src.tracking import macro_calendar as mc
+    from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+    try:
+        now = datetime.now(ZoneInfo("America/New_York"))
+        from src.tracking.spread_check import spread_flags
+
+        positions = get_portfolio_positions() or []
+        return {"releases": mc.release_groups(now, mc.fetch_events(now), positions), "spreads": spread_flags(positions, now.date()),
+                "opex": mc.opex_status(now, positions)}
+    except Exception as e:
+        logger.error(f"macro board failed: {type(e).__name__} {e}")
+        return {"releases": [], "error": f"{type(e).__name__}: {e}"}
+
+
+@router.get("/regime-lane")
+def get_regime_lane():
+    """Today's breadth quintile with measured lane expectancy, plus index protection on event days."""
+    from src.tracking import regime_lane as rl
+    from src.tracking import risk_snapshot
+    from src.tracking import macro_calendar as mc
+    from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+    from src.ui.services.opportunity_service import get_market_regime
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        regime = get_market_regime()
+        now = datetime.now(ZoneInfo("America/New_York"))
+        positions = get_portfolio_positions() or []
+        releases = mc.release_groups(now, mc.fetch_events(now), positions)
+        spy = ((regime or {}).get("tide") or {}).get("spy")
+        prot = rl.index_protection(risk_snapshot.get_snapshot(), releases, mc.opex_status(now, positions), spy)
+        return {"lane": rl.lane_context(regime), "protection": prot}
+    except Exception as e:
+        logger.error(f"regime lane failed: {type(e).__name__} {e}")
+        return {"lane": {"available": False}, "protection": None, "error": f"{type(e).__name__}: {e}"}
+
+
+@router.get("/thesis-ledger")
+def get_thesis_ledger():
+    """Paper thesis ledger: theses, paper tranches, last research update, scores vs SPY."""
+    from src.tracking import thesis_ledger
+    try:
+        return thesis_ledger.board()
+    except Exception as e:
+        logger.error(f"thesis ledger failed: {type(e).__name__} {e}")
+        return {"theses": [], "error": f"{type(e).__name__}: {e}"}
+
+
+class ThesisSeedBody(BaseModel):
+    tickers: List[str] = []
+
+
+@router.post("/thesis-ledger/seed")
+def seed_thesis_ledger(body: ThesisSeedBody):
+    """Seed held equity names plus the given list (cap 30 active)."""
+    from src.tracking import thesis_ledger
+    try:
+        return thesis_ledger.seed(body.tickers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@router.get("/deploy-plan")
+def get_deploy_plan():
+    """Tranche plan for dry powder: gate-passing buys now, limits at zone tops, reserve."""
+    from src.ui.services.deploy_planner import build_deploy_plan
+    try:
+        return build_deploy_plan()
+    except Exception as e:
+        logger.error(f"deploy plan failed: {type(e).__name__} {e}")
+        return {"error": f"{type(e).__name__}: {e}", "tranches": []}
+
+
 @router.get("/journal")
 def get_journal(
     status: Optional[str] = None,

@@ -28,6 +28,9 @@ def seeded(tmp_path, monkeypatch):
 
     monkeypatch.setattr(adb, "DB_PATH", tmp_path / "alerts.db")
     monkeypatch.setattr(wm, "DB_PATH", tmp_path / "watch.db")
+    import src.tracking.auto_triage_daemon as atd_gate
+
+    monkeypatch.setattr(atd_gate, "_data_window_gate", lambda a: (True, []))
     adb.init_db()
     wm.init_watch_db()
 
@@ -94,6 +97,8 @@ def _daemon(monkeypatch):
     d.batch_size = 50
     d.poll_interval = 999
     d.total_triaged = 0
+    d.total_skipped = 0
+    monkeypatch.setattr(atd, "_data_window_gate", lambda a: (True, []))
     d.is_processing = False
     d._stop_event = threading.Event()
     return d, seen, ae

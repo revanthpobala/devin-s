@@ -34,6 +34,9 @@ def seeded(tmp_path, monkeypatch):
             )
         c.commit()
 
+    import src.tracking.auto_triage_daemon as atd
+
+    monkeypatch.setattr(atd, "_data_window_gate", lambda a: (True, []))
     seen: list = []
     monkeypatch.setattr(ae, "evaluate_alert_payload",
                         lambda a, use_tools=False: seen.append(a["message_id"]) or {})

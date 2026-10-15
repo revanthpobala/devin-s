@@ -1284,7 +1284,7 @@ class SheetsTracker:
                 if status_raw == "IN_ZONE":
                     status_badge = "🎯 IN ZONE"
                 elif status_raw == "STALKING":
-                    status_badge = "⏳ STALKING"
+                    status_badge = "⏳ WAITING"
                 elif status_raw == "INVALIDATED":
                     status_badge = "🛑 INVALIDATED"
                 elif status_raw == "IN_TRADE":

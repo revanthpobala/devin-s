@@ -1,4 +1,4 @@
-﻿"""
+"""
 src/ui/services/opportunity_service.py
 
 Real-Time Opportunity Synthesis & Live Market Dynamics Engine.
@@ -15,6 +15,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -155,15 +156,35 @@ def _extract_pm_takeaways(arbitration_path: Path, max_bullets: int = 2) -> List[
         return []
 
 
+def _report_age_days(report_date, now) -> int:
+    try:
+        return (now.date() - datetime.strptime(str(report_date)[:10], "%Y-%m-%d").date()).days
+    except Exception:
+        return 0
+
+
+_OPPS_REFRESHING = threading.Lock()
+
+
 def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[Dict[str, Any]]:
-    """
-    Scan reports/ across lookback_days (default 3: today + recent session), parse deep research watch_levels,
-    enrich with live quotes, compute proximity and R:R, and return structured setups.
-    """
+    """Cached opportunities; an expired cache is served while a background thread rebuilds it."""
+    if _OPPS_CACHE is None:
+        return _collect_opportunities_uncached(lookback_days)
+    if (time.time() - _OPPS_CACHE_TIME) >= _OPPS_CACHE_TTL and _OPPS_REFRESHING.acquire(blocking=False):
+        def _run():
+            try:
+                _collect_opportunities_uncached(lookback_days)
+            except Exception as e:
+                logger.debug("background opportunities refresh failed: %s", e)
+            finally:
+                _OPPS_REFRESHING.release()
+        threading.Thread(target=_run, daemon=True, name="OppsRefresh").start()
+    return _OPPS_CACHE
+
+
+def _collect_opportunities_uncached(lookback_days: int = 3) -> List[Dict[str, Any]]:
+    """Scan reports/, parse watch_levels, enrich with live quotes, compute proximity and R:R."""
     global _OPPS_CACHE, _OPPS_CACHE_TIME
-    now_ts = time.time()
-    if _OPPS_CACHE is not None and (now_ts - _OPPS_CACHE_TIME) < _OPPS_CACHE_TTL:
-        return _OPPS_CACHE
 
     reports_base = config.BASE_DIR / "reports"
     if not reports_base.exists():
@@ -341,6 +362,7 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                         "summary_path": None,
                         "arbitration_path": None,
                         "stage": "SCREENER_COIL",
+                        "pb_funnel": c.get("pb_funnel"),
                         "needs_deep_research": True,
                         "is_actionable": False,
                         "gate_reasons": ["Screener coil: awaiting Data Window measurement"],
@@ -360,7 +382,13 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
         logger.warning(f"Batch price error for opportunities: {e}")
 
     # Evaluate gate for each setup
-    from src.logic.actionable_gate import is_actionable as check_is_actionable, gate_inputs_from_datawindow
+    from src.logic.actionable_gate import (
+        is_actionable as check_is_actionable,
+        gate_inputs_from_datawindow,
+        dw_long_levels,
+        dw_rr_at_market,
+        level_mismatch,
+    )
     from src.data.datawindow_loader import load_datawindow
     processed: List[Dict[str, Any]] = []
 
@@ -481,27 +509,46 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
                     s["limit_price"] = limit_price
                     s["wait_for"] = f"wait for ${limit_price:.2f}"
 
-        # 6. Evaluate Canonical Gate with Live Inputs
+        # 6. Evaluate Canonical Gate on Data Window levels only
+        s["level_mismatch"] = None
         if dw:
+            dw_lv = dw_long_levels(dw)
+            ref_px = spot if spot > 0 else dw_lv["price"]
+            dw_rr = dw_rr_at_market(dw_lv, ref_px)
+            if s.get("stage") == "SCREENER_COIL":
+                s["level_mismatch"] = level_mismatch(
+                    dw_lv, {"entry": e_high, "stop": stop, "target": t1}, ref_px
+                )
+                if s["level_mismatch"]:
+                    s["live_rr"] = round(dw_rr, 2) if dw_rr is not None else 0.0
+                    s["limit_price"] = None
             gate_in = gate_inputs_from_datawindow(dw)
-            gate_in["price"] = spot if spot > 0 else gate_in.get("price")
+            gate_in["price"] = ref_px
+            if s.get("pb_funnel") is not None:
+                sp = int(round(float(gate_in.get("signal_pack") or 0)))
+                gate_in["signal_pack"] = (sp | 32) if s["pb_funnel"] else (sp & ~32)
             gate_in["long_in_zone"] = 1.0 if in_zone else (0.0 if spot > 0 else gate_in.get("long_in_zone"))
-            if live_rr is not None:
-                gate_in["long_rr_at_market"] = live_rr
-            if stop and stop > 0:
-                gate_in["long_stop_loss"] = stop
+            gate_in["long_rr_at_market"] = dw_rr
+            gate_in["long_stop_loss"] = dw_lv["stop"]
 
             is_act, fails = check_is_actionable(
                 gate_in,
                 {
                     "side": side.lower(),
-                    "entry": e_high or spot,
-                    "stop": stop,
-                    "t1": t1,
-                    "rr": live_rr if live_rr is not None else None,
+                    "entry": dw_lv["entry"] or ref_px,
+                    "stop": dw_lv["stop"],
+                    "t1": dw_lv["target"],
+                    "rr": dw_rr,
                     "in_zone": 1.0 if in_zone else 0.0,
                 }
             )
+            fails = list(fails)
+            if dw_rr is None:
+                is_act = False
+                fails.append("R:R at market undefined from Data Window levels")
+            if s["level_mismatch"]:
+                is_act = False
+                fails.append(s["level_mismatch"])
             s["is_actionable"] = is_act
             s["gate_reasons"] = fails
 
@@ -533,10 +580,27 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             s["opportunity_state"] = "STOP_BREACHED"
             s["state_label"] = "🛑 STOP BREACHED"
             s["priority_tier"] = 8
+        elif s.get("level_mismatch"):
+            s["opportunity_state"] = "WATCH"
+            s["state_label"] = f"👀 WATCH, {s['level_mismatch']}"
+            s["priority_tier"] = 5
+            s["wait_for"] = None
+        elif in_zone and s.get("is_actionable"):
+            s["opportunity_state"] = "TAKE_NOW"
+            s["state_label"] = "✅ TAKE NOW (gate passed)"
+            s["priority_tier"] = 0
         elif in_zone:
             s["opportunity_state"] = "IN_ZONE"
-            s["state_label"] = "🎯 IN ENTRY ZONE"
+            s["state_label"] = "🎯 IN ZONE, gate blocked"
             s["priority_tier"] = 1
+        elif not is_geo_valid:
+            s["opportunity_state"] = "NEEDS_LEVELS"
+            s["state_label"] = "⚠️ no valid stop/target geometry"
+            s["priority_tier"] = 6
+        elif _report_age_days(s.get("report_date"), now_mt) > 2:
+            s["opportunity_state"] = "STALE"
+            s["state_label"] = "🕰️ stale plan, re-research"
+            s["priority_tier"] = 6
         elif abs(dist_pct) <= 1.5 and spot > 0:
             s["opportunity_state"] = "COILED_TRIGGER"
             s["state_label"] = f"⚡ COILED TRIGGER ({'+' if dist_pct > 0 else ''}{dist_pct}%)"
@@ -550,8 +614,11 @@ def collect_active_deep_research_opportunities(lookback_days: int = 3) -> List[D
             s["state_label"] = "⏳ screener coil, unmeasured"
             s["priority_tier"] = 5
         else:
-            s["opportunity_state"] = "STALKING"
-            s["state_label"] = f"⏳ STALKING ({'+' if dist_pct > 0 else ''}{dist_pct}%)"
+            s["opportunity_state"] = "ARMED" if s.get("wait_for") else "STALKING"
+            s["state_label"] = (
+                f"⏳ ARMED, {s['wait_for']}" if s.get("wait_for")
+                else f"⏳ WAITING ({'+' if dist_pct > 0 else ''}{dist_pct}%)"
+            )
             s["priority_tier"] = 4
 
         processed.append(s)
@@ -690,7 +757,7 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
             a["urgency_rank"] = 2
         else:
             a["alert_state"] = "STALKING"
-            a["state_label"] = f"⏳ STALKING ({'+' if dist > 0 else ''}{dist}%)"
+            a["state_label"] = f"⏳ WAITING ({'+' if dist > 0 else ''}{dist}%)"
             a["urgency_rank"] = 3
 
         actionable.append(a)

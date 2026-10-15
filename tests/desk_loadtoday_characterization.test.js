@@ -109,9 +109,12 @@ function check(label, fn) {
     const todayFailed = (scenario.failWith || []).includes('/api/desk/today');
 
     check(`${scenario.name}: fired the desk requests a controller reload needs`, () => {
-      assert.deepStrictEqual(firstCallRequests, FULL_REQUESTS);
+      // Briefing and feedback-loop are fetched only while their own sub-tab is open.
+      const expected = FULL_REQUESTS.concat(scenario.subtab === 'positions' ? ['/api/desk/feedback-loop'] : [],
+        scenario.subtab === 'briefing' ? ['/api/desk/morning-briefing'] : []);
+      assert.deepStrictEqual(firstCallRequests, expected);
       // Every request must be answerable from the fixture map, or a fixture edit goes unread.
-      for (const url of FULL_REQUESTS) assert.ok(ENDPOINTS[url], `no fixture key for ${url}`);
+      for (const url of expected) assert.ok(ENDPOINTS[url], `no fixture key for ${url}`);
     });
 
     check(`${scenario.name}: HTML is byte-identical to the snapshot`, () => {

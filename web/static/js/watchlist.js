@@ -34,11 +34,31 @@ window.AppWatchlist = {
     this.renderRadarWidget();
   },
 
+  isActionableNow(t) {
+    const a = t.action;
+    if (!a) return false;
+    const dist = Math.abs(Number(t.distance_to_entry_pct == null ? 99 : t.distance_to_entry_pct));
+    return ['ACT', 'CHECK', 'EXIT', 'TAKE PROFIT', 'HOLD'].includes(a.label) || (a.label === 'SKIP' && dist === 0) || (a.label === 'WAIT' && dist <= 1.5);
+  },
+
+  actionBadge(t, small) {
+    const a = t.action;
+    if (!a) return null;
+    const c = { green: '#10b981', yellow: '#facc15', orange: '#f97316', amber: '#f59e0b', cyan: '#06b6d4', red: '#f43f5e', muted: 'var(--text-muted)' }[a.tone] || 'var(--text-muted)';
+    return `<span class="pill" style="font-size:${small ? 10 : 11}px; padding:2px 8px; font-weight:900; letter-spacing:0.4px; color:${c}; border:1px solid ${c};" title="${String(a.why || '').replace(/"/g, '&quot;')}">${a.label}</span>` +
+      (small ? '' : `<div style="margin-top:3px; font-size:10px; line-height:1.3; max-width:210px; white-space:normal; color:var(--text-muted);">${a.why || ''}</div>`);
+  },
+
   async loadWatchlist() {
     try {
       const data = await window.AppApi.getWatchTargets();
       if (!data) return;
       const newTargets = Array.isArray(data.targets) ? data.targets : [];
+      try {
+        const sg = await window.AppApi.getSuggestedTrades();
+        const byId = new Map(((sg && sg.trades) || []).map((x) => [x.id, x]));
+        newTargets.forEach((t) => { const x = byId.get(t.id); if (x) { t.action = x.action; t.rr_live = x.rr_live; } });
+      } catch (e) { /* rows fall back to their raw status */ }
       const newJson = JSON.stringify(newTargets);
       const isUnchanged = (newJson === this._lastTargetsJson);
       this._lastTargetsJson = newJson;
@@ -275,19 +295,9 @@ window.AppWatchlist = {
       list = list.filter(t => Boolean(t.user_taken || t.is_taken || t.taken));
     } else if (this._activeFilter === 'ACTIONABLE') {
       list = list.filter(t => {
+        if (t.action) return this.isActionableNow(t);
         const st = (t.status || '').toUpperCase();
-        // Exclude resolved, stopped, runaway, expired, or unresearched setups from Actionable/Near Zone
-        if (['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'EXPIRED', 'REJECTED_BY_GATE', 'UNRESEARCHED'].includes(st)) {
-          return false;
-        }
-        const evalVerdict = (t.evaluation_verdict || '').toUpperCase();
-        if (['STAND_ASIDE', 'TARGET_HIT', 'STOP_BREACHED'].includes(evalVerdict)) {
-          return false;
-        }
-        const spot = Number(t.last_price || t.spot_price || 0);
-        const dist = t.distance_to_entry_pct;
-        const isNear = spot > 0 && dist !== null && dist !== undefined && Math.abs(dist) <= 1.5;
-        return st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable) || Boolean(t.is_actionable_now);
+        return st === 'IN_ZONE' || st === 'IN_TRADE';
       });
     } else if (this._activeFilter === 'RESEARCHED') {
       list = list.filter(t => (t.status || '').toUpperCase() !== 'UNRESEARCHED');
@@ -355,15 +365,7 @@ window.AppWatchlist = {
   updateFilterCounts() {
     const all = this._allTargets || [];
     const countAll = all.length;
-    const countActionable = all.filter(t => {
-      const st = (t.status || '').toUpperCase();
-      if (['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'UNRESEARCHED'].includes(st)) {
-        return false;
-      }
-      const dist = t.distance_to_entry_pct;
-      const isNear = dist !== null && dist !== undefined && Math.abs(dist) <= 1.5;
-      return st === 'IN_ZONE' || st === 'IN_TRADE' || isNear || Boolean(t.options_actionable);
-    }).length;
+    const countActionable = all.filter(t => this.isActionableNow(t)).length;
     const countResearched = all.filter(t => (t.status || '').toUpperCase() !== 'UNRESEARCHED').length;
     const countUnresearched = all.filter(t => (t.status || '').toUpperCase() === 'UNRESEARCHED').length;
     const countInZone = all.filter(t => (t.status || '').toUpperCase() === 'IN_ZONE').length;
@@ -479,10 +481,10 @@ window.AppWatchlist = {
 
     strip.innerHTML = `
       <div class="perf-kpi-card win-rate" style="cursor:pointer;" onclick="AppWatchlist.setFilterTab('TARGET_HIT')" title="Click to view all winning trades">
-        <span class="perf-kpi-title">🏆 Resolved Win Rate</span>
+        <span class="perf-kpi-title" title="Modelled from plan levels, not your fills. Under 200 resolved plans this is not a verdict; the measured lane wins about a third of the time and earns it on payoff.">🏆 Modelled Win Rate</span>
         <div class="perf-kpi-val" style="color:#10b981;">
           ${winRate}%
-          <span class="perf-kpi-sub">(${wonCount} Won / ${lostCount} Stopped)</span>
+          <span class="perf-kpi-sub">(${wonCount} Won / ${lostCount} Stopped${totalResolved < 200 ? ", n<200: not a verdict" : ""})</span>
         </div>
       </div>
 
@@ -890,7 +892,7 @@ window.AppWatchlist = {
           ${t.target_1_dollar ? `<div style="font-size:9.5px; color:var(--emerald-light); font-weight:700;">+$${Number(t.target_1_dollar).toFixed(0)} <span style="font-size:8.5px; opacity:0.8;">(100sh)</span></div>` : ''}
         </td>
         <td>
-          <span class="status-badge-lg ${statusBadgeClass}">${statusIcon} ${statusUpper}</span>
+          ${this.actionBadge(t, false) || `<span class="status-badge-lg ${statusBadgeClass}">${statusIcon} ${statusUpper}</span>`}
         </td>
         <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${optionsText}">
           ${optionsBadgeHtml}<span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${optionsText}</span>
@@ -1118,7 +1120,7 @@ window.AppWatchlist = {
               ${spot > 0 ? `<span style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--cyan-glow); font-size:13.5px; margin-left:4px;">$${spot.toFixed(2)}</span>` : ''}
               ${tickerPnlBadge}
               <span class="dist-pill ${distBadgeClass}" style="font-size:10px; padding:2px 6px;">${distText}</span>
-              <span class="status-badge-lg ${statusBadgeClass}" style="font-size:10.5px; padding:2px 7px;">${statusIcon} ${statusUpper}</span>
+              ${this.actionBadge(primary, true) || `<span class="status-badge-lg ${statusBadgeClass}" style="font-size:10.5px; padding:2px 7px;">${statusIcon} ${statusUpper}</span>`}
               ${primary.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${primary.conviction}/10</span>` : ''}
             </div>
             <div class="watch-group-actions" onclick="event.stopPropagation();">
@@ -1160,7 +1162,7 @@ window.AppWatchlist = {
     const statusDefs = [
       { key: 'IN_ZONE', name: 'IN ZONE — Entry Trigger Active', icon: '🎯', badgeClass: 'in_zone', borderColor: '#10b981' },
       { key: 'IN_TRADE', name: 'IN TRADE — Active Portfolio Positions', icon: '💼', badgeClass: 'in_trade', borderColor: '#06b6d4' },
-      { key: 'STALKING', name: 'STALKING — Monitoring Price Action', icon: '⏳', badgeClass: 'stalking', borderColor: '#f59e0b' },
+      { key: 'STALKING', name: 'WAITING — Monitoring Price Action', icon: '⏳', badgeClass: 'stalking', borderColor: '#f59e0b' },
       { key: 'TARGET_HIT', name: 'TARGET HIT — Tactical Targets Reached', icon: '🏁', badgeClass: 'target_hit', borderColor: '#3b82f6' },
       { key: 'MISSED_RUNAWAY', name: 'MISSED RUNAWAY — Price Escaped Entry Zone', icon: '🏃', badgeClass: 'missed_runaway', borderColor: '#a855f7' },
       { key: 'INVALIDATED', name: 'INVALIDATED — Stop Breached / Thesis Void', icon: '⚠️', badgeClass: 'invalidated', borderColor: '#ef4444' }
@@ -1708,7 +1710,7 @@ window.AppWatchlist = {
       } else if ((st === 'INVALIDATED' || st === 'STOP_BREACHED') && isActuallyStopped) {
         statusBadge = `<span class="badge invalid">🛑 STOP BREACHED</span>`;
       } else {
-        statusBadge = `<span class="badge stalking">⏳ STALKING (${distStr ? distStr + ' to zone' : 'Active'})</span>`;
+        statusBadge = `<span class="badge stalking">⏳ WAITING (${distStr ? distStr + ' to zone' : 'Active'})</span>`;
       }
 
       // Action Directive Banner (What should I take action on)
@@ -2392,10 +2394,10 @@ window.AppWatchlist = {
 
     container.innerHTML = `
       <div class="perf-kpi-card win-rate" style="cursor:pointer;" onclick="AppWatchlist.setAuditTab('WON')" title="Click to filter to won trades">
-        <span class="perf-kpi-title">🏆 Win Rate (${winNote})</span>
+        <span class="perf-kpi-title" title="Modelled from plan levels, not your fills. Under 200 resolved plans this is not a verdict.">🏆 Modelled Win Rate (${winNote})</span>
         <div class="perf-kpi-val" style="color:#10b981;">
           ${winRate}%
-          <span class="perf-kpi-sub">(${wonCount} Won / ${lostCount} Stopped)</span>
+          <span class="perf-kpi-sub">(${wonCount} Won / ${lostCount} Stopped${wonCount + lostCount < 200 ? ", n<200: not a verdict" : ""})</span>
         </div>
       </div>
 
@@ -2467,7 +2469,7 @@ window.AppWatchlist = {
       } else if (st === 'MISSED_RUNAWAY') {
         statusBadge = `<span class="pill" style="font-size:10px; padding:2px 6px; opacity:0.7;">RUNAWAY</span>`;
       } else {
-        statusBadge = `<span class="pill amber" style="font-size:10.5px; padding:2px 7px; font-weight:700;">⏳ STALKING</span>`;
+        statusBadge = `<span class="pill amber" style="font-size:10.5px; padding:2px 7px; font-weight:700;">⏳ WAITING</span>`;
       }
 
       // Key levels text

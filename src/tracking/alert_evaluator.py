@@ -1005,7 +1005,7 @@ def evaluate_batch_pending(
     for r in rows:
         try:
             alert_dict = dict(r)
-            evaluate_alert_payload(alert_dict, use_tools=False)
+            evaluate_alert_gated(alert_dict, use_tools=False)
             evaluated_count += 1
         except Exception as e:
             logger.warning(f"Batch evaluation failed for {r['symbol']}: {e}")
@@ -1205,3 +1205,26 @@ def notify_push(message: str) -> None:
     except Exception as e:
         logger.debug(f"Failed writing push to UI board: {e}")
 
+
+
+def evaluate_alert_gated(alert: Dict[str, Any], use_tools: bool = False) -> Dict[str, Any]:
+    """evaluate_alert_payload behind the Data Window gate; failures record a skip and cost no LLM call."""
+    from src.tracking.auto_triage_daemon import _data_window_gate, _gate_exempt
+
+    if _gate_exempt(alert):
+        return evaluate_alert_payload(alert, use_tools=use_tools)
+    passed, fails = _data_window_gate(alert)
+    if passed:
+        return evaluate_alert_payload(alert, use_tools=use_tools)
+    decision = f"SKIPPED (no LLM): Data Window gate: {'; '.join(fails)}"
+    msg_id = alert.get("message_id")
+    if msg_id:
+        import sqlite3
+
+        from src.tracking.alert_db import DB_PATH
+
+        with sqlite3.connect(str(DB_PATH), timeout=10.0) as conn:
+            conn.execute("UPDATE alerts SET llm_decision = ? WHERE message_id = ?", (decision, msg_id))
+            conn.commit()
+    logger.info(f"{alert.get('symbol')} skipped, no LLM: {decision}")
+    return {"llm_decision": decision, "llm_playbook": "", "skipped": True}

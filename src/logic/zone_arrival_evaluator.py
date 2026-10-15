@@ -238,6 +238,14 @@ def evaluate_target_on_zone_arrival(
             is_no_entry = str(watch_target.get("entry_type") or "").upper() == "NO_ENTRY"
             is_gate_rejected = bool(watch_target.get("level_gate_rejected"))
             act_ok, act_reasons = check_is_actionable(gate_in, {"side": side.lower(), "entry": spot_price})
+            try:
+                from src.logic.level_validation import EARNINGS_BLOCK_DAYS, earnings_days_for
+                _ed = earnings_days_for(sym)
+                if _ed is not None and 0 <= _ed <= EARNINGS_BLOCK_DAYS:
+                    act_ok = False
+                    act_reasons.append(f"earnings in {_ed} trading days (blocked inside {EARNINGS_BLOCK_DAYS})")
+            except Exception:
+                pass
             if is_no_entry:
                 act_ok = False
                 act_reasons.append("entry_type is NO_ENTRY")
@@ -287,11 +295,11 @@ def evaluate_target_on_zone_arrival(
         )
     else:
         verdict = "STALKING"
-        verdict_label = "⏳ STALKING"
+        verdict_label = "⏳ WAITING"
         is_actionable = False
         reasons.append(f"Price ${spot_price:.2f} is outside entry zone [${entry_low:.2f}–${entry_high:.2f}].")
         playbook = (
-            f"⏳ STALKING — Price ${spot_price:.2f} remains outside the entry zone. "
+            f"⏳ WAITING — Price ${spot_price:.2f} remains outside the entry zone. "
             f"No execution permitted until price pulls back to [${entry_low:.2f}–${entry_high:.2f}]."
         )
 

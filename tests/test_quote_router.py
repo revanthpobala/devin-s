@@ -101,27 +101,26 @@ def test_in_memory_cache_prevents_duplicate_calls(mock_router):
         mock_sq.assert_called_once_with("NVDA")
 
 
-def test_batch_surveillance_partitions_indices_and_equities(mock_router):
-    """Batch watchlist fetching must partition indices to Yahoo and equities to Alpaca/Yahoo."""
-    fake_quotes = {
+def test_batch_surveillance_routes_to_surveillance_providers(mock_router):
+    """Watchlist batch routes surveillance to non-Schwab providers (Yahoo/Alpaca/Tastytrade)."""
+    yahoo = {
         "AAPL": QuoteData(symbol="AAPL", last_price=250.0, source="YAHOO_DIRECT"),
         "MSFT": QuoteData(symbol="MSFT", last_price=450.0, source="YAHOO_DIRECT"),
         "VIX": QuoteData(symbol="VIX", last_price=15.0, source="YAHOO_DIRECT"),
     }
-    with patch.object(mock_router, "_fetch_yahoo_direct_batch", return_value=fake_quotes), \
+    with patch.object(mock_router, "_fetch_yahoo_direct_batch", return_value=yahoo) as mock_yahoo, \
          patch("src.clients.schwab_client.get_realtime_quotes_batch") as mock_schwab_batch:
 
         res = mock_router.get_watchlist_quotes_batch(["AAPL", "MSFT", "VIX"])
-        assert len(res) == 3
-        assert res["VIX"].last_price == 15.0
-        assert res["AAPL"].last_price == 250.0
-        # Schwab batch was NEVER called for surveillance
+        assert res["VIX"].last_price == 15.0 and res["AAPL"].last_price == 250.0 and res["MSFT"].last_price == 450.0
         mock_schwab_batch.assert_not_called()
+        mock_yahoo.assert_called_once()
 
 
 def test_circuit_breaker_cooldown_on_failure(mock_router):
     """When Schwab fails repeatedly, circuit breaker trips and routes to emergency fallback."""
     with patch("src.clients.schwab_client.get_realtime_quote", side_effect=Exception("401 Unauthorized")), \
+         patch.object(mock_router, "_fetch_tastytrade_quote", return_value=None), \
          patch.object(mock_router, "_fetch_yahoo_direct") as mock_backup:
 
         mock_backup.return_value = QuoteData(

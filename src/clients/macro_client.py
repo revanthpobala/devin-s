@@ -14,6 +14,7 @@ Sources (all FREE):
 
 from __future__ import annotations
 
+import time
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -360,6 +361,9 @@ def get_vix() -> str:
     return "VIX: N/A"
 
 
+_FG_CACHE: dict = {}
+
+
 def get_fear_and_greed() -> str:
     """Fetches real-time CNN Fear & Greed Index score and market sentiment rating."""
     import urllib.request
@@ -369,8 +373,13 @@ def get_fear_and_greed() -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.cnn.com/markets/fear-and-greed",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.cnn.com",
+        "Referer": "https://www.cnn.com/",
     }
+    cached = _FG_CACHE.get("v")
+    if cached and time.time() - cached[0] < 600:
+        return cached[1]
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -391,11 +400,13 @@ def get_fear_and_greed() -> str:
                     if score_f >= 25
                     else "🟢 EXTREME FEAR (<25) — ASYMMETRIC REVERSAL BUYING OPPORTUNITY"
                 )
-                return f"Fear & Greed Index: {score_f:.1f}/100 ({rating}) [{flag}]"
+                out = f"Fear & Greed Index: {score_f:.1f}/100 ({rating}) [{flag}]"
+                _FG_CACHE["v"] = (time.time(), out)
+                return out
     except Exception as e:
-        logger.debug(f"Fear & Greed Index fetch failed: {e}")
+        logger.warning(f"Fear & Greed Index fetch failed: {e}")
 
-    return "Fear & Greed Index: N/A"
+    return cached[1] if cached else "Fear & Greed Index: N/A"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -651,6 +662,22 @@ def build_macro_context(ticker: str | None = None) -> str:
     fomc = get_fomc_alert()
     if fomc:
         sections.append(fomc)
+
+    try:
+        from src.tracking import macro_calendar as mc
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+
+        now_et = datetime.now(ET)
+        rel = mc.context_text(now_et, mc.fetch_events(now_et), get_portfolio_positions() or [])
+        if rel:
+            sections.append(rel)
+        from src.tracking import spread_check as sc
+
+        spreads = sc.context_text(sc.spread_flags(get_portfolio_positions() or [], now_et.date()))
+        if spreads:
+            sections.append(spreads)
+    except Exception as e:
+        logger.debug(f"Economic release context unavailable: {e}")
 
     # ── C) OPEX ──────────────────────────────────────────────────────────────
     opex = get_opex_alert()

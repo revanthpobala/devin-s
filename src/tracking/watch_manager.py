@@ -946,10 +946,14 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                 FROM suggestions s
                 WHERE s.gate_status = 'PASS'
                   AND s.date >= date('now', '-' || ? || ' days')
-                GROUP BY LOWER(s.ticker)
+                  AND s.id = (
+                      SELECT MAX(s2.id) FROM suggestions s2
+                      WHERE s2.gate_status = 'PASS' AND LOWER(s2.ticker) = LOWER(s.ticker)
+                        AND s2.date >= date('now', '-' || ? || ' days')
+                  )
                 ORDER BY s.id DESC
                 """,
-                (lookback_days,),
+                (lookback_days, lookback_days),
             )
             suggestions = [dict(r) for r in cursor.fetchall()]
 
@@ -980,10 +984,15 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                         target_1 = COALESCE(excluded.target_1, watch_targets.target_1),
                         target_2 = COALESCE(excluded.target_2, watch_targets.target_2),
                         status = CASE 
-                            WHEN watch_targets.status IN ('UNRESEARCHED', 'EXPIRED', 'WATCH') OR watch_targets.status IS NULL THEN 'STALKING'
-                            WHEN watch_targets.status = 'INVALIDATED' AND (watch_targets.last_price IS NULL OR watch_targets.last_price > excluded.tactical_stop) THEN 'STALKING'
+                            WHEN watch_targets.status = 'EXPIRED' THEN CASE WHEN excluded.date > COALESCE(watch_targets.date, '') THEN 'STALKING' ELSE 'EXPIRED' END
+                            WHEN watch_targets.status IN ('UNRESEARCHED', 'WATCH') OR watch_targets.status IS NULL THEN 'STALKING'
+                            WHEN watch_targets.status = 'INVALIDATED' AND excluded.date > COALESCE(watch_targets.date, '') AND (watch_targets.last_price IS NULL OR watch_targets.last_price > excluded.tactical_stop) THEN 'STALKING'
                             ELSE watch_targets.status 
                         END,
+                        created_date = CASE WHEN watch_targets.status = 'EXPIRED' AND excluded.date > COALESCE(watch_targets.date, '') THEN excluded.date ELSE watch_targets.created_date END,
+                        expires_on = CASE WHEN watch_targets.status = 'EXPIRED' AND excluded.date > COALESCE(watch_targets.date, '') THEN NULL ELSE watch_targets.expires_on END,
+                        is_active = CASE WHEN watch_targets.status = 'EXPIRED' AND excluded.date > COALESCE(watch_targets.date, '') THEN 1 ELSE watch_targets.is_active END,
+                        date = CASE WHEN excluded.date > COALESCE(watch_targets.date, '') THEN excluded.date ELSE watch_targets.date END,
                         signal_pack = COALESCE(excluded.signal_pack, watch_targets.signal_pack),
                         fade = COALESCE(excluded.fade, watch_targets.fade),
                         action_long = COALESCE(excluded.action_long, watch_targets.action_long),
@@ -1048,9 +1057,9 @@ def sweep_expired_watch_targets(days: int = 21, as_of_date: Optional[str] = None
                         """
                         UPDATE watch_targets 
                         SET status = 'EXPIRED', is_active = 0, is_actionable_now = 0, updated_at = ?
-                        WHERE ticker = ?
+                        WHERE ticker = ? AND date = ? AND status IN ('STALKING', 'IN_ZONE', 'WATCH')
                         """,
-                        (now, ticker),
+                        (now, ticker, r["date"]),
                     )
                     cursor.execute(
                         """
@@ -1176,8 +1185,12 @@ def update_target_live_state(
                 query_parts.append("evaluation_verdict = ?")
                 params.append(evaluation_verdict)
             params.append(ticker.upper())
+            # An evaluation that is not itself terminal must not revive an EXPIRED row: coverage
+            # names are evaluated whether or not their thesis row is live, and reviving it made
+            # the sweep re-expire it (and re-emit THESIS_EXPIRED) every cycle.
+            guard = "" if status_upper in terminal_statuses else " AND status != 'EXPIRED'"
             cursor.execute(
-                f"UPDATE watch_targets SET {', '.join(query_parts)} WHERE ticker = ?",
+                f"UPDATE watch_targets SET {', '.join(query_parts)} WHERE ticker = ?{guard}",
                 params,
             )
             conn.commit()
@@ -1420,7 +1433,7 @@ def record_last_researched(
 def ensure_universe_prepopulated() -> int:
     """Pre-populate the tracked universe with the full Schwab 1000 constituents (~983 tickers).
 
-    1. Loads all constituents from All_tickrs/Schwab_1000_Index®_Index_Constituents.csv into
+    1. Loads the screener universe (Schwab 1000 + S&P 400/600 holdings, src/screener/universe.py) into
        `tracked_universe` -- universe storage, NOT `watch_targets`.
     2. Syncs any existing deep research reports from reports/ so researched tickers have their
        latest research timestamp, levels, verdict, conviction, and status, in `watch_targets`.
@@ -1429,24 +1442,13 @@ def ensure_universe_prepopulated() -> int:
 
     Returns the number of constituents tracked.
     """
-    csv_path = config.BASE_DIR / "All_tickrs" / "Schwab_1000_Index®_Index_Constituents.csv"
-    if not csv_path.exists():
-        logger.warning(f"Schwab 1000 constituents CSV not found at {csv_path}")
-        return 0
+    from src.screener.universe import load_constituents
 
-    import csv
-    constituents = {}
-    try:
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                sym = (row.get("Ticker") or "").strip().upper()
-                if sym and sym not in constituents:
-                    constituents[sym] = {
-                        "name": (row.get("Name") or "").strip(),
-                        "sector": (row.get("Sector") or "").strip(),
-                    }
-    except Exception as e:
-        logger.error(f"Error loading constituents CSV: {e}")
+    constituents = {
+        sym: {"name": v["name"], "sector": ""} for sym, v in load_constituents().items()
+    }
+    if not constituents:
+        logger.warning("Screener universe is empty")
         return 0
 
     # Extract all latest deep research reports from disk

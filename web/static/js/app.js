@@ -1,11 +1,18 @@
 /**
  * Main Application Bootstrap & Lifecycle Orchestrator
  */
+window.addEventListener('pageshow', (e) => { if (e.persisted) window.location.reload(); });
+
 window.App = {
+  _deskPath(desk) {
+    return desk === 'swing' ? '/radar' : `/${desk}`;
+  },
+
   navigateTo(desk) {
     if (!desk) return;
     this.switchDesk(desk);
-    const path = (desk === 'swing') ? '/radar' : `/${desk}`;
+    if (!document.getElementById(`desk-pane-${desk === 'ops' ? 'logs' : desk}`) && desk !== 'screener') return;
+    const path = this._deskPath(desk);
     try {
       if (window.location.pathname !== path) {
         window.history.pushState({ desk }, '', path);
@@ -36,6 +43,13 @@ window.App = {
     }
     
     if (desk === 'ops') desk = 'logs';
+
+    // Each page ships only its own pane: a desk this page does not contain needs a real page load.
+    if (!document.getElementById(`desk-pane-${desk}`)) {
+      const path = this._deskPath(desk);
+      if (window.location.pathname !== path) window.location.assign(path);
+      return;
+    }
 
     window.AppState.currentDesk = desk;
     

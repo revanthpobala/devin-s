@@ -37,7 +37,8 @@ function bootApp({ currentDesk = 'today' } = {}) {
   };
 
   const documentStub = {
-    getElementById: () => null,
+    // Panes exist for every desk, so a switch stays on this page instead of navigating away.
+    getElementById: (id) => (id.startsWith('desk-pane-') ? { style: {} } : null),
     documentElement: { getAttribute: () => 'light', setAttribute: () => {} },
     addEventListener: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
   };

@@ -246,6 +246,31 @@ def run_local_research(
         reverse=True,
     )
     selected = ranked[:enrich_n] if enrich_n > 0 else ranked
+
+    # Exploration arm: a seeded random daily sample of gate-blocked names that still have a complete plan.
+    # They ride the force path with the pre-gates bypassed, so deep research on them measures the gates.
+    explore_file = config.BASE_DIR / "data" / "triage" / today_str / "explore.json"
+    try:
+        explore = {str(t).upper() for t in json.loads(explore_file.read_text(encoding="utf-8"))}
+    except Exception:
+        explore = set()
+    if config.EXPLORE_SAMPLE_N > 0 and not target_ticker and len(explore) < config.EXPLORE_SAMPLE_N:
+        import random
+
+        def _planned(r):
+            t = r.get("triage") or {}
+            p = t.get("long_plan") or {}
+            return (t.get("triage") in ("PASS", "WATCH") and all(v is not None for v in (p.get("zone") or [None]))
+                    and p.get("stop") is not None and p.get("target") is not None)
+
+        pool = sorted(r["ticker"].upper() for r in prefilter_results
+                      if not r.get("send_for_deep_research") and _planned(r) and r["ticker"].upper() not in explore)
+        explore |= set(random.Random(f"{today_str}{len(explore)}").sample(pool, min(config.EXPLORE_SAMPLE_N - len(explore), len(pool))))
+        explore_file.parent.mkdir(parents=True, exist_ok=True)
+        explore_file.write_text(json.dumps(sorted(explore)), encoding="utf-8")
+        logger.info(f"Exploration arm: {len(explore)} gate-blocked names sampled for deep research ({sorted(explore)}).")
+    force_set |= explore
+    force_tickers |= explore
     enrich_targets = {r["ticker"].upper() for r in selected} | force_set
     logger.info(
         f"PHASE 2C-1 done: {len(prefilter_results)} prefiltered, "

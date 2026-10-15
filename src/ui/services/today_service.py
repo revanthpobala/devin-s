@@ -64,11 +64,11 @@ _PAYLOAD_TTL_S: Dict[str, float] = {
 
 # Protective build timeouts per payload (a hung build never stalls the cycle).
 _PAYLOAD_TIMEOUT_S: Dict[str, float] = {
-    "today": 60.0,
-    "coverage": 20.0,
-    "missed_moves": 20.0,
-    "morning_briefing": 25.0,
-    "feedback_loop": 20.0,
+    "today": 75.0,
+    "coverage": 30.0,
+    "missed_moves": 45.0,
+    "morning_briefing": 30.0,
+    "feedback_loop": 25.0,
 }
 
 # One build lock per payload: a build in flight is waited on, never duplicated.
@@ -77,7 +77,7 @@ _PAYLOAD_TIMEOUT_S: Dict[str, float] = {
 _PAYLOAD_LOCKS: Dict[str, threading.Lock] = {name: threading.Lock() for name in _PAYLOAD_TTL_S}
 
 # How long a cold GET waits for an in-flight background build before it builds itself.
-_COLD_GET_WAIT_S = 5.0
+_COLD_GET_WAIT_S = 20.0
 
 _WORKER_THREAD: Optional[threading.Thread] = None
 _STOP_EVENT = threading.Event()
@@ -116,6 +116,9 @@ def _lane_priors(setup_lane: Optional[str], pb_funnel: Any) -> Tuple[Optional[fl
     return lane_prior(_SETUP_LANE_TO_REASON.get(setup_lane), pb_funnel) or (None, None)
 
 
+_DEAD_STATUSES = frozenset({"TARGET_HIT", "EXPIRED", "INVALIDATED"})
+
+
 def _pb_bucket(pb_funnel: Any) -> str:
     if pb_funnel is None:
         return "pre-PB"
@@ -134,8 +137,23 @@ def _has_deep_report(ticker: str, date_str: str) -> bool:
 # 1. CORE SYNTHESIS WORKERS (RUN IN MULTI-THREADED BACKGROUND POOL)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_BUILD_TIMINGS: Dict[str, float] = {}
+
+
+_LAST_GOOD: Dict[str, Any] = {}
+
+
+def _timed_call(label: str, fn, *args):
+    t0 = time.time()
+    try:
+        return fn(*args)
+    finally:
+        _BUILD_TIMINGS[label] = round(time.time() - t0, 2)
+
+
 def _build_today_payload_sync() -> Dict[str, Any]:
     """Execute high-speed read-only WAL queries and enrich Today desk."""
+    _t_build = time.time()
     today_str = get_eastern_date_str()
     alerts_db_path = config.alerts_db_path()
     watch_db_path = config.research_watch_db_path()
@@ -229,6 +247,8 @@ def _build_today_payload_sync() -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"[_build_today_payload] Read-only watch query exception: {e}")
 
+    _BUILD_TIMINGS["db_reads"] = round(time.time() - _t_build, 2)
+
     def _decision_rank(dec: str) -> int:
         d = (dec or "").upper()
         if "PASS" in d:
@@ -263,6 +283,7 @@ def _build_today_payload_sync() -> Dict[str, Any]:
     actionable = []
     stalking = []
     watch_list = []
+    done_list = []
     cut_list = []
     needs_you = []
     unmeasured = []
@@ -379,9 +400,16 @@ def _build_today_payload_sync() -> Dict[str, Any]:
             bstop = float(r.get("breakout_stop") or stop or 0.0)
         except (TypeError, ValueError):
             bstop = 0.0
+        try:
+            target_2 = float(r.get("target_2") or 0.0)
+        except (TypeError, ValueError):
+            target_2 = 0.0
+        # The breakout path is judged on the nearest researched target that sits above its trigger.
+        breakout_target = next((x for x in (target, target_2) if x and x > breakout_lvl), 0.0)
+        r["breakout_target_used"] = "T1" if breakout_target and breakout_target == target else ("T2" if breakout_target else None)
         if breakout_lvl > 0:
-            if bstop and breakout_lvl > bstop and target and target > breakout_lvl:
-                rr_breakout_at_trigger = round((target - breakout_lvl) / (breakout_lvl - bstop), 2)
+            if bstop and breakout_lvl > bstop and breakout_target:
+                rr_breakout_at_trigger = round((breakout_target - breakout_lvl) / (breakout_lvl - bstop), 2)
             else:
                 breakout_trigger_broken = True
         r["breakout_level"] = breakout_lvl
@@ -392,9 +420,9 @@ def _build_today_payload_sync() -> Dict[str, Any]:
         if rr_zone_at_entry_high is not None:
             _path_bits.append(f"zone R:R {rr_zone_at_entry_high:.2f} @ ${entry_h:.2f}")
         if rr_breakout_at_trigger is not None:
-            _path_bits.append(f"breakout R:R {rr_breakout_at_trigger:.2f} @ ${breakout_lvl:.2f}")
+            _path_bits.append(f"breakout R:R {rr_breakout_at_trigger:.2f} @ ${breakout_lvl:.2f} (to {r['breakout_target_used']})")
         elif breakout_trigger_broken:
-            _path_bits.append("breakout path broken (targets at/below trigger — demoted)")
+            _path_bits.append("breakout needs a target above its trigger: re-run research")
         r["rr_paths_text"] = " | ".join(_path_bits)
 
         status = r.get("status") or "STALKING"
@@ -404,10 +432,16 @@ def _build_today_payload_sync() -> Dict[str, Any]:
         in_zone_flag = 1.0 if (r.get("in_zone") or status in ("IN_ZONE", "ENTER") or near) else 0.0
         entry_px = r.get("entry_high") or last_px or r.get("entry_low")
 
-        sig_pack_val = r.get("signal_pack") if r.get("signal_pack") is not None else (r.get("w_signal_pack") if r.get("w_signal_pack") is not None else (36.0 if r.get("pb_funnel") else 4.0))
-        fade_val = r.get("fade") if r.get("fade") is not None else (r.get("w_fade") if r.get("w_fade") is not None else ((0.0 if not r.get("fade_gate") else 1.0) if r.get("fade_gate") is not None else 0.0))
-        action_long_val = r.get("action_long") if r.get("action_long") is not None else (r.get("w_action_long") if r.get("w_action_long") is not None else (r.get("action_code") if r.get("action_code") is not None else 10.0))
-        ext_z_val = r.get("ext_z") if r.get("ext_z") is not None else (r.get("w_ext_z") if r.get("w_ext_z") is not None else 0.0)
+        def _first(*vals):
+            return next((v for v in vals if v is not None), None)
+
+        # Unknown stays None so the gate names the missing field instead of passing on a made-up value.
+        pb_known = r.get("pb_funnel")
+        sig_pack_val = _first(r.get("signal_pack"), r.get("w_signal_pack"), None if pb_known is None else (36.0 if pb_known else 4.0))
+        fade_gate = r.get("fade_gate")
+        fade_val = _first(r.get("fade"), r.get("w_fade"), None if fade_gate is None else (1.0 if fade_gate else 0.0))
+        action_long_val = _first(r.get("action_long"), r.get("w_action_long"), r.get("action_code"))
+        ext_z_val = _first(r.get("ext_z"), r.get("w_ext_z"))
         atr_val = float(atr_at_signal) if (atr_at_signal and float(atr_at_signal) > 0) else ((abs(entry_h - stop)) if (entry_h and stop and entry_h > stop) else 1.0)
 
         dw_dict = {
@@ -416,10 +450,10 @@ def _build_today_payload_sync() -> Dict[str, Any]:
             "long_stop_loss": stop,
             "atr14": atr_val,
             "price": last_px or r.get("price") or entry_px,
-            "signal_pack": float(sig_pack_val),
-            "fade_long": float(fade_val),
-            "action_long": float(action_long_val),
-            "ext_z_self": float(ext_z_val),
+            "signal_pack": sig_pack_val,
+            "fade_long": fade_val,
+            "action_long": action_long_val,
+            "ext_z_self": ext_z_val,
         }
         gate_in = gate_inputs_from_datawindow(dw_dict)
         is_act, gate_fails = is_actionable(gate_in, {"side": "long", "entry": entry_px})
@@ -518,7 +552,10 @@ def _build_today_payload_sync() -> Dict[str, Any]:
                 r["unmeasured_reason"] = "; ".join(gate_fails) if gate_fails else "below_bar"
                 unmeasured.append(r)
         elif "WATCH" in local_dec:
-            watch_list.append(r)
+            if str(r.get("status") or "").upper() in _DEAD_STATUSES:
+                done_list.append(r)
+            else:
+                watch_list.append(r)
         elif "CUT" in local_dec:
             cut_list.append(r)
 
@@ -576,6 +613,19 @@ def _build_today_payload_sync() -> Dict[str, Any]:
             "last_price": (s_match["last_price"] if s_match else None) or local.get("alert_price") or local.get("market_price"),
         })
 
+    _no_px = [r["ticker"] for r in inbox if not r.get("last_price") and r.get("ticker")]
+    if _no_px:
+        try:
+            from src.clients.price_client import get_current_prices_batch
+            _live = get_current_prices_batch(sorted(set(_no_px)), context="surveillance") or {}
+            for r in inbox:
+                if not r.get("last_price"):
+                    px = _live.get(r.get("ticker"))
+                    if px:
+                        r["last_price"] = px
+        except Exception as e_px:
+            logger.warning(f"[today] inbox price fill failed: {type(e_px).__name__} {e_px}")
+
     inbox_measured = [r for r in inbox if r.get("measured")]
     inbox_unmeasured = [r for r in inbox if not r.get("measured")]
 
@@ -597,9 +647,10 @@ def _build_today_payload_sync() -> Dict[str, Any]:
     missing_test = sorted(s for s in missing_all if is_test_ticker(s))
     missing_real = [s for s in missing_all if not is_test_ticker(s)]
 
+    _BUILD_TIMINGS["row_loop_end"] = round(time.time() - _t_build, 2)
     core_probe_error = None
     try:
-        core_gaps, core_covered = core_coverage_gaps()
+        core_gaps, core_covered = _timed_call("core_coverage_gaps", core_coverage_gaps)
     except Exception as exc:
         core_gaps, core_covered = [], list(CORE_SYMBOLS)
         core_probe_error = str(exc)[:200]
@@ -614,25 +665,44 @@ def _build_today_payload_sync() -> Dict[str, Any]:
     from src.ui.services.action_engine import build_action_panel
     from src.ui.services.feedback_service import get_feedback_loop_data
 
-    # Multi-threaded sub-task pool for external fetches
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        f_pulse = ex.submit(get_live_market_pulse)
-        f_regime = ex.submit(get_market_regime)
-        f_opps = ex.submit(collect_active_deep_research_opportunities, 3)
+    # Multi-threaded sub-task pool for external fetches (bounded by shared time budget)
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+    try:
+        futs = (
+            ("market_pulse", ex.submit(_timed_call, "market_pulse", get_live_market_pulse), 12.0, {}),
+            ("market_regime", ex.submit(_timed_call, "market_regime", get_market_regime), 25.0, {}),
+            ("deep_research_opps", ex.submit(_timed_call, "deep_research_opps", collect_active_deep_research_opportunities, 3), 20.0, []),
+        )
+        got = {}
+        subtasks_deadline = time.time() + 25.0
+        for label, fut, max_wait, empty in futs:
+            rem = max(0.1, subtasks_deadline - time.time())
+            wait_time = min(max_wait, rem)
+            try:
+                got[label] = _LAST_GOOD[label] = fut.result(timeout=wait_time)
+            except (concurrent.futures.TimeoutError, TimeoutError):
+                logger.warning(f"[today] {label} exceeded time budget ({wait_time:.1f}s); serving last good value")
+                got[label] = _LAST_GOOD.get(label, empty)
+            except Exception as e_sub:
+                logger.warning(f"[today] {label} failed: {e_sub}; serving last good value")
+                got[label] = _LAST_GOOD.get(label, empty)
+    finally:
+        ex.shutdown(wait=False)
+    market_pulse = got.get("market_pulse") or _LAST_GOOD.get("market_pulse", {})
+    market_regime = got.get("market_regime") or _LAST_GOOD.get("market_regime", {})
+    top_opportunities = got.get("deep_research_opps") or _LAST_GOOD.get("deep_research_opps", [])
 
-        market_pulse = f_pulse.result(timeout=15)
-        market_regime = f_regime.result(timeout=45)
-        top_opportunities = f_opps.result(timeout=30)
-
-    actionable_alerts = get_actionable_alerts_stream(limit=30)
-    feedback_data = get_feedback_loop_data()
-    action_panel = build_action_panel(
+    actionable_alerts = _timed_call("actionable_alerts", lambda: get_actionable_alerts_stream(limit=30))
+    feedback_data = _timed_call("feedback_loop", get_feedback_loop_data)
+    action_panel = _timed_call("action_panel", lambda: build_action_panel(
         opportunities=top_opportunities,
         regime=market_regime,
         open_positions=feedback_data.get("open_positions") or [],
-    )
+    ))
+    _BUILD_TIMINGS["total"] = round(time.time() - _t_build, 2)
 
     return {
+        "build_timings": dict(_BUILD_TIMINGS),
         "market_pulse": market_pulse,
         "market_regime": market_regime,
         "action_panel": action_panel,
@@ -647,6 +717,7 @@ def _build_today_payload_sync() -> Dict[str, Any]:
         "actionable": actionable,
         "stalking": stalking,
         "watch": watch_list,
+        "done": done_list,
         "cut": cut_list,
         "needs_you": needs_you,
         "unmeasured": unmeasured,
@@ -666,6 +737,7 @@ def _build_today_payload_sync() -> Dict[str, Any]:
             "deep_queued": sum(1 for j in job_map.values() if j.get("job_status") in ("QUEUED", "RUNNING")),
             "deep_done": sum(1 for sym in alert_map.keys() if _has_deep_report(sym, today_str)),
             "actionable": len(actionable),
+            "screener_actionable": sum(1 for o in top_opportunities if o.get("is_actionable")),
         },
         "coverage": {
             "found_count": len(found_rows) if found_rows else 0,
@@ -673,6 +745,7 @@ def _build_today_payload_sync() -> Dict[str, Any]:
             "actionable_count": len(actionable),
             "stalking_count": len(stalking),
             "watch_count": len(watch_list),
+            "done_count": len(done_list),
             "cut_count": len(cut_list),
             "needs_you_count": len(needs_you),
             "unmeasured_count": len(unmeasured),
@@ -871,6 +944,71 @@ def _data_fingerprint() -> Tuple[Any, ...]:
         return ("unknown",)
 
 
+_WARM_PATH = config.BASE_DIR / "data" / "desk_warm_cache.json"
+_WARM_MAX_AGE_S = 900.0
+_WARM_WRITE_EVERY_S = 60.0
+_WARM_LAST_WRITE = 0.0
+
+
+def _warm_key() -> Any:
+    """Session date and R:R dial: the part of the fingerprint a restart does not change."""
+    return json.loads(json.dumps(_data_fingerprint()[:2], default=str))
+
+
+def _persist_warm_start(payload: Dict[str, Any]) -> None:
+    """Save the last good Today payload so a restart can serve it while the first build runs."""
+    global _WARM_LAST_WRITE
+    now_ts = time.time()
+    if now_ts - _WARM_LAST_WRITE < _WARM_WRITE_EVERY_S:
+        return
+    _WARM_LAST_WRITE = now_ts
+    try:
+        _WARM_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _WARM_PATH.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"ts": now_ts, "key": _warm_key(), "payload": payload}, default=str),
+            encoding="utf-8",
+        )
+        os.replace(tmp, _WARM_PATH)
+    except Exception as e:
+        logger.warning(f"[today_service] warm-start save failed: {e}")
+
+
+def _load_warm_start() -> None:
+    """Load the saved Today payload as a stale cache entry, only for the same session date and dial."""
+    try:
+        if not _WARM_PATH.exists():
+            return
+        saved = json.loads(_WARM_PATH.read_text(encoding="utf-8"))
+        ts = float(saved.get("ts") or 0.0)
+        payload = saved.get("payload")
+        if not isinstance(payload, dict) or time.time() - ts > _WARM_MAX_AGE_S:
+            return
+        if saved.get("key") != _warm_key():
+            return
+        with _CACHE_LOCK:
+            if _CACHE.get("today") is not None:
+                return
+            _CACHE["today"] = payload
+            _CACHE["today_ts"] = ts
+            _CACHE["today_fp"] = None
+            _CACHE["today_warm"] = True
+    except Exception as e:
+        logger.warning(f"[today_service] warm-start load failed: {e}")
+
+
+def _serve_warm_start(name: str) -> Optional[Dict[str, Any]]:
+    """The saved payload, until the first real build replaces it (bounded by _WARM_MAX_AGE_S)."""
+    with _CACHE_LOCK:
+        if not _CACHE.get(f"{name}_warm"):
+            return None
+        payload = _CACHE.get(name)
+        ts = float(_CACHE.get(f"{name}_ts", 0.0) or 0.0)
+    if payload is None or time.time() - ts > _WARM_MAX_AGE_S:
+        return None
+    return {**payload, "stale_s": round(time.time() - ts, 1), "from_cache": True, "warm_start": True}
+
+
 def _store_payload(name: str, payload: Optional[Dict[str, Any]], t0: float, fingerprint=None) -> None:
     if payload is None:
         return
@@ -880,6 +1018,9 @@ def _store_payload(name: str, payload: Optional[Dict[str, Any]], t0: float, fing
         _CACHE[f"{name}_ts"] = time.time()
         _CACHE[f"{name}_build_s"] = build_s
         _CACHE[f"{name}_fp"] = fingerprint if fingerprint is not None else _data_fingerprint()
+        _CACHE[f"{name}_warm"] = False
+    if name == "today" and not payload.get("error"):
+        _persist_warm_start(payload)
 
 
 def _due(name: str, now_ts: float, force: bool = False) -> bool:
@@ -907,8 +1048,10 @@ def _run_build(name: str, builder) -> Optional[Dict[str, Any]]:
     lock = _PAYLOAD_LOCKS.get(name)
     if lock is None:
         return builder()
-    if not lock.acquire(timeout=_PAYLOAD_TIMEOUT_S.get(name, 30.0)):
-        logger.warning(
+    # The background cycle never blocks waiting for another in-flight build:
+    # if a build is already in flight, let that thread finish and store the result.
+    if not lock.acquire(timeout=0.25):
+        logger.info(
             f"[TodayBackgroundService] {name} build skipped: another build holds it "
             f"(in flight, not queued)."
         )
@@ -986,6 +1129,9 @@ def serve_payload(name: str, builder, force_refresh: bool = False) -> Dict[str, 
         cached = _serve_cached(name, fingerprint)
         if cached is not None:
             return cached
+        warm = _serve_warm_start(name)
+        if warm is not None:
+            return warm
         if _PAYLOAD_LOCKS.get(name) is not None and _PAYLOAD_LOCKS[name].locked():
             logger.debug(
                 f"[serve_payload] {name} cache miss; a build is in flight, waiting for it."
@@ -1085,7 +1231,8 @@ def _background_cycle(force: bool = False):
         return
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(due))) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(due)))
+        try:
             futures = {
                 name: executor.submit(_run_build, name, builder)
                 for name, builder in builders.items() if name in due
@@ -1094,7 +1241,9 @@ def _background_cycle(force: bool = False):
                 try:
                     fut.result(timeout=_PAYLOAD_TIMEOUT_S.get(name, 30.0))
                 except Exception as e:
-                    logger.error(f"[TodayBackgroundService] {name} cycle error: {e}")
+                    logger.error(f"[TodayBackgroundService] {name} cycle error: {type(e).__name__} {e}")
+        finally:
+            executor.shutdown(wait=False)
 
         logger.info(
             f"⚡ [TodayBackgroundService] Cycle refreshed {','.join(due)} "
@@ -1134,6 +1283,7 @@ def start_today_service():
         return
     _STOP_EVENT.clear()
     _TRIGGER_EVENT.clear()
+    _load_warm_start()
     _WORKER_THREAD = threading.Thread(target=_worker_loop, daemon=True, name="TodayBackgroundService")
     _WORKER_THREAD.start()
 

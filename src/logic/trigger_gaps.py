@@ -157,7 +157,7 @@ _HARD_EXCLUSION_CODES = {11, 12, 13, 14, 15, 16, 17, 18}
 # FORMING->SCREEN BLOCK->zone-WAIT; short PRIME/ACTION->WATCH;
 # Ext-Z>=1.5->EXTENDED; room->CHASE; RVOL<0.75->EARLY;
 # capitulation->REVERSAL BUY
-_STOP_STATES = {0, 5}  # Stage 0/5 (warmup / recovery — no fresh long)
+_STOP_STATES = {0}  # Stage 0 warmup only; Stage 5 (recovery) is watchable, not excluded
 
 
 # ---------------------------------------------------------------------------

@@ -283,3 +283,61 @@ def is_actionable(dw: Dict[str, Any], plan: Optional[Dict[str, Any]] = None) -> 
         fails.append(f"ext_z_self {ext_z} >= 2.5")
 
     return (not fails), fails
+
+
+LEVEL_MISMATCH_PCT: float = 2.0
+
+
+def _dw_float(dw: Dict[str, Any], *needles: str) -> Optional[float]:
+    norm = {str(k).lower().replace(" ", "").replace("_", ""): v for k, v in dw.items()}
+    for n in needles:
+        val = norm.get(n.lower().replace(" ", "").replace("_", ""))
+        if val is None or val == "" or val == "N/A" or val == "null":
+            continue
+        try:
+            return float(str(val).replace(",", "").replace("$", "").strip())
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def dw_long_levels(dw: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    """Data Window Long Entry / Stop / Target plus close. Missing fields stay None."""
+    dw = dw if isinstance(dw, dict) else {}
+    return {
+        "entry": _dw_float(dw, "long_entry", "Long Entry"),
+        "stop": _dw_float(dw, "long_stop_loss", "Long Stop Loss"),
+        "target": _dw_float(dw, "long_target", "Long Target"),
+        "price": _dw_float(dw, "price", "close", "Close"),
+    }
+
+
+def dw_rr_at_market(levels: Dict[str, Optional[float]], price: Optional[float] = None) -> Optional[float]:
+    """Unrounded (target - price) / (price - stop) from Data Window levels; None if undefined."""
+    px = price if price else levels.get("price")
+    stop, target = levels.get("stop"), levels.get("target")
+    if not px or stop is None or target is None or px <= stop or target <= px:
+        return None
+    return (target - px) / (px - stop)
+
+
+def level_mismatch(
+    dw_levels: Dict[str, Optional[float]],
+    other: Dict[str, Optional[float]],
+    ref_price: Optional[float],
+) -> Optional[str]:
+    """Reason string when `other` levels (entry/stop/target) disagree materially with the
+    Data Window, or the Data Window stop/target are missing. None when they agree."""
+    if dw_levels.get("stop") is None or dw_levels.get("target") is None:
+        return "Data Window stop/target missing"
+    ref = ref_price or dw_levels.get("price")
+    if not ref:
+        return "Data Window price missing"
+    diffs = []
+    for name in ("entry", "stop", "target"):
+        o, d = other.get(name), dw_levels.get(name)
+        if o and d and abs(o - d) / ref * 100.0 > LEVEL_MISMATCH_PCT:
+            diffs.append(f"{name} {o:.2f} vs DW {d:.2f}")
+    if diffs:
+        return "levels disagree with Data Window (" + ", ".join(diffs) + ")"
+    return None

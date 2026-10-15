@@ -130,7 +130,7 @@ def _validate_and_demote_credit_spread(
         logger.info(f"[{safe_ticker}] Demoting credit spread {struct_upper}: {reason_str}")
         return (
             "NONE",
-            f"{opt_summary} [DEMOTED: {reason_str} — negative expectancy; use equity or Bull Call debit spread]",
+            f"{opt_summary} [DEMOTED: {reason_str} — risk rules failed, structure not measured; equity plan is primary]",
             True,
         )
 
@@ -431,7 +431,7 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
         v_raw = m_verdict.group(1).strip().upper()
         if any(neg in v_raw for neg in ("DO NOT", "DON'T", "NOT BUY", "NO BUY", "NO ENTRY", "NO_ENTRY", "NO TRADE", "NO_TRADE")):
             verdict = "NO_TRADE"
-        elif re.search(r"\bSTALK\b", v_raw):
+        elif re.search(r"\b(?:STALK|ARMED)\b", v_raw):
             verdict = "STALK"
         elif re.search(r"\bENTER\b", v_raw) or re.search(r"\bBUY\b", v_raw):
             verdict = "ENTER"

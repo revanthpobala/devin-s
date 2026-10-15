@@ -129,6 +129,10 @@ def sync_reports_to_watchlist(
     logger.info(f"Indexing research levels for {len(tickers)} ticker(s) on date '{date_str}'...")
     for t in sorted(tickers):
         data = extract_watch_levels_from_report(t, date_str)
+        if data and data.get("level_gate_rejected"):
+            # Arbitration already gated and logged this plan (display-only file); re-validating it here would
+            # double-log the rejection and, after a gate change, could resurrect a stale plan as a watch target.
+            continue
         if data:
             # Load ticker's same-date data window: data/raw/<report date>/<T>/<T>_datawindow.json
             dw_dict = {}
@@ -639,6 +643,14 @@ def _rescore_at_market(
 
     _ok, gate_reasons = is_actionable(gate_in, {"side": "long", "entry": live_price})
     running_reasons = [r for r in gate_reasons if "zone" not in r.lower()]
+    try:
+        from src.logic.level_validation import EARNINGS_BLOCK_DAYS, earnings_days_for
+
+        _ed = earnings_days_for(ticker)
+        if _ed is not None and 0 <= _ed <= EARNINGS_BLOCK_DAYS:
+            running_reasons.append(f"earnings in {_ed} trading days (blocked inside {EARNINGS_BLOCK_DAYS})")
+    except Exception as e_earn:
+        logger.debug(f"[{ticker}] earnings check skipped: {e_earn}")
 
     floor = min_rr()
     gates_clear = not running_reasons
@@ -690,30 +702,30 @@ def _rescore_at_market(
 
 
 def _requeue_for_local_triage(ticker: str, t: Dict[str, Any], live_price: float, today_str: str) -> bool:
-    """B3: a name that completed T1 without a fill is re-queued for local triage on
-    the live bar so levels refresh, and dispatched into a free research slot."""
+    """B3: a name that completed T1 without a fill is queued once per day for local triage on the
+    live bar so levels refresh, and dispatched into a free research slot. The queue and the
+    dispatch both use TODAY: the plan's own date always has a report, so it would be skipped."""
+    date_str = str(today_str)[:10]
     try:
         from src.tracking.alert_db import queue_for_research
 
-        date_str = str(t.get("date") or today_str)[:10]
-        queue_for_research(
+        newly = queue_for_research(
             symbol=ticker,
             date_str=date_str,
             setup=None,
             source="watch_runaway",
             reason=f"T1 reached without a fill at ${live_price:.2f} — levels need refresh",
-            force=True,
         )
     except Exception as e:
         logger.debug(f"[{ticker}] runaway re-queue failed: {e}")
         return False
+    if not newly:
+        return True
     try:
         from src.screener.continuous_screener_daemon import _daemon_instance
 
         if _daemon_instance and _daemon_instance.is_slot_available():
-            _daemon_instance.dispatch_candidate_research(
-                ticker, str(t.get("date") or today_str)[:10], candidate_dict={"symbol": ticker}
-            )
+            _daemon_instance.dispatch_candidate_research(ticker, date_str, candidate_dict={"symbol": ticker})
     except Exception as e:
         logger.debug(f"[{ticker}] runaway dispatch skipped: {e}")
     return True
@@ -1047,19 +1059,19 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
     # 2. Sweep expired targets (21 days lookback aligned with suggestions)
     try:
         now_et = get_eastern_now()
-        sweep_expired_watch_targets(days=21, as_of_date=now_et.strftime("%Y-%m-%d"))
+        sweep_expired_watch_targets(days=5, as_of_date=now_et.strftime("%Y-%m-%d"))
     except Exception as e_swp:
         logger.debug(f"Sweep expired watch targets exception: {e_swp}")
     targets = get_active_watch_targets()
-    if not targets:
-        logger.info("No active watch targets in SQLite DB.")
+    # A5: the armed universe is every name with a recent dossier, not just stored rows. Collected BEFORE the
+    # empty-targets exit so dossiers keep being armed on days when no stored row is active.
+    coverage = _collect_armed_coverage({str(t["ticker"]).upper() for t in targets if t.get("ticker")})
+    if not targets and not coverage:
+        logger.info("No active watch targets in SQLite DB and no dossier coverage to arm.")
         return []
 
-    logger.info(f"Evaluating {len(targets)} armed name(s) through the level engine...")
+    logger.info(f"Evaluating {len(targets)} armed name(s) + {len(coverage)} dossier(s) through the level engine...")
     updated_targets = []
-
-    # A5: the armed universe is every name with a recent dossier, not just stored rows.
-    coverage = _collect_armed_coverage({str(t["ticker"]).upper() for t in targets if t.get("ticker")})
 
     target_syms = [t["ticker"] for t in targets if t.get("ticker")]
     coverage_syms = [c["ticker"] for c in coverage]
@@ -1519,6 +1531,26 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             _process_coverage_row(c, live_price, get_eastern_now(), volumes)
         except Exception as e_cov:
             logger.debug(f"[{ticker}] coverage evaluation failed: {e_cov}")
+
+    # A6: zone ledger. Every zone from recent dossiers stays watched after a newer plan replaces it.
+    try:
+        from src.tracking import zone_ledger
+
+        def _fetch_zone_prices(syms: List[str]) -> Dict[str, float]:
+            qb = quote_router.get_watchlist_quotes_batch(syms)
+            return {k: qd.last_price for k, qd in qb.items() if qd and qd.last_price > 0}
+
+        zone_ledger.run_cycle(prices, get_eastern_now().strftime("%Y-%m-%d"), _emit_level_alert, _fetch_zone_prices)
+    except Exception as e_zone:
+        logger.debug(f"zone ledger failed: {e_zone}")
+
+    # A7: log live option quotes for every suggested option structure (suggestion-time mid, then daily marks).
+    try:
+        from src.tracking import option_quote_log
+
+        option_quote_log.run_cycle()
+    except Exception as e_oq:
+        logger.debug(f"option quote log failed: {e_oq}")
 
     # 4. Mirror to Google Sheets WATCH-TRIGGERS tab
     if sync_sheets and updated_targets:

@@ -92,6 +92,104 @@ def evaluate_suggestions_endpoint():
         return {"success": False, "error": str(e)}
 
 
+from src.tracking import rr_config
+
+_TIER_TONE = {"green": "green", "yellow": "yellow", "orange": "orange"}
+
+_DEAD_WHY = {
+    "INVALIDATED": "stop breached before the plan filled", "STOP_BREACHED": "stop breached", "STOPPED": "stopped out",
+    "EXPIRED": "plan expired unfilled", "REJECTED_BY_GATE": "rejected by the R:R gate", "COMPLETED": "plan finished",
+}
+
+
+_ATR_CACHE: dict = {}
+
+
+def _bars_atr(ticker):
+    """ATR14 from daily bars when the plan carries none; cached per day."""
+    from src.logic.level_validation import _compute_atr14_from_bars
+
+    key = (ticker, time.strftime("%Y-%m-%d"))
+    if key not in _ATR_CACHE:
+        _ATR_CACHE[key] = _compute_atr14_from_bars(ticker, key[1])
+    return _ATR_CACHE[key]
+
+
+def _action_for(side, status, last, low, high, stop, t1, taken, filled, hit_target, hit_stop, gate_ok, gate_fails):
+    """One plain call per row: what to do now and why. Group is LIVE, DONE or DEAD for the filters."""
+    def rr(px):
+        return round((t1 - px) / (px - stop), 2) if t1 and stop and t1 > px > stop else None
+    rr_now = rr(last) if last else None
+    out = _action_core(side, status, last, low, high, stop, t1, taken, filled, hit_target, hit_stop, gate_ok, gate_fails, rr, rr_now)
+    out["rr_top"] = rr(high) if high else None
+    return out
+
+
+def _action_core(side, status, last, low, high, stop, t1, taken, filled, hit_target, hit_stop, gate_ok, gate_fails, rr, rr_now):
+    if side == "SHORT":
+        return {"label": "NO EDGE", "group": "LIVE", "tone": "muted", "why": "Shorts measured no edge: levels only, not a trade.", "rr_live": None}
+    if taken or filled:
+        own = "yours" if taken else "the tracker's fill, not yours"
+        if hit_target:
+            return {"label": "TAKE PROFIT" if taken else "DONE", "group": "LIVE" if taken else "DONE", "tone": "cyan",
+                    "why": f"T1 ${t1:.2f} reached ({own}): sell the planned share or trail the stop.", "rr_live": rr_now}
+        if hit_stop:
+            return {"label": "EXIT" if taken else "DEAD", "group": "LIVE" if taken else "DEAD", "tone": "red",
+                    "why": f"Price ${last:.2f} is at or under the ${stop:.2f} stop ({own}).", "rr_live": None}
+        left = f"R:R left {rr_now}" if rr_now else "past T1" if t1 and last and last >= t1 else "R:R n/a"
+        return {"label": "HOLD" if taken else "TRACKING", "group": "LIVE", "tone": "cyan",
+                "why": f"{own.capitalize()}: stop ${stop:.2f}, T1 ${t1:.2f}, {left}.", "rr_live": rr_now}
+    if status == "MISSED_RUNAWAY":
+        return {"label": "MISSED", "group": "DEAD", "tone": "red", "why": f"Ran past T1 ${t1:.2f} with no fill: do not chase.", "rr_live": None}
+    if status in _DEAD_WHY:
+        return {"label": "DEAD", "group": "DEAD", "tone": "red", "why": _DEAD_WHY[status].capitalize() + ".", "rr_live": None}
+    in_zone = bool(low and high and last and low <= last <= high)
+    floor = rr_config.min_rr()
+    tier = rr_config.tier(rr_now)
+    if in_zone and gate_ok:
+        return {"label": "ACT", "group": "LIVE", "tone": _TIER_TONE.get(tier, "green"),
+                "why": f"In zone, R:R {rr_now} at market ({tier}, floor {floor}): buy limit, stop ${stop:.2f}, T1 ${t1:.2f}.", "rr_live": rr_now}
+    if in_zone:
+        hard = [g for g in gate_fails if "missing" not in g]
+        if not hard and rr_now and rr_now >= floor:
+            return {"label": "CHECK", "group": "LIVE", "tone": _TIER_TONE.get(tier, "amber"), "why": f"In zone, R:R {rr_now} at market, but fade and PB flags are not available for this plan: confirm on the chart Data Window before buying. Stop ${stop:.2f}, T1 ${t1:.2f}.", "rr_live": rr_now}
+        why = hard[0] if hard else "R:R at market is under the floor"
+        if why.startswith("stop width"):
+            why += " (UNMEASURED floor: wider stops measured no better)"
+        return {"label": "SKIP", "group": "LIVE", "tone": "orange" if tier == "orange" else "amber", "why": f"In zone but no trade: {why}.", "rr_live": rr_now}
+    top = rr(high) if high else None
+    if last and low and last < low:
+        return {"label": "WAIT", "group": "LIVE", "tone": "amber", "why": f"Below the ${low:.2f}-${high:.2f} zone: buy only on a reclaim.", "rr_live": rr_now}
+    if top is not None and top >= floor:
+        return {"label": "WAIT", "group": "LIVE", "tone": "amber", "why": f"Set a buy limit at the zone top ${high:.2f}: R:R {top} ({rr_config.tier(top)}) if filled there. Do not chase.", "rr_live": rr_now}
+    return {"label": "SKIP", "group": "LIVE", "tone": "muted", "why": f"R:R only {top if top is not None else 'n/a'} at the zone top (floor {floor}): no trade unless the plan moves.", "rr_live": rr_now}
+
+
+def _missed_reason(t, zstate):
+    """Why a plan was missed: price traded into its zone (a fill was possible) or ran away from above without touching it."""
+    low, high = t.get("entry_zone_low"), t.get("entry_zone_high")
+    if not (low and high):
+        return None
+    band = [x for x in (zstate.get(t["ticker"], {}).get("touches") or []) if low * 0.99 <= x["p"] <= high * 1.003 and x["d"] >= (t.get("date") or "")]
+    if band:
+        d = max(x["d"] for x in band)
+        return f"touched the zone on {d}; the entry was available and not taken"
+    return "no touch of the zone recorded: it ran away from above (zone tracking only covers recent days)"
+
+
+@router.post("/api/trades/decision")
+def record_decision(data: dict):
+    """Store your take, skip or reject next to what the system said at that moment."""
+    from src.tracking import decision_log
+
+    try:
+        _SUGGESTED_CACHE.clear()
+        return decision_log.record(int(data["id"]), str(data["ticker"]), str(data.get("date") or ""), str(data["decision"]),
+                                   data.get("reason"), data.get("label"), data.get("rr"), data.get("spot"))
+    except (KeyError, ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/api/trades/suggested")
 def get_suggested_trades_endpoint():
     """Returns structured suggested trades from watch_targets with live PnL and outcome metrics."""
@@ -134,6 +232,11 @@ def get_suggested_trades_endpoint():
                 ).fetchall()
 
         trades = []
+        from src.tracking import decision_log, zone_ledger
+        my_decisions = decision_log.latest_by_plan()
+        zstate = zone_ledger._load_state()
+        from src.tracking import agent_trader
+        agent_rows = agent_trader.by_plan()
         company_names = get_company_names_dict()
         for r in rows:
             t = dict(r)
@@ -235,6 +338,8 @@ def get_suggested_trades_endpoint():
                 atr_num = float(atr_val) if atr_val is not None else 0.0
             except (ValueError, TypeError):
                 atr_num = 0.0
+            if atr_num <= 0 and t.get("ticker") and status_str not in ("MISSED_RUNAWAY", "EXPIRED", "REJECTED_BY_GATE", "INVALIDATED"):
+                atr_num = _bars_atr(t["ticker"])
             if atr_num > 0 and stop_loss is not None and entry_mid is not None:
                 t["stop_in_atr"] = round(abs(entry_mid - stop_loss) / atr_num, 2)
             else:
@@ -259,12 +364,6 @@ def get_suggested_trades_endpoint():
                     else:
                         dist_val = 0.0
                 t["distance_to_entry_pct"] = dist_val
-
-            try:
-                dist_abs = abs(float(dist_val)) if dist_val is not None else 999.0
-            except (ValueError, TypeError):
-                dist_abs = 999.0
-            has_spot = bool(last_price and float(last_price) > 0)
 
             # Dynamic state transition verification against live price
             status_str = (t.get("status") or "STALKING").upper()
@@ -358,55 +457,16 @@ def get_suggested_trades_endpoint():
             t["evaluation_verdict"] = eval_verdict
             t["is_actionable_now"] = is_actionable_now
             t["evaluation_playbook"] = eval_playbook
-            t["measured_actionable"] = is_actionable_now
-            t["gate_reasons"] = gate_fails
+            t["gate_reasons"] = [g for g in gate_fails if "missing" not in g]
+            act = _action_for(side, status_str, last_price, entry_low, entry_high, stop_loss, target_1,
+                              bool(is_taken), bool(is_filled and not is_taken), hit_target, hit_stop, is_actionable_now, gate_fails)
+            t["action"] = act
+            t["rr_live"] = act["rr_live"]
+            t["agent"] = agent_rows.get(t.get("id"))
+            t["my_decision"] = (my_decisions.get(t.get("id")) or {}).get("decision")
+            t["missed_reason"] = _missed_reason(t, zstate) if act["label"] == "MISSED" else None
 
-            # Quantitative Priority Engine
-            if is_terminated or status_str in ("TARGET_HIT", "COMPLETED"):
-                if status_str in ("TARGET_HIT", "COMPLETED"):
-                    priority_tier = 7
-                    priority_score = 100.0
-                    priority_label = "🏁 TARGET HIT"
-                else:
-                    priority_tier = 8
-                    priority_score = 50.0
-                    priority_label = "🛑 STOPPED"
-            elif is_actionable_now and is_strictly_in_zone:
-                priority_tier = 1
-                priority_score = 1200.0 - min(dist_abs, 50.0)
-                priority_label = "🟢 ACTIONABLE IN ZONE" if side == "LONG" else "🔴 ACTIONABLE IN ZONE"
-            elif status_str in ("IN_ZONE", "ENTER"):
-                priority_tier = 2
-                priority_score = 1000.0 - min(dist_abs, 50.0)
-                priority_label = "⚡ IN ZONE"
-            elif is_taken or status_str == "IN_TRADE":
-                priority_tier = 3
-                priority_score = 800.0 - min(dist_abs, 50.0)
-                priority_label = "💼 IN TRADE"
-            elif status_str == "STALKING" and has_spot and dist_abs <= 3.0:
-                priority_tier = 4
-                priority_score = 600.0 - (dist_abs * 10.0)
-                priority_label = f"⚡ HOT STALK ({dist_abs:.1f}%)"
-            elif status_str == "STALKING" and has_spot:
-                priority_tier = 5
-                priority_score = 400.0 - min(dist_abs, 100.0)
-                priority_label = "⏳ STALKING"
-            elif status_str == "STALKING":
-                priority_tier = 6
-                priority_score = 250.0
-                priority_label = "⏳ UNQUOTED"
-            else:
-                priority_tier = 8
-                priority_score = 50.0
-                priority_label = "🛑 STOPPED"
-
-            t["priority_tier"] = priority_tier
-            t["priority_score"] = round(priority_score, 2)
-            t["priority_label"] = priority_label
             trades.append(t)
-
-        # Prioritize plays: In Zone > In Trade > Hot Stalk (<3%) > Stalking > Completed > Stopped
-        trades.sort(key=lambda tr: (tr.get("priority_score", 0), tr.get("date", ""), tr.get("updated_at", "")), reverse=True)
 
         summary = {
             "total": len(trades),
@@ -415,6 +475,8 @@ def get_suggested_trades_endpoint():
             "target_hit": sum(1 for tr in trades if tr.get("status") in ("TARGET_HIT", "COMPLETED")),
             "stopped": sum(1 for tr in trades if tr.get("status") in ("STOP_BREACHED", "STOPPED") or (tr.get("status") in ("INVALIDATED", "GAP_STOP") and tr.get("was_filled"))),
             "user_taken": sum(1 for tr in trades if tr.get("is_taken")),
+            "missed_touched": sum(1 for tr in trades if (tr.get("missed_reason") or "").startswith("touched")),
+            "missed_never": sum(1 for tr in trades if (tr.get("missed_reason") or "").startswith("no touch")),
         }
         result = {"trades": trades, "summary": summary}
         _SUGGESTED_CACHE[_cache_key] = (_now, result)
@@ -550,7 +612,15 @@ def take_trade_endpoint(data: dict):
             _WATCH_TARGETS_CACHE.clear()
         except Exception:
             pass
-        return {"success": True, "message": f"Successfully recorded trade for {ticker or row_id or sugg_id} at ${fill_price:.2f}"}
+        warnings = [w for w, missing in (
+            ("no stop: position is untracked for stop breach", not stop),
+            ("no target: position is untracked for target hit", not t1),
+        ) if missing]
+        return {
+            "success": True,
+            "message": f"Successfully recorded trade for {ticker or row_id or sugg_id} at ${fill_price:.2f}",
+            "warnings": warnings,
+        }
     except Exception as e:
         logger.error(f"Error in take_trade_endpoint: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

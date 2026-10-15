@@ -187,8 +187,10 @@ class Onset:
             self.lane = None
         elif self._rr_raw >= hi_rr:
             self.lane = "rr_at_market_lane_strong"
-        elif self._rr_raw >= min_rr:
+        elif self._rr_raw >= max(min_rr, rr_config.GREEN_RR):
             self.lane = "rr_at_market_lane"
+        elif self._rr_raw >= min_rr:
+            self.lane = "rr_at_market_lane_marginal"
         else:
             self.lane = None
         prior = lane_prior(self.lane, self.pb_funnel)
@@ -322,7 +324,9 @@ def _num(value: Optional[float], fmt: str = ".2f") -> str:
 def entry_body(o: Onset, open_px: Optional[float] = None) -> str:
     """The push body. Every claim carries its measurement."""
     tradeable, note = o.next_open_verdict(open_px)
-    prior = LANE_PRIOR_TEXT.get((o.lane, bool(o.pb_funnel)), "prior not measured for this lane")
+    prior = ("R:R 1.5-2 (yellow, marginal): 41% win / +0.02R, era-unstable, PB split not measurable"
+             if o.lane == "rr_at_market_lane_marginal"
+             else LANE_PRIOR_TEXT.get((o.lane, bool(o.pb_funnel)), "prior not measured for this lane"))
 
     prices = (
         f"close ${_num(o.close)} · stop ${_num(o.stop)} · target ${_num(o.target)}"

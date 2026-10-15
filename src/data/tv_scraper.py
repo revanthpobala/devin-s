@@ -108,7 +108,7 @@ def signed_in_profiles(names: Optional[Iterable[str]] = None) -> List[str]:
     ever created here: these are the profiles already on disk.
     """
     if names is None:
-        names = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+        names = sorted(p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir())
     return [n for n in names if profile_has_tv_session(config.BASE_DIR / n)]
 
 
@@ -120,7 +120,7 @@ def usable_profiles(names: Optional[Iterable[str]] = None) -> List[str]:
     locks the Cookies DB) are both usable; provably signed-out is not.
     """
     if names is None:
-        names = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
+        names = sorted(p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir())
     keep = set()
     for n in names:
         if profile_tv_session_state(config.BASE_DIR / n) in ("in", "unknown"):

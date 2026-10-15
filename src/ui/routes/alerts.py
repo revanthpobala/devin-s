@@ -50,6 +50,64 @@ def get_alerts_history(
         return {"status": "error", "error": str(e), "alerts": []}
 
 
+@router.get("/api/alerts/today-board")
+def get_alerts_today_board(date: Optional[str] = None):
+    """Today's TradingView alerts grouped by ticker, with how far each name got through research."""
+    import json
+
+    from src import config
+    from src.tracking.alert_db import get_alerts_for_date, get_eastern_date_str, get_research_queue
+    from src.tracking.explore_arm import members
+
+    try:
+        d = get_eastern_date_str(date)
+        raw = config.BASE_DIR / "data" / "raw" / d
+        queue = {q["symbol"]: q for q in get_research_queue(d)}
+        explore = members(d)
+
+        def _load(path):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+        groups = {}
+        for a in get_alerts_for_date(d):
+            g = groups.setdefault(a["symbol"], {"symbol": a["symbol"], "alerts": 0, "actions": set(), "strategies": set(), "price": a.get("alert_price"), "last": a.get("timestamp"), "setup": a.get("setup")})
+            g["alerts"] += 1
+            g["actions"].add(a.get("action"))
+            g["strategies"].add(a.get("strategy"))
+        rows = []
+        for sym, g in groups.items():
+            fdir = raw / sym
+            tri = _load(fdir / f"{sym}_triage.json")
+            wl = _load(fdir / f"{sym}_watch_levels.json")
+            if wl:
+                stage = "DEEP"
+            elif tri:
+                stage = "LOCAL"
+            elif (fdir / f"{sym}_datawindow.json").exists():
+                stage = "DATA"
+            else:
+                stage = "QUEUED"
+            reasons = wl.get("gate_reasons") or []
+            rows.append({
+                "symbol": sym, "alerts": g["alerts"], "actions": sorted(x for x in g["actions"] if x),
+                "strategies": sorted(x for x in g["strategies"] if x), "price": g["price"], "last": g["last"],
+                "stage": stage, "triage": tri.get("triage"), "triage_reason": tri.get("reason"), "flags": tri.get("flags") or [],
+                "deep_verdict": wl.get("verdict"), "gate_rejected": bool(wl.get("level_gate_rejected")),
+                "gate_reason": reasons[0] if reasons else None, "explore": sym in explore,
+                "queue_status": (queue.get(sym) or {}).get("status"),
+            })
+        order = {"DEEP": 0, "LOCAL": 1, "DATA": 2, "QUEUED": 3}
+        rows.sort(key=lambda r: (order[r["stage"]], r["symbol"]))
+        counts = {k: sum(1 for r in rows if r["stage"] == k) for k in order}
+        return {"status": "ok", "date": d, "count": len(rows), "counts": counts, "rows": rows}
+    except Exception as e:
+        logger.error(f"alerts today-board failed: {type(e).__name__} {e}")
+        return {"status": "error", "error": str(e), "rows": []}
+
+
 @router.post("/api/alerts/check-gmail")
 def check_gmail_alerts_now():
     """Trigger a fast 1-shot poll of Gmail for TradingView alerts into trading_alerts.db."""

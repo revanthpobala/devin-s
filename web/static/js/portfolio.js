@@ -342,24 +342,18 @@ window.AppPortfolio = {
                     🎯 Core Compounders Concentration (GOOGL + AMZN: ${alloc.top2_concentration}%)
                   </span>
                   <span class="badge" style="border-color:var(--green); color:var(--green); font-size:9.5px; font-weight:800;">
-                    +$47.5k Combined Profit
+                    ${(alloc.top2_unrealized || 0) >= 0 ? '+' : '-'}$${Math.abs((alloc.top2_unrealized || 0) / 1000).toFixed(1)}k Combined Profit
                   </span>
                 </div>
                 <div style="color:var(--text-main);">
-                  <b>GOOGL</b> ($${(alloc.googl_val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })} · <b>${alloc.googl_pct}%</b> · +111.7%) and <b>AMZN</b> ($${(alloc.amzn_val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })} · <b>${alloc.amzn_pct}%</b> · +72.0%) constitute over 53% of total net worth. Down days in mega-cap tech dictate day P/L.
+                  <b>GOOGL</b> ($${(alloc.googl_val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })} · <b>${alloc.googl_pct}%</b> · ${(alloc.googl_gain_pct || 0) >= 0 ? '+' : ''}${alloc.googl_gain_pct}%) and <b>AMZN</b> ($${(alloc.amzn_val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })} · <b>${alloc.amzn_pct}%</b> · ${(alloc.amzn_gain_pct || 0) >= 0 ? '+' : ''}${alloc.amzn_gain_pct}%) constitute ${alloc.top2_concentration}% of total net worth. Down days in mega-cap tech dictate day P/L.
                 </div>
               </div>
             </div>
 
             <!-- Multi-Baggers Strip -->
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; font-size:10.5px;">
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">PLTR +955%</span>
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">INTC +482%</span>
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">AAPL +116%</span>
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">UBER +93%</span>
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">NVDA +88%</span>
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">SWTSX +73%</span>
-              <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">SWPPX +62%</span>
+              ${(alloc.top_gain_pct || []).map((g) => `<span class="badge" style="border-color:var(--green); color:var(--green); font-weight:700;">${g.symbol} +${g.unrealized_pnl_pct}%</span>`).join('')}
             </div>
           </div>
 

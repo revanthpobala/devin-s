@@ -654,6 +654,25 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
     amzn_pct = round((amzn_val / total_val) * 100.0, 1) if total_val > 0 else 0.0
     top2_concentration = round(googl_pct + amzn_pct, 1)
 
+    def _gain(sym: str):
+        rows = [p for p in positions if p.get("underlying_symbol") == sym and p.get("asset_type") != "OPTION"]
+        up = sum(float(p.get("unrealized_profit_loss") or 0.0) for p in rows)
+        cost = sum(float(p.get("cost_basis") or 0.0) for p in rows)
+        return up, (round(up / cost * 100.0, 1) if cost > 0 else 0.0)
+
+    googl_up, googl_gain_pct = _gain("GOOGL")
+    amzn_up, amzn_gain_pct = _gain("AMZN")
+    top2_unrealized = round(googl_up + amzn_up, 2)
+    top_gain_pct = sorted(
+        (
+            {"symbol": sym, "unrealized_pnl_pct": it["unrealized_pnl_pct"]}
+            for sym, it in by_symbol.items()
+            if it["asset_type"] != "OPTION" and sym != "SWVXX" and float(it.get("cost_basis") or 0.0) >= 250.0
+            and it["unrealized_pnl_pct"] > 0
+        ),
+        key=lambda x: -x["unrealized_pnl_pct"],
+    )[:8]
+
     # 3. Recent Trades & Activity Audit from Schwab API
     recent_trades = []
     covered_calls_audit = []
@@ -759,11 +778,15 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
 
     googl_px = by_symbol.get("GOOGL", {}).get("current_price", 0.0)
     amzn_px = by_symbol.get("AMZN", {}).get("current_price", 0.0)
+    def _day_word(sym: str) -> str:
+        pct = by_symbol.get(sym, {}).get("day_pct", 0.0)
+        return f"{pct:+.2f}% today"
+
+    reserves_pct = round((total_liquid_reserves / total_val) * 100.0, 1) if total_val > 0 else 0.0
     what_is_happening = (
-        f"Your top two compounders (GOOGL + AMZN) command {top2_concentration}% of total assets ($100k+) with +$48k+ in combined unrealized profit. "
-        f"Both are trading firmly positive in live real-time (GOOGL ${googl_px:.2f}, AMZN ${amzn_px:.2f}). "
-        f"You hold ${total_liquid_reserves:,.0f} (12.0%) in liquid dry powder ($7.8k cash + $14.6k in SWVXX yielding 5%), "
-        f"providing full insulation against market chop without requiring any forced selling."
+        f"Your top two compounders (GOOGL + AMZN) are {top2_concentration}% of total assets with ${top2_unrealized:,.0f} in combined unrealized profit. "
+        f"Live: GOOGL ${googl_px:.2f} ({_day_word('GOOGL')}), AMZN ${amzn_px:.2f} ({_day_word('AMZN')}). "
+        f"You hold ${total_liquid_reserves:,.0f} ({reserves_pct}%) in liquid dry powder (${cash_val:,.0f} cash + ${swvxx_val:,.0f} in SWVXX)."
     )
 
     # 5. Severe Price Shock & Risk Sentinel
@@ -937,6 +960,10 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
             "swppx_val": round(swppx_val, 2),
             "swtsx_val": round(swtsx_val, 2),
             "top2_concentration": top2_concentration,
+            "top2_unrealized": top2_unrealized,
+            "googl_gain_pct": googl_gain_pct,
+            "amzn_gain_pct": amzn_gain_pct,
+            "top_gain_pct": top_gain_pct,
         },
         "recent_trades": recent_trades[:15],
         "trade_evaluations": {
@@ -960,8 +987,8 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
                 "critique": "Multi-year LEAPS allow high-delta exposure with capital efficiency. Profit locked on 2028 AMZN call provided liquidity."
             },
             "tactical_pm_directives": [
-                "Mega-Cap Concentration: GOOGL (35.5%) and AMZN (18.1%) make up 53.6% of your portfolio. Tech consolidation days dictate short-term portfolio fluctuation.",
-                "Cash & Yield Deployment: $21.9k liquid reserves ($7.2k cash + $14.6k in SWVXX @ ~5% yield). Deploy dry powder directly from SWVXX for High Priority screener coils (SWKS, QCOM) rather than taking margin interest.",
+                f"Mega-Cap Concentration: GOOGL ({googl_pct}%) and AMZN ({amzn_pct}%) make up {top2_concentration}% of your portfolio. Tech consolidation days dictate short-term portfolio fluctuation.",
+                f"Cash & Yield Deployment: ${total_liquid_reserves:,.0f} liquid reserves (${cash_val:,.0f} cash + ${swvxx_val:,.0f} in SWVXX). Deploy dry powder from SWVXX for names that pass the R:R gate rather than taking margin interest.",
                 "Covered Call Staggering: Continue selling 0.05-0.15 delta weekly calls on GOOGL/AMZN during overbought market days to hedge day P/L."
             ]
         }

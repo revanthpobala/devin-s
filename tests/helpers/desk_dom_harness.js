@@ -35,13 +35,12 @@ const ENDPOINTS = {
   '/api/desk/feedback-loop': 'feedback',
 };
 
-/** What a single NON-SILENT loadToday fires, in order. */
+/** What a single NON-SILENT loadToday fires on the default sub-tab, in order. Briefing and
+ *  feedback-loop are fetched only when their own sub-tab is open. */
 const FULL_REQUESTS = [
   '/api/desk/today',
   '/api/desk/coverage',
   '/api/desk/missed-moves',
-  '/api/desk/morning-briefing',
-  '/api/desk/feedback-loop',
 ];
 
 /** What a single SILENT (6s poll) loadToday fires: no briefing, no feedback-loop. */
@@ -81,6 +80,7 @@ function makeElement(id, win) {
  */
 function loadDesk(schemas, opts = {}) {
   const requests = [];
+  const sideRequests = [];
   const scrollCalls = [];
   const elements = new Map();
 
@@ -123,7 +123,10 @@ function loadDesk(schemas, opts = {}) {
     set(v) { rebuild(container, v); },
   });
 
-  // Forget the harness's own warm-up write so a caller can count what loadToday() did.
+  // A live page already holds content (the skeleton from first paint), so loadToday does not
+  // write a skeleton before the real render. Forget the harness's own warm-up write so a caller
+  // can count what loadToday() did.
+  container._html = '<div id="seed"></div>';
   container.writes = 0;
 
   const documentStub = {
@@ -136,7 +139,10 @@ function loadDesk(schemas, opts = {}) {
     documentStub.activeElement = elements.get(opts.activeElementId);
   }
 
-  const ctx = { window: windowStub, document: documentStub, console, setTimeout, clearTimeout };
+  // Side panels (deploy plan, macro, alert setups) fetch directly and fill their own divs; they
+  // never answer here, and their URLs stay out of `requests`, which pins the controller's own fetches.
+  const fetchStub = (url) => { sideRequests.push(url); return new Promise(() => {}); };
+  const ctx = { window: windowStub, document: documentStub, console, setTimeout, clearTimeout, fetch: fetchStub };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
   vm.runInContext(DESK_SRC, ctx, { filename: 'desk.js' });
@@ -175,7 +181,7 @@ function loadDesk(schemas, opts = {}) {
   };
   const flush = async () => { while (pending) await pending; };
 
-  return { AppDesk, container, elements, requests, scrollCalls, memoKeys, rendererCalls, windowStub, documentStub, flush };
+  return { AppDesk, container, elements, requests, sideRequests, scrollCalls, memoKeys, rendererCalls, windowStub, documentStub, flush };
 }
 
 /** Element ids the emitted HTML declares. */

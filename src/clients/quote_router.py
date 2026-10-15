@@ -155,6 +155,14 @@ class QuoteRouter:
         self._surveillance_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=8, thread_name_prefix="surveillance_quotes"
         )
+        # Separate pool for slow/unbounded providers (yfinance, Tastytrade) so a hang cannot starve Yahoo workers
+        self._slow_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="quote_slow"
+        )
+        self._neg_cache: Dict[str, float] = {}
+        self.ttl_negative = 20.0       # Skip symbols that failed every provider
+        self.stale_max = 180.0         # Serve last good surveillance quote this long when providers fail
+        self.slow_timeout = 3.0
 
     # -------------------------------------------------------------------------
     # Helper Utilities
@@ -199,6 +207,54 @@ class QuoteRouter:
     def _is_index(self, symbol: str) -> bool:
         s = self._clean_symbol(symbol)
         return s in INDEX_SYMBOLS
+
+    def _schwab_quotes(self, syms: List[str]) -> Dict[str, QuoteData]:
+        """Schwab batch for non-index equities/ETFs. Returns {clean_sym: QuoteData}; empty on any failure."""
+        if not syms or not self.schwab_breaker.is_available():
+            return {}
+        # Broad market index symbols must never route to Schwab quotes API
+        equities = [s for s in syms if not self._is_index(s)]
+        if not equities:
+            return {}
+        try:
+            from src.clients.schwab_client import get_realtime_quotes_batch
+
+            m = {self._format_for_schwab(s): s for s in equities}
+            out: Dict[str, QuoteData] = {}
+            for k, sq in get_realtime_quotes_batch(list(m.keys())).items():
+                s = m.get(k) or m.get(str(k).replace("/", "."))
+                if s and sq and float(sq.get("last_price") or 0) > 0:
+                    out[s] = QuoteData(
+                        symbol=s, last_price=float(sq["last_price"]), bid=float(sq.get("bid") or 0.0), ask=float(sq.get("ask") or 0.0),
+                        open=float(sq.get("open") or 0.0), high=float(sq.get("high") or 0.0), low=float(sq.get("low") or 0.0),
+                        close=float(sq.get("close") or 0.0), volume=int(sq.get("volume") or 0),
+                        net_change=float(sq.get("net_change") or 0.0), net_percent_change=float(sq.get("net_percent_change") or 0.0),
+                        source="SCHWAB", timestamp=time.time())
+            return out
+        except Exception as e:
+            logger.warning(f"Schwab quotes for {equities} failed: {e!r}")
+            return {}
+
+    def _call_bounded(self, fn: Callable, *args: Any, timeout: Optional[float] = None) -> Any:
+        """Run a provider call with a hard deadline; None on timeout/error (worker thread may finish later)."""
+        fut = self._slow_executor.submit(fn, *args)
+        try:
+            return fut.result(timeout=timeout or self.slow_timeout)
+        except Exception as e:
+            fut.cancel()
+            logger.debug(f"Bounded call {getattr(fn, '__name__', fn)}{args} failed/timed out: {e!r}")
+            return None
+
+    def _stale_surveillance(self, sym: str) -> Optional[QuoteData]:
+        """Last good surveillance quote within stale_max, tagged STALE; None if too old."""
+        with self._cache_lock:
+            cached = self._cache_surveillance.get(sym)
+        if cached and time.time() - cached[0] < self.stale_max:
+            qd = cached[1]
+            if not str(qd.source).endswith("_STALE"):
+                qd = QuoteData(**{**qd.to_dict(), "source": f"{qd.source}_STALE"})
+            return qd
+        return None
 
     def _get_ticker_lock(self, symbol: str) -> threading.Lock:
         with self._inflight_meta_lock:
@@ -283,7 +339,7 @@ class QuoteRouter:
 
             # 4. Fallback: If Schwab is hard down during live trading, protect capital via secondary
             logger.warning(f"[ExecutionChannel:{clean_sym}] Schwab unavailable! Engaging safety backup.")
-            backup_quote = self._fetch_yahoo_direct(clean_sym)
+            backup_quote = self._fetch_tastytrade_quote(clean_sym) or self._fetch_yahoo_direct(clean_sym)
             if backup_quote:
                 backup_quote.source = f"{backup_quote.source}_EMERGENCY_FALLBACK"
                 with self._cache_lock:
@@ -364,7 +420,14 @@ class QuoteRouter:
         missing = [s for s in to_fetch if s not in results]
         if missing:
             logger.warning(f"[ExecutionChannel] {len(missing)} missing from Schwab; pulling backup.")
-            backup_quotes = self._fetch_yahoo_direct_batch(missing)
+            backup_quotes = {}
+            for s_m in missing:
+                qd_tt = self._fetch_tastytrade_quote(s_m)
+                if qd_tt:
+                    backup_quotes[s_m] = qd_tt
+            left = [s_m for s_m in missing if s_m not in backup_quotes]
+            if left:
+                backup_quotes.update(self._fetch_yahoo_direct_batch(left))
             with self._cache_lock:
                 for s, qd in backup_quotes.items():
                     qd.source = f"{qd.source}_EMERGENCY_FALLBACK"
@@ -397,6 +460,7 @@ class QuoteRouter:
                 if cached and (now - cached[0] < self.ttl_index):
                     return cached[1]
 
+            # Broad market indices route directly to Yahoo Direct REST (bypassing Schwab)
             qd = self._fetch_yahoo_direct(clean_sym, is_index=True)
             if qd:
                 with self._cache_lock:
@@ -430,40 +494,30 @@ class QuoteRouter:
             if cached and (now - cached[0] < self.ttl_surveillance):
                 return cached[1]
 
-        # 1. Try Alpaca Snapshot if credentials configured
-        qd_alpaca = self._fetch_alpaca_snapshot_single(clean_sym)
-        if qd_alpaca:
-            with self._cache_lock:
-                self._cache_surveillance[clean_sym] = (now, qd_alpaca)
-            return qd_alpaca
+        with self._cache_lock:
+            neg_hit = now - self._neg_cache.get(clean_sym, 0.0) < self.ttl_negative
+        if neg_hit:
+            return self._stale_surveillance(clean_sym)
 
-        # 2. Try Yahoo Direct REST (~200ms)
-        qd_yahoo = self._fetch_yahoo_direct(clean_sym)
-        if qd_yahoo:
-            with self._cache_lock:
-                self._cache_surveillance[clean_sym] = (now, qd_yahoo)
-            return qd_yahoo
-
-        # 3. Try Tastytrade institutional quote
-        qd_tt = self._fetch_tastytrade_quote(clean_sym)
-        if qd_tt:
-            with self._cache_lock:
-                self._cache_surveillance[clean_sym] = (now, qd_tt)
-            return qd_tt
-
-        # 4. Fallback to yfinance
-        qd_yf = self._fetch_yfinance_fast(clean_sym)
-        if qd_yf:
-            with self._cache_lock:
-                self._cache_surveillance[clean_sym] = (now, qd_yf)
-            return qd_yf
-
-        return None
+        # Alpaca -> Yahoo -> Tastytrade (5s cap, breaker) -> yfinance (3s cap); failures negative-cached.
+        qd = (
+            self._fetch_alpaca_snapshot_single(clean_sym)
+            or self._fetch_yahoo_direct(clean_sym)
+            or self._fetch_tastytrade_quote(clean_sym)
+            or self._call_bounded(self._fetch_yfinance_fast, clean_sym)
+        )
+        with self._cache_lock:
+            if qd:
+                self._cache_surveillance[clean_sym] = (now, qd)
+                self._neg_cache.pop(clean_sym, None)
+            else:
+                self._neg_cache[clean_sym] = now
+        return qd or self._stale_surveillance(clean_sym)
 
     def get_watchlist_quotes_batch(self, symbols: List[str]) -> Dict[str, QuoteData]:
         """
         High-throughput batch quotes for watchlist stalking (10–100 tickers).
-        Runs via concurrent Yahoo Direct REST workers and Alpaca snapshots.
+        Runs via concurrent Yahoo Direct REST workers, Alpaca snapshots, and Tastytrade.
         ZERO impact on Schwab connection.
         """
         results: Dict[str, QuoteData] = {}
@@ -492,6 +546,18 @@ class QuoteRouter:
         if not to_fetch:
             return results
 
+        # 0. Tastytrade DXLink: one websocket for the whole batch
+        tt_syms = [x for x in to_fetch if not self._is_index(x)]
+        if tt_syms:
+            tt_quotes = self._tastytrade_quotes_batch(tt_syms)
+            with self._cache_lock:
+                for s_, qd in tt_quotes.items():
+                    self._cache_surveillance[s_] = (now, qd)
+                    results[s_] = qd
+            to_fetch = [x for x in to_fetch if x not in results]
+            if not to_fetch:
+                return results
+
         # 1. Fetch via Alpaca snapshots if credentials available
         alpaca_key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY_ID")
         alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
@@ -507,7 +573,7 @@ class QuoteRouter:
         if not to_fetch:
             return results
 
-        # 2. Fetch remaining concurrently via Yahoo Direct REST (pool of 8 workers)
+        # 2. Concurrently via Yahoo Direct REST (pool of 8 workers)
         yahoo_quotes = self._fetch_yahoo_direct_batch(to_fetch)
         with self._cache_lock:
             for s, qd in yahoo_quotes.items():
@@ -520,13 +586,26 @@ class QuoteRouter:
         # 3. Last-resort fallback for any still missing: yfinance
         still_missing = [s for s in to_fetch if s not in results]
         if still_missing:
-            for s in still_missing:
-                try:
-                    q_yf = self._fetch_yfinance_fast(f"^{s}" if self._is_index(s) else s)
+            futs = {
+                self._slow_executor.submit(self._fetch_yfinance_fast, f"^{s}" if self._is_index(s) else s): s
+                for s in still_missing[:12]
+            }
+            try:
+                for fut in concurrent.futures.as_completed(futs, timeout=self.slow_timeout + 1.0):
+                    try:
+                        q_yf = fut.result()
+                    except Exception:
+                        q_yf = None
                     if q_yf:
-                        results[s] = q_yf
-                except Exception:
-                    pass
+                        results[futs[fut]] = q_yf
+            except concurrent.futures.TimeoutError:
+                for f in futs:
+                    f.cancel()
+            for s in still_missing:
+                if s not in results and not self._is_index(s):
+                    st = self._stale_surveillance(s)
+                    if st:
+                        results[s] = st
 
         # Map back to whatever symbol representation the caller provided (e.g. BRK.B or BRK/B)
         for s in symbols:
@@ -624,6 +703,8 @@ class QuoteRouter:
     # =========================================================================
     def _fetch_yahoo_direct(self, symbol: str, is_index: bool = False) -> Optional[QuoteData]:
         """Direct query to Yahoo Finance v8 chart REST endpoint (~180–220ms, no API keys)."""
+        if not self.yahoo_breaker.is_available():
+            return None
         clean = self._clean_symbol(symbol)
         yahoo_sym = self._format_for_yahoo(symbol, is_index=is_index)
 
@@ -634,8 +715,11 @@ class QuoteRouter:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1m&range=1d"
 
         try:
-            r = requests.get(url, headers=headers, timeout=3.5)
-            if r.status_code == 200:
+            r = requests.get(url, headers=headers, timeout=(5.0, 5.0))
+            if r.status_code == 429 or r.status_code >= 500:
+                self.yahoo_breaker.record_failure(f"HTTP {r.status_code}")
+            elif r.status_code == 200:
+                self.yahoo_breaker.record_success()
                 data = r.json()
                 meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
                 price = meta.get("regularMarketPrice")
@@ -660,6 +744,7 @@ class QuoteRouter:
                     )
         except Exception as e:
             logger.debug(f"Yahoo Direct query failed for {symbol}: {e}")
+            self.yahoo_breaker.record_failure(str(e))
 
         return None
 
@@ -673,56 +758,27 @@ class QuoteRouter:
             self._surveillance_executor.submit(self._fetch_yahoo_direct, sym): sym
             for sym in symbols
         }
-        for fut in concurrent.futures.as_completed(futures):
-            sym = futures[fut]
-            try:
-                qd = fut.result()
-                if qd and qd.last_price > 0:
-                    results[sym] = qd
-            except Exception as e:
-                logger.debug(f"Yahoo concurrent worker error for {sym}: {e}")
+        try:
+            for fut in concurrent.futures.as_completed(futures, timeout=6.0):
+                sym = futures[fut]
+                try:
+                    qd = fut.result()
+                    if qd and qd.last_price > 0:
+                        results[sym] = qd
+                except Exception as e:
+                    logger.debug(f"Yahoo concurrent worker error for {sym}: {e}")
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Yahoo batch deadline hit: {len(results)}/{len(symbols)} returned")
+            for f in futures:
+                f.cancel()
 
         return results
 
     def _fetch_alpaca_snapshot_single(self, symbol: str) -> Optional[QuoteData]:
-        """Fetch single symbol quote from Alpaca latest trade endpoint."""
-        alpaca_key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY_ID")
-        alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
-        if not alpaca_key or not alpaca_secret or self._is_index(symbol):
+        """Single symbol via the snapshot endpoint (sanity-checked against bid/ask)."""
+        if self._is_index(symbol) or not self.alpaca_breaker.is_available():
             return None
-
-        clean = self._clean_symbol(symbol)
-        alpaca_sym = self._format_for_alpaca(symbol)
-        base_url = (
-            os.getenv("ALPACA_DATA_URL")
-            or os.getenv("ALPACA_API_URL")
-            or "https://data.alpaca.markets"
-        ).strip().rstrip("/")
-        if "paper-api" in base_url or "api.alpaca.markets" in base_url:
-            base_url = "https://data.alpaca.markets"
-        if "/v2" not in base_url:
-            base_url = f"{base_url}/v2"
-
-        url = f"{base_url}/stocks/{alpaca_sym}/trades/latest"
-        headers = {"APCA-API-KEY-ID": alpaca_key, "APCA-API-SECRET-KEY": alpaca_secret}
-
-        try:
-            r = requests.get(url, headers=headers, timeout=3.0)
-            if r.status_code == 200:
-                trade = r.json().get("trade") or {}
-                px = trade.get("p")
-                if px and float(px) > 0:
-                    return QuoteData(
-                        symbol=clean,
-                        last_price=float(px),
-                        volume=int(trade.get("s") or 0),
-                        source="ALPACA",
-                        timestamp=time.time(),
-                    )
-        except Exception as e:
-            logger.debug(f"Alpaca single trade lookup failed for {symbol}: {e}")
-
-        return None
+        return self._fetch_alpaca_snapshots_batch([symbol]).get(self._clean_symbol(symbol))
 
     def _fetch_alpaca_snapshots_batch(self, symbols: List[str]) -> Dict[str, QuoteData]:
         """Fetch multiple symbols in a single request from Alpaca snapshots."""
@@ -745,8 +801,11 @@ class QuoteRouter:
             syms_param = ",".join(chunk)
             url = f"{base_url}/stocks/snapshots?symbols={syms_param}"
             try:
-                r = requests.get(url, headers=headers, timeout=4.0)
-                if r.status_code == 200:
+                r = requests.get(url, headers=headers, timeout=(5.0, 5.0))
+                if r.status_code == 429 or r.status_code >= 500:
+                    self.alpaca_breaker.record_failure(f"HTTP {r.status_code}")
+                elif r.status_code == 200:
+                    self.alpaca_breaker.record_success()
                     data = r.json()
                     for sym, snap in data.items():
                         trade = snap.get("latestTrade") or {}
@@ -757,6 +816,9 @@ class QuoteRouter:
                         last_p = trade.get("p") or quote.get("ap") or quote.get("bp")
                         if last_p and float(last_p) > 0:
                             px = float(last_p)
+                            bp, ap = float(quote.get("bp") or 0.0), float(quote.get("ap") or 0.0)
+                            if bp > 0 and ap >= bp and not (bp * 0.98 <= px <= ap * 1.02):
+                                px = (bp + ap) / 2.0
                             close_p = float(prev.get("c") or px)
                             net_c = round(px - close_p, 2)
                             net_p = round((net_c / close_p) * 100, 2) if close_p > 0 else 0.0
@@ -782,6 +844,8 @@ class QuoteRouter:
                                 results[sym] = qd
             except Exception as e:
                 logger.debug(f"Alpaca snapshot chunk failed: {e}")
+                self.alpaca_breaker.record_failure(str(e))
+                continue
 
         return results
 
@@ -817,37 +881,57 @@ class QuoteRouter:
 
         return None
 
-    def _fetch_tastytrade_quote(self, symbol: str) -> Optional[QuoteData]:
-        """Fetch quote via Tastytrade DXLink / market-metrics."""
-        if not self.tastytrade_breaker.is_available() or self._is_index(symbol):
-            return None
+    def _tastytrade_quotes_batch(self, symbols: List[str]) -> Dict[str, QuoteData]:
+        """One DXLink websocket for many symbols (shared client, cached quote token, 8s cap)."""
+        syms = [s for s in dict.fromkeys(symbols) if s and not self._is_index(s)]
+        if not syms or not self.tastytrade_breaker.is_available():
+            return {}
+        out: Dict[str, QuoteData] = {}
         try:
-            from src.clients.tastytrade_client import TastytradeClient
-            client = TastytradeClient()
-            q = client.get_realtime_quote(symbol)
-            if q and q.get("last_price") and float(q["last_price"]) > 0:
-                px = float(q["last_price"])
-                self.tastytrade_breaker.record_success()
-                return QuoteData(
-                    symbol=symbol,
+            from src.clients.tastytrade_client import get_tastytrade_client
+            client = get_tastytrade_client()
+            fut = self._slow_executor.submit(client.get_realtime_quotes_batch, syms, 5.0)
+            raw = fut.result(timeout=8.0)
+            for sym, q in (raw or {}).items():
+                px = float(q.get("last_price") or 0.0)
+                if px <= 0:
+                    continue
+                prev = float(q.get("prev_close") or 0.0)
+                out[sym] = QuoteData(
+                    symbol=sym,
                     last_price=px,
                     bid=float(q.get("bid") or 0.0),
                     ask=float(q.get("ask") or 0.0),
+                    open=float(q.get("open") or 0.0),
+                    high=float(q.get("high") or 0.0),
+                    low=float(q.get("low") or 0.0),
+                    close=prev,
+                    volume=int(q.get("volume") or 0),
+                    net_change=round(px - prev, 4) if prev else 0.0,
+                    net_percent_change=round((px - prev) / prev * 100.0, 4) if prev else 0.0,
                     source="TASTYTRADE",
                     timestamp=time.time(),
                 )
+            if out:
+                self.tastytrade_breaker.record_success()
+            if time.time() - getattr(self, "_tt_log_at", 0.0) > 60.0:
+                self._tt_log_at = time.time()
+                logger.info(f"Tastytrade DXLink batch: {len(out)}/{len(syms)} symbols quoted")
         except Exception as e:
-            logger.debug(f"Tastytrade quote fetch failed for {symbol}: {e}")
+            logger.debug(f"Tastytrade batch quote failed for {syms[:5]}: {e}")
             self.tastytrade_breaker.record_failure(str(e))
-        return None
+        return out
+
+    def _fetch_tastytrade_quote(self, symbol: str) -> Optional[QuoteData]:
+        return self._tastytrade_quotes_batch([symbol]).get(symbol)
 
     def enrich_with_tastytrade_metrics(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
         """Fetch Tastytrade institutional volatility metrics (IV Rank, IV Pct, HV30)."""
         if not symbols or not self.tastytrade_breaker.is_available():
             return {}
         try:
-            from src.clients.tastytrade_client import TastytradeClient
-            client = TastytradeClient()
+            from src.clients.tastytrade_client import get_tastytrade_client
+            client = get_tastytrade_client()
             items = client.get_market_metrics(symbols)
             results = {}
             for it in items:
@@ -882,3 +966,7 @@ class QuoteRouter:
 
 # Global singleton instance
 quote_router = QuoteRouter()
+
+
+def get_quote_router() -> QuoteRouter:
+    return quote_router

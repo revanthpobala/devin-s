@@ -369,7 +369,7 @@ def _fake_bars_for_stats():
 
 
 def test_target_hit_without_fill_requeues_local_triage():
-    """B3: T1 reached without a fill re-queues local triage with force."""
+    """B3: T1 reached without a fill queues local triage once for today (no forced same-day re-queue)."""
     watch_manager.upsert_watch_target(_payload("REQ"))
 
     with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
@@ -382,7 +382,8 @@ def test_target_hit_without_fill_requeues_local_triage():
     assert row["status"] == "STALKING"
     assert row["last_alert_type"] == "TARGET_HIT_NO_FILL"
     assert qfr.called
-    assert qfr.call_args.kwargs.get("force") is True
+    assert not qfr.call_args.kwargs.get("force")
+    assert qfr.call_args.kwargs.get("date_str") == "2026-10-12"
     assert qfr.call_args.kwargs.get("source") == "watch_runaway"
 
 

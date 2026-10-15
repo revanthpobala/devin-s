@@ -234,7 +234,7 @@ def test_print_funnel_summary():
         "total_quotes": 983,
         "rejections": {
             "biotech_exclusion": 45,
-            "price_under_15": 120,
+            "price_under_min": 120,
             "low_volume": 210,
             "missing_52w_data": 12,
             "out_of_bounds_or_excess_chg": 350,

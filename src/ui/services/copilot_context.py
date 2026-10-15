@@ -171,11 +171,60 @@ def _get_company_name(ticker: str) -> str:
     return _COMPANY_NAME_CACHE.get(ticker.upper(), ticker.upper())
 
 
+_GENERAL_CONCEPT_PATTERNS = [
+    re.compile(r"\bwhen\s+(?:does\s+it\s+make\s+sense|should\s+(?:i|we|you|one)|to)\s+(?:buy|sell|trade|use|enter|exit|roll|close|structure)\b", re.IGNORECASE),
+    re.compile(r"\bhow\s+(?:do|does|can)\s+(?:[\w\s]{0,25}?\b)?(?:spreads?|leaps?|options?|calls?|puts?|condors?|straddles?|strangles?|theta|gamma|delta|vega|greeks?|iv|volatility|collars?|diagonals?|calendars?|iron\s+condors?|covered\s+calls?|cash\s+secured\s+puts?|synthetic|assignment|early\s+exercise|pin\s+risk)\s+work\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:is|are|does\s+(?:it\s+)?mean)\s+(?:a|an|the)?\s*[\w\s]{0,30}?(?:spreads?|leaps?|options?|calls?|puts?|condors?|straddles?|strangles?|theta|gamma|delta|vega|greeks?|iv|implied\s+volatility|time\s+decay|extrinsic|intrinsic|max\s+pain|skew|smile|term\s+structure|wash\s+sale|pdt\s+rule)\b", re.IGNORECASE),
+    re.compile(r"\bwhy\s+(?:buy|sell|trade|use|prefer|choose)\s+(?:[\w\s]{0,25}?\b)?(?:spreads?|leaps?|options?|calls?|puts?|condors?|straddles?|strangles?|shares|stock)\b", re.IGNORECASE),
+    re.compile(r"\b(?:pros\s+and\s+cons|advantages?\s+and\s+disadvantages?|rules?\s+for|best\s+practices?\s+for|difference\s+between)\s+[\w\s]{0,35}?(?:spreads?|leaps?|options?|calls?|puts?|condors?|straddles?|strangles?|theta|shares|stock)\b", re.IGNORECASE),
+    re.compile(r"^(?:explain|tell\s+me\s+about|teach\s+me\s+about|guide\s+to|overview\s+of)\s+[\w\s]{0,35}?(?:spreads?|leaps?|options?|calls?|puts?|condors?|straddles?|strangles?|greeks?|theta|gamma|delta|vega|iv|hedging|risk\s+management)\b", re.IGNORECASE),
+    re.compile(r"\b(?:leap\s+spreads?|vertical\s+spreads?|credit\s+spreads?|debit\s+spreads?|iron\s+condors?|calendar\s+spreads?|diagonal\s+spreads?|covered\s+calls?|cash\s+secured\s+puts?|options\s+trading|options\s+basics|greeks|theta\s+decay|iv\s+crush)\b", re.IGNORECASE),
+]
+
+_TARGET_REF_RE = re.compile(r"\b(?:on|for|in|with)\s+(?:it|this|that|them|\$[A-Za-z]{1,5})\b", re.IGNORECASE)
+
+_CONTINUITY_RE = re.compile(
+    r"\b(it|its|this|that|them|the\s+stock|the\s+company|the\s+setup|the\s+ticker|the\s+trade|the\s+position|"
+    r"levels?|stop\s*loss|targets?|entry\s*zone|breakout|chart|thesis|ruling|judge|verdict|"
+    r"invalidation|r:r|rr|risk\s*to\s*reward|dossier|flow|sweeps?|filings?|10-k|10-q)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_general_conceptual_question(question: str) -> bool:
+    """
+    Returns True if the prompt is an educational, conceptual, or strategy question
+    that does NOT explicitly name a specific stock ticker.
+    """
+    if not question or not isinstance(question, str):
+        return False
+    if re.search(r"\$[A-Za-z]{1,5}\b", question):
+        return False
+    if re.search(r"\b(?:stock|ticker|symbol|shares\s+of|shares\s+in)\s+[A-Za-z]{1,5}\b", question, re.IGNORECASE):
+        return False
+    return any(pat.search(question) for pat in _GENERAL_CONCEPT_PATTERNS)
+
+
 def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history: list = None) -> dict:
     """
     Extracts all tickers and tracks whether each ticker was explicitly specified ($TICKER / modal / keyword)
     or inferred from casual company names / conversational words.
     """
+    is_general_strategy = _is_general_conceptual_question(question)
+    has_target_ref = bool(_TARGET_REF_RE.search(question or ""))
+
+    # If the user asks a purely general strategy or educational options question with no explicit ticker target,
+    # return GENERAL immediately so no random ticker (like LINE or an inherited stock) hijacks the answer.
+    if is_general_strategy and not has_target_ref:
+        return {
+            "tickers": ["GENERAL"],
+            "primary_ticker": "GENERAL",
+            "is_explicit": False,
+            "is_inferred": False,
+            "match_type": "none",
+            "company_name": "Broad Market",
+        }
+
     _init_company_data()
     known = _get_known_ticker_set()
     detected = []
@@ -253,7 +302,14 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "HIGHS", "LOWS", "OPENS", "CLOSES", "EXP", "DTE", "TICKER", "TICKERS",
         "SYMBOL", "SYMBOLS", "DESK", "DESKS", "MARKET", "MARKETS", "CHATS", "VIEWS", "SETUP", "SETUPS", "ACTION", "ACTIONS",
         "REPORT", "REPORTS", "MONTE", "CARLO", "DATA", "WINDOW", "CHAIN", "CHAINS", "GREEKS", "OPTION", "OPTIONS",
-        "EXACT", "EXECUTION", "TODAY", "RIGHT", "SPOT", "SPOTS", "TRIM", "TRAIL"
+        "EXACT", "EXECUTION", "TODAY", "RIGHT", "SPOT", "SPOTS", "TRIM", "TRAIL",
+        "LINE", "LINES", "SPREAD", "SPREADS", "STRADDLE", "STRADDLES", "STRANGLE", "STRANGLES", "CONDOR", "CONDORS",
+        "COLLAR", "COLLARS", "DIAGONAL", "DIAGONALS", "CALENDAR", "CALENDARS", "VERTICAL", "VERTICALS",
+        "SYNTHETIC", "ASSIGNMENT", "EXPIRATION", "EXPIRATIONS", "DELTA", "GAMMA", "THETA", "VEGA", "RHO", "IV",
+        "VOLATILITY", "EXTRINSIC", "INTRINSIC", "DEBIT", "DEBITS", "CREDIT", "CREDITS", "RATIO", "RATIOS",
+        "WING", "WINGS", "LEG", "LEGS", "ROLL", "ROLLS", "HOT", "COOL", "WARM", "PRINT", "PRINTS",
+        "SAFE", "POOL", "BILL", "ROOT", "HOPE", "LIVE", "LIFE", "BEAT", "MIND", "LUCK", "POST", "PEAK", "BASE", "EDGE",
+        "BOOK", "DECK", "FILL", "FILLS", "PAIR", "PAIRS", "SWAP", "SWAPS", "ALPHA", "BETA", "SENSE", "REASON"
     }
 
     acronym_blacklist = {
@@ -284,7 +340,14 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "ALERT", "ALERTS", "ALERTING", "QUICK", "RESEARCH", "PORTFOLIO", "PORTFOLIOS", "ACCOUNT", "ACCOUNTS",
         "BALANCE", "BALANCES", "HOLDING", "HOLDINGS", "POSITION", "POSITIONS", "SHARE", "SHARES",
         "COULD", "WOULD", "SHOULD", "MIGHT", "MAYBE", "ABOUT", "BASED", "WHATEVER", "EVERYTHING", "SOMETHING",
-        "NOTHING", "ANYTHING", "ORDER", "ORDERS", "EXECUTE", "TRIGGER", "TRIGGERS"
+        "NOTHING", "ANYTHING", "ORDER", "ORDERS", "EXECUTE", "TRIGGER", "TRIGGERS",
+        "LINE", "LINES", "SPREAD", "SPREADS", "STRADDLE", "STRADDLES", "STRANGLE", "STRANGLES", "CONDOR", "CONDORS",
+        "COLLAR", "COLLARS", "DIAGONAL", "DIAGONALS", "CALENDAR", "CALENDARS", "VERTICAL", "VERTICALS",
+        "SYNTHETIC", "ASSIGNMENT", "EXPIRATION", "DELTA", "GAMMA", "THETA", "VEGA", "RHO", "IV",
+        "VOLATILITY", "EXTRINSIC", "INTRINSIC", "DEBIT", "CREDIT", "RATIO", "WING", "WINGS", "LEG", "LEGS",
+        "ROLL", "ROLLS", "HOT", "COOL", "WARM", "PRINT", "PRINTS", "SAFE", "POOL", "BILL", "ROOT", "HOPE",
+        "LIVE", "LIFE", "BEAT", "MIND", "LUCK", "POST", "PEAK", "BASE", "EDGE", "BOOK", "DECK", "FILL", "FILLS",
+        "PAIR", "PAIRS", "SWAP", "SWAPS", "ALPHA", "BETA", "SENSE", "REASON"
     }
 
     # 5a. First check standalone known ticker tokens (e.g. WMT, AAPL, NVDA, GOOGL)
@@ -312,7 +375,8 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
                     q_clean = re.sub(rf'\b{re.escape(phrase)}\b', ' ', q_clean, flags=re.IGNORECASE)
 
     # 7. Inherit active conversation ticker if none detected in prompt
-    if not detected and history:
+    has_continuity = bool(_CONTINUITY_RE.search(question or ""))
+    if not detected and history and not is_general_strategy and has_continuity:
         for turn in reversed(history):
             content = turn.get("content", "")
             role = turn.get("role", "")
@@ -1121,7 +1185,7 @@ ABSOLUTE OPERATING RULES (violating any rule is a failure)
 
 13. ACCOUNT & TAX AWARENESS. Distinguish MARGIN vs CASH accounts (they are labeled per leg). Call out assignment risk on short calls, capital-gains impact of trimming long-held winners, and never propose an action in a CASH account that requires unsettled funds.
 
-14. INTERACTIVE ACTIONS & TOOLS. Finish every recommendation with one-click buttons drawn from the real leg: `[🔔 Set Alert at $XX.XX](action:alert?ticker=XXX&price=XX.XX&op=<=)` and `[🎯 Add to Watch Targets](action:watch?ticker=XXX&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`. Live quotes, options chains, and macro are already in context; emit any additional tool calls in your FIRST response so they run in parallel.
+14. INTERACTIVE ACTIONS & TOOLS. Finish every recommendation with one-click buttons drawn from the real leg: `[🔔 Set Alert at $XX.XX](action:alert?ticker=XXX&price=XX.XX&op=OP)` and `[🎯 Add to Watch Targets](action:watch?ticker=XXX&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`. OP is `>=` for a breakout or target alert and `<=` for a stop or support-loss alert; never leave it as OP. Live quotes, options chains, and macro are already in context; emit any additional tool calls in your FIRST response so they run in parallel.
 
 15. TEMPORAL CHRONOLOGY. Today is {calendar_today} ({now_str} / {now_et_str}). The active baseline was recorded {dossier_date} ({elapsed_days_str}). Never speak of prior-day statements as future expectations, and never quote remembered dollar figures — only what is in the dossier below.
 
@@ -1369,7 +1433,7 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
             copilot_instruction = f"The stock HAS ALREADY PULLED BACK from {_fmt(report_spot, default='prior highs')} to {_fmt(live_spot)}. It is testing the POC structural floor above the {_fmt(stop_p)} stop. DO NOT tell the user to wait for a pullback to {ceiling_str}—the pullback has already completed! Evaluate whether support is defending above {_fmt(stop_p)}."
         elif ez_high is not None and live_spot > ez_high:
             dist_above = ((live_spot - ez_high) / ez_high) * 100
-            status_badge = f"⏳ STALKING (+{dist_above:.1f}% ABOVE ENTRY ZONE)"
+            status_badge = f"⏳ WAITING (+{dist_above:.1f}% ABOVE ENTRY ZONE)"
             res_str = _fmt(breakout_p, default="resistance")
             status_desc = f"Live spot ({_fmt(live_spot)}) is trading above the entry zone ceiling ({_fmt(ez_high)}). Awaiting pullback or breakout above {res_str}."
             copilot_instruction = f"Price ({_fmt(live_spot)}) is currently {dist_above:.1f}% above the top of the entry zone ({_fmt(ez_high)}). Await pullback to {_fmt(ez_high)} or breakout above {res_str}."
@@ -1382,7 +1446,8 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
                 f"2) Establish a crisp tactical trade plan: Entry Zone, Hard Tactical Stop, and Targets (T1/T2). "
                 f"3) Recommend the highest-edge options vehicle (Bull Put credit spread, Long Call / Debit vertical, or Covered Call) with exact strikes and expiration. "
                 f"4) MUST conclude with interactive one-click action buttons to set cloud alerts and save to watch targets: "
-                f"`[🔔 Set Alert at $XX.XX](action:alert?ticker={ticker_u}&price=XX.XX&op=<=)  [🎯 Add to Watch Targets](action:watch?ticker={ticker_u}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`"
+                f"`[🔔 Set Alert at $XX.XX](action:alert?ticker={ticker_u}&price=XX.XX&op=OP)  [🎯 Add to Watch Targets](action:watch?ticker={ticker_u}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)` "
+                f"OP is `>=` for a breakout or target alert and `<=` for a stop or support-loss alert; never leave it as OP."
             )
 
     elapsed_days_str = ""
@@ -2653,7 +2718,16 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
      (a) What was run today (pipelines completed, tickers audited).
      (b) Key quantitative lessons & bull/bear debates learned.
      (c) Actionable gameplan for today (in-zone triggers vs stalking targets).
-   - NEVER claim "NO ACTIVE TICKER DATA DETECTED" or refuse to answer. You have complete institutional intelligence provided in the context below."""
+   - NEVER claim "NO ACTIVE TICKER DATA DETECTED" or refuse to answer. You have complete institutional intelligence provided in the context below.
+
+4. General Quantitative, Educational & Options Strategy Inquiries:
+   - When the user asks a general conceptual, options structure, or trading strategy question (e.g. 'when does it make sense to buy leap spreads', 'how do debit spreads work', 'what is theta decay', 'iron condor mechanics', 'why trade vertical spreads'):
+     Answer the strategy question DIRECTLY, thoroughly, and quantitatively without forcing an unrelated stock ticker or desk briefing.
+   - Structure your response cleanly:
+     (a) **Core Strategic Mechanics & Edge**: Explain the structure (e.g. buying deep ITM ~70-80 delta LEAPS call while selling shorter-term OTM call, or vertical debit/credit geometry), why it reduces capital outlay and theta bleed compared to naked options or buying shares outright.
+     (b) **Optimal Market Regimes & When It Makes Sense**: Detail the exact market conditions (e.g. low-to-moderate IV percentile, multi-quarter bullish thesis, avoiding high IV crush, defined-risk ceiling).
+     (c) **Greeks & Risk/Reward Dynamics**: Delta leverage, theta protection (net neutral or positive decay), max risk (net debit paid), and breakeven.
+     (d) **Execution & Management Playbook**: Strike selection guidelines, profit targets (e.g. 50-75% max profit or rolling short legs), and risk boundaries."""
 
     if board_is_desk and not is_portfolio_chat:
         desk_directive = (
@@ -2678,7 +2752,26 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
     else:
         portfolio_mode_directive = ""
 
+    try:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _Zi
+
+        from src.tracking import macro_calendar as _mc
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions as _gpp
+
+        _now_et = _dt.now(_Zi("America/New_York"))
+        _pos = _gpp() or []
+        from src.tracking import spread_check as _sc
+
+        macro_release_block = "\n\n".join(b for b in (_mc.context_text(_now_et, _mc.fetch_events(_now_et), _pos),
+                                                      _sc.context_text(_sc.spread_flags(_pos, _now_et.date()))) if b)
+    except Exception as _e:
+        logger.debug(f"Economic release context unavailable: {_e}")
+        macro_release_block = ""
+
     market_context_block = f"""---
+
+{macro_release_block}
 
 ### ACTIVE REAL-TIME MARKET CONTEXT:
 • CURRENT SYSTEM TIME: {now_str} ({now_et_str})
@@ -2723,6 +2816,7 @@ Guidelines:
 5. Cite exact real-time spot prices, bid/ask spreads, Greeks, and strikes when discussing levels. ALWAYS treat the LIVE REAL-TIME MARKET QUOTE as the sole authoritative current spot price. Never repeat historical report spot prices as today's price.
 5b. STAMP EVERY LIVE QUOTATION WITH ITS TIMESTAMP. Whenever you cite a spot price, price change, or quote-derived figure, append the quote time from the context in this exact form: `$X.XX (spot, HH:MM ET)`. A price without a timestamp reads as stale and is treated as an error.
 6. When recommending trades, always specify: Actionable Vehicle (Equity vs Option Structure), Exact Strikes / Expiration, Target Premium/Debit, Max Loss, and The ONE Thing Invalidation level.
+   - Any covered call, cash-secured put, or credit spread idea is premium selling and its profitability is UNMEASURED (no options history behind it). Label it UNMEASURED and justify the timing only from Ext Z and IV rank. Never suggest a short-side directional trade as having an edge.
 7. Mathematical Rigor & Deterministic Execution: All quantitative metrics, 14d ATRs, 20d Realized Volatilities, moving averages, and 10,000-path Monte Carlo probabilities are computed deterministically via the verified Python sandbox engine below. Always double-check mathematical identities (e.g. Max Profit + Max Loss = Spread Width, Breakeven = Strike ± Premium, R:R = Target Gain / Risk). Never hallucinate mental arithmetic.
 8. Strict Historical Factuality & No Retrospective Attribution: Never claim that a research report or technical model from an earlier date "had notice" or "saw the news" of a catalyst that occurred after that report was compiled. If a stock moved on news published today, state clearly that the news broke today, not in the earlier report. Distinguish between what the technical indicators saw on the report date and what news broke subsequently.
 9. Mandatory Two-Pass Clarification & Execution Protocol (Interactive Clarification & Ticker Verification):
@@ -2791,7 +2885,7 @@ Guidelines:
 15. One-Click Interactive Alerts & Watchlist Triggers:
    - When proposing tactical trade levels (Entry Zone, Stop Loss, Target 1, Breakout Level) or quote alerts for ANY stock (${primary_ticker} or user-requested tickers):
      YOU MUST ALWAYS APPEND ONE-CLICK INTERACTIVE ACTION BUTTONS at the end of your trade plan:
-     - Cloud Quote Alert: `[🔔 Set Alert at $XX.XX](action:alert?ticker=${primary_ticker}&price=XX.XX&op=<=)`
+     - Cloud Quote Alert: `[🔔 Set Alert at $XX.XX](action:alert?ticker=${primary_ticker}&price=XX.XX&op=OP)` where OP is `>=` for a breakout or target alert and `<=` for a stop or support-loss alert (never leave it as OP)
      - SQLite Watchlist Radar: `[🎯 Add to Watch Targets](action:watch?ticker=${primary_ticker}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`
      Clicking these buttons instantly triggers cloud push notifications via Tastytrade mobile or saves the target into the SQLite radar without requiring any typing!
  15b. LEVEL QUESTIONS ARE DETERMINISTIC — CALL get_candles, NEVER MENTAL ARITHMETIC:

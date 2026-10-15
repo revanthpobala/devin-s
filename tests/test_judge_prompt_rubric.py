@@ -61,15 +61,15 @@ def test_rubric_states_gate_floor_and_stronger_tier(prompt):
 
 
 # ---------------------------------------------------------------------------
-# 3. STALK must be armed
+# 3. ARMED must be armed
 # ---------------------------------------------------------------------------
 
-def test_stalk_requires_armed_levels(prompt):
+def test_armed_requires_armed_levels(prompt):
     """6-7 tier must require non-zero breakout/entry zone, stop, and T1/T2 above trigger."""
     assert "non-zero breakout level or entry zone" in prompt
     assert "tactical stop" in prompt
     assert "T1/T2 strictly above the trigger" in prompt
-    assert "Never emit breakout_level = 0 on a STALK" in prompt
+    assert "Never emit breakout_level = 0 on an ARMED verdict" in prompt
     assert "If the plan arms nothing, output CASH_SKIP instead" in prompt
 
 
@@ -79,7 +79,7 @@ def test_stalk_requires_armed_levels(prompt):
 
 def test_watch_in_verdict_enum(prompt):
     """WATCH must appear in the json:watch_levels verdict field comment."""
-    assert "STALK|WATCH|CASH_SKIP" in prompt
+    assert "ARMED|WATCH|CASH_SKIP" in prompt
 
 
 def test_watch_rubric_entry_present(prompt):
@@ -166,3 +166,12 @@ def test_panel_triage_stalk_maps_to_watch_band():
         else ("CUT" if "CASH_SKIP" in verdict.upper() else "WATCH")
     )
     assert _panel_triage == "WATCH"
+
+
+def test_judge_armed_verdict_is_stored_as_stalk():
+    import inspect
+
+    from src.logic.deep_research import arbitration
+
+    src = inspect.getsource(arbitration)
+    assert 'verdict.upper() == "ARMED"' in src and 'verdict = "STALK"' in src

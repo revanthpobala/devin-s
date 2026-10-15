@@ -23,18 +23,17 @@ from src.ui.routes.screener import _pb_lane_prior
 
 # --- the two dominant inbox families -------------------------------------------------------------
 
-def test_a_plus_trend_long_is_unmeasured_not_a_lane():
-    """41 of 81 inbox rows. It has never been measured, so it must not carry a lane."""
+def test_a_plus_trend_long_is_chase_risk_not_a_lane():
+    """Measured below the same-day tape (alert_setups scoreboard), so it carries no lane."""
     r = classify_setup_name("A+ Trend Long")
-    assert r["tag"] == UNMEASURED
+    assert r["tag"] == "chase risk"
     assert r["lane"] is None
     assert r["prior_win"] is None
-    assert "unmeasured" in r["label"].lower()
 
 
 @pytest.mark.parametrize("name", ["A+ Trend Long", "a+ trend long", "A+ TREND LONG"])
 def test_a_plus_trend_matching_is_case_insensitive(name):
-    assert classify_setup_name(name)["tag"] == UNMEASURED
+    assert classify_setup_name(name)["tag"] == "chase risk"
 
 
 def test_early_action_long_is_tagged_no_edge():
@@ -224,4 +223,4 @@ def test_needs_you_gate_follows_the_live_rr_config():
     # reads the live floor, and the dial is part of the cache fingerprint.
     assert "rr_config.min_rr()" in inspect.getsource(today_service._build_today_payload_sync)
     assert "rr_config" in inspect.getsource(today_service._data_fingerprint)
-    assert rr_config.min_rr() == 2.0, "the shipped default is the measured floor"
+    assert rr_config.min_rr() == 1.5, "the shipped default floor"

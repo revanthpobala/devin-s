@@ -544,6 +544,12 @@ def test_card_states_both_paths_and_both_rr(client):
             "VALUES ('BRK', ?, 'test', 'PASS', 'RR_SETUP', 100, 110, 125, 95, 120, 5.0, 36, 0.0, 20, 0.0)",
             (today,),
         )
+        # T1 below the trigger but T2 above it: judged on T2, not called broken.
+        cursor.execute(
+            "INSERT INTO suggestions (ticker, date, source, gate_status, setup_lane, entry_low, entry_high, breakout_level, stop, target_1, target_2, atr_at_signal, signal_pack, fade, action_long, ext_z) "
+            "VALUES ('BT2', ?, 'test', 'PASS', 'RR_SETUP', 100, 110, 125, 95, 120, 155, 5.0, 36, 0.0, 20, 0.0)",
+            (today,),
+        )
         cursor.execute(
             "INSERT INTO watch_targets (ticker, date, status, verdict, actionable, side, last_price, updated_at) "
             "VALUES ('BKO', ?, 'STALKING', 'STALK', 1, 'LONG', 112.0, ?)",
@@ -554,6 +560,11 @@ def test_card_states_both_paths_and_both_rr(client):
             "VALUES ('BRK', ?, 'STALKING', 'STALK', 1, 'LONG', 112.0, ?)",
             (today, datetime.now().isoformat()),
         )
+        cursor.execute(
+            "INSERT INTO watch_targets (ticker, date, status, verdict, actionable, side, last_price, updated_at) "
+            "VALUES ('BT2', ?, 'STALKING', 'STALK', 1, 'LONG', 112.0, ?)",
+            (today, datetime.now().isoformat()),
+        )
         # The desk only assembles cards for rows with a live alert decision.
         conn.commit()
 
@@ -561,7 +572,7 @@ def test_card_states_both_paths_and_both_rr(client):
     # through the alerts table the desk reads.
     from src.tracking import alert_db as _adb
     with _adb._db_lock, _adb._get_connection() as ac:
-        for sym in ("BKO", "BRK"):
+        for sym in ("BKO", "BRK", "BT2"):
             ac.execute(
                 """
                 INSERT OR REPLACE INTO alerts (message_id, email_id, date, timestamp, symbol, action, strategy,
@@ -590,14 +601,19 @@ def test_card_states_both_paths_and_both_rr(client):
     assert bko["rr_breakout_at_trigger"] == 0.17
     assert bko["breakout_trigger_broken"] is False
     assert "zone R:R 1.33 @ $110.00" in bko["rr_paths_text"]
-    assert "breakout R:R 0.17 @ $125.00" in bko["rr_paths_text"]
+    assert "breakout R:R 0.17 @ $125.00 (to T1)" in bko["rr_paths_text"]
 
     brk = rows.get("BRK")
     assert brk is not None
     # Target 120 sits below the 125 trigger: the path is flagged broken, never blended.
     assert brk["breakout_trigger_broken"] is True
     assert brk["rr_breakout_at_trigger"] is None
-    assert "broken" in brk["rr_paths_text"]
+    assert "needs a target above its trigger" in brk["rr_paths_text"]
+
+    bt2 = rows.get("BT2")
+    assert bt2 is not None and bt2["breakout_trigger_broken"] is False
+    # (155-125)/(125-95) = 1.0, measured to T2
+    assert bt2["rr_breakout_at_trigger"] == 1.0 and bt2["breakout_target_used"] == "T2"
 
 
 def monkeypatch_attr(obj, name, value):

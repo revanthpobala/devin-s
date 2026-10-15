@@ -22,7 +22,37 @@ logger = logging.getLogger(__name__)
 API_URL = os.getenv("LOCAL_LLM_API_URL", "http://127.0.0.1:8000/v1")
 
 _LOCAL_LLM_CONCURRENCY = max(1, int(getattr(config, "LLM_LOCAL_CONCURRENCY", 4)))
-_local_llm_semaphore = threading.Semaphore(_LOCAL_LLM_CONCURRENCY)
+# One server slot is always left for chat: a pool of N threads would otherwise all pass the /slots
+# check in the same instant and fill every slot.
+_local_llm_semaphore = threading.Semaphore(max(1, _LOCAL_LLM_CONCURRENCY - 1))
+
+
+def _wait_for_spare_slot(max_wait_s: float = 90.0) -> None:
+    """Research and triage leave one llama-server slot idle so a chat message never queues behind them.
+
+    Reads the server's own /slots, so it works across the separate research processes.
+    ponytail: two callers can pass the check in the same instant (the chat then waits for one of them);
+    upgrade path is a cross-process lock. Gives up after max_wait_s rather than starving research.
+    """
+    import random
+    import urllib.request
+
+    from src.utils import chat_priority
+
+    base = API_URL.rsplit("/v1", 1)[0]
+    deadline = time.time() + max_wait_s
+    while time.time() < deadline:
+        if chat_priority.is_waiting():
+            time.sleep(1.0 + random.random())
+            continue
+        try:
+            with urllib.request.urlopen(f"{base}/slots", timeout=0.5) as r:
+                slots = json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return
+        if len(slots) < 2 or sum(1 for s in slots if s.get("is_processing")) < len(slots) - 1:
+            return
+        time.sleep(1.0 + random.random())
 
 
 def _create_completion(client, provider: str, **kwargs):
@@ -34,6 +64,7 @@ def _create_completion(client, provider: str, **kwargs):
         if kwargs.get("stream"):
             # Consume stream inside semaphore block so concurrency limit is strictly held for generation duration
             with _local_llm_semaphore:
+                _wait_for_spare_slot()
                 stream_response = client.chat.completions.create(**kwargs)
                 collected_chunks = []
                 finish_reason = None
@@ -63,6 +94,7 @@ def _create_completion(client, provider: str, **kwargs):
                 return _DummyResponse(full_content, finish_reason)
 
         with _local_llm_semaphore:
+            _wait_for_spare_slot()
             return client.chat.completions.create(**kwargs)
 
     return client.chat.completions.create(**kwargs)
@@ -629,43 +661,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_candles",
-            "description": (
-                "Deterministic lookup for daily, 5-minute, and 1-minute OHLCV candles from Schwab. "
-                "Returns the session Open, High, Low, Close, and current live quote. "
-                "When 'levels' are provided (e.g. [355.0]), it deterministically calculates and returns for each level: "
-                "crossed or not ('crossed: yes/no'), exact first touch timestamp ('first_touch_time' or 'never touched'), "
-                "whether it held on close ('held_on_close: yes/no'), distance ($ and %), and current position at live quote. "
-                "ALWAYS call this deterministic tool whenever the user asks about a price level or candle history."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ticker": {
-                        "type": "string",
-                        "description": "Stock ticker symbol (e.g., 'GOOGL', 'AAPL', 'NVDA')",
-                    },
-                    "interval": {
-                        "type": "string",
-                        "description": "Candle timeframe interval ('5m', '1m', 'daily', default: '5m')",
-                    },
-                    "days": {
-                        "type": "integer",
-                        "description": "Number of days of daily history to fetch (default: 5)",
-                    },
-                    "levels": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "description": "Optional list of price levels to evaluate against candles (e.g. [355.0]). Returns crossed status, first touch time, and close holding status.",
-                    },
-                },
-                "required": ["ticker"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "execute_python_code",
             "description": (
                 "Executes arbitrary Python code in a secure sandboxed environment with read-only market data. "
@@ -1200,7 +1195,7 @@ def invoke_skill(skill_name: str, topic: str = "") -> dict:
         return {"status": "error", "error": f"Error reading skill '{skill_name}': {e}", "content": ""}
 
 
-def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = False):
+def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = False, chat_ticker: Optional[str] = None):
     """Executes the mapped python function for a given tool call with TTL artifact caching."""
     from src.data.artifact_cache import artifact_cache
     
@@ -1214,8 +1209,9 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         return f"Error: Invalid JSON arguments provided for tool '{function_name}': {str(e)}. Please correct your JSON and try again."
 
     from src.clients import options_client
-    active_ticker = options_client._ACTIVE_TICKER
-    req_ticker = (args.get("ticker") or args.get("symbol") or active_ticker or "GLOBAL").upper()
+    # Chat names its own ticker per call; the research-pipeline global (last researched name) must not rewrite it.
+    active_ticker = None if chat_ticker is not None else options_client._ACTIVE_TICKER
+    req_ticker = (args.get("ticker") or args.get("symbol") or active_ticker or chat_ticker or "GLOBAL").upper()
 
     if active_ticker and req_ticker != active_ticker and function_name not in ("search_web", "fetch_prediction_market"):
         logger.warning(
@@ -1253,23 +1249,17 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         cache_key = f"prior_research_{lookback_slug}"
     elif function_name == "get_prior_plan_outcome":
         cache_key = "prior_plan_outcome"
-    elif function_name == "get_candles":
-        lvls = args.get("levels") or []
-        lvls_slug = "-".join(f"{float(x):.4f}" for x in lvls if str(x).replace(".", "", 1).replace("-", "", 1).isdigit()) if lvls else ""
-        cache_key = f"candles_{args.get('interval', '5m')}_{args.get('days', 5)}" + (f"_{lvls_slug}" if lvls_slug else "")
     elif function_name == "fetch_sec_filings":
         form_slug = re.sub(r'[^\w\-]', '_', str(args.get("form_type", "ALL")).upper()).strip('_')
         limit_slug = re.sub(r'[^\w\-]', '_', str(args.get("limit", 5))).strip('_')
         cache_key = f"sec_filings_{form_slug}_{limit_slug}"
-    elif function_name == "get_candles":
-        levels_slug = "_".join(str(lvl) for lvl in args.get("levels", []))
-        cache_key = f"candles_{args.get('interval', '5m')}_{args.get('days', 5)}_{levels_slug}"
     elif function_name == "execute_python_code":
         import hashlib
         code_hash = hashlib.md5(str(args.get("code", "")).encode("utf-8")).hexdigest()[:8]
         cache_key = f"py_code_{code_hash}"
 
-    cached_val = artifact_cache.get(date_str, ticker, cache_key)
+    # get_candles answers "did it cross" from live bars: never serve it from the 5-minute artifact cache.
+    cached_val = None if function_name == "get_candles" else artifact_cache.get(date_str, ticker, cache_key)
     if cached_val is not None:
         return cached_val
 
@@ -1380,16 +1370,6 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         res_str = fetch_historical_zone_and_regime_analytics_tool(ticker, lookback_bars=lookback, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
-    elif function_name == "get_candles":
-        from src.tracking.candle_service import get_candles_tool
-        t = (args.get("ticker") or ticker or "").upper()
-        interval = args.get("interval", "5m")
-        days = int(args.get("days", 5))
-        levels = args.get("levels", [])
-        logger.info(f"LLM executed deterministic tool: get_candles(ticker='{t}', interval='{interval}', days={days}, levels={levels})")
-        res_str = get_candles_tool(ticker=t, interval=interval, days=days, levels=levels)
-        artifact_cache.save(date_str, ticker, cache_key, res_str)
-        return res_str
     elif function_name == "execute_python_code":
         code = args.get("code", "")
         t = (args.get("ticker") or ticker or "").upper()
@@ -1442,7 +1422,6 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
             days=int(args.get("days") or 5),
             levels=levels,
         )
-        artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "detect_candlestick_patterns":
         logger.info(f"LLM executed tool: detect_candlestick_patterns(ticker='{ticker}')")

@@ -34,10 +34,9 @@ def test_presets_are_in_reward_to_risk_notation():
 
 
 def test_the_default_preset_is_the_measured_one():
-    """1:2 == rr_market_min 2.0, the floor the corpus supports. Shipping any other default
-    would be shipping an unmeasured claim."""
-    assert rc.PRESETS["2_0"]["rr_market_min"] == 2.0
-    assert rc.active_preset() == "2_0", "a clean install must land on the measured preset"
+    """1:1.5 is the shipped floor: yellow 1.5-2.0 (+0.02R, unstable), green from 2.0 (+0.08R)."""
+    assert rc.PRESETS["1_5"]["rr_market_min"] == 1.5
+    assert rc.active_preset() == "1_5", "a clean install must land on the 1:1.5 preset"
 
 
 def test_every_preset_is_internally_valid():
@@ -310,7 +309,7 @@ def test_level_validation_rejects_at_the_configured_floor():
 
     # at-market R:R = (115-100)/(100-90) = 1.5
     strict = reasons_at(2.0)
-    assert len(strict) == 1 and "below 2.00 floor" in strict[0], strict
+    assert len(strict) == 1 and "below 2.000 floor" in strict[0], strict
 
     permissive = reasons_at(1.5)
     assert permissive == [], "at exactly the floor the row must not be cut"

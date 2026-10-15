@@ -356,6 +356,8 @@ window.AppStatus = {
   },
 
   async updateStatus() {
+    if (this._statusInFlight) return;
+    this._statusInFlight = true;
     try {
       const data = await window.AppApi.getStatus();
 
@@ -599,6 +601,8 @@ window.AppStatus = {
 
     } catch (e) {
       console.error('Status update error', e);
+    } finally {
+      this._statusInFlight = false;
     }
   },
 
@@ -1420,3 +1424,24 @@ window.AppStatus = {
     modal.style.display = 'flex';
   }
 };
+
+(function mountTickerSearch() {
+  const mount = () => {
+    const ribbon = document.getElementById('status-ribbon');
+    if (!ribbon || document.getElementById('hdr-ticker-search')) return;
+    const f = document.createElement('form');
+    f.id = 'hdr-ticker-search';
+    f.style.cssText = 'display:inline-flex; margin-right:8px;';
+    f.innerHTML = '<input type="text" placeholder="Ticker ↵" maxlength="8" autocomplete="off" spellcheck="false" style="width:84px; padding:4px 8px; font-size:11px; font-weight:800; font-family:var(--font-mono); text-transform:uppercase; background:var(--bg-main); color:var(--text-main); border:1px solid var(--border); border-radius:6px;">';
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const i = f.firstChild;
+      const t = i.value.trim().toUpperCase().replace(/^\$/, '');
+      if (!/^[A-Z][A-Z0-9.\-]{0,7}$/.test(t)) return;
+      window.open('/research/' + encodeURIComponent(t), '_blank');
+      i.value = '';
+    };
+    ribbon.insertBefore(f, ribbon.firstChild);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
+})();

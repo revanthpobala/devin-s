@@ -1085,11 +1085,26 @@ def stop_continuous_screener_daemon():
         _daemon_instance = None
 
 
+def _remote():
+    """Control data of the detached backend process, or None when this process owns the daemon / no backend."""
+    if _daemon_instance is not None:
+        return None
+    from src.tracking import backend_control as bc
+
+    data = bc.read()
+    return data if bc.alive(data) else None
+
+
 def trigger_continuous_scan_now():
     """Trigger an immediate scan cycle on the active daemon."""
     global _daemon_instance
     if _daemon_instance is not None and _daemon_instance.is_alive():
         _daemon_instance.trigger_now()
+        return True
+    if _remote() is not None:
+        from src.tracking import backend_control as bc
+
+        bc.command(scan_now_ts=time.time())
         return True
     return False
 
@@ -1100,6 +1115,11 @@ def pause_continuous_screener() -> bool:
     if _daemon_instance is not None:
         _daemon_instance.pause()
         return True
+    if _remote() is not None:
+        from src.tracking import backend_control as bc
+
+        bc.command(paused=True)
+        return True
     return False
 
 
@@ -1109,6 +1129,11 @@ def resume_continuous_screener() -> bool:
     if _daemon_instance is not None:
         _daemon_instance.resume()
         return True
+    if _remote() is not None:
+        from src.tracking import backend_control as bc
+
+        bc.command(paused=False)
+        return True
     return False
 
 
@@ -1117,6 +1142,13 @@ def toggle_continuous_screener_pause() -> bool:
     global _daemon_instance
     if _daemon_instance is not None:
         return _daemon_instance.toggle_pause()
+    remote = _remote()
+    if remote is not None:
+        from src.tracking import backend_control as bc
+
+        new_paused = not bool((remote.get("screener") or {}).get("paused", False))
+        bc.command(paused=new_paused)
+        return new_paused
     return False
 
 
@@ -1125,6 +1157,9 @@ def get_continuous_screener_status() -> Dict[str, Any]:
     global _daemon_instance
     if _daemon_instance is not None:
         return _daemon_instance.get_status()
+    remote = _remote()
+    if remote is not None and remote.get("screener"):
+        return {**remote["screener"], "backend": "detached"}
     return {
         "running": False,
         "paused": False,

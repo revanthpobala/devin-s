@@ -303,7 +303,8 @@ def get_watch_targets():
                 item["rr_ratio"] = rr_ratio
 
                 # Actionable flag: IN_ZONE, IN_TRADE, or distance <= 1.0%
-                is_actionable = (status in ("IN_ZONE", "IN_TRADE")) or (dist_pct is not None and abs(dist_pct) <= 1.0) or opt_act
+                dead = status in ("TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED", "STOPPED", "MISSED_RUNAWAY", "EXPIRED", "REJECTED_BY_GATE", "UNRESEARCHED")
+                is_actionable = not dead and ((status in ("IN_ZONE", "IN_TRADE")) or (dist_pct is not None and abs(dist_pct) <= 1.0) or opt_act)
                 item["is_actionable"] = is_actionable
                 if is_actionable:
                     actionable_count += 1

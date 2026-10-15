@@ -197,31 +197,49 @@ def start_all_daemons():
         logger.error(f"Failed to auto-start Email Alert Ingestor on startup: {e}")
         append_log(f"⚠️ [Startup] Auto-start Email Alert Ingestor failed: {e}")
 
-    # 2. Autonomous Alert Triage Daemon
-    try:
-        from src.tracking.auto_triage_daemon import start_auto_triage_daemon
-        start_auto_triage_daemon(poll_interval=8, batch_size=15)
-        append_log("🤖 [Startup] Autonomous Alert Triage Daemon active.")
-    except Exception as e_triage:
-        logger.warning(f"Failed to start AutoTriageDaemon: {e_triage}")
+    # 2-4. Triage, screener and watch daemons run in the detached backend process (survives UI restarts).
+    # PINE_INPROCESS_DAEMONS=1 keeps the old in-UI behaviour.
+    if os.environ.get("PINE_INPROCESS_DAEMONS") == "1":
+        # 2. Autonomous Alert Triage Daemon
+        try:
+            from src.tracking.auto_triage_daemon import start_auto_triage_daemon
+            start_auto_triage_daemon(poll_interval=8, batch_size=15)
+            append_log("🤖 [Startup] Autonomous Alert Triage Daemon active.")
+        except Exception as e_triage:
+            logger.warning(f"Failed to start AutoTriageDaemon: {e_triage}")
 
-    # 3. Continuous Schwab 1000 & Tastytrade Screener Daemon
-    try:
-        from src.screener.continuous_screener_daemon import start_continuous_screener_daemon
-        start_continuous_screener_daemon()
-        append_log("🤖 [Startup] Continuous Schwab & Tastytrade Screener Daemon active.")
-    except Exception as e_screener:
-        logger.warning(f"Failed to start ContinuousScreenerDaemon: {e_screener}")
+        # 3. Continuous Schwab 1000 & Tastytrade Screener Daemon
+        try:
+            from src.screener.continuous_screener_daemon import start_continuous_screener_daemon
+            start_continuous_screener_daemon()
+            append_log("🤖 [Startup] Continuous Schwab & Tastytrade Screener Daemon active.")
+        except Exception as e_screener:
+            logger.warning(f"Failed to start ContinuousScreenerDaemon: {e_screener}")
 
-    # 4. Watchlist & Trigger Alert Daemon
-    try:
-        def _bg_watch_alerts():
-            from run_watch_alerts import run_watch_loop
-            run_watch_loop(poll_interval=60, sync_sheets=False)
-        threading.Thread(target=_bg_watch_alerts, daemon=True, name="WatchAlertsDaemon").start()
-        append_log("🤖 [Startup] Real-Time Watchlist Trigger Alert Daemon active (60s loop).")
-    except Exception as e_watch:
-        logger.warning(f"Failed to start WatchAlertsDaemon: {e_watch}")
+        # 4. Watchlist & Trigger Alert Daemon
+        try:
+            def _bg_watch_alerts():
+                from run_watch_alerts import run_watch_loop
+                run_watch_loop(poll_interval=60, sync_sheets=False)
+            threading.Thread(target=_bg_watch_alerts, daemon=True, name="WatchAlertsDaemon").start()
+            append_log("🤖 [Startup] Real-Time Watchlist Trigger Alert Daemon active (60s loop).")
+        except Exception as e_watch:
+            logger.warning(f"Failed to start WatchAlertsDaemon: {e_watch}")
+
+    else:
+        try:
+            from src.tracking import backend_control as bc
+
+            if bc.read().get("stopped_by_user"):
+                append_log("⏸️ [Startup] Research backend was stopped by user; not auto-starting. Start it from the bell panel.")
+            else:
+                if bc.alive() and bc.code_is_newer(bc.read().get("started_at")):
+                    append_log("♻️ [Startup] Research backend is on old code; restarting it.")
+                    bc.stop_process()
+                res = bc.start_process()
+                append_log(f"🧠 [Startup] Research backend: {res.get('status')} (PID {res.get('pid')}).")
+        except Exception as e_backend:
+            logger.warning(f"Research backend failed to start: {e_backend}")
 
     # 5. Local LLM Server Healthcheck on port 8000
     def _bg_check_llm():
@@ -256,10 +274,58 @@ def start_all_daemons():
         logger.warning(f"Edge Scanner failed to start: {e_edge}")
         append_log(f"⚠️ [Startup] Edge Scanner not started: {e_edge}")
 
+    # 8. Notifier: child of this server, stops with it
+    try:
+        start_notifier_process()
+        append_log("🔔 [Startup] Notifier started (stops with the server).")
+    except Exception as e_notif:
+        logger.warning(f"Notifier failed to start: {e_notif}")
+
+
+_NOTIFIER = None
+
+
+def stop_notifier_processes():
+    """Kill every run_notifier.py process (stale ones from older code included)."""
+    import psutil
+    global _NOTIFIER
+    _NOTIFIER = None
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if "python" in (proc.info.get("name") or "").lower() and any("run_notifier.py" in a for a in proc.cmdline()):
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+
+def start_notifier_process():
+    """Launch run_notifier.py as a child of this server: replaces any stale copy, exits when this process ends."""
+    global _NOTIFIER
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    stop_notifier_processes()
+    time.sleep(0.5)
+    log_path = config.BASE_DIR / "logs" / "notifier.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    with open(log_path, "ab") as log:
+        _NOTIFIER = subprocess.Popen(
+            [sys.executable, "run_notifier.py", "--parent", str(os.getpid())],
+            cwd=str(config.BASE_DIR),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+
 
 def stop_all_daemons():
     """Cleanly stop background ingestor, auto-triage daemon, and continuous screener on shutdown."""
     from src.ui import state
+    try:
+        stop_notifier_processes()
+    except Exception:
+        pass
     if state.TRACKER_PROCESS is not None and state.TRACKER_PROCESS.poll() is None:
         try:
             logger.info("Stopping Email Alert Ingestor on UI shutdown...")

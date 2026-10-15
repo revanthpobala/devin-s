@@ -407,8 +407,37 @@ def get_research_queue(date: Optional[str] = None):
         return {"date": "", "queue": [], "error": str(e)}
 
 
+_REPORTS_CACHE: dict = {}
+_REPORTS_TTL_S = 15.0
+_REPORTS_REFRESHING: set = set()
+
+
 @router.get("/api/reports")
 def list_available_reports(date: Optional[str] = None):
+    """Reports listing, reused for _REPORTS_TTL_S: building every card reads many report files."""
+    key = (str(config.BASE_DIR), date)
+    hit = _REPORTS_CACHE.get(key)
+    now_ts = time.time()
+    if hit is not None:
+        if now_ts - hit[0] >= _REPORTS_TTL_S and key not in _REPORTS_REFRESHING:
+            _REPORTS_REFRESHING.add(key)
+            threading.Thread(target=_refresh_reports, args=(key, date), daemon=True, name="ReportsRefresh").start()
+        return hit[1]
+    result = _list_available_reports_uncached(date)
+    _REPORTS_CACHE[key] = (time.time(), result)
+    return result
+
+
+def _refresh_reports(key, date) -> None:
+    try:
+        _REPORTS_CACHE[key] = (time.time(), _list_available_reports_uncached(date))
+    except Exception as e:
+        logger.warning(f"[reports] refresh failed: {e}")
+    finally:
+        _REPORTS_REFRESHING.discard(key)
+
+
+def _list_available_reports_uncached(date: Optional[str] = None):
     """List all available research reports grouped by date with rich summary metadata."""
     reports_dir = config.BASE_DIR / "reports"
     if not reports_dir.exists():
@@ -1582,21 +1611,145 @@ def get_ticker_quote(ticker: str):
 
 @router.get("/api/options-flow/{ticker}")
 def get_options_flow_endpoint(ticker: str, refresh: bool = False):
-    """Fetch unusual options flow anomalies and institutional sweep metrics from Schwab API."""
+    """
+    Fetch unusual options flow anomalies, institutional sweep metrics, 
+    and Tastytrade volatility dynamics across multi-broker feeds.
+    """
     from src.clients.schwab_client import get_unusual_options_flow_data
+    from src.clients.quote_router import get_quote_router
 
     sym = validate_ticker(ticker)
+    qr = get_quote_router()
+
+    # 1. Fetch Schwab unusual options flow data
     try:
         data = get_unusual_options_flow_data(sym, force_refresh=refresh)
-        return data
     except Exception as e:
         logger.error(f"Failed to fetch Schwab options flow for {sym}: {e}")
-        return {
+        data = {
             "ticker": sym,
             "status": "error",
             "error": str(e),
             "anomalies": [],
         }
+
+    # 2. Enrich with live spot quote from QuoteRouter if missing or zero
+    if not data.get("underlying_price"):
+        try:
+            q = qr.get_quote(sym)
+            if q and q.last_price > 0:
+                data["underlying_price"] = q.last_price
+        except Exception as e:
+            logger.debug(f"Could not fetch spot quote for {sym}: {e}")
+
+    # 3. Enrich with Tastytrade institutional volatility metrics
+    try:
+        from src.clients.tastytrade_client import get_tastytrade_client
+        tt_client = get_tastytrade_client()
+        metrics_list = tt_client.get_market_metrics([sym])
+        if metrics_list:
+            m = metrics_list[0]
+            
+            def _to_flt(val):
+                try:
+                    return float(val) if val is not None else None
+                except (ValueError, TypeError):
+                    return None
+
+            ivr_raw = _to_flt(m.get("tos-implied-volatility-index-rank") or m.get("implied-volatility-index-rank"))
+            ivp_raw = _to_flt(m.get("implied-volatility-percentile"))
+            hv30_raw = _to_flt(m.get("historical-volatility-30-day"))
+            iv30_raw = _to_flt(m.get("implied-volatility-30-day"))
+            iv_hv_diff = _to_flt(m.get("iv-hv-30-day-difference"))
+
+            ivr = round(ivr_raw * 100, 1) if ivr_raw is not None and ivr_raw <= 1.0 else (round(ivr_raw, 1) if ivr_raw else None)
+            ivp = round(ivp_raw * 100, 1) if ivp_raw is not None and ivp_raw <= 1.0 else (round(ivp_raw, 1) if ivp_raw else None)
+            hv30 = round(hv30_raw, 1) if hv30_raw is not None else None
+            iv30 = round(iv30_raw, 1) if iv30_raw is not None else None
+
+            data["iv_rank"] = ivr
+            data["iv_percentile"] = ivp
+            data["hv_30"] = hv30
+            data["iv_30"] = iv30
+            data["iv_hv_spread"] = round(iv30 - hv30, 1) if (iv30 is not None and hv30 is not None) else (round(iv_hv_diff, 1) if iv_hv_diff is not None else None)
+            data["beta"] = _to_flt(m.get("beta"))
+            data["liquidity_rating"] = m.get("liquidity-rating")
+            
+            # Per-expiration IV curve
+            exp_vols = m.get("option-expiration-implied-volatilities", [])
+            data["expiration_implied_vols"] = [
+                {
+                    "expiration": ev.get("expiration-date"),
+                    "implied_vol": round(float(ev["implied-volatility"]) * 100, 1) if ev.get("implied-volatility") else None
+                }
+                for ev in exp_vols[:12]
+            ]
+    except Exception as e:
+        logger.debug(f"Tastytrade metrics enrichment failed for {sym}: {e}")
+
+    # 4. If Schwab had an issue but Tastytrade metrics succeeded, upgrade status to 'partial' so UI renders cleanly
+    if data.get("status") == "error" and (data.get("iv_rank") is not None or data.get("underlying_price")):
+        data["status"] = "partial"
+        data["data_source"] = "Tastytrade Live Volatility & Multi-Broker Spot"
+        if not data.get("sentiment_label"):
+            ivr_val = data.get("iv_rank")
+            if ivr_val is not None:
+                if ivr_val >= 65:
+                    data["sentiment"] = "ELEVATED_VOLATILITY"
+                    data["sentiment_label"] = f"Elevated IV Rank ({ivr_val}%) — Premium Rich"
+                elif ivr_val <= 30:
+                    data["sentiment"] = "LOW_VOLATILITY"
+                    data["sentiment_label"] = f"Low IV Rank ({ivr_val}%) — Cheap Options"
+                else:
+                    data["sentiment"] = "NEUTRAL_VOLATILITY"
+                    data["sentiment_label"] = f"Moderate IV Rank ({ivr_val}%)"
+            else:
+                data["sentiment"] = "NEUTRAL"
+                data["sentiment_label"] = "Live Market Volatility Active"
+    elif data.get("status") == "ok":
+        data["data_source"] = "Schwab Institutional Sweeps + Tastytrade Volatility"
+
+    # 5. Persist daily snapshot to 30-day historical options ledger
+    try:
+        from src.tracking.options_history_manager import record_options_snapshot
+        record_options_snapshot(data)
+    except Exception as e_hist:
+        logger.debug(f"Failed to record options snapshot for {sym}: {e_hist}")
+
+    return data
+
+
+@router.get("/api/options-flow/{ticker}/history")
+def get_options_flow_history_endpoint(ticker: str, days: int = 30):
+    """Retrieve up to 30 days of historical options flow, institutional sweeps, and volatility metrics."""
+    from src.tracking.options_history_manager import get_options_history
+
+    sym = validate_ticker(ticker)
+    effective_days = max(1, min(days, 90))
+    history = get_options_history(sym, days=effective_days)
+    return {
+        "ticker": sym,
+        "days": effective_days,
+        "count": len(history),
+        "history": history,
+    }
+
+
+@router.get("/api/options-flow/{ticker}/sweeps")
+def get_options_sweeps_history_endpoint(ticker: str, date: Optional[str] = None, days: int = 30):
+    """Retrieve granular historical institutional sweep block orders for a ticker."""
+    from src.tracking.options_history_manager import get_sweeps_history
+
+    sym = validate_ticker(ticker)
+    effective_days = max(1, min(days, 90))
+    sweeps = get_sweeps_history(sym, date=date, days=effective_days)
+    return {
+        "ticker": sym,
+        "date": date,
+        "days": effective_days,
+        "count": len(sweeps),
+        "sweeps": sweeps,
+    }
 
 
 @router.get("/api/charts/{date}/{ticker}/{chart_type}")
@@ -2086,7 +2239,7 @@ def trigger_research(req: ResearchRequest):
     if not tickers:
         raise HTTPException(status_code=400, detail="Ticker is required")
     for t in tickers:
-        if not re.match(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$", t):
+        if not re.match(r"^[A-Z0-9]{1,6}(?:[./][A-Z0-9]{1,2})?$", t):
             raise HTTPException(status_code=400, detail=f"Invalid ticker format: {t}")
     if req.date and req.date.strip():
         if not re.match(r'^\d{4}-\d{2}-\d{2}$', req.date.strip()):
@@ -2173,6 +2326,25 @@ def trigger_research(req: ResearchRequest):
                 "tier": req_tier,
                 "target_date": target_date,
                 "message": f"{ticker_u} already researched for {target_date}",
+            }
+
+    if not req.force and req.mode in ("full", "deep_only"):
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+        with get_db() as conn:
+            gated = conn.cursor().execute(
+                "SELECT job_id FROM active_research_jobs WHERE ticker = ? AND target_date = ? AND status = 'COMPLETED' "
+                "AND stage_detail LIKE '%skipped by triage gate%' AND completed_at > ? LIMIT 1",
+                (ticker_u, target_date, cutoff),
+            ).fetchone()
+        if gated:
+            return {
+                "status": "skipped",
+                "job_id": None,
+                "ticker": ticker_u,
+                "mode": req.mode,
+                "tier": req_tier,
+                "target_date": target_date,
+                "message": f"{ticker_u} failed the triage gate for {target_date} within 12h; use force to re-run",
             }
 
     job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ticker_u}"

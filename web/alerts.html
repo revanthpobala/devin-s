@@ -68,12 +68,6 @@
 </a>
 </nav>
 <div class="status-ribbon" id="status-ribbon">
-<button class="btn header-chat-btn" id="btn-header-chat" onclick="AppChat.toggleCollapse()" title="Toggle Rev Chat Sidebar"><span class="chat-icon">💬</span> <span id="txt-header-chat">Rev Chat</span></button>
-<button class="pill sys-pill" id="pill-market" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
-<button class="pill sys-pill" id="pill-llm" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
-<button class="pill sys-pill" id="pill-schwab" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
-<button class="pill sys-pill" id="pill-tracker" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
-<button class="pill sys-pill" id="pill-tasty" onclick="AppSettings.open()" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
 <button class="btn secondary" id="btn-settings" onclick="AppSettings.open()" title="Settings, services &amp; diagnostics">⚙️</button>
 </div>
 </header>
@@ -88,6 +82,17 @@
 <button class="btn secondary" onclick="AppSettings.close()" style="padding:3px 10px; font-size:11px;">✕ Close</button>
 </div>
 <div style="padding:16px 18px; display:flex; flex-direction:column; gap:16px;">
+<!-- Status -->
+<div>
+<div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">STATUS</div>
+<div style="display:flex; flex-wrap:wrap; gap:6px;">
+<button class="pill sys-pill" id="pill-market" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
+<button class="pill sys-pill" id="pill-llm" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
+<button class="pill sys-pill" id="pill-schwab" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
+<button class="pill sys-pill" id="pill-tracker" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
+<button class="pill sys-pill" id="pill-tasty" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
+</div>
+</div>
 <!-- Services -->
 <div>
 <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">SERVICES</div>
@@ -580,7 +585,7 @@
 <div style="display:flex; align-items:center; gap:4px;">
 <button class="btn secondary dr-verdict-filter-btn active" data-v="ALL" onclick="AppAlerts.setDeepResearchVerdictFilter('ALL')" style="padding:3px 9px; font-size:11px; font-weight:700;">All (<span id="dr-count-all">0</span>)</button>
 <button class="btn secondary dr-verdict-filter-btn" data-v="ENTER" onclick="AppAlerts.setDeepResearchVerdictFilter('ENTER')" style="padding:3px 9px; font-size:11px; font-weight:700; color:#10b981;">🟢 Enter (<span id="dr-count-enter">0</span>)</button>
-<button class="btn secondary dr-verdict-filter-btn" data-v="STALK" onclick="AppAlerts.setDeepResearchVerdictFilter('STALK')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--amber);">⏳ Stalk (<span id="dr-count-stalk">0</span>)</button>
+<button class="btn secondary dr-verdict-filter-btn" data-v="STALK" onclick="AppAlerts.setDeepResearchVerdictFilter('STALK')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--amber);">⏳ Waiting (<span id="dr-count-stalk">0</span>)</button>
 <button class="btn secondary dr-verdict-filter-btn" data-v="AVOID" onclick="AppAlerts.setDeepResearchVerdictFilter('AVOID')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--rose);">🛑 Avoid/Pass (<span id="dr-count-avoid">0</span>)</button>
 </div>
 <div class="search-filter-box" style="min-width:180px; max-width:240px;">
@@ -1836,17 +1841,18 @@
 <script src="/static/js/state.js?v=88"></script>
 <script src="/static/js/utils.js?v=88"></script>
 <script src="/static/js/api.js?v=88"></script>
-<script src="/static/js/status.js?v=88"></script>
-<script src="/static/js/swing.js?v=88"></script>
+<script src="/static/js/status.js?v=90"></script>
+<script src="/static/js/swing.js?v=89"></script>
 <script src="/static/js/watchlist.js?v=88"></script>
 <script src="/static/js/trades.js?v=88"></script>
-<script src="/static/js/intraday.js?v=88"></script>
+<script src="/static/js/intraday.js?v=89"></script>
 <script src="/static/js/portfolio.js?v=88"></script>
 <script src="/static/js/logs.js?v=88"></script>
 <script src="/static/js/alerts.js?v=88"></script>
-<script src="/static/js/chat.js?v=88"></script>
-<script src="/static/js/desk.js?v=88"></script>
+<script src="/static/js/chat.js?v=91"></script>
+<script src="/static/js/desk.js?v=97"></script>
 <script src="/static/js/tv_hover.js?v=88"></script>
-<script src="/static/js/app.js?v=88"></script>
+<script src="/static/js/app.js?v=89"></script>
+<script src="/static/js/notifications.js?v=3"></script>
 </body>
 </html>

@@ -745,6 +745,7 @@ To prevent models from hallucinating nonexistent exclusion names (e.g. `stage_5_
 - **`chasing_without_target`**: Price above zone without valid waypoint target (`triage = CUT`).
 - **`reversal_buy_lane`**: Code 20 Reversal in-zone with valid R:R (`triage = PASS`).
 - **`rr_at_market_lane` / `rr_at_market_lane_strong`**: At-market R:R >= 2.0 / >= 3.0 in-zone, fade gate OFF (`triage = PASS`).
+- **`rr_at_market_lane_marginal`**: R:R 1.5-2.0 in-zone (the desk floor default is 1.5). Measured +0.021R, era 1 negative, 41% win: marginal, not a green lane. Tiers: green >= 2.0 (+0.077R / +0.136R at >= 3), yellow 1.5-2.0, orange 1.0-1.5 (+0.006R, no edge).
 - **`structure_only_no_fresh_long`**: Action code 17 (PARABOLIC), fade gate ACTIVE, or extension extreme (Ext Z >= 2.0); fresh long prohibited; context evaluated for options structure (`triage = WATCH`).
 - **`constructible_watch`**: Staging setup or in-zone with open trigger gap (`triage = WATCH`).
 - **`no_setup`**: No actionable signal or R:R criteria met (`triage = WATCH`).
@@ -1196,6 +1197,8 @@ The Weinstein MA is HMA(150) on the CHART timeframe:
 
 **PASS (promote for research):**
 - In zone, `Long RR At Market ≥ 2.0`, fade off, stop ≥ 0.7 ATR, PB funnel on, codes 17/18 off, `Ext Z < 2.5`.
+  The desk floor default is 1.5; rows at 1.5-2.0 pass the gate but read yellow (marginal), not green.
+  On bad-breadth days (index below its 20-day EMA, most decliners) the R:R lane measured weakest: expect fewer passes and size down.
 - Or: Action Long Code = 20 (REVERSAL BUY) with `Long Rev Zone ≥ 10` and R:R ≥ 2. Counter-trend, secondary lane.
 - Missing `Long Target`, `Long Stop Loss`, `Signal Pack` or `Zone RR Flags Pack` → not PASS (fail closed).
 
@@ -1877,7 +1880,7 @@ from). On that basis, at 1.0× / 1.25× / 1.5× ExpMove:
 
 This section governs the research/desk layer (verdicts and alerts), not the Pine Row 8 codes.
 
-**18.1 STALK means armed.** The research verdict `STALK` is valid only as a set of armed levels that alert on cross: a non-zero `breakout_level` or entry zone, a `tactical_stop`, and T1/T2 strictly above the trigger. If T1 or T2 sits at or below the trigger the targets are rebuilt above it; the trigger is never zeroed. A STALK with no armed level is invalid (`CASH_SKIP`). The value of a stalk is the alert at the cross, not the label.
+**18.1 ARMED means armed levels.** The research verdict `ARMED` (the retired `STALK`; the ledger still stores the token `STALK`) is valid only as a set of armed levels that alert on cross: a non-zero `breakout_level` or entry zone, a `tactical_stop`, and T1/T2 strictly above the trigger. If T1 or T2 sits at or below the trigger the targets are rebuilt above it; the trigger is never zeroed. An ARMED with no armed level is invalid (`CASH_SKIP`). The value of a stalk is the alert at the cross, not the label.
 
 **18.2 Levels and crosses.** Armed levels per plan: ZONE_LOW, ZONE_TOP, BREAKOUT, HIGH_20D, T1, T2, STOP, INVALIDATION. A cross is detected on intraday highs/lows, needs RVOL >= 1.0 to confirm (UNMEASURED if ADV20 is missing), alerts once per level per day, and re-arms after a close back through the level. A name that runs away from its zone is re-scored at the market price (`RUNNING_ACTIONABLE` / `RUNNING_NO_ROOM`), not left as a dead limit.
 

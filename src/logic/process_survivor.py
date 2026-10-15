@@ -464,6 +464,37 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     flags = triage.get("flags") or []
     regime_v = int(round(triage.get("regime") or 0))
     blocked = regime_v == 2 or "exhaustion" in flags  # terminal climax / blow-off
+    if not det_pass:
+        # A WATCH that already ran past its zone or has no R:R left fails the level gate after the paid
+        # pass (LLY 0.03, META 0.25), so do not pay for it. A resting limit is judged at the zone top, the
+        # same basis the level validator uses; the at-market check happens again at fire time.
+        from src.tracking.rr_config import min_rr
+
+        rr_chk = triage.get("rr_at_market") if triage.get("rr_at_market") is not None else triage.get("rr")
+        try:
+            z = (plan or {}).get("zone") or [None, None]
+            z_hi, st, tg = z[1], (plan or {}).get("stop"), (plan or {}).get("target")
+            if z_hi and st and tg and float(st) < float(z_hi) < float(tg):
+                rr_chk = (float(tg) - float(z_hi)) / (float(z_hi) - float(st))
+        except (TypeError, ValueError, IndexError):
+            pass
+        try:
+            rr_low = rr_chk is not None and float(rr_chk) < min_rr()
+        except (TypeError, ValueError):
+            rr_low = False
+        if triage.get("missed") or "chased" in flags or rr_low:
+            blocked = True
+    # Plans that act now (already in zone) cannot carry earnings inside 21 bars; deferred plans are blocked at
+    # fire time instead, so only the in-zone case is cut before paid research.
+    if triage.get("in_zone") and triage.get("ticker"):
+        try:
+            from src.logic.level_validation import earnings_days_for
+
+            _ed = earnings_days_for(str(triage["ticker"]))
+            if _ed is not None and 0 <= _ed <= 21:
+                blocked = True
+        except Exception:
+            pass
     mode = triage.get("mode") or "NONE"
     is_reversion = mode.startswith("REVERSION")
     rev_raw = triage.get("rev")
@@ -669,6 +700,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
         else "PASS"
     )
 
+    triage.setdefault("ticker", str(ticker).upper())
     # Single shared gate (identical logic to the enrichment pass) WITHOUT full news.
     quality_pass, send, ev_score, has_plan = _deep_research_gate(
         triage,
@@ -809,6 +841,8 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 date_str=dw_bar_date,
             )
             rule_gate_status = "PASS" if gate_ok else "REJECTED_BY_GATE"
+            from src.logic.actionable_gate import gate_inputs_from_datawindow
+            _gin = gate_inputs_from_datawindow(data_window or {})
 
             atr_val = None
             if data_window:
@@ -842,15 +876,23 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "target_1": t1_lvl,
                 "target_2": t2_lvl,
                 "planned_rr": float(triage.get("rr")) if triage.get("rr") else None,
-                "verdict": "ENTER" if triage.get("triage") == "PASS" else "STALK",
+                # RSI2 is research-only (next-open entry, no LIMIT zone), never an ENTER plan.
+                "verdict": "ENTER" if (triage.get("triage") == "PASS" and s_lane != "RSI2") else "STALK",
                 "gate_status": rule_gate_status,
+                "gate_reasons": "; ".join(gate_reasons) if gate_reasons else None,
                 "setup_lane": s_lane,
                 "kind": "NEW",
                 "atr_at_signal": atr_val,
                 "spot_at_signal": spot_val,
                 "live_spot": live_spot,
                 "move_since_bar_pct": move_since_bar_pct,
-                "rr_at_market_at_signal": float(triage["rr_at_market"]) if triage.get("rr_at_market") is not None else None,
+                "rr_at_market_at_signal": (
+                    float(triage["rr_at_market"]) if triage.get("rr_at_market") is not None
+                    else rule_plan.get("rr_at_market")
+                ),
+                "signal_pack": _gin.get("signal_pack"),
+                "fade": _gin.get("fade_long"),
+                "ext_z": _gin.get("ext_z_self"),
                 "lane_prior_win": triage.get("lane_prior_win"),
                 "lane_prior_ev": triage.get("lane_prior_ev"),
                 "pb_funnel": triage.get("pb_funnel"),
@@ -1836,6 +1878,7 @@ Output:
     triage["news_contradiction"] = contradicts
     triage["news_negative"] = news_negative
 
+    triage.setdefault("ticker", str(ticker).upper())
     # Single shared gate (byte-identical logic to the prefilter pass).
     quality_pass, send, rank_score, has_plan = _deep_research_gate(
         triage,

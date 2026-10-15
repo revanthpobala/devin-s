@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,9 @@ class TastytradeClient:
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
         self.token_expiry: float = 0.0
+        self._lock = threading.RLock()
+        self._quote_token: Optional[Dict[str, Any]] = None
+        self._quote_token_at: float = 0.0
 
     def _load_tokens(self) -> bool:
         if not os.path.exists(self.token_path):
@@ -99,23 +103,24 @@ class TastytradeClient:
             return False
 
     def get_auth_headers(self) -> Optional[Dict[str, str]]:
-        """Return valid Authorization headers, auto-refreshing expired tokens."""
-        if not self.access_token:
-            if not self._load_tokens():
-                return None
+        """Return valid Authorization headers, auto-refreshing expired tokens (one refresh at a time)."""
+        with self._lock:
+            if not self.access_token:
+                if not self._load_tokens():
+                    return None
 
-        # Refresh token if within 60 seconds of expiring
-        if time.time() >= (self.token_expiry - 60):
-            logger.info("Tastytrade access token near expiry or expired; refreshing...")
-            if not self.refresh_access_token():
-                return None
+            # Refresh token if within 60 seconds of expiring
+            if time.time() >= (self.token_expiry - 60):
+                logger.info("Tastytrade access token near expiry or expired; refreshing...")
+                if not self.refresh_access_token():
+                    return None
 
-        return {
-            "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+            return {
+                "Authorization": f"Bearer {self.access_token}",
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
 
     def get_quote_alerts(self) -> List[Dict[str, Any]]:
         """Fetch all active quote alerts from Tastytrade cloud."""
@@ -416,135 +421,154 @@ class TastytradeClient:
             logger.debug(f"Error fetching Tastytrade market metrics for {sym_str}: {e}")
             return []
 
-    def get_realtime_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Fetch instantaneous institutional real-time Bid/Ask quote via Tastytrade DXLink."""
-        import asyncio
-        import math
-        import websockets
-
+    def _get_quote_token(self) -> Optional[Dict[str, Any]]:
+        """DXLink url + token; valid ~24h, cached 20h."""
+        with self._lock:
+            if self._quote_token and time.time() - self._quote_token_at < 20 * 3600:
+                return self._quote_token
         headers = self.get_auth_headers()
         if not headers:
             return None
-
-        # 1. Get Quote Token
         try:
-            r = requests.get(f"{BASE_URL}/api-quote-tokens", headers=headers, timeout=10)
+            r = requests.get(f"{BASE_URL}/api-quote-tokens", headers=headers, timeout=8)
             if r.status_code != 200:
                 return None
             data = r.json().get("data", {})
-            dxlink_url = data.get("dxlink-url")
-            token = data.get("token")
-            if not dxlink_url or not token:
+            if not data.get("dxlink-url") or not data.get("token"):
                 return None
+            with self._lock:
+                self._quote_token, self._quote_token_at = data, time.time()
+            return data
         except Exception as e:
             logger.debug(f"Failed to fetch DXLink quote token: {e}")
             return None
 
-        def _safe_float(v):
-            if v is None or v in ("NaN", "nan", "None", ""):
-                return None
+    def get_realtime_quotes_batch(self, symbols: List[str], timeout: float = 6.0) -> Dict[str, Dict[str, Any]]:
+        """Many symbols over ONE DXLink websocket. Returns {SYMBOL: {bid, ask, price, last_price, prev_close, ...}}."""
+        import asyncio
+        import math
+
+        import websockets
+
+        syms = list(dict.fromkeys(str(x).upper().strip() for x in symbols if x))
+        tok = self._get_quote_token() if syms else None
+        if not tok:
+            return {}
+
+        fields = {
+            "Quote": ["eventSymbol", "bidPrice", "askPrice"],
+            "Trade": ["eventSymbol", "price", "dayVolume"],
+            "Summary": ["eventSymbol", "prevDayClosePrice", "dayOpenPrice", "dayHighPrice", "dayLowPrice"],
+        }
+
+        def _f(v):
             try:
-                flt = float(v)
-                return None if (math.isnan(flt) or math.isinf(flt)) else flt
+                x = float(v)
+                return None if (math.isnan(x) or math.isinf(x)) else x
             except (ValueError, TypeError):
                 return None
 
-        async def _fetch():
-            async with websockets.connect(dxlink_url) as ws:
-                # 1. SETUP
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "SETUP",
-                            "channel": 0,
-                            "version": "0.1-DXF-JS/0.3.0",
-                            "keepaliveTimeout": 60,
-                            "acceptKeepalive": True,
-                        }
-                    )
-                )
-                await ws.recv()
+        raw: Dict[str, Dict[str, Any]] = {s_: {} for s_ in syms}
 
-                # 2. AUTH
-                await ws.send(json.dumps({"type": "AUTH", "channel": 0, "token": token}))
-                await ws.recv()
+        def _ingest(data):
+            i = 0
+            while i < len(data) - 1:
+                etype, vals = data[i], data[i + 1]
+                i += 2
+                names = fields.get(etype)
+                if not names or not isinstance(vals, list):
+                    continue
+                for k in range(0, len(vals) - len(names) + 1, len(names)):
+                    row = dict(zip(names, vals[k:k + len(names)]))
+                    sym = str(row.get("eventSymbol") or "").upper()
+                    if sym in raw:
+                        raw[sym].setdefault(etype, {}).update({n: row[n] for n in names[1:]})
 
-                # 3. CHANNEL_REQUEST
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "CHANNEL_REQUEST",
-                            "channel": 1,
-                            "service": "FEED",
-                            "parameters": {"contract": "AUTO"},
-                        }
-                    )
-                )
-                await ws.recv()
+        def _done():
+            return all(raw[s_].get("Quote") and raw[s_].get("Summary") for s_ in syms)
 
-                # 4. FEED_SETUP
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "FEED_SETUP",
-                            "channel": 1,
-                            "acceptAggregationPeriod": 0.1,
-                            "acceptDataFormat": "COMPACT",
-                            "acceptEventFields": {
-                                "Quote": ["eventSymbol", "bidPrice", "askPrice", "bidSize", "askSize"],
-                            },
-                        }
-                    )
-                )
-                await ws.recv()
+        async def _run():
+            async with websockets.connect(tok["dxlink-url"], open_timeout=4) as ws:
+                async def _send(msg):
+                    await ws.send(json.dumps(msg))
 
-                # 5. FEED_SUBSCRIPTION
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "FEED_SUBSCRIPTION",
-                            "channel": 1,
-                            "add": [{"type": "Quote", "symbol": symbol.upper()}],
-                        }
-                    )
-                )
+                await _send({"type": "SETUP", "channel": 0, "version": "0.1-DXF-JS/0.3.0", "keepaliveTimeout": 60, "acceptKeepaliveTimeout": 60})
+                deadline = asyncio.get_event_loop().time() + timeout
+                state = {"auth_sent": False, "channel": False}
 
-                # Wait for feed data
-                for _ in range(8):
-                    msg = await asyncio.wait_for(ws.recv(), timeout=3.0)
-                    msg_data = json.loads(msg)
-                    if msg_data.get("type") == "FEED_DATA":
-                        feed_rows = msg_data.get("data", [])
-                        if len(feed_rows) >= 2 and feed_rows[0] == "Quote":
-                            quote_vals = feed_rows[1]
-                            if isinstance(quote_vals, list) and len(quote_vals) >= 3:
-                                bid = _safe_float(quote_vals[1])
-                                ask = _safe_float(quote_vals[2])
-                                mid = round((bid + ask) / 2.0, 2) if (bid is not None and ask is not None) else (bid or ask)
-                                price = mid or ask or bid
-                                if price is not None:
-                                    return {
-                                        "symbol": symbol.upper(),
-                                        "bid": bid,
-                                        "ask": ask,
-                                        "mid": mid,
-                                        "price": price,
-                                    }
-                return None
+                async def _handshake(msg):
+                    mt = msg.get("type")
+                    if mt == "AUTH_STATE" and msg.get("state") == "UNAUTHORIZED" and not state["auth_sent"]:
+                        state["auth_sent"] = True
+                        await _send({"type": "AUTH", "channel": 0, "token": tok["token"]})
+                    elif mt == "AUTH_STATE" and msg.get("state") == "AUTHORIZED" and not state["channel"]:
+                        state["channel"] = True
+                        await _send({"type": "CHANNEL_REQUEST", "channel": 1, "service": "FEED", "parameters": {"contract": "AUTO"}})
+                    elif mt == "CHANNEL_OPENED":
+                        await _send({"type": "FEED_SETUP", "channel": 1, "acceptAggregationPeriod": 0.1,
+                                     "acceptDataFormat": "COMPACT", "acceptEventFields": fields})
+                        await _send({"type": "FEED_SUBSCRIPTION", "channel": 1,
+                                     "add": [{"type": t, "symbol": s_} for s_ in syms for t in fields]})
+                    elif mt == "KEEPALIVE":
+                        await _send({"type": "KEEPALIVE", "channel": 0})
+                    elif mt == "ERROR":
+                        raise RuntimeError(f"DXLink error: {msg.get('message')}")
+                while not _done():
+                    left = deadline - asyncio.get_event_loop().time()
+                    if left <= 0:
+                        break
+                    try:
+                        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=left))
+                    except asyncio.TimeoutError:
+                        break
+                    if msg.get("type") == "FEED_DATA":
+                        _ingest(msg.get("data") or [])
+                    else:
+                        await _handshake(msg)
 
         try:
             try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
+                asyncio.get_running_loop()
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    return pool.submit(asyncio.run, _fetch()).result(timeout=10)
-            else:
-                return asyncio.run(_fetch())
+                    pool.submit(asyncio.run, _run()).result(timeout=timeout + 4)
+            except RuntimeError:
+                asyncio.run(_run())
         except Exception as e:
-            logger.debug(f"DXLink quote fetch timeout/error for {symbol}: {e}")
-            return None
+            logger.debug(f"DXLink batch quote error for {syms[:5]}: {e}")
+            with self._lock:
+                self._quote_token = None
 
+        out: Dict[str, Dict[str, Any]] = {}
+        for sym, ev in raw.items():
+            q, t, sm = ev.get("Quote", {}), ev.get("Trade", {}), ev.get("Summary", {})
+            bid, ask = _f(q.get("bidPrice")), _f(q.get("askPrice"))
+            if not bid and not ask:
+                continue
+            mid = round((bid + ask) / 2.0, 4) if (bid and ask) else (bid or ask)
+            last = _f(t.get("price"))
+            price = last if (last and bid and ask and bid * 0.99 <= last <= ask * 1.01) else mid
+            prev = _f(sm.get("prevDayClosePrice"))
+            out[sym] = {
+                "symbol": sym, "bid": bid, "ask": ask, "mid": mid, "price": price, "last_price": price,
+                "prev_close": prev, "open": _f(sm.get("dayOpenPrice")), "high": _f(sm.get("dayHighPrice")),
+                "low": _f(sm.get("dayLowPrice")), "volume": int(_f(t.get("dayVolume")) or 0),
+            }
+        return out
+
+    def get_realtime_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Single-symbol wrapper over the batch call."""
+        return self.get_realtime_quotes_batch([symbol]).get(str(symbol).upper())
+
+
+_CLIENT: Optional[TastytradeClient] = None
+_CLIENT_LOCK = threading.Lock()
+
+
+def get_tastytrade_client() -> TastytradeClient:
+    """Process-wide client so token refresh and the quote token are shared, not redone per call."""
+    global _CLIENT
+    with _CLIENT_LOCK:
+        if _CLIENT is None:
+            _CLIENT = TastytradeClient()
+        return _CLIENT

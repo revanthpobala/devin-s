@@ -136,3 +136,22 @@ def test_lock_telemetry_endpoint(client: TestClient):
     assert "longest_hold_s" in w_stats
     assert "total_acquisitions" in w_stats
     print(f"\n[TELEMETRY] Lock stats: {stats}")
+
+
+@pytest.mark.parametrize("path", [
+    "/api/desk/today",
+    "/api/desk/coverage",
+    "/api/trades/suggested",
+    "/api/status",
+    "/api/reports",
+    "/api/edge-scanner/status",
+])
+def test_desk_endpoints_smoke_warm(client: TestClient, path: str):
+    """Every home-page feed answers 200 and, once warm, fast. A repeat of the Today 500 (a broken module) fails here."""
+    first = client.get(path)
+    assert first.status_code == 200, f"{path} -> {first.status_code}"
+    t0 = time.perf_counter()
+    again = client.get(path)
+    elapsed = time.perf_counter() - t0
+    assert again.status_code == 200
+    assert elapsed < 2.0, f"{path} warm took {elapsed:.2f}s"

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # key -> (default, min, max)
 SPEC: Dict[str, tuple] = {
-    "rr_market_min": (2.0, 1.0, 10.0),   # needs-you gate AND the ENTRY push gate
+    "rr_market_min": (1.5, 1.0, 10.0),   # needs-you gate AND the ENTRY push gate. Bands, in zone & fade off: 1.0-1.5 +0.00R, 1.5-2.0 +0.02R (era 1 negative), 2-3 +0.08R, >=3 +0.17R
     "rr_hi_rr": (3.0, 2.0, 25.0),        # the HI-RR / teal tag
 }
 
@@ -71,7 +71,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "label": "1:1.5",
         "rr_market_min": 1.5,
         "rr_hi_rr": 3.0,
-        "blurb": "research mode · below measured floor (-0.013R)",
+        "blurb": "default · 1.5-2.0 is yellow: 41% win but only +0.02R, era-unstable; green from 2.0 (+0.08R)",
         "below_measured_floor": True,
     },
     "2_0": {
@@ -250,6 +250,26 @@ def active_preset() -> Optional[str]:
 
 def min_rr() -> float:
     return get_rr_config()["rr_market_min"]
+
+
+# Gate semantics changed on this date (zone R:R at research for LIMIT/STALK, Pine-stop rule, earnings as fire-time block).
+# Rows dated on/after it are a different population from earlier ones; reports split on it.
+GATE_CHANGE_DATE = "2026-10-16"
+
+GREEN_RR = 2.0   # measured lane: in-zone R:R >= 2.0 is +0.089R, stable in all four eras
+
+
+def tier(rr: Optional[float]) -> Optional[str]:
+    """green: at or above 2.0 and the floor (+0.08R or better). yellow: meets the floor, under 2.0 (marginal, +0.02R,
+    unstable). orange: 1.0 up to the floor (no edge, +0.00R). None under 1.0 or unknown."""
+    if rr is None:
+        return None
+    floor = min_rr()
+    if rr >= max(GREEN_RR, floor):
+        return "green"
+    if rr >= floor:
+        return "yellow"
+    return "orange" if rr >= 1.0 else None
 
 
 def hi_rr() -> float:

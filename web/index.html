@@ -72,13 +72,7 @@
     </nav>
 
     <div class="status-ribbon" id="status-ribbon">
-      <button class="btn header-chat-btn" id="btn-header-chat" onclick="AppChat.toggleCollapse()" title="Toggle Rev Chat Sidebar"><span class="chat-icon">💬</span> <span id="txt-header-chat">Rev Chat</span></button>
-      <button class="pill sys-pill" id="pill-market" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
-      <button class="pill sys-pill" id="pill-llm" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
-      <button class="pill sys-pill" id="pill-schwab" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
-      <button class="pill sys-pill" id="pill-tracker" onclick="AppSettings.open()" title="Open system status & settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
-      <button class="pill sys-pill" id="pill-tasty" onclick="AppSettings.open()" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
-      <button class="btn secondary" id="btn-settings" onclick="AppSettings.open()" title="Settings, services & diagnostics">⚙️</button>
+                                          <button class="btn secondary" id="btn-settings" onclick="AppSettings.open()" title="Settings, services & diagnostics">⚙️</button>
     </div>
   </header>
 
@@ -95,7 +89,18 @@
 
       <div style="padding:16px 18px; display:flex; flex-direction:column; gap:16px;">
 
-        <!-- Services -->
+        <!-- Status -->
+<div>
+<div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">STATUS</div>
+<div style="display:flex; flex-wrap:wrap; gap:6px;">
+<button class="pill sys-pill" id="pill-market" title="Open system status & settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
+<button class="pill sys-pill" id="pill-llm" title="Open system status & settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
+<button class="pill sys-pill" id="pill-schwab" title="Open system status & settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
+<button class="pill sys-pill" id="pill-tracker" title="Open system status & settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
+<button class="pill sys-pill" id="pill-tasty" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
+</div>
+</div>
+<!-- Services -->
         <div>
           <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">SERVICES</div>
           <div style="display:flex; flex-direction:column; gap:8px;">
@@ -371,7 +376,7 @@
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <button class="tab-pill-btn active" data-radar-filter="ALL" onclick="AppWatchlist.setRadarFilter('ALL')">All Targets (<span id="rf-count-all">0</span>)</button>
             <button class="tab-pill-btn" data-radar-filter="IN_ZONE" onclick="AppWatchlist.setRadarFilter('IN_ZONE')">🎯 In Entry Zone (<span id="rf-count-zone">0</span>)</button>
-            <button class="tab-pill-btn" data-radar-filter="STALKING" onclick="AppWatchlist.setRadarFilter('STALKING')">⏳ Stalking (<span id="rf-count-stalk">0</span>)</button>
+            <button class="tab-pill-btn" data-radar-filter="STALKING" onclick="AppWatchlist.setRadarFilter('STALKING')">⏳ Waiting (<span id="rf-count-stalk">0</span>)</button>
             <button class="tab-pill-btn" data-radar-filter="IN_TRADE" onclick="AppWatchlist.setRadarFilter('IN_TRADE')">💼 In Trade / My Positions (<span id="rf-count-intrade">0</span>)</button>
             <button class="tab-pill-btn" data-radar-filter="TARGET_HIT" onclick="AppWatchlist.setRadarFilter('TARGET_HIT')">🏁 Target Hit (<span id="rf-count-target">0</span>)</button>
             <button class="tab-pill-btn" data-radar-filter="MISSED_RUNAWAY" onclick="AppWatchlist.setRadarFilter('MISSED_RUNAWAY')">🚀 Missed Runaway (<span id="rf-count-runaway">0</span>)</button>
@@ -859,7 +864,7 @@
                 <div style="display:flex; align-items:center; gap:4px;">
                   <button class="btn secondary dr-verdict-filter-btn active" data-v="ALL" onclick="AppAlerts.setDeepResearchVerdictFilter('ALL')" style="padding:3px 9px; font-size:11px; font-weight:700;">All (<span id="dr-count-all">0</span>)</button>
                   <button class="btn secondary dr-verdict-filter-btn" data-v="ENTER" onclick="AppAlerts.setDeepResearchVerdictFilter('ENTER')" style="padding:3px 9px; font-size:11px; font-weight:700; color:#10b981;">🟢 Enter (<span id="dr-count-enter">0</span>)</button>
-                  <button class="btn secondary dr-verdict-filter-btn" data-v="STALK" onclick="AppAlerts.setDeepResearchVerdictFilter('STALK')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--amber);">⏳ Stalk (<span id="dr-count-stalk">0</span>)</button>
+                  <button class="btn secondary dr-verdict-filter-btn" data-v="STALK" onclick="AppAlerts.setDeepResearchVerdictFilter('STALK')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--amber);">⏳ Waiting (<span id="dr-count-stalk">0</span>)</button>
                   <button class="btn secondary dr-verdict-filter-btn" data-v="AVOID" onclick="AppAlerts.setDeepResearchVerdictFilter('AVOID')" style="padding:3px 9px; font-size:11px; font-weight:700; color:var(--rose);">🛑 Avoid/Pass (<span id="dr-count-avoid">0</span>)</button>
                 </div>
 
@@ -1071,7 +1076,7 @@
               <button class="btn secondary trades-filter-btn active" data-filter="ALL" onclick="AppTrades.setFilter('ALL')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">All Trades</button>
               <button class="btn secondary trades-filter-btn" data-filter="MY_TRADES" onclick="AppTrades.setFilter('MY_TRADES')" style="padding:4px 11px; font-size:11.5px; font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12);" title="Show trades you personally marked as taken in your portfolio">💼 My Taken Trades (<span id="count-trades-taken">0</span>)</button>
               <button class="btn secondary trades-filter-btn" data-filter="IN_ZONE" onclick="AppTrades.setFilter('IN_ZONE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🎯 In Zone (<span id="count-trades-in-zone">0</span>)</button>
-              <button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Stalking (<span id="count-trades-stalking">0</span>)</button>
+              <button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Waiting (<span id="count-trades-stalking">0</span>)</button>
               <button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Target Hit (<span id="count-trades-target-hit">0</span>)</button>
               <button class="btn secondary trades-filter-btn" data-filter="STOP_BREACHED" onclick="AppTrades.setFilter('STOP_BREACHED')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🛑 Stopped (<span id="count-trades-stopped">0</span>)</button>
             </div>
@@ -2900,17 +2905,18 @@
   <script src="/static/js/state.js?v=88"></script>
   <script src="/static/js/utils.js?v=88"></script>
   <script src="/static/js/api.js?v=88"></script>
-  <script src="/static/js/status.js?v=88"></script>
-  <script src="/static/js/swing.js?v=88"></script>
+  <script src="/static/js/status.js?v=90"></script>
+  <script src="/static/js/swing.js?v=89"></script>
   <script src="/static/js/watchlist.js?v=88"></script>
   <script src="/static/js/trades.js?v=88"></script>
-  <script src="/static/js/intraday.js?v=88"></script>
+  <script src="/static/js/intraday.js?v=89"></script>
   <script src="/static/js/portfolio.js?v=88"></script>
   <script src="/static/js/logs.js?v=88"></script>
   <script src="/static/js/alerts.js?v=88"></script>
-  <script src="/static/js/chat.js?v=88"></script>
-  <script src="/static/js/desk.js?v=88"></script>
+  <script src="/static/js/chat.js?v=91"></script>
+  <script src="/static/js/desk.js?v=97"></script>
   <script src="/static/js/tv_hover.js?v=88"></script>
-  <script src="/static/js/app.js?v=88"></script>
+  <script src="/static/js/app.js?v=89"></script>
+<script src="/static/js/notifications.js?v=3"></script>
 </body>
 </html>

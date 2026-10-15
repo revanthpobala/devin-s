@@ -78,16 +78,16 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
         "CONVICTION & VERDICT CALIBRATION RUBRIC:\n"
         "- 8 to 10 / 10 (ENTER — measured gate): ENTER requires the engine gate to pass: Long In Zone, Long RR At Market >= 2.0 (rr_config.min_rr() = 2.0), PB funnel, fade off, stop >= 0.7 ATR, Ext Z < 2.5. R:R >= 3.0 is the stronger tier. ENTER (Breakout) is allowed only when that gate passes. Output VERDICT = 'ENTER (Limit @ Floor)' or 'ENTER (Breakout)'.\n"
-        "- 6 to 7 / 10 (ACTIONABLE STALKING): Armed setup awaiting trigger: requires a non-zero breakout level or entry zone, a tactical stop, and T1/T2 strictly above the trigger. Never emit breakout_level = 0 on a STALK. Output VERDICT = 'STALK'. If the plan arms nothing, output CASH_SKIP instead.\n"
+        "- 6 to 7 / 10 (ARMED): Armed setup awaiting trigger: requires a non-zero breakout level or entry zone, a tactical stop, and T1/T2 strictly above the trigger. Never emit breakout_level = 0 on an ARMED verdict. Output VERDICT = 'ARMED'. If the plan arms nothing, output CASH_SKIP instead.\n"
         "- 1 to 5 / 10 (AVOID / CASH SKIP): R:R at market < 2.0 (gate floor), distribution / Stage 4 knife, or binary friction. Output VERDICT = 'CASH_SKIP'.\n"
         "- WATCH (UNMEASURED MOMENTUM): A floor defense or level break on RVOL >= 1.0 that fails the measured gate. Start the summary with 'UNMEASURED MOMENTUM:' then RVOL, R:R at market, and a structural stop. Output VERDICT = 'WATCH' with the level armed. This lane has no measured edge and never receives high conviction or priority.\n"
-        "CONVICTION IS A LABEL: The conviction number has no measured basis of its own. It can only be lowered by cap_conviction — it must never drive entry priority. A WATCH or STALK card with conviction 8 is a badge mismatch, not actionable.\n"
-        "CRITICAL CONSTRAINT: You CANNOT output ENTER if engine triage is 'no_setup' or the actionable gate fails. Output CASH_SKIP or STALK instead.\n\n"
+        "CONVICTION IS A LABEL: The conviction number has no measured basis of its own. It can only be lowered by cap_conviction — it must never drive entry priority. A WATCH or ARMED card with conviction 8 is a badge mismatch, not actionable.\n"
+        "CRITICAL CONSTRAINT: You CANNOT output ENTER if engine triage is 'no_setup' or the actionable gate fails. Output CASH_SKIP or ARMED instead.\n\n"
         "Output in this exact markdown format (JSON BLOCK MUST COME FIRST):\n\n"
         "```json:watch_levels\n"
         "{\n"
         f'  "ticker": "{ticker}",\n'
-        '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|STALK|WATCH|CASH_SKIP",\n'
+        '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|ARMED|WATCH|CASH_SKIP",\n'
         '  "conviction": 8,\n'
         '  "side": "LONG|SHORT",\n'
         '  "shares_plan": {\n'
@@ -169,7 +169,7 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "     - CREDIT-TO-WIDTH FLOOR: NEVER suggest a credit spread collecting < 25% of the spread width (risking > 3:1 against the trader). If an edge-appropriate credit spread does not exist at >= 1.25x ExpMove below the stop loss, set options_plan.structure = 'NONE' and actionable = false. Do NOT force an options trade when shares provide the superior R:R.\n"
         "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
         "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put strictly below invalidation floor).\n"
-        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / STALK / CASH_SKIP]** (Conviction: X/10)\n\n"
+        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / ARMED / CASH_SKIP]** (Conviction: X/10)\n\n"
         "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
         "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, Breakout Trigger Level & Stop, R:R]\n"
         "* **Options Directives (Tiered Menu):**\n"
@@ -399,6 +399,10 @@ def run_arbitration(
         is_no_setup = str(setup_lane or "").strip().lower() in ("no_setup", "none", "")
 
         verdict = str(watch_data.get("verdict", "")).strip()
+        if verdict.upper() == "ARMED":
+            # ARMED is the judge's word; STALK stays the stored token every ledger query filters on.
+            verdict = "STALK"
+            watch_data["verdict"] = verdict
         if "ENTER" in verdict.upper():
             if is_no_setup or not gate_ok:
                 capped_verdict = "CASH_SKIP" if is_no_setup else "STALK"
@@ -457,7 +461,7 @@ def run_arbitration(
                 side=str(watch_data.get("side", "LONG")).upper(),
             ):
                 _ok = False
-                _reasons.append("STALK with no armed level — the plan arms nothing to watch")
+                _reasons.append("ARMED with no armed level — the plan arms nothing to watch")
 
         if not _ok:
             logger.warning(
@@ -465,6 +469,26 @@ def run_arbitration(
                 f"NOT persisting to watch_targets or suggestions ledger."
             )
             log_rejected_plan(ticker, date_str, plan, _reasons)
+            try:
+                _rsp = watch_data.get("shares_plan") or {}
+                _num = lambda k: dw_dict.get(k) if dw_dict.get(k) not in (None, "", "N/A") else None
+                append_suggestion({
+                    "ticker": ticker, "date": date_str, "source": "judge",
+                    "side": watch_data.get("side", "LONG"),
+                    "entry_type": _rsp.get("entry_type", "LIMIT"),
+                    "entry_low": _rsp.get("entry_zone_low"), "entry_high": _rsp.get("entry_zone_high"),
+                    "breakout_level": _rsp.get("breakout_level"), "stop": _rsp.get("tactical_stop"),
+                    "target_1": _rsp.get("target_1"), "target_2": _rsp.get("target_2"),
+                    "verdict": watch_data.get("verdict"), "gate_status": "REJECTED_BY_GATE",
+                    "gate_reasons": "; ".join(_reasons), "setup_lane": triage_lane, "kind": kind,
+                    "atr_at_signal": atr14_val if atr14_val != "N/A" else None,
+                    "spot_at_signal": spot_num or None,
+                    "rr_at_market_at_signal": plan.get("rr_at_market"),
+                    "signal_pack": _num("Signal Pack"), "ext_z": _num("Ext Z Self Relative"),
+                    "_datawindow": dw_dict, "notes": "Judge plan rejected by level gate",
+                })
+            except Exception as e_rej:
+                logger.debug(f"[{ticker}] rejected judge suggestion not logged: {e_rej}")
             clean_judge += f"\n\n> 🛑 **LEVEL GATE REJECTED**: {'; '.join(_reasons)}"
             # Still write watch_levels.json so the briefing/UI can display the thesis card.
             # Mark level_gate_rejected=True and options_plan actionable=False so callers know not to treat these as actionable levels.

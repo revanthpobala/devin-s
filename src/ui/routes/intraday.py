@@ -123,9 +123,14 @@ def get_intraday_signals_endpoint():
         targets_hit = 0
         active_count = 0
 
+        seen = set()
         for r in rows:
             d = dict(zip(cols, r))
             sym = d["ticker"]
+            dedupe_key = (sym, str(d.get("side") or "LONG").upper())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
             entry = float(d.get("entry_price") or d.get("entry_px") or 0.0)
             t1 = float(d.get("target_1") or d.get("entry_t1") or 0.0) if (d.get("target_1") or d.get("entry_t1")) else None
             stop = float(d.get("stop") or d.get("entry_stop") or 0.0) if (d.get("stop") or d.get("entry_stop")) else None
@@ -139,14 +144,14 @@ def get_intraday_signals_endpoint():
             except Exception:
                 spot = entry
 
-            # P&L
-            pnl_pct = 0.0
-            if entry > 0 and spot > 0:
-                pnl_pct = round(((spot - entry) / entry) * 100, 2) if is_long else round(((entry - spot) / entry) * 100, 2)
-
-            # Status determination
             ex_info = exit_map.get(sym)
             is_open = sym in open_pos_map
+
+            # P&L: a closed play is marked at its exit price, not the live spot
+            mark = float(ex_info["exit_price"]) if (ex_info and not is_open and ex_info.get("exit_price")) else spot
+            pnl_pct = 0.0
+            if entry > 0 and mark > 0:
+                pnl_pct = round(((mark - entry) / entry) * 100, 2) if is_long else round(((entry - mark) / entry) * 100, 2)
 
             status = "MONITORING"
             status_badge = "amber"

@@ -414,7 +414,7 @@ def run_research_worker(
     init_db()
     ticker_u = ticker.strip().upper()
     tier_u = str(tier or "MID").upper()
-    if not re.match(r"^[A-Z0-9]{1,6}(?:/[A-Z0-9]{1,2})?$", ticker_u):
+    if not re.match(r"^[A-Z0-9]{1,6}(?:[./][A-Z0-9]{1,2})?$", ticker_u):
         logger.warning(f"Rejecting invalid or traversal ticker in research worker: {ticker_u}")
         with get_db() as conn:
             conn.cursor().execute(
@@ -777,7 +777,7 @@ def run_research_worker(
         try:
             with get_db() as c_db:
                 row = c_db.cursor().execute(
-                    "SELECT gate_status FROM suggestions WHERE LOWER(ticker) = ? AND date >= date('now', '-3 days') ORDER BY id DESC LIMIT 1",
+                    "SELECT gate_status FROM suggestions WHERE LOWER(ticker) = ? AND source = 'judge' AND date >= date('now', '-3 days') ORDER BY id DESC LIMIT 1",
                     (ticker_u.lower(),)
                 ).fetchone()
                 if row and row["gate_status"] == "PASS":

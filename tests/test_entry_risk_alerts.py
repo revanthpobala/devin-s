@@ -146,7 +146,15 @@ def test_unknown_fade_state_is_not_fade_off():
     assert o.entry_gate()[0] is False
 
 
-def test_rr_below_two_never_qualifies():
+def test_rr_below_floor_never_qualifies():
+    o = _onset(close=100.0, stop=95.0, target=106.0)     # RR = 6/5 = 1.2 (< floor 1.5)
+    assert o.rr_at_market == pytest.approx(1.2)
+    assert o.entry_gate()[0] is False
+
+
+def test_rr_below_two_never_qualifies_under_2_0_preset(monkeypatch):
+    import src.tracking.rr_config as rc
+    monkeypatch.setattr(rc, "min_rr", lambda: 2.0)
     o = _onset(close=100.0, stop=95.0, target=108.0)     # RR = 8/5 = 1.6
     assert o.rr_at_market == pytest.approx(1.6)
     assert o.entry_gate()[0] is False
@@ -171,7 +179,8 @@ def test_lane_is_assigned_by_rr_tier():
     assert _onset(target=112.0).lane == "rr_at_market_lane"          # RR 2.4
     assert _onset(target=115.0).lane == "rr_at_market_lane_strong"   # RR 3.0
     assert _onset(target=125.0).lane == "rr_at_market_lane_strong"   # RR 5.0
-    assert _onset(target=108.0).lane is None                         # RR 1.6
+    assert _onset(target=108.0).lane == "rr_at_market_lane_marginal" # RR 1.6
+    assert _onset(target=106.0).lane is None                         # RR 1.2 (< min_rr 1.5)
 
 
 def test_pb_split_prior_is_attached():

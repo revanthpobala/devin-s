@@ -45,6 +45,8 @@ window.AppIntraday = {
   },
 
   async loadIntradaySignals() {
+    if (this._sigInFlight) return;
+    this._sigInFlight = true;
     const container = document.getElementById('odte-signals-container');
     try {
       const data = await window.AppApi.getIntradaySignals();
@@ -66,6 +68,8 @@ window.AppIntraday = {
     } catch (e) {
       console.error('Failed loading 0DTE signals', e);
       if (container) container.innerHTML = `<div style="color:var(--text-muted); font-size:12px; text-align:center; padding:16px;">Error loading 0DTE signals: ${e.message}</div>`;
+    } finally {
+      this._sigInFlight = false;
     }
   },
 

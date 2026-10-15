@@ -161,6 +161,7 @@ def test_ensure_universe_prepopulated_writes_tracked_universe_not_watch_targets(
         encoding="utf-8",
     )
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr("src.screener.universe._etf_constituents", lambda etf: {})
 
     total = wm.ensure_universe_prepopulated()
 
@@ -182,6 +183,7 @@ def test_prepopulated_then_migrated_then_prepopulated_is_stable(
         "Ticker,Name,IndexWeighting\nMSFT,Microsoft,0.50\nZZZ,Zeta,0.30\n", encoding="utf-8",
     )
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr("src.screener.universe._etf_constituents", lambda etf: {})
 
     wm.ensure_universe_prepopulated()
     after_first = wm.ensure_universe_prepopulated()

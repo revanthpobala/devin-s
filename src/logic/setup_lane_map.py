@@ -31,7 +31,7 @@ _NAME_MAP: Tuple[Tuple[str, Optional[int], Optional[str], str, Optional[Tuple[fl
     ("code20", 20, "CODE20", "measured", LANE_PRIORS.get("reversal_buy_lane")),
     ("momentum_breakout", None, "MOMENTUM_BREAKOUT", "unmeasured", None),
     ("coil", None, "COIL", "unmeasured", None),
-    ("a+ trend", None, None, "unmeasured", None),
+    ("a+ trend", None, None, "chase risk", None),
     ("early action", 2, None, "no edge", None),
     ("prime", 1, None, "unmeasured", None),
     ("power move", 3, None, "unmeasured", None),

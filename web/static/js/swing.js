@@ -120,6 +120,7 @@ window.AppSwing = {
     }
     await this.refreshResearchQueue();
     await this.loadTastytradeAlerts();
+    await this.loadTvBoard();
     await this.loadCalibrationScoreboard();
     await this.loadSchwabScreener();
   },
@@ -1035,6 +1036,45 @@ window.AppSwing = {
     }).join('');
   },
 
+  async loadTvBoard() {
+    const box = document.getElementById('tv-board');
+    if (!box) return;
+    try {
+      const r = await fetch('/api/alerts/today-board');
+      const d = await r.json();
+      const rows = d.rows || [];
+      const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+      document.getElementById('tv-board-count').innerText = `${rows.length} names`;
+      const c = d.counts || {};
+      document.getElementById('tv-board-stages').innerText = `deep ${c.DEEP || 0} · local ${c.LOCAL || 0} · data ${c.DATA || 0} · queued ${c.QUEUED || 0}`;
+      if (!rows.length) {
+        box.innerHTML = '<div style="color:var(--text-muted); font-size:12px; padding:10px;">No TradingView alerts today.</div>';
+        return;
+      }
+      const col = {DEEP: 'var(--green-glow, #3ddc97)', LOCAL: 'var(--cyan-glow)', DATA: '#e0b341', QUEUED: 'var(--text-muted)'};
+      const status = (x) => {
+        if (x.stage === 'DEEP') {
+          const why = x.gate_rejected && x.gate_reason ? ` · gate: ${x.gate_reason}` : '';
+          return `deep ${x.deep_verdict || '?'}${why}`;
+        }
+        if (x.stage === 'LOCAL') return `local ${x.triage || '?'}${x.triage_reason ? ' · ' + x.triage_reason : ''} · no deep`;
+        if (x.stage === 'DATA') return 'data window only, local pending';
+        return x.queue_status === 'QUEUED' ? 'queued, not researched yet' : esc(x.queue_status || 'no research');
+      };
+      box.innerHTML = '<table style="width:100%; font-size:12px; border-collapse:collapse;">' + rows.map((x) => {
+        const t = encodeURIComponent(x.symbol);
+        return `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
+<td style="padding:5px 8px; font-weight:700;"><a href="/research/${t}" target="_blank" rel="noopener" style="color:var(--cyan-glow); text-decoration:none;">${esc(x.symbol)}</a>${x.explore ? ' <span class="pill" title="exploration sample">EXPLORE</span>' : ''}</td>
+<td style="padding:5px 8px;">${esc(x.actions.join('/'))}${x.alerts > 1 ? ' ×' + x.alerts : ''}</td>
+<td style="padding:5px 8px;">${x.price != null ? '$' + Number(x.price).toFixed(2) : ''}</td>
+<td style="padding:5px 8px; color:var(--text-muted);">${esc(x.strategies.join(', '))}</td>
+<td style="padding:5px 8px; color:${col[x.stage]};">${esc(status(x))}</td></tr>`;
+      }).join('') + '</table>';
+    } catch (e) {
+      box.innerHTML = '<div style="color:var(--text-muted); font-size:12px; padding:10px;">TradingView board unavailable.</div>';
+    }
+  },
+
   async loadTastytradeAlerts() {
     try {
       const data = await window.AppApi.getTastytradeAlerts();
@@ -1929,7 +1969,7 @@ window.AppSwing = {
         optAct.textContent = 'ACTIONABLE';
       } else if (isConditional) {
         optAct.className = 'pill amber';
-        optAct.textContent = '⏳ CONDITIONAL (STALK)';
+        optAct.textContent = '⏳ CONDITIONAL (WAITING)';
       } else if (isExplicitlyDemoted) {
         optAct.className = 'pill red';
         optAct.textContent = '⛔ DEMOTED';
@@ -2175,7 +2215,7 @@ window.AppSwing = {
         ` : (isConditional ? `
         <div style="background:rgba(217,119,6,0.08); border:1px solid rgba(217,119,6,0.3); border-radius:6px; padding:8px 14px; margin-bottom:14px; display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:#d97706;">
           <span style="font-size:16px;">⏳</span>
-          <div>Options Structure is <strong>CONDITIONAL (STALKING)</strong> — Defined risk spread planned for entry when price touches the entry floor limit.</div>
+          <div>Options Structure is <strong>CONDITIONAL (WAITING)</strong> — Defined risk spread planned for entry when price touches the entry floor limit.</div>
         </div>
         ` : '')}
 
@@ -2189,7 +2229,7 @@ window.AppSwing = {
                 <span style="font-size:13px; font-weight:800; color:${isExplicitlyDemoted ? 'var(--rose)' : (isConditional ? '#d97706' : 'var(--blue)')}; text-transform:uppercase; letter-spacing:0.5px;">
                   🎯 Options Structure ${isExplicitlyDemoted ? '(Demoted)' : (isConditional ? '(Conditional / Stalking)' : '(Primary Vehicle)')}
                 </span>
-                ${isActionable ? '<span class="pill green" style="font-size:10px; font-weight:800;">ACTIONABLE</span>' : (isConditional ? '<span class="pill amber" style="font-size:10px; font-weight:800;">⏳ CONDITIONAL (STALK)</span>' : '<span class="pill red" style="font-size:10px; font-weight:800;">NOT ACTIONABLE</span>')}
+                ${isActionable ? '<span class="pill green" style="font-size:10px; font-weight:800;">ACTIONABLE</span>' : (isConditional ? '<span class="pill amber" style="font-size:10px; font-weight:800;">⏳ CONDITIONAL (WAITING)</span>' : '<span class="pill red" style="font-size:10px; font-weight:800;">NOT ACTIONABLE</span>')}
               </div>
 
               <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:14px;">

@@ -210,3 +210,86 @@ def test_dated_briefing_bypasses_cache(monkeypatch):
     assert out["from_cache"] is False
     with ts._CACHE_LOCK:
         assert ts._CACHE.get("morning_briefing") is None, "the dated path must not poison the cache"
+
+
+def test_warm_start_serves_saved_payload_until_first_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "_WARM_PATH", tmp_path / "warm.json")
+    monkeypatch.setattr(ts, "_WARM_LAST_WRITE", 0.0)
+    ts.serve_payload("today", lambda: {"value": 1})
+    assert (tmp_path / "warm.json").exists(), "a good build is saved"
+
+    with ts._CACHE_LOCK:
+        for key in [k for k in ts._CACHE if k.startswith("today")]:
+            ts._CACHE[key] = None
+    ts._load_warm_start()
+
+    calls = {"n": 0}
+
+    def _builder():
+        calls["n"] += 1
+        return {"value": 2}
+
+    warm = ts.serve_payload("today", _builder)
+    assert warm["warm_start"] is True and warm["value"] == 1
+    assert calls["n"] == 0, "the saved payload is served without building"
+
+    fresh = ts.serve_payload("today", _builder, force_refresh=True)
+    assert fresh["value"] == 2 and "warm_start" not in fresh
+    assert ts.serve_payload("today", _builder).get("warm_start") is None
+
+
+def test_warm_start_ignores_stale_or_other_session(tmp_path, monkeypatch):
+    path = tmp_path / "warm.json"
+    monkeypatch.setattr(ts, "_WARM_PATH", path)
+    import json
+
+    path.write_text(json.dumps({"ts": time.time() - ts._WARM_MAX_AGE_S - 10, "key": ts._warm_key(), "payload": {"value": 1}}))
+    ts._load_warm_start()
+    assert _cache_val("today")[0] is None
+
+    path.write_text(json.dumps({"ts": time.time(), "key": ["1999-01-01", []], "payload": {"value": 1}}))
+    ts._load_warm_start()
+    assert _cache_val("today")[0] is None
+
+
+def test_edge_scanner_regime_never_blocks_the_request(monkeypatch):
+    from src.ui.routes import edge_scanner as es
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_fetch():
+        started.set()
+        release.wait(5.0)
+        es._REGIME_STATE["val"] = "RISK_ON"
+        es._REGIME_STATE["ts"] = time.time()
+        es._REGIME_STATE["busy"] = False
+
+    monkeypatch.setattr(es, "_fetch_regime", _slow_fetch)
+    monkeypatch.setitem(es._REGIME_STATE, "ts", 0.0)
+    monkeypatch.setitem(es._REGIME_STATE, "busy", False)
+    monkeypatch.setitem(es._REGIME_STATE, "val", None)
+
+    t0 = time.perf_counter()
+    assert es._cached_regime() is None, "the first call returns the last known value, not the fetch"
+    assert time.perf_counter() - t0 < 0.5
+    assert started.wait(2.0)
+    release.set()
+
+
+def test_event_radar_looks_up_causes_together(monkeypatch):
+    from src.ui.services import action_engine as ae
+
+    monkeypatch.setattr(ae, "_holdings_by_underlying", lambda: {})
+
+    import threading
+    barrier = threading.Barrier(4, timeout=5.0)
+
+    def _slow_cause(sym):
+        barrier.wait()  # only passes if all 4 lookups run at the same time
+        return f"cause-{sym}"
+
+    monkeypatch.setattr(ae, "_mover_cause", _slow_cause)
+    movers = [{"ticker": t, "drastic": True, "chg_pct": 5} for t in ("AAA", "BBB", "CCC", "DDD")]
+    radar = ae.get_event_radar(movers, [])
+    assert [m["cause"] for m in radar] == ["cause-AAA", "cause-BBB", "cause-CCC", "cause-DDD"]

@@ -267,3 +267,22 @@ def test_chat_prompt_mandates_get_candles_for_named_levels():
     assert "HELD on close" in system_prompt
     # The live price, never the report spot.
     assert "report's historical spot price" in system_prompt
+
+
+def _bar(ts_utc_ms, hi, lo, sess, label):
+    return {"datetime": ts_utc_ms, "ts": "2026-10-13 " + label, "time_et": label + " ET", "date": "2026-10-13",
+            "session": sess, "open": lo, "high": hi, "low": lo, "close": hi, "volume": 1}
+
+
+def test_premarket_print_is_not_reported_as_the_regular_session_cross():
+    bars = [_bar(1, 748.0, 740.0, "PRE", "07:00 AM"), _bar(2, 745.0, 736.0, "RTH", "09:35 AM"),
+            _bar(3, 749.0, 744.0, "RTH", "10:05 AM")]
+    data = {"day_high": 749.0, "day_low": 736.0, "day_close": 748.5, "live_price": 748.5, "day_open": 740.0,
+            "prior_close": 718.67, "interval": "5m", "session_date": "2026-10-13", "m5_candles": bars, "m1_candles": []}
+    ev = evaluate_levels_against_candles(data, [747.6])[0]
+    assert ev["crossed"] and ev["first_touch_time"].startswith("10:05 AM ET")
+    assert "07:00 AM ET (PRE)" in ev["first_touch_time"]
+
+    only_pre = dict(data, day_high=745.0, day_close=744.0, live_price=744.0)
+    ev2 = evaluate_levels_against_candles(only_pre, [747.6])[0]
+    assert not ev2["crossed"] and "extended-hours print only" in ev2["first_touch_time"]

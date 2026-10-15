@@ -460,8 +460,8 @@ def process_alert_enrichment(alert: dict, sheets=None):
 
     # 4. Local LLM Analysis (#ponytail triage)
     try:
-        from src.tracking.alert_evaluator import evaluate_alert_payload
-        eval_res = evaluate_alert_payload(alert, use_tools=False)
+        from src.tracking.alert_evaluator import evaluate_alert_gated
+        eval_res = evaluate_alert_gated(alert, use_tools=False)
         llm_decision = eval_res.get("llm_decision", "")
         if llm_decision:
             logger.info(f"AI decision written to SQLite for {symbol}: {llm_decision}")

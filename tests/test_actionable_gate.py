@@ -96,7 +96,8 @@ class TestGateFails:
         assert "long_rr_at_market missing" in fails
 
     def test_rr_below_floor(self):
-        dw = _dw(long_rr_at_market=1.99)
+        from src.tracking.rr_config import min_rr
+        dw = _dw(long_rr_at_market=min_rr() - 0.01)
         plan = _plan(entry=100.0)
         ok, fails = is_actionable(dw, plan)
         assert ok is False
@@ -203,17 +204,21 @@ class TestGateFails:
 
 
 class TestUnroundedComparison:
-    def test_rr_1_996_below_floor(self):
-        """1.996 < 2.0 floor: unrounded comparison means 1.996 does not pass."""
-        dw = _dw(long_rr_at_market=1.996)
+    def test_rr_below_floor_unrounded(self):
+        """Unrounded comparison means floor - 0.004 does not pass."""
+        from src.tracking.rr_config import min_rr
+        floor = min_rr()
+        val = round(floor - 0.004, 3)
+        dw = _dw(long_rr_at_market=val)
         plan = _plan(entry=100.0)
         ok, fails = is_actionable(dw, plan)
         assert ok is False
-        assert any("RR@mkt" in f and "1.996" in f for f in fails), fails
+        assert any("RR@mkt" in f and str(val) in f for f in fails), fails
 
-    def test_rr_2_000_above_floor(self):
-        """2.0 >= 2.0 floor: passes the RR check."""
-        dw = _dw(long_rr_at_market=2.0)
+    def test_rr_at_floor_passes(self):
+        """floor >= floor: passes the RR check."""
+        from src.tracking.rr_config import min_rr
+        dw = _dw(long_rr_at_market=min_rr())
         plan = _plan(entry=100.0)
         ok, fails = is_actionable(dw, plan)
         assert ok is True

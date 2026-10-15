@@ -2,11 +2,23 @@
  * REV CHAT Sidebar & Modal Dossier Copilot Controller with SQLite 15-Day History Persistence
  */
 window.AppChat = {
-  _revSessionId: null,
+  // The sidebar thread lives in SQLite; the session id (and portfolio mode) are kept in
+  // localStorage so every page load resumes the same conversation instead of starting fresh.
+  _revSid: (() => { try { return localStorage.getItem('rev_chat_sid') || null; } catch (e) { return null; } })(),
+  _revPortfolio: (() => { try { return localStorage.getItem('rev_chat_portfolio') === '1'; } catch (e) { return false; } })(),
+  get _revSessionId() { return this._revSid; },
+  set _revSessionId(v) {
+    this._revSid = v || null;
+    try { v ? localStorage.setItem('rev_chat_sid', v) : localStorage.removeItem('rev_chat_sid'); } catch (e) { /* storage unavailable */ }
+  },
+  get _portfolioMode() { return this._revPortfolio; },
+  set _portfolioMode(v) {
+    this._revPortfolio = !!v;
+    try { localStorage.setItem('rev_chat_portfolio', v ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  },
   _modalSessionId: null,
   _portfolioSessionId: null,
   _forcePortfolioChat: false,
-  _portfolioMode: false,
   _sidebarAttachedBoard: null,
   _sidebarAttachedImage: null,
   _modalAttachedBoard: null,
@@ -520,6 +532,11 @@ window.AppChat = {
     return clamped;
   },
 
+  ensureChatOpen() {
+    const container = document.querySelector('.container');
+    if (container && container.classList.contains('chat-collapsed')) this.toggleCollapse();
+  },
+
   toggleCollapse() {
     const container = document.querySelector('.container');
     if (!container) return;
@@ -972,6 +989,52 @@ window.AppChat = {
     }
   },
 
+  async restoreRevChat() {
+    const sid = this._revSessionId;
+    if (!sid || (window.AppState.revChatHistory || []).length) return;
+    const map = (messages) => messages.map(m => ({ role: m.role, content: m.content, date: m.date, created_at: m.created_at }));
+    try {
+      const res = await fetch(`/api/copilot/chats/history?session_id=${encodeURIComponent(sid)}`);
+      const data = await res.json();
+      const messages = (data && data.messages) || [];
+      if (!messages.length || (window.AppState.revChatHistory || []).length) return;
+      if (String(sid).startsWith('sess_PORTFOLIO_')) {
+        this._portfolioSessionId = sid;
+        this.enterPortfolioMode();
+      }
+      window.AppState.revChatHistory = map(messages);
+      // The server keeps generating after you leave the page; if the last turn is still your
+      // question, show a placeholder and pick the answer up from the database when it lands.
+      if (messages[messages.length - 1].role === 'user') {
+        window.AppState.revChatHistory.push({ role: 'assistant', pending: true, content: '⏳ Still generating. The answer will appear here when it finishes.' });
+        this._pollRevAnswer(sid, map);
+      }
+      this.renderRevChat();
+    } catch (e) {
+      console.debug('Could not restore sidebar chat:', e);
+    }
+  },
+
+  _pollRevAnswer(sid, map, tries = 0) {
+    if (tries > 120) return;
+    setTimeout(async () => {
+      if (this._revSessionId !== sid) return;
+      try {
+        const res = await fetch(`/api/copilot/chats/history?session_id=${encodeURIComponent(sid)}`);
+        const data = await res.json();
+        const messages = (data && data.messages) || [];
+        const hist = window.AppState.revChatHistory || [];
+        if (!hist.some(m => m.pending)) return;
+        if (messages.length && messages[messages.length - 1].role === 'assistant') {
+          window.AppState.revChatHistory = map(messages);
+          this.renderRevChat();
+          return;
+        }
+      } catch (e) { /* retry */ }
+      this._pollRevAnswer(sid, map, tries + 1);
+    }, 3000);
+  },
+
   startNewChat(target = 'modal') {
     const isModal = target === 'modal';
     if (isModal) {
@@ -1262,6 +1325,7 @@ window.AppChat = {
   },
 
   openChatWithPrompt(prompt, sym = null) {
+    this.ensureChatOpen();
     if (sym) {
       this.setRevChatFocus(sym);
       const tickerInput = document.getElementById('ticker-input');
@@ -1557,6 +1621,7 @@ window.AppChat = {
 
   async sendRevChatMsg(customPrompt = null) {
     if (this._isSendingRevMsg) return;
+    this.ensureChatOpen();
     this._isSendingRevMsg = true;
 
     try {
@@ -1594,7 +1659,7 @@ window.AppChat = {
       // from the last few turns of the other thread so follow-ups ("and its covered call?") keep
       // their subject. These turns are context only - they are not rendered into this thread.
       let cleanHistory = (window.AppState.revChatHistory || [])
-        .filter(m => (m.role === 'user' || m.role === 'assistant') && m.content)
+        .filter(m => (m.role === 'user' || m.role === 'assistant') && m.content && !m.pending)
         .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : String(m.content) }));
 
       if (cleanHistory.length < 2 && Array.isArray(window.AppState.revChatCrossTurns) && window.AppState.revChatCrossTurns.length) {
@@ -1602,6 +1667,7 @@ window.AppChat = {
         cleanHistory = bridge.concat(cleanHistory);
       }
 
+      window.AppState.revChatHistory = window.AppState.revChatHistory.filter(m => !m.pending);
       window.AppState.revChatHistory.push({ role: 'user', content: question });
 
       // Remember recent turns across threads (capped) for cross-mode continuity
@@ -2241,3 +2307,5 @@ window.AppChat = {
     }
   }
 };
+
+document.addEventListener('DOMContentLoaded', () => { if (window.AppChat) window.AppChat.restoreRevChat(); });

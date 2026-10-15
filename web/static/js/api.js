@@ -284,6 +284,21 @@ window.AppApi = {
     return await res.json();
   },
 
+  async getOptionsFlowHistory(ticker, days = 30) {
+    const url = `/api/options-flow/${encodeURIComponent(ticker)}/history?days=${days}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch options history: ${res.status}`);
+    return await res.json();
+  },
+
+  async getOptionsSweepsHistory(ticker, date = null, days = 30) {
+    const dateParam = date ? `&date=${encodeURIComponent(date)}` : '';
+    const url = `/api/options-flow/${encodeURIComponent(ticker)}/sweeps?days=${days}${dateParam}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch options sweeps history: ${res.status}`);
+    return await res.json();
+  },
+
   async getPositions() {
     const res = await fetch('/api/positions');
     if (!res.ok) throw new Error(`Failed to fetch positions: ${res.status}`);

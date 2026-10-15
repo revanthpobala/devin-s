@@ -41,8 +41,8 @@ def _onset(ticker="T", rr=3.0, stop=96.5, close=100.0, atr=5.0):
 # --- defaults ------------------------------------------------------------------------------------
 
 def test_shipped_default_is_the_measured_floor():
-    assert rc.get_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
-    assert rc.min_rr() == 2.0
+    assert rc.get_rr_config() == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
+    assert rc.min_rr() == 1.5
     assert rc.hi_rr() == 3.0
 
 
@@ -75,13 +75,13 @@ def test_partial_update_leaves_other_keys_alone():
 
 def test_reset_restores_defaults(isolated_config):
     rc.set_rr_config(rr_market_min=9.0, rr_hi_rr=12.0)
-    assert rc.reset_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
+    assert rc.reset_rr_config() == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
     assert not isolated_config.exists()
 
 
 def test_corrupt_file_falls_back_to_defaults_instead_of_raising(isolated_config):
     isolated_config.write_text("{not json", encoding="utf-8")
-    assert rc.get_rr_config() == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
+    assert rc.get_rr_config() == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
 
 
 def test_external_edit_is_picked_up(isolated_config):
@@ -101,7 +101,7 @@ def test_unwritable_path_raises_rather_than_corrupting_the_defaults(isolated_con
     monkeypatch.setenv("RR_CONFIG_PATH", str(blocker / "nested" / "rr.json"))
     with pytest.raises(OSError):
         rc.set_rr_config(rr_market_min=3.0)
-    assert rc.get_rr_config()["rr_market_min"] == 2.0
+    assert rc.get_rr_config()["rr_market_min"] == 1.5
 
 
 # --- validation -------------------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def test_unwritable_path_raises_rather_than_corrupting_the_defaults(isolated_con
 def test_out_of_range_and_junk_values_are_rejected(bad):
     with pytest.raises(ValueError):
         rc.set_rr_config(rr_market_min=bad)
-    assert rc.get_rr_config()["rr_market_min"] == 2.0, "a rejected value must not persist"
+    assert rc.get_rr_config()["rr_market_min"] == 1.5, "a rejected value must not persist"
 
 
 def test_boolean_is_accepted_as_one_because_json_owns_that_bug():
@@ -159,15 +159,15 @@ def test_values_are_rounded_to_two_decimals():
 # --- the gate actually moves ----------------------------------------------------------------------
 
 def test_lowering_the_floor_admits_a_row_that_was_below_it():
-    o = _onset(rr=1.8)
-    assert o.rr_at_market == pytest.approx(1.8)
-    assert o.rr_ok is False, "1.8 sits under the 2.0 default"
+    o = _onset(rr=1.2)
+    assert o.rr_at_market == pytest.approx(1.2)
+    assert o.rr_ok is False, "1.2 sits under the 1.5 default"
     assert o.lane is None
 
-    rc.set_rr_config(rr_market_min=1.5)
-    o2 = _onset(rr=1.8)
+    rc.set_rr_config(rr_market_min=1.0)
+    o2 = _onset(rr=1.2)
     assert o2.rr_ok is True, "the same row is admitted once the floor moves"
-    assert o2.lane == "rr_at_market_lane"
+    assert o2.lane == "rr_at_market_lane_marginal"
 
 
 def test_raising_the_floor_excludes_a_row_that_was_above_it():
@@ -258,7 +258,7 @@ def test_pb_is_still_required_for_the_entry_push_at_any_floor():
 
 def test_ui_payload_declares_what_is_not_configurable():
     payload = rc.as_ui_payload()
-    assert payload["defaults"] == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
+    assert payload["defaults"] == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
     assert payload["bounds"]["rr_market_min"] == {"min": 1.0, "max": 10.0}
     assert payload["overridden"] == {"rr_market_min": False, "rr_hi_rr": False}
     assert "stop_atr_floor" in payload["not_configurable"]
@@ -276,7 +276,7 @@ def test_overridden_flags_track_the_config():
 
 def test_get_endpoint_returns_the_ui_payload():
     out = desk_mod.get_rr_config_endpoint()
-    assert out["values"] == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
+    assert out["values"] == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
     assert out["labels"]["rr_market_min"]
     assert out["hints"]["rr_market_min"]
 
@@ -306,5 +306,5 @@ def test_reset_endpoint_restores_defaults():
     desk_mod.set_rr_config_endpoint(desk_mod.RRConfigUpdate(rr_market_min=4.0, rr_hi_rr=9.0))
     assert rc.get_rr_config() == {"rr_market_min": 4.0, "rr_hi_rr": 9.0}
     out = desk_mod.reset_rr_config_endpoint()
-    assert out["updated"] == {"rr_market_min": 2.0, "rr_hi_rr": 3.0}
-    assert rc.min_rr() == 2.0
+    assert out["updated"] == {"rr_market_min": 1.5, "rr_hi_rr": 3.0}
+    assert rc.min_rr() == 1.5

@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
+import httpx
 import schwab
 from dotenv import load_dotenv
 
@@ -20,6 +21,7 @@ TOKEN_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "schwab
 
 _SCHWAB_CLIENT = None
 _SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
+_SCHWAB_429_COOLDOWN_UNTIL = 0.0
 
 def get_schwab_client(force_new: bool = False):
     global _SCHWAB_CLIENT, _SCHWAB_AUTH_COOLDOWN_UNTIL
@@ -39,14 +41,14 @@ def get_schwab_client(force_new: bool = False):
             SCHWAB_API_CLIENT_SECRET
         )
         if hasattr(_SCHWAB_CLIENT, "session"):
-            _SCHWAB_CLIENT.session.timeout = 4.0
+            _SCHWAB_CLIENT.session.timeout = httpx.Timeout(15.0, connect=5.0, read=12.0, write=5.0)
         _SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
         return _SCHWAB_CLIENT
     except FileNotFoundError:
         raise Exception("schwab_token.json not found. Please run python setup_schwab.py first.")
     except Exception as e:
         err_msg = str(e)
-        if any(k in err_msg for k in ("invalid_grant", "Refresh token is invalid", "400 Bad Request", "unsupported_token_type")):
+        if any(k in err_msg for k in ("invalid_grant", "Refresh token is invalid", "unsupported_token_type")):
             _SCHWAB_AUTH_COOLDOWN_UNTIL = time.time() + 300.0
             logger.warning("⚠️ Schwab refresh token is expired or revoked (invalid_grant). Run 'python setup_schwab.py' to re-authenticate. Schwab calls paused for 5m.")
         raise
@@ -130,16 +132,26 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     Fetch live real-time equity/ETF quotes from Schwab API for multiple symbols in a single batch request.
     Returns dict mapping symbol -> quote_info dict.
     """
+    global _SCHWAB_AUTH_COOLDOWN_UNTIL, _SCHWAB_429_COOLDOWN_UNTIL
     if not symbols:
         return {}
 
     now_ts = time.time()
+    if now_ts < _SCHWAB_429_COOLDOWN_UNTIL:
+        # Rate limit cooldown active: serve whatever is cached
+        return {
+            s: _QUOTE_CACHE[s][1]
+            for s in [str(x).upper().strip().replace(".", "/") for x in symbols]
+            if s in _QUOTE_CACHE
+        }
+
     results = {}
     to_fetch = []
 
+    INDEX_TICKERS = {"VIX", "SPX", "NDX", "RUT", "DJI", "COMP", "TNX"}
     for s in symbols:
         s_u = str(s).upper().strip().replace(".", "/")
-        if not s_u or s_u.startswith("^"):
+        if not s_u or s_u.startswith("^") or s_u.startswith("$") or s_u in INDEX_TICKERS:
             continue
         cached = _QUOTE_CACHE.get(s_u)
         if cached and (now_ts - cached[0] < _QUOTE_CACHE_TTL):
@@ -155,21 +167,42 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
         # Chunk into slices of 50
         for i in range(0, len(to_fetch), 50):
             chunk = to_fetch[i : i + 50]
+            resp = None
             try:
                 resp = client.get_quotes(chunk)
             except Exception as ex_call:
-                logger.debug(f"Schwab client.get_quotes call failed, re-authenticating: {ex_call}")
-                if any(k in str(ex_call) for k in ("invalid_grant", "Refresh token is invalid", "400 Bad Request")):
+                logger.warning(f"Schwab batch get_quotes attempt 1 failed for {chunk}: {ex_call!r}")
+                if any(k in str(ex_call) for k in ("invalid_grant", "Refresh token is invalid", "unsupported_token_type")):
                     _SCHWAB_AUTH_COOLDOWN_UNTIL = time.time() + 300.0
                     break
-                client = get_schwab_client(force_new=True)
-                resp = client.get_quotes(chunk)
+                # Transient network timeout or dropped connection: retry once with fresh client
+                try:
+                    time.sleep(0.3)
+                    client = get_schwab_client(force_new=True)
+                    resp = client.get_quotes(chunk)
+                except Exception as ex_retry:
+                    logger.warning(f"Schwab batch get_quotes retry failed for {chunk}: {ex_retry!r}")
+                    continue
 
-            if resp.status_code == 401:
-                client = get_schwab_client(force_new=True)
-                resp = client.get_quotes(chunk)
+            if resp is not None and resp.status_code == 401:
+                try:
+                    client = get_schwab_client(force_new=True)
+                    resp = client.get_quotes(chunk)
+                except Exception:
+                    pass
 
-            if resp.status_code == 200:
+            if resp is not None and resp.status_code == 429:
+                try:
+                    time.sleep(0.8)
+                    resp = client.get_quotes(chunk)
+                except Exception:
+                    pass
+                if resp is not None and resp.status_code == 429:
+                    _SCHWAB_429_COOLDOWN_UNTIL = time.time() + 3.0
+                    logger.debug(f"Schwab rate limit 429 sustained for {chunk}; cooling down 3s")
+                    break
+
+            if resp is not None and resp.status_code == 200:
                 data = resp.json()
                 for sym_key, sym_val in data.items():
                     if not isinstance(sym_val, dict):
@@ -198,10 +231,10 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
                         }
                         _QUOTE_CACHE[sym_key] = (now_ts, q_dict)
                         results[sym_key] = q_dict
-            else:
-                logger.debug(f"Schwab get_quotes returned HTTP {resp.status_code}: {resp.text[:150]}")
+            elif resp is not None:
+                logger.warning(f"Schwab batch quotes HTTP {resp.status_code} for {chunk}: {resp.text[:150]}")
     except Exception as e:
-        logger.debug(f"Error fetching Schwab realtime quotes batch: {e}")
+        logger.warning(f"Schwab batch quotes error for {to_fetch}: {e!r}")
 
     return results
 
@@ -213,7 +246,7 @@ def get_realtime_quote(symbol: str) -> Optional[dict]:
     high, low, open, close, volume, or None on failure.
     """
     sym = str(symbol).upper().strip().replace(".", "/")
-    if not sym or sym.startswith("^"):
+    if not sym or sym.startswith("^") or sym.startswith("$"):
         return None
     res = get_realtime_quotes_batch([sym])
     return res.get(sym)
@@ -234,7 +267,7 @@ def get_intraday_candles(symbol: str, frequency: int = 5, lookback_bars: int = 3
     Falls back to yfinance if Schwab API call encounters issues.
     """
     sym = str(symbol).upper().strip().replace(".", "/")
-    if not sym or sym.startswith("^"):
+    if not sym or sym.startswith("^") or sym.startswith("$"):
         return []
 
     try:
@@ -364,16 +397,33 @@ def get_unusual_options_flow_data(ticker: str, force_refresh: bool = False) -> d
         }
 
     now = datetime.now()
-    to_date = now + timedelta(days=90)
+    is_index_etf = schwab_sym in {"SPY", "QQQ", "IWM", "DIA"}
+    days_out = 45 if is_index_etf else 90
+    s_count = 40 if is_index_etf else 70
+    to_date = now + timedelta(days=days_out)
     
     try:
         # Note: Schwab API rejects from_date if it is today or in the past (HTTP 400).
-        # We query up to 90 days out using to_date.date() and let Schwab default to the earliest active expiration.
-        r = client.get_option_chain(
-            schwab_sym,
-            contract_type=client.Options.ContractType.ALL,
-            to_date=to_date.date()
-        )
+        # Use tuned strike_count & date window to prevent massive payload timeouts on daily-expiration ETFs
+        try:
+            r = client.get_option_chain(
+                schwab_sym,
+                contract_type=client.Options.ContractType.ALL,
+                strike_count=s_count,
+                to_date=to_date.date()
+            )
+        except Exception as e_first:
+            # If TCP connect timed out or network connection failed, fail fast to fallback feeds
+            if isinstance(e_first, (httpx.ConnectTimeout, httpx.NetworkError)):
+                raise
+            logger.warning(f"Initial Schwab option chain query for {sym} failed ({e_first}). Retrying with strike_count=30 and 30-day window...")
+            to_date_short = now + timedelta(days=30)
+            r = client.get_option_chain(
+                schwab_sym,
+                contract_type=client.Options.ContractType.ALL,
+                strike_count=30,
+                to_date=to_date_short.date()
+            )
         
         # If token was refreshed or 401 returned, force reconnect once
         if r.status_code == 401:
@@ -382,41 +432,70 @@ def get_unusual_options_flow_data(ticker: str, force_refresh: bool = False) -> d
             r = client.get_option_chain(
                 schwab_sym,
                 contract_type=client.Options.ContractType.ALL,
+                strike_count=70,
                 to_date=to_date.date()
             )
 
         # Fallback if 400 or any issue occurs with to_date
         if r.status_code != 200:
-            logger.warning(f"Schwab API returned HTTP {r.status_code} with to_date={to_date.date()}, retrying full option chain query...")
+            logger.warning(f"Schwab API returned HTTP {r.status_code} with to_date={to_date.date()}, retrying with strike_count=50...")
             r = client.get_option_chain(
                 schwab_sym,
-                contract_type=client.Options.ContractType.ALL
+                contract_type=client.Options.ContractType.ALL,
+                strike_count=50
             )
 
         if r.status_code != 200:
             err_detail = r.text[:300] if r.text else f"HTTP {r.status_code}"
             logger.error(f"Schwab API error for {sym}: HTTP {r.status_code} - {err_detail}")
+            spot = 0.0
+            try:
+                from src.clients.quote_router import get_quote_router
+                q = get_quote_router().get_quote(sym)
+                if q and q.last_price > 0:
+                    spot = q.last_price
+            except Exception:
+                pass
             return {
                 "ticker": sym,
                 "status": "error",
                 "error": f"Schwab API returned HTTP {r.status_code}: {err_detail}",
+                "underlying_price": spot,
                 "anomalies": []
             }
         data = r.json()
     except Exception as e:
         logger.error(f"Failed to fetch option chain from Schwab for {sym}: {e}")
+        spot = 0.0
+        try:
+            from src.clients.quote_router import get_quote_router
+            q = get_quote_router().get_quote(sym)
+            if q and q.last_price > 0:
+                spot = q.last_price
+        except Exception:
+            pass
         return {
             "ticker": sym,
             "status": "error",
-            "error": str(e),
+            "error": f"Schwab options feed timed out ({e}). Live spot & Tastytrade volatility active.",
+            "underlying_price": spot,
             "anomalies": []
         }
 
     if data.get("status") != "SUCCESS":
+        spot = 0.0
+        try:
+            from src.clients.quote_router import get_quote_router
+            q = get_quote_router().get_quote(sym)
+            if q and q.last_price > 0:
+                spot = q.last_price
+        except Exception:
+            pass
         return {
             "ticker": sym,
             "status": "error",
             "error": f"Schwab returned status {data.get('status')}",
+            "underlying_price": spot,
             "anomalies": []
         }
 

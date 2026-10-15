@@ -82,7 +82,7 @@ def _run_meta_arbitration(tmp_path: Path) -> dict:
         )
 
     watch_files = [
-        reports_dir / "META_watch_levels.json",
+        tdir / "META_watch_levels.json",
         raw_dir / "META" / "META_watch_levels.json",
     ]
     persisted = None
@@ -103,8 +103,9 @@ def _run_meta_arbitration(tmp_path: Path) -> dict:
 
 def test_arbitration_persisted_mega_plan_is_not_gate_rejected(tmp_path):
     persisted = _run_meta_arbitration(tmp_path)
-    # META still fails its own gate — the rebuilt targets do not rescue the zone R:R.
-    assert persisted["level_gate_rejected"] is True
+    # META waits just above its zone: the stop sits on Pine's stop and the zone-top R:R clears the floor, so the
+    # plan now passes and is persisted as a live watch plan (the at-market check runs again at fire time).
+    assert not persisted.get("level_gate_rejected")
 
 
 def test_judge_prompt_states_targets_above_trigger():

@@ -1754,7 +1754,7 @@ window.AppAlerts = {
       } else {
         statusBadge = `
           <span class="badge" style="background:rgba(255,255,255,0.025); color:var(--text-muted); border:1px dashed rgba(255,255,255,0.12); font-size:10.5px;">
-            ⏳ STALKING SETUP
+            ⏳ WAITING SETUP
           </span>
         `;
       }
@@ -2343,7 +2343,7 @@ window.AppAlerts = {
           bColor = '#f59e0b';
           bBorder = 'rgba(245,158,11,0.35)';
           bIcon = '⏸';
-          bLabel = 'WAIT / STALK';
+          bLabel = 'WAIT';
         } else if (upperDec.includes('EXIT')) {
           bBg = 'rgba(245,158,11,0.12)';
           bColor = '#f59e0b';
@@ -2933,7 +2933,7 @@ window.AppAlerts = {
           const upperDec = decClean.toUpperCase();
 
           let bClass = 'badge stalking';
-          let bLabel = 'WATCH / STALK';
+          let bLabel = 'WATCH';
           if (upperDec.includes('PASS') || upperDec.includes('GO') || upperDec.includes('TAKE') || upperDec.includes('BUY') || upperDec.includes('LONG')) {
             bClass = 'badge in_zone';
             bLabel = upperDec.includes('PASS') ? 'PASS (GO)' : (upperDec.includes('TAKE') ? 'TAKE' : 'ACTIONABLE');

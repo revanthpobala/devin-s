@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -42,7 +43,7 @@ EDGE_SCANNER_DIR = config.BASE_DIR / "edge_scanner_tmp"
 def _is_edge_scanner_port_live(port: int = 7777) -> bool:
     """Check whether the edge-scanner HTTP/WS port is accepting connections."""
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
             return True
     except OSError:
         return False
@@ -62,17 +63,11 @@ def _universe_count() -> int:
         return 0
 
 
-@router.get("/api/edge-scanner/status")
-def get_edge_scanner_status():
-    """Health check: is edge-scanner running, what regime, how many alerts."""
-    from src.streaming import edge_scanner_bridge as _bridge
+_REGIME_STATE: dict = {"ts": 0.0, "val": None, "busy": False}
+_REGIME_TTL_S = 60.0
 
-    proc = _state.EDGE_SCANNER_PROCESS   # always read from module, not a stale local copy
-    proc_live = (proc is not None and proc.poll() is None)
-    port_live = _is_edge_scanner_port_live(7777)
-    running = proc_live or port_live
 
-    regime = None
+def _fetch_regime() -> None:
     try:
         import json as _json
         import urllib.request
@@ -80,11 +75,42 @@ def get_edge_scanner_status():
         with urllib.request.urlopen("http://127.0.0.1:7777/api/regime", timeout=2.0) as resp:
             if resp.status == 200:
                 payload = _json.loads(resp.read().decode("utf-8", errors="replace"))
-                regime = payload.get("regime")
+                _REGIME_STATE["val"] = payload.get("regime")
     except Exception:
-        regime = None
+        _REGIME_STATE["val"] = None
+    finally:
+        _REGIME_STATE["ts"] = time.time()
+        _REGIME_STATE["busy"] = False
 
-    return {
+
+def _cached_regime():
+    """Last known regime. A refresh runs in a background thread, so the request never waits on a slow scanner."""
+    if not _REGIME_STATE["busy"] and time.time() - _REGIME_STATE["ts"] >= _REGIME_TTL_S:
+        _REGIME_STATE["busy"] = True
+        threading.Thread(target=_fetch_regime, daemon=True, name="EdgeScannerRegime").start()
+    return _REGIME_STATE["val"]
+
+
+_STATUS_CACHE: dict = {"ts": 0.0, "val": None}
+_STATUS_TTL_S = 5.0
+
+
+@router.get("/api/edge-scanner/status")
+def get_edge_scanner_status():
+    """Health check: is edge-scanner running, what regime, how many alerts."""
+    cached = _STATUS_CACHE["val"]
+    if cached is not None and time.time() - _STATUS_CACHE["ts"] < _STATUS_TTL_S:
+        return {**cached, "alerts_buffered": len(_ALERT_RING_BUFFER)}
+    from src.streaming import edge_scanner_bridge as _bridge
+
+    proc = _state.EDGE_SCANNER_PROCESS   # always read from module, not a stale local copy
+    proc_live = (proc is not None and proc.poll() is None)
+    port_live = _is_edge_scanner_port_live(7777)
+    running = proc_live or port_live
+
+    regime = _cached_regime() if running else None
+
+    result = {
         "running": running,
         "process_running": proc_live,
         "port_live": port_live,
@@ -93,6 +119,9 @@ def get_edge_scanner_status():
         "universe_count": _universe_count(),
         "alerts_buffered": len(_ALERT_RING_BUFFER),
     }
+    _STATUS_CACHE["ts"] = time.time()
+    _STATUS_CACHE["val"] = result
+    return result
 
 
 @router.get("/api/edge-scanner/alerts")

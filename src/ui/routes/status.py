@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -130,6 +131,85 @@ def _get_active_processes() -> List[Dict[str, Any]]:
     return active
 
 
+_PROBE_CACHE: Dict[str, Any] = {}
+
+
+def _cached_probe(key: str, ttl_s: float, fn):
+    """Slow probes (psutil, GPU, network) are reused for ttl_s; the cheap DB/file counts stay live."""
+    hit = _PROBE_CACHE.get(key)
+    now_ts = time.time()
+    if hit is not None and now_ts - hit[0] < ttl_s:
+        return hit[1]
+    val = fn()
+    _PROBE_CACHE[key] = (now_ts, val)
+    return val
+
+
+def _probe_llm_online() -> bool:
+    try:
+        import requests
+        r = requests.get("http://127.0.0.1:8000/health", timeout=1.5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _probe_tastytrade():
+    try:
+        from src.clients.tastytrade_client import TastytradeClient
+        return len(TastytradeClient().get_quote_alerts()), True
+    except Exception:
+        return 0, False
+
+
+def _probe_schwab_status():
+    try:
+        from src.clients.schwab_client import get_schwab_token_status
+        return get_schwab_token_status()
+    except Exception:
+        return None
+
+
+HEALTH_SNAPSHOT = config.BASE_DIR / "data" / "health_snapshot.json"
+HEALTH_MAX_AGE_S = 30.0
+
+
+def collect_slow_probes() -> Dict[str, Any]:
+    """Every probe that shells out or hits the network. Run by run_health_worker.py, not by requests."""
+    tasty_count, tasty_auth = _probe_tastytrade()
+    return {
+        "llm_online": _probe_llm_online(),
+        "tracker_pid": find_running_tracker_pid(),
+        "gpu_stats": _get_gpu_stats(),
+        "active_procs": _get_active_processes(),
+        "vix_price": _get_live_vix(),
+        "tasty_count": tasty_count,
+        "tasty_auth": tasty_auth,
+        "schwab_status": _probe_schwab_status(),
+    }
+
+
+def _slow_probes() -> Dict[str, Any]:
+    """Worker snapshot when fresh; in-process cached probes only if the worker is not running."""
+    try:
+        snap = json.loads(HEALTH_SNAPSHOT.read_text(encoding="utf-8"))
+        if time.time() - snap["ts"] < HEALTH_MAX_AGE_S:
+            return snap["probes"]
+    except Exception:
+        pass
+    tasty_count, tasty_auth = _cached_probe("tasty", 15.0, _probe_tastytrade)
+    return {
+        "llm_online": _cached_probe("llm", 10.0, _probe_llm_online),
+        "tracker_pid": _cached_probe("tracker_pid", 3.0, find_running_tracker_pid),
+        "gpu_stats": _cached_probe("gpu", 5.0, _get_gpu_stats),
+        "active_procs": _cached_probe("procs", 5.0, _get_active_processes),
+        "vix_price": _cached_probe("vix", 15.0, _get_live_vix),
+        "tasty_count": tasty_count,
+        "tasty_auth": tasty_auth,
+        "schwab_status": _cached_probe("schwab", 15.0, _probe_schwab_status),
+    }
+
+
 @router.get("/api/status")
 def get_system_status():
     """System heartbeat, market hours, GPU VRAM, active tasks, LLM health, orchestrator status, and active counts."""
@@ -164,21 +244,12 @@ def get_system_status():
         market_open = False
         market_status_text = f"🔴 MARKET CLOSED ({now_mt.strftime('%I:%M %p')} MT)"
 
-    # Local LLM check (port 8000)
-    llm_online = False
-    try:
-        import requests
-        r = requests.get("http://127.0.0.1:8000/health", timeout=1.5)
-        llm_online = (r.status_code == 200)
-    except Exception:
-        llm_online = False
-
-    tracker_pid = find_running_tracker_pid()
-    tracker_running = tracker_pid is not None
-
-    gpu_stats = _get_gpu_stats()
-    active_procs = _get_active_processes()
-    vix_price = _get_live_vix()
+    slow = _slow_probes()
+    llm_online = slow["llm_online"]
+    tracker_pid = slow["tracker_pid"]
+    gpu_stats = slow["gpu_stats"]
+    active_procs = slow["active_procs"]
+    vix_price = slow["vix_price"]
 
     watch_count = 0
     try:
@@ -190,16 +261,7 @@ def get_system_status():
     except Exception:
         pass
 
-    tasty_count = 0
-    tasty_auth = False
-    try:
-        from src.clients.tastytrade_client import TastytradeClient
-        client = TastytradeClient()
-        alerts = client.get_quote_alerts()
-        tasty_count = len(alerts)
-        tasty_auth = True
-    except Exception:
-        pass
+    tasty_count, tasty_auth = slow["tasty_count"], slow["tasty_auth"]
 
     open_pos_count = 0
     if POSITIONS_FILE.exists():
@@ -220,12 +282,7 @@ def get_system_status():
         tracker_pid = TRACKER_PROCESS.pid
     tracker_running = tracker_pid is not None
 
-    schwab_status = None
-    try:
-        from src.clients.schwab_client import get_schwab_token_status
-        schwab_status = get_schwab_token_status()
-    except Exception:
-        pass
+    schwab_status = slow["schwab_status"]
 
     return {
         "time_mt": now_mt.strftime("%Y-%m-%d %I:%M:%S %p MT"),

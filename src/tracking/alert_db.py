@@ -612,6 +612,18 @@ def update_research_status(symbol: str, date_str: str, status: str):
                 """,
                 (status, symbol, date_str),
             )
+            if cursor.rowcount == 0 and status in ("DEEP_RUNNING", "DEEP_DONE_PASS", "DEEP_DONE_REJECT", "LOCAL_DONE"):
+                # A job can start on one date and finish on another (or with a differently derived date);
+                # settle the newest unfinished row for the symbol instead of leaving it stuck in DEEP_RUNNING.
+                cursor.execute(
+                    """
+                    UPDATE research_queue SET status = ?
+                    WHERE id = (SELECT id FROM research_queue WHERE symbol = ?
+                                AND status IN ('QUEUED', 'LOCAL_WATCH', 'LOCAL_PASS', 'DEEP_RUNNING')
+                                ORDER BY id DESC LIMIT 1)
+                    """,
+                    (status, symbol),
+                )
             conn.commit()
 
 

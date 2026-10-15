@@ -137,15 +137,18 @@ def _normalize_intraday(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 ts_str = dt_et.strftime("%Y-%m-%d %H:%M")
                 time_et_str = dt_et.strftime("%I:%M %p ET")
                 date_str = dt_et.strftime("%Y-%m-%d")
+                minutes = dt_et.hour * 60 + dt_et.minute
+                session = "PRE" if minutes < 570 else ("POST" if minutes >= 960 else "RTH")
             except Exception:
-                ts_str, time_et_str, date_str = str(ts), "", ""
+                ts_str, time_et_str, date_str, session = str(ts), "", "", "RTH"
         else:
-            ts_str, time_et_str, date_str = "", "", ""
+            ts_str, time_et_str, date_str, session = "", "", "", "RTH"
         out.append({
             "datetime": ts,
             "ts": ts_str,
             "time_et": time_et_str,
             "date": date_str,
+            "session": session,
             "open": _num(c.get("open")),
             "high": _num(c.get("high")),
             "low": _num(c.get("low")),
@@ -272,8 +275,10 @@ def evaluate_levels_against_candles(
         timeline = candles_data.get("m5_candles") or candles_data.get("m1_candles") or []
     session_date = candles_data.get("session_date") or ""
     session_bars = [b for b in timeline if b.get("date") == session_date or b.get("ts", "").startswith(session_date)]
-    if not session_bars:
-        session_bars = timeline
+    if not session_bars and timeline:
+        # No bars dated "today" (weekend, pre-open, or past midnight ET): the session is the last one with bars.
+        last_date = timeline[-1].get("date")
+        session_bars = [b for b in timeline if b.get("date") == last_date] or timeline
 
     for raw_lvl in levels:
         lvl = _num(raw_lvl)
@@ -283,20 +288,29 @@ def evaluate_levels_against_candles(
         is_up = lvl >= ref_price if ref_price > 0 else (lvl >= live_price)
         crossed = (day_high >= lvl) if is_up else (day_low <= lvl)
 
+        def _touched(bar):
+            return (_num(bar.get("high")) >= lvl) if is_up else (_num(bar.get("low")) <= lvl)
+
+        def _label(bar):
+            return bar.get("time_et") or bar.get("ts") or ""
+
+        # Day high/low are regular-session figures, so the headline touch is the first REGULAR-session
+        # touch. An earlier pre/post-market print is reported separately, never as the cross.
+        rth_touch = next((b for b in session_bars if b.get("session", "RTH") == "RTH" and _touched(b)), None)
+        ext_touch = next((b for b in session_bars if b.get("session", "RTH") != "RTH" and _touched(b)), None)
+
         first_touch_time: Optional[str] = None
         if crossed:
-            for bar in session_bars:
-                touched = (_num(bar.get("high")) >= lvl) if is_up else (_num(bar.get("low")) <= lvl)
-                if touched:
-                    first_touch_time = bar.get("time_et") or bar.get("ts")
-                    if not first_touch_time and bar.get("datetime"):
-                        from datetime import datetime as _dt, timezone as _tz
-                        from zoneinfo import ZoneInfo
-                        first_touch_time = _dt.fromtimestamp(bar["datetime"] / 1000, tz=_tz.utc).astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p ET")
-                    break
-            if not first_touch_time:
-                # The session extreme touched it; no fine-grained bar resolved it.
+            if rth_touch:
+                first_touch_time = _label(rth_touch)
+            elif ext_touch:
+                first_touch_time = f"{_label(ext_touch)} ({ext_touch.get('session')}-market print; regular-session bar unresolved)"
+            else:
                 first_touch_time = "touched (session high/low; bar time unavailable)"
+            if rth_touch and ext_touch and ext_touch is not rth_touch and (ext_touch.get("datetime") or 0) < (rth_touch.get("datetime") or 0):
+                first_touch_time += f"; first extended-hours print {_label(ext_touch)} ({ext_touch.get('session')})"
+        elif ext_touch:
+            first_touch_time = f"never touched in regular session (extended-hours print only: {_label(ext_touch)} {ext_touch.get('session')})"
         else:
             first_touch_time = "never touched"
 

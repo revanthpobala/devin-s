@@ -44,6 +44,179 @@ window.AppDesk = {
     return html;
   },
 
+  renderDeployPlan(plan) {
+    if (!plan || plan.error || !plan.tranches) return '';
+    const money = (v) => `$${Math.round(v || 0).toLocaleString()}`;
+    const pf = plan.portfolio || {};
+    const cx = plan.context || {};
+    const sz = plan.sizing || {};
+    const orderRow = (o) => `<div style="display:flex; justify-content:space-between; gap:10px; font-family:var(--font-mono); font-size:11px; padding:3px 0; border-top:1px dashed var(--border);"><b>${o.ticker}</b><span>${o.type} ${o.shares} @ ${o.entry}</span><span style="color:var(--text-dim);">stop ${o.stop} · T1 ${o.target} · R:R ${o.rr}</span><span>${money(o.notional)} · risk ${money(o.risk)} · wt ${o.weight_after_pct}%</span></div>`;
+    const tranche = (t) => `<div style="flex:1 1 220px; min-width:200px; background:var(--bg-main); border:1px solid var(--border); border-radius:6px; padding:8px 10px;"><div style="font-size:10px; font-weight:900; letter-spacing:0.6px; color:var(--text-dim);">${t.label.toUpperCase()}</div><div style="font-size:14px; font-weight:900; font-family:var(--font-mono);">${money(t.budget)}</div>${(t.orders || []).length ? t.orders.map(orderRow).join('') : '<div style="font-size:10.5px; color:var(--text-dim); margin-top:4px;">no qualifying order</div>'}</div>`;
+    const vet = (plan.vetoes || []).map(v => `<span style="font-size:10px; font-family:var(--font-mono); color:var(--text-dim);"><b>${v.ticker}</b> ${v.veto}</span>`).join(' · ');
+    const conc = (plan.concentration || []).map(c => `${c.ticker} ${c.weight_pct}%`).join(' · ');
+    return `
+    <div class="station-card" style="padding:12px 18px; border-left:4px solid var(--cyan-glow);">
+      <div style="display:flex; align-items:center; gap:9px; margin-bottom:6px; flex-wrap:wrap;">
+        <span style="font-size:13px; font-weight:900; letter-spacing:0.7px;">DEPLOY PLAN</span>
+        <span style="font-size:10px; font-family:var(--font-mono); color:var(--text-dim);">dry powder ${money((pf.dry_powder || {}).total)} (${pf.dry_powder_pct}% of ${money(pf.total)}) · risk ${sz.risk_pct_per_name}% per name · name cap ${sz.name_cap_pct}% · min R:R ${sz.min_rr}</span>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">${plan.tranches.map(tranche).join('')}</div>
+      ${vet ? `<div style="margin-top:7px; line-height:1.6;">Skipped: ${vet}</div>` : ''}
+      ${cx.vix_band ? `<div style="margin-top:6px; font-size:11px;"><b>VIX ${cx.vix} · ${cx.vix_band.range} · ${cx.vix_band.sentiment}</b>: ${cx.vix_band.pace}. Options: ${cx.vix_band.options}.${(plan.income_candidates || []).length ? ` Over the ${sz.held_cap_pct}% cap, covered-call candidates: <b>${plan.income_candidates.join(', ')}</b>.` : ''}</div>` : ''}
+      ${conc ? `<div style="margin-top:5px; font-size:10px; font-family:var(--font-mono); color:var(--text-dim);">Concentration: ${conc}</div>` : ''}
+      <div style="margin-top:5px; font-size:10px; color:var(--text-dim);">VIX ${cx.vix ?? '–'} · Fear &amp; Greed ${cx.fear_greed ?? '–'} · ${cx.tide || ''}. ${plan.note || ''}</div>
+    </div>`;
+  },
+
+  renderAlertSetups(d) {
+    const setups = (d && d.setups) || {};
+    const names = Object.keys(setups);
+    if (!names.length) return '';
+    const f = (v, dp = 2) => (v === null || v === undefined ? '–' : Number(v).toFixed(dp));
+    const row = (k) => {
+      const e = setups[k] || {};
+      const col = (e.mean_r_rel || 0) > 0 ? 'var(--green)' : 'var(--rose-light)';
+      return `<div style="display:flex; gap:12px; flex-wrap:wrap; font-family:var(--font-mono); font-size:11px; padding:3px 0; border-top:1px dashed var(--border);"><b style="min-width:190px;">${k}</b><span>n ${e.n || 0}${e.pending ? ` (+${e.pending} pending)` : ''}</span><span>R ${f(e.mean_r)} / med ${f(e.median_r)}</span><span style="color:${col};">vs tape ${f(e.mean_r_rel)}</span><span>win ${f(e.win_pct, 0)}%</span><span>breadth ${f(e.breadth_pct, 0)}% of ${e.tickers || 0}</span><span style="color:${e.status === 'MEASURED' ? 'var(--green)' : 'var(--amber)'};">${e.status || 'UNMEASURED'}</span></div>`;
+    };
+    return `
+    <div class="station-card" style="padding:10px 18px; border-left:4px solid var(--amber);">
+      <div style="font-size:12px; font-weight:900; letter-spacing:0.7px; margin-bottom:4px;">EMAIL ALERT SETUPS — 21-BAR R vs TAPE</div>
+      ${names.map(row).join('')}
+      <div style="margin-top:5px; font-size:10px; color:var(--text-dim);">${d.note || ''}</div>
+    </div>`;
+  },
+
+  _refreshAlertSetups() {
+    const el = document.getElementById('desk-alert-setups');
+    if (!el || (Date.now() - (this._alertSetupsAt || 0)) < 300000) return;
+    this._alertSetupsAt = Date.now();
+    fetch('/api/notifications/trust').then(r => r.json()).then(t => this._fillSide('desk-alert-setups', this.renderAlertSetups(t && t.alert_setups))).catch(() => {});
+  },
+
+  // The side panels fetch on their own timers and a full render rebuilds their divs empty, so the last
+  // good HTML is kept and put back instead of leaving a blank until the next timer fires.
+  _fillSide(id, html) {
+    this._side = this._side || {};
+    this._side[id] = html;
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  },
+
+  _restoreSide() {
+    const side = this._side || {};
+    for (const id of ['desk-macro', 'desk-deploy-plan', 'desk-alert-setups', 'desk-thesis', 'desk-regime-lane']) {
+      const el = document.getElementById(id);
+      if (el && side[id] !== undefined) el.innerHTML = side[id];
+    }
+    this._refreshMacro();
+    this._refreshDeployPlan();
+    this._refreshAlertSetups();
+    this._refreshThesis();
+    this._refreshRegimeLane();
+  },
+
+  renderMacro(d) {
+    const rel = (d && d.releases) || [];
+    const spreads = (d && d.spreads) || [];
+    const ox = (d && d.opex) || {};
+    if (!rel.length && !spreads.length && !ox.date) return '';
+    const money0 = (v) => `$${Math.round(v || 0).toLocaleString()}`;
+    // Prompts are built from the flagged rows themselves and kept here, so no quote in a title can break an onclick.
+    this._macroPrompts = [];
+    const ask = (label, text, cls) => {
+      this._macroPrompts.push(text);
+      return `<button class="btn ${cls || 'secondary'}" style="font-size:10px; font-weight:800; padding:2px 9px;" onclick="AppChat.askPortfolioCopilot(AppDesk._macroPrompts[${this._macroPrompts.length - 1}])">💬 ${label}</button>`;
+    };
+    const titles = (r) => r.releases.map(x => `${x.title} (fcst ${x.forecast || 'n/a'}, prev ${x.previous || 'n/a'})`).join(', ');
+    const legs = (r) => r.exposed.map(x => `${x.underlying} ${x.expiry} (${x.legs} leg${x.legs !== 1 ? 's' : ''})`).join('; ');
+    const next = rel[0];
+    const spreadHtml = spreads.map(s => {
+      const name = `${s.underlying} ${s.expiry} ${s.long_strike}/${s.short_strike} ${s.type.toLowerCase()} spread x${s.qty}`;
+      const prompt = `My ${name} risks ${money0(s.downside)} to make ${money0(s.upside)}${s.ratio ? ` (${s.ratio}:1)` : ''}. ` +
+        (next ? `The next release is ${next.when}: ${titles(next)}. ` : 'No release is due in the next 48h. ') +
+        'What has to happen for me to lose it, and should I close it now, at the open, or hold? Use my real book and no direction predictions.';
+      return `<div style="padding:5px 0; border-top:1px dashed var(--border); font-size:11px; color:var(--rose-light); display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><span><b>${name}:</b> risk ${money0(s.downside)} to make ${money0(s.upside)}${s.ratio ? ` (${s.ratio}:1)` : ''}. Closing removes the risk for the leftover gain.</span>${ask('Ask about this spread', prompt, 'danger')}</div>`;
+    }).join('');
+    const g = (r) => {
+      const hot = r.exposed.length;
+      const col = r.same_day ? 'var(--rose-light)' : (hot ? 'var(--amber, #f59e0b)' : 'var(--text-dim)');
+      const items = r.releases.map(x => `${x.title}${x.forecast ? ` (fcst ${x.forecast}, prev ${x.previous || '–'})` : ''}`).join(' · ');
+      const ex = hot ? `<div style="margin-top:3px; font-size:11px; color:${col};"><b>${r.same_day ? 'Your options expire that day' : 'Your options expire within a week'}:</b> ${r.exposed.map(x => `${x.underlying} ${x.expiry} (${x.legs} leg${x.legs !== 1 ? 's' : ''})`).join('; ')}. ${r.pre_open ? 'Prints before the open; you can only react from 9:30 ET.' : ''}</div>` : '';
+      const pb = (r.playbook || []).map(x => `<div style="font-size:10px; color:var(--text-dim);"><b>${x.release}</b> · ${x.hot} ${x.cool}</div>`).join('');
+      const plan = r.same_day ? `<div style="margin-top:3px; font-size:11px;"><b>Plan:</b> check futures before the open; the print lands first and you can only act from 9:30 ET. Decide hold or close before then.</div>` : '';
+      const prompt = `${r.when} (in ${r.hours}h): ${titles(r)}. ` +
+        (hot ? `My open options exposed: ${legs(r)}${r.same_day ? ', expiring that day' : ''}. ` : 'None of my open options expire near it. ') +
+        'Using my real book, give the dollar impact on my positions if it prints hot, in line, or cool' + (hot ? ', and whether to hold or close the exposed options before it' : '') + '. No direction predictions.';
+      return `<div style="padding:5px 0; border-top:1px dashed var(--border);"><div style="font-size:11px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;"><span><b style="font-family:var(--font-mono);">${r.when}</b> · in ${r.hours}h</span>${ask('Ask about this release', prompt)}</div><div style="font-size:11px; color:var(--text-dim);">${items}</div>${pb}${ex}${plan}</div>`;
+    };
+    let opexHtml = '';
+    if (ox.date) {
+      const when = ox.days === 0 ? 'TODAY' : (ox.days === 1 ? 'TOMORROW' : `in ${ox.days} days`);
+      const legTxt = (ox.legs || []).map(l => `${l.underlying} ${l.strike || ''} ${(l.type || '').toLowerCase()} x${l.qty}`).join('; ');
+      const prompt = `${ox.quarterly ? 'Quarterly' : 'Monthly'} opex is ${when} (${ox.date}). ` +
+        (legTxt ? `My legs expiring that day: ${legTxt}. ` : 'None of my open options expire that day. ') +
+        'Using my real book, how far is each from the nearest round strike, and should I hold, close or roll before the close? Timing and exposure only, no direction predictions.';
+      opexHtml = `<div style="padding:5px 0; border-top:1px dashed var(--border); font-size:11px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; color:${ox.legs && ox.legs.length ? 'var(--rose-light)' : 'var(--amber, #f59e0b)'};"><span><b>${ox.quarterly ? 'QUARTERLY' : 'MONTHLY'} OPEX ${when} (${ox.date}):</b> ${legTxt ? `your legs expire: ${legTxt}` : 'no open option expires that day'}. Pinning near round strikes is possible; not a measured edge.</span>${ask('Ask about opex', prompt, ox.legs && ox.legs.length ? 'danger' : 'secondary')}</div>`;
+    }
+    return `<div class="station-card" style="padding:12px 18px; border-left:4px solid ${rel.some(r => r.same_day) || (ox.legs && ox.legs.length) ? 'var(--rose-light)' : 'var(--cyan-glow)'};"><div style="font-size:13px; font-weight:900; letter-spacing:0.7px; margin-bottom:4px;">ECONOMIC DATA · NEXT 48H · RISK CHECK <span style="font-size:10px; font-weight:400; color:var(--text-dim);">(reading guide is policy, not a forecast)</span></div>${opexHtml}${spreadHtml}${rel.map(g).join('')}</div>`;
+  },
+
+  _refreshMacro() {
+    const el = document.getElementById('desk-macro');
+    if (!el || (Date.now() - (this._macroAt || 0)) < 300000) return;
+    this._macroAt = Date.now();
+    fetch('/api/desk/macro').then(r => r.json()).then(d => this._fillSide('desk-macro', this.renderMacro(d))).catch(() => {});
+  },
+
+  _refreshDeployPlan() {
+    const el = document.getElementById('desk-deploy-plan');
+    if (!el || (Date.now() - (this._deployPlanAt || 0)) < 60000) return;
+    this._deployPlanAt = Date.now();
+    fetch('/api/desk/deploy-plan').then(r => r.json()).then(p => this._fillSide('desk-deploy-plan', this.renderDeployPlan(p))).catch(() => {});
+  },
+
+  renderRegimeLane(d) {
+    const l = (d && d.lane) || {};
+    const p = d && d.protection;
+    if (!l.available && !p) return '';
+    const z = l.available && l.lanes ? l.lanes.ZONE_RR : null;
+    const lane = l.available ? `<div style="font-size:11px;"><b>Breadth ${l.advancing_pct}% advancing · ${l.quintile}</b>${z ? ` · zone R:R lane here ${z.r_rel > 0 ? '+' : ''}${z.r_rel}R (n=${z.n})` : ''}
+      <div style="font-size:10px; color:var(--text-dim);">${l.note}</div></div>` : '';
+    const prot = p ? `<div style="margin-top:6px; font-size:11px;"><b style="color:var(--amber);">Event risk on your book:</b> ${p.events.join(' · ')}<br>${p.idea}
+      <div style="font-size:10px; color:var(--text-dim);">${p.note}</div></div>` : '';
+    return `<div class="station-card" style="padding:10px 16px;">${lane}${prot}</div>`;
+  },
+
+  _refreshRegimeLane() {
+    const el = document.getElementById('desk-regime-lane');
+    if (!el || (Date.now() - (this._regimeLaneAt || 0)) < 300000) return;
+    this._regimeLaneAt = Date.now();
+    fetch('/api/desk/regime-lane').then(r => r.json()).then(d => this._fillSide('desk-regime-lane', this.renderRegimeLane(d))).catch(() => {});
+  },
+
+  renderThesis(d) {
+    const rows = (d && d.theses) || [];
+    if (!rows.length) return '';
+    const sm = d.summary || {};
+    const pct = (v) => (v === null || v === undefined) ? '–' : `${v > 0 ? '+' : ''}${v}%`;
+    const tone = (st) => st === 'BROKEN' ? 'var(--rose-light)' : 'var(--green)';
+    const body = rows.map(r => `<tr><td><b>${r.ticker}</b></td><td style="color:${tone(r.status)}">${r.status}${r.broken_reason ? ' · ' + r.broken_reason : ''}</td>
+      <td>${r.invalidation_px ? r.invalidation_px.toFixed(2) : '–'}</td><td>${r.tranches}/3</td><td>${pct(r.paper_pnl_pct)}</td>
+      <td>${r.last_verdict || '–'} ${r.last_update ? '(' + r.last_update + ')' : ''}</td></tr>`).join('');
+    const sc = (sm.scored || {});
+    const scored = Object.keys(sc).map(h => `${h}d n=${sc[h].n}${sc[h].mean_excess_pct === null ? '' : ' ' + pct(sc[h].mean_excess_pct) + ' vs SPY'}`).join(' · ');
+    return `<details class="station-card" style="padding:10px 16px;"><summary style="cursor:pointer; font-size:12px; font-weight:800;">📒 THESIS LEDGER (paper) · ${sm.active || 0} active · ${sm.broken || 0} broken · ${sm.tranches || 0} tranches</summary>
+      <div style="font-size:10px; color:var(--text-dim); margin:6px 0;">${scored} · ${sm.note || ''}</div>
+      <table style="width:100%; font-size:11px; font-family:var(--font-mono);"><tr style="color:var(--text-dim)"><th align="left">Name</th><th align="left">Status</th><th align="left">Invalidation</th><th align="left">Tranches</th><th align="left">Paper P/L</th><th align="left">Last research</th></tr>${body}</table></details>`;
+  },
+
+  _refreshThesis() {
+    const el = document.getElementById('desk-thesis');
+    if (!el || (Date.now() - (this._thesisAt || 0)) < 300000) return;
+    this._thesisAt = Date.now();
+    fetch('/api/desk/thesis-ledger').then(r => r.json()).then(d => this._fillSide('desk-thesis', this.renderThesis(d))).catch(() => {});
+  },
+
   renderBatSignal(panel) {
     const bat = (panel && panel.bat_signal) || {};
     if (!bat || !bat.action) return '';
@@ -499,6 +672,7 @@ window.AppDesk = {
     const tone = {
       measured: 'var(--green)',
       'no edge': 'var(--rose-light)',
+      'chase risk': 'var(--rose-light)',
       excluded: 'var(--rose-light)',
       'hard cut': 'var(--rose-light)',
       unmeasured: 'var(--text-muted)',
@@ -506,6 +680,7 @@ window.AppDesk = {
     }[tag] || 'var(--text-muted)';
 
     let tip = tag;
+    if (tag === 'chase risk') tip = 'A+ Trend Long measured below the same-day tape (see Alert setups scoreboard). Chase risk, not a buy cue.';
     if (tag === 'no edge') tip = 'Early Action maps to ACTION (code 2), which measured flat/unstable. Not an edge.';
     if (tag === 'unmeasured') tip = 'This alert family has never been measured. Treat levels only.';
     if (tag === 'measured' && ib.setup_prior_win) {
@@ -810,6 +985,11 @@ window.AppDesk = {
     // 2. regime strip + bat signal
     this._writeMemo('desk-regime-strip', 'regime_strip', regime, (r) => this.renderRegimeStrip(r));
     this._writeMemo('desk-bat-signal', 'bat_signal', panel, (p) => this.renderBatSignal(p));
+    this._refreshDeployPlan();
+    this._refreshMacro();
+    this._refreshAlertSetups();
+    this._refreshThesis();
+    this._refreshRegimeLane();
 
     // 3. funnel counts
     this._setText('desk-funnel-alerts', f.alerts || 0);
@@ -818,7 +998,7 @@ window.AppDesk = {
     this._setText('desk-funnel-measured', f.measured || 0);
     this._setText('desk-funnel-deep-queued', f.deep_queued || 0);
     this._setText('desk-funnel-deep-done', f.deep_done || 0);
-    this._setText('desk-funnel-actionable', f.actionable || 0);
+    this._setText('desk-funnel-actionable', Math.max(f.actionable || 0, f.screener_actionable || 0));
 
     // 3b. the six sub-tab count badges
     this._setText('subtab-count-opps', topOpps.length);
@@ -857,6 +1037,7 @@ window.AppDesk = {
     if (prevScroll > 0) window.scrollTo(0, prevScroll);
 
     this._bindFeedbackDirtyGuard(cont);
+    this._restoreSide();
   },
 
   /**
@@ -1042,7 +1223,7 @@ window.AppDesk = {
     try {
       // Primary fast operational feeds: all served from instant in-memory cache (<50ms)
       const requests = [
-        window.AppApi.request('/api/desk/today', { timeoutMs: 8000 }),
+        window.AppApi.request('/api/desk/today', { timeoutMs: 30000 }),
         window.AppApi.request('/api/desk/coverage', { timeoutMs: 6000 }).catch(() => null),
         window.AppApi.request('/api/desk/missed-moves', { timeoutMs: 6000 }).catch(() => null),
       ];
@@ -1126,6 +1307,11 @@ window.AppDesk = {
       // every cycle, and a changed payload updates the div without rebuilding the desk.
       html += `<div id="desk-regime-strip">${this.memoRender('regime_strip', regime, (r) => this.renderRegimeStrip(r))}</div>`;
       html += `<div id="desk-bat-signal">${this.memoRender('bat_signal', actionPanel, (p) => this.renderBatSignal(p))}</div>`;
+      html += `<div id="desk-macro"></div>`;
+      html += `<div id="desk-deploy-plan"></div>`;
+      html += `<div id="desk-alert-setups"></div>`;
+      html += `<div id="desk-regime-lane"></div>`;
+      html += `<div id="desk-thesis"></div>`;
 
       html += `
       <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
@@ -1184,7 +1370,7 @@ window.AppDesk = {
             <span style="color:var(--text-muted);">➔</span>
             <span>Deep Done: <b id="desk-funnel-deep-done" style="color:var(--blue-light);">${todayData.funnel.deep_done || 0}</b></span>
             <span style="color:var(--text-muted);">➔</span>
-            <span>Actionable: <b id="desk-funnel-actionable" style="color:var(--green); font-size:12px;">${todayData.funnel.actionable || 0}</b></span>
+            <span>Actionable: <b id="desk-funnel-actionable" style="color:var(--green); font-size:12px;">${Math.max(todayData.funnel.actionable || 0, todayData.funnel.screener_actionable || 0)}</b></span>
           </div>
         </div>` : ''}
 

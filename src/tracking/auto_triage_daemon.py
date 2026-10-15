@@ -38,16 +38,28 @@ def _ensure_queue_coverage(today_str: Optional[str] = None):
             if not items:
                 return
             now_iso = datetime.now(timezone.utc).isoformat()
+            syms = sorted({(s_ or "").strip().upper() for s_, _ in items if (s_ or "").strip()})
+            known = {r[0] for r in cur.execute("SELECT symbol FROM alerts WHERE date = ?", (today_str,))}
+            prices: Dict[str, float] = {}
+            fresh = [x for x in syms if x not in known]
+            if fresh:
+                try:
+                    from src.clients.price_client import get_current_prices_batch
+                    prices = get_current_prices_batch(fresh, context="surveillance") or {}
+                except Exception as e_px:
+                    logger.warning(f"Queue coverage price fetch failed: {type(e_px).__name__} {e_px}")
             for sym, setup in items:
                 sym_u = (sym or "").strip().upper()
                 if not sym_u:
                     continue
                 msg_id = f"synth-{sym_u}-{today_str}"
+                px = prices.get(sym_u) or None
                 cur.execute("""
                     INSERT OR IGNORE INTO alerts (
-                        message_id, date, timestamp, symbol, action, strategy, setup, status, created_at, raw_payload
-                    ) VALUES (?, ?, ?, ?, 'LONG', 'Swing', ?, 'PENDING', ?, '{}')
-                """, (msg_id, today_str, now_iso, sym_u, setup or 'Screener', now_iso))
+                        message_id, date, timestamp, symbol, action, strategy, setup, status, created_at, raw_payload,
+                        alert_price, market_price
+                    ) VALUES (?, ?, ?, ?, 'LONG', 'Swing', ?, 'PENDING', ?, '{}', ?, ?)
+                """, (msg_id, today_str, now_iso, sym_u, setup or 'Screener', now_iso, px, px))
             conn.commit()
     except Exception as e:
         logger.debug(f"Queue coverage sync note: {e}")
@@ -101,6 +113,23 @@ def is_llm_server_online(timeout: float = 2.0) -> bool:
         return False
 
 
+def _gate_exempt(alert: Dict[str, Any]) -> bool:
+    """Coverage rows (research_queue) and Intraday position alerts keep the LLM path."""
+    return (
+        str(alert.get("message_id") or "").startswith("synth-")
+        or str(alert.get("strategy") or "").strip() == "Intraday"
+    )
+
+
+def _data_window_gate(alert: Dict[str, Any]) -> tuple:
+    from src.logic.data_window_filter import datawindow_gate
+
+    try:
+        return datawindow_gate((alert.get("symbol") or "").strip().upper(), alert.get("date"))
+    except Exception as e:
+        return False, [f"gate error {type(e).__name__}"]
+
+
 def _alerts_db():
     """Alerts DB path, resolved per call.
 
@@ -114,8 +143,13 @@ def _alerts_db():
 
 
 def get_pending_alerts_count(date_str: Optional[str] = None) -> int:
-    """Return the total number of alerts in SQLite that have not been triaged."""
+    """Alerts not yet triaged for `date_str` (default: today ET). The worker only triages today's
+    alerts, so older untriaged rows are not pending work and must not inflate the count."""
     try:
+        if date_str is None:
+            from src.tracking.alert_db import get_eastern_date_str
+
+            date_str = get_eastern_date_str()
         with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
             cur = conn.cursor()
             query = """
@@ -145,6 +179,7 @@ class AutoTriageDaemon(threading.Thread):
         self.batch_size = batch_size
         self._stop_event = threading.Event()
         self.total_triaged = 0
+        self.total_skipped = 0
         self.last_run_time: Optional[str] = None
         self.is_processing = False
 
@@ -229,6 +264,24 @@ class AutoTriageDaemon(threading.Thread):
                         logger.warning(f"[AutoTriageDaemon] Failed marking {msg_id} as FAILED: {e_up}")
                     continue
 
+                if not _gate_exempt(alert_dict):
+                    gate_ok, gate_fails = _data_window_gate(alert_dict)
+                    if not gate_ok:
+                        reason = "; ".join(gate_fails)
+                        try:
+                            with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+                                conn.execute(
+                                    "UPDATE alerts SET llm_decision = ? WHERE message_id = ?",
+                                    (f"SKIPPED (no LLM): Data Window gate: {reason}", msg_id),
+                                )
+                                conn.commit()
+                        except Exception as e_skip:
+                            logger.warning(f"[AutoTriageDaemon] Failed recording skip for {msg_id}: {e_skip}")
+                            continue
+                        self.total_skipped += 1
+                        logger.info(f"[AutoTriageDaemon] {alert_dict.get('symbol')} skipped, no LLM: {reason}")
+                        continue
+
                 new_attempts = attempts + 1
                 try:
                     with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
@@ -291,6 +344,7 @@ class AutoTriageDaemon(threading.Thread):
             "is_alive": self.is_alive(),
             "is_processing": self.is_processing,
             "total_triaged": self.total_triaged,
+            "total_skipped": self.total_skipped,
             "pending_count": get_pending_alerts_count(),
             "last_run_time": self.last_run_time,
             "llm_online": is_llm_server_online(),
@@ -314,6 +368,11 @@ def get_auto_triage_status() -> Dict[str, Any]:
     global _daemon_instance
     if _daemon_instance and _daemon_instance.is_alive():
         return _daemon_instance.get_status()
+    from src.tracking import backend_control as bc
+
+    remote = bc.read()
+    if bc.alive(remote) and remote.get("triage"):
+        return {**remote["triage"], "pending_count": get_pending_alerts_count(), "backend": "detached"}
     return {
         "is_alive": False,
         "is_processing": False,

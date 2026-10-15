@@ -144,6 +144,10 @@ def run_deep_research(
     triage_dir = config.BASE_DIR / "data" / "triage" / date_str
     deep_dir = triage_dir / "_DEEP_RESEARCH"
     raw_dir = config.BASE_DIR / "data" / "raw" / date_str
+    try:
+        _explore = {str(t).upper() for t in json.loads((triage_dir / "explore.json").read_text(encoding="utf-8"))}
+    except Exception:
+        _explore = set()
 
     # ------------------------------------------------------------------
     # Helper: find artifact sub-directory for a ticker
@@ -178,7 +182,7 @@ def run_deep_research(
         return False
 
     def _has_recent_unchanged_research(sym: str, target_date: str, dw: dict) -> bool:
-        if force:
+        if force or sym.upper() in _explore:
             return False
         try:
             from src.tracking.watch_manager import get_last_researched
@@ -472,7 +476,15 @@ def run_deep_research(
                 f"Aborting to prevent hallucinated thesis."
             )
             continue
+        _has_zone = bool(dw_dict.get("Long Entry Zone Bot") or dw_dict.get("Long Entry Zone Top"))
+        if _has_zone and not dw_dict.get("Long Entry") and not dw_dict.get("Long Stop Loss"):
+            logger.error(
+                f"[{ticker}] Data Window has long zone but null Long Entry/Stop/Target: stale TradingView "
+                f"script build at scrape. Re-apply indicator to chart and re-scrape. Aborting (no null thesis)."
+            )
+            continue
 
+        force_t = force or ticker.upper() in _explore
         # Check holding (MANAGE vs NEW)
         is_held = _is_held_in_portfolio(ticker)
         kind = "MANAGE" if is_held else "NEW"
@@ -502,7 +514,7 @@ def run_deep_research(
             ).upper()
             if is_held:
                 kind = "MANAGE"
-            elif triage_val == "CUT" and not force:
+            elif triage_val == "CUT" and not force_t:
                 logger.info(f"[{ticker}] Explicit ticker resolved to CUT triage and is not held in portfolio. Skipping deep research.")
                 continue
             elif triage_val == "WATCH":
@@ -519,12 +531,8 @@ def run_deep_research(
         # ------------------------------------------------------------------
         # Pre-gate Evaluation: Far-from-gate shortcut (GATE_ONLY)
         # ------------------------------------------------------------------
-        active_floor = 1.0
-        try:
-            from src.logic.actionable_gate import RR_GATE_FLOOR_ACTIVE
-            active_floor = float(RR_GATE_FLOOR_ACTIVE)
-        except Exception:
-            pass
+        from src.tracking.rr_config import min_rr as _min_rr
+        active_floor = _min_rr()
 
         rr_val = None
         for k in ("Long RR At Market", "long_rr_at_market", "rr_at_market"):
@@ -535,9 +543,21 @@ def run_deep_research(
                 except (ValueError, TypeError):
                     pass
 
+        # A resting limit above price is judged at the zone top (same basis as validate_levels), so a name
+        # waiting for a pullback is not cut here for its at-market ratio.
+        try:
+            _zt = float(dw_dict.get("Long Entry Zone Top"))
+            _st = float(dw_dict.get("Long Stop Loss"))
+            _tg = float(dw_dict.get("Long Target"))
+            _px = float(dw_dict.get("Close") or dw_dict.get("close"))
+            if _st < _zt < _tg and _px > _zt and (_px - _zt) <= 0.5 * (_tg - _zt):
+                rr_val = max(rr_val if rr_val is not None else 0.0, (_tg - _zt) / (_zt - _st))
+        except (TypeError, ValueError):
+            pass
+
         is_far_from_gate = False
         far_gate_reason = ""
-        if not force and not is_held:
+        if not force_t and not is_held:
             if rr_val is not None and rr_val < (active_floor * 0.5):
                 is_far_from_gate = True
                 far_gate_reason = f"R:R at market ({rr_val:.2f}) is below half the active floor ({active_floor*0.5:.2f})"
@@ -545,7 +565,7 @@ def run_deep_research(
                 is_far_from_gate = True
                 far_gate_reason = f"Hard-blocked action code {f_parsed.get('action_long')} (EXHAUSTION / EXTENDED)"
 
-        if is_far_from_gate and not force:
+        if is_far_from_gate and not force_t:
             logger.info(f"[{ticker}] Pre-gate: Far from gate ({far_gate_reason}). Writing GATE_ONLY report (no LLM GPU time burned).")
             reports_dir = config.BASE_DIR / "reports" / date_str
             reports_dir.mkdir(parents=True, exist_ok=True)

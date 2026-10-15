@@ -21,7 +21,7 @@ class GmailClient:
         """Connect and login to Gmail IMAP."""
         try:
             logger.info("Connecting to Gmail IMAP...")
-            self.mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            self.mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
             self.mail.login(self.email, self.password)
             self.mail.select("inbox")
             logger.info("Successfully connected to Gmail.")

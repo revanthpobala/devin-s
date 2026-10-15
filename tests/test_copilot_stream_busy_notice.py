@@ -157,3 +157,73 @@ def test_fast_stream_has_no_busy_notice(monkeypatch):
     body = _run_chat(monkeypatch, delay=0.0, session_id="test_fast_stream", limit=2)
 
     assert "GPU busy, queued" not in body
+
+
+def test_answer_is_saved_when_the_browser_leaves_mid_stream(monkeypatch):
+    saved = []
+    monkeypatch.setattr(cop, "_save_chat_turn", lambda sid, t, d, role, content: saved.append((sid, role, content)))
+
+    class _LongStream(_FakeStream):
+        async def _gen(self):
+            await asyncio.sleep(0.4)
+            yield _chunk("The full answer that finishes after the user has left the page.")
+
+    class _LongOpenAI(_FakeOpenAI):
+        def __init__(self, delay):
+            super().__init__(delay)
+            self.chat.completions.create = lambda **k: _async_value(_LongStream(0.4))
+
+    async def _async_value(v):
+        return v
+
+    async def _drive():
+        with patch("openai.AsyncOpenAI", lambda *a, **k: _LongOpenAI(0.4)), \
+             patch("socket.create_connection", lambda *a, **k: _FakeSocketConn()):
+            response = await cop.copilot_chat_stream_endpoint(
+                CopilotChatRequest(prompt="Q?", ticker="GOOGL", date="2026-10-13", session_id="sess_leave"),
+                request=_fake_request(),
+            )
+            relay = asyncio.ensure_future(_drain(response.body_iterator))
+            await asyncio.sleep(0.15)
+            relay.cancel()
+            await asyncio.sleep(1.5)
+            for t in list(cop._DETACHED_TASKS):
+                await asyncio.wait_for(t, timeout=5)
+
+    asyncio.run(_drive())
+    answers = [c for (_, role, c) in saved if role == "assistant"]
+    assert answers and "full answer" in answers[-1] and "interrupted" not in answers[-1]
+
+
+def test_user_turn_is_saved_before_slow_context_build(monkeypatch):
+    import threading
+
+    saved = []
+    monkeypatch.setattr(cop, "_save_chat_turn", lambda sid, t, d, role, content: saved.append((sid, role, content)))
+    build_started, release_build = threading.Event(), threading.Event()
+
+    def _blocked_build(**kwargs):
+        build_started.set()
+        release_build.wait(timeout=10)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(cop, "_build_copilot_context_and_tools", _blocked_build)
+
+    async def _drive():
+        response = await cop.copilot_chat_stream_endpoint(
+            CopilotChatRequest(question="Q?", ticker="GOOGL", date="2026-10-13", session_id="sess_early"),
+            request=_fake_request(),
+        )
+        relay = asyncio.ensure_future(_drain(response.body_iterator))
+        while not build_started.is_set():
+            await asyncio.sleep(0)
+        early = list(saved)
+        relay.cancel()
+        release_build.set()
+        for t in list(cop._DETACHED_TASKS):
+            await asyncio.wait_for(t, timeout=5)
+        return early
+
+    early = asyncio.run(_drive())
+    assert early == [("sess_early", "user", "Q?")]
+    assert any(role == "assistant" and "Context compilation error" in c for (_, role, c) in saved)

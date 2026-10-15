@@ -21,7 +21,7 @@ function pbBadge(pb) {
 window.AppTrades = {
   _trades: [],
   _summary: { total: 0, in_zone: 0, stalking: 0, target_hit: 0, stopped: 0 },
-  _activeFilter: 'ALL',
+  _activeFilter: 'LIVE',
   _searchQuery: '',
   _sortCol: 'priority',
   _sortAsc: false, // Default: Highest execution priority first (In Zone > In Trade > Hot Stalk)
@@ -31,29 +31,10 @@ window.AppTrades = {
   _selectedTrade: null,
 
   getTradePriority(t) {
-    if (!t) return 0;
-    if (t.priority_score !== undefined && t.priority_score !== null) {
-      return Number(t.priority_score);
-    }
-    const status = (t.status || '').toUpperCase();
-    const isTerminated = ['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'EXPIRED', 'REJECTED_BY_GATE'].includes(status);
-    if (status === 'TARGET_HIT' || status === 'COMPLETED') return 100;
-    if (isTerminated) return 50;
-
-    const isTaken = Boolean(t.is_taken || t.user_taken);
-    const spot = Number(t.last_price || 0);
-    const dist = Math.abs(Number(t.distance_to_entry_pct || 999));
-    const entryLow = Number(t.entry_zone_low || 0);
-    const entryHigh = Number(t.entry_zone_high || 0);
-    const inZone = entryLow > 0 && entryHigh > 0 && spot >= entryLow && spot <= entryHigh;
-
-    if (!isTerminated && t.is_actionable_now && inZone) return 1200 - Math.min(dist, 50);
-    if (status === 'IN_ZONE' || status === 'ENTER' || inZone) return 1000 - Math.min(dist, 50);
-    if (isTaken || status === 'IN_TRADE') return 800 - Math.min(dist, 50);
-    if (status === 'STALKING' && spot > 0 && dist <= 3.0) return 600 - (dist * 10);
-    if (status === 'STALKING' && spot > 0) return 400 - Math.min(dist, 100);
-    if (status === 'STALKING') return 250;
-    return 50;
+    const rank = { 'ACT': 1000, 'EXIT': 950, 'TAKE PROFIT': 900, 'HOLD': 800, 'CHECK': 700, 'SKIP': 600, 'WAIT': 500, 'TRACKING': 400, 'NO EDGE': 200, 'DONE': 100, 'DEAD': 0, 'MISSED': 0 };
+    const act = t.action || {};
+    const near = Math.min(Math.abs(Number(t.distance_to_entry_pct || 99)), 99);
+    return (rank[act.label] ?? 300) - near;
   },
 
   async loadSuggestedTrades() {
@@ -66,6 +47,7 @@ window.AppTrades = {
       this._trades = (data && data.trades) ? data.trades : [];
       this._summary = (data && data.summary) ? data.summary : { total: 0, in_zone: 0, stalking: 0, target_hit: 0, stopped: 0 };
       this.renderSummary();
+      this.renderTopOpportunities();
       this.renderTable();
     } catch (e) {
       console.error('Failed loading suggested trades:', e);
@@ -82,50 +64,44 @@ window.AppTrades = {
   },
 
   renderSummary() {
-    const totalEl = document.getElementById('kpi-trades-total');
-    const inZoneEl = document.getElementById('kpi-trades-in-zone');
-    const stalkingEl = document.getElementById('kpi-trades-stalking');
-    const winnersEl = document.getElementById('kpi-trades-winners');
-    const stoppedEl = document.getElementById('kpi-trades-stopped');
-
-    if (totalEl) totalEl.textContent = this._summary.total || this._trades.length || 0;
-    if (inZoneEl) inZoneEl.textContent = this._summary.in_zone || 0;
-    if (stalkingEl) stalkingEl.textContent = this._summary.stalking || 0;
-    if (winnersEl) winnersEl.textContent = this._summary.target_hit || 0;
-    if (stoppedEl) stoppedEl.textContent = this._summary.stopped || 0;
-    const takenEl = document.getElementById('count-trades-taken');
-    if (takenEl) takenEl.textContent = this._summary.user_taken || this._trades.filter(x => x.is_taken).length || 0;
-
-    const inZoneBtn = document.getElementById('count-trades-in-zone');
-    if (inZoneBtn) inZoneBtn.textContent = this._summary.in_zone || 0;
-    const stalkingBtn = document.getElementById('count-trades-stalking');
-    if (stalkingBtn) stalkingBtn.textContent = this._summary.stalking || 0;
-    const targetHitBtn = document.getElementById('count-trades-target-hit');
-    if (targetHitBtn) targetHitBtn.textContent = this._summary.target_hit || 0;
-    const stoppedBtn = document.getElementById('count-trades-stopped');
-    if (stoppedBtn) stoppedBtn.textContent = this._summary.stopped || 0;
+    const by = (f) => this._trades.filter(f).length;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const L = (t) => (t.action || {}).label;
+    const G = (t) => (t.action || {}).group;
+    set('kpi-trades-total', this._trades.length);
+    set('kpi-trades-in-zone', by((t) => L(t) === 'ACT'));
+    set('kpi-trades-stalking', by((t) => L(t) === 'WAIT'));
+    set('kpi-trades-winners', by((t) => G(t) === 'DONE'));
+    set('kpi-trades-stopped', by((t) => G(t) === 'DEAD'));
+    set('count-trades-live', by((t) => G(t) === 'LIVE'));
+    set('count-trades-taken', by((t) => t.is_taken));
+    set('count-trades-in-zone', by((t) => L(t) === 'ACT' || L(t) === 'CHECK' || (L(t) === 'SKIP' && (t.distance_to_entry_pct || 0) === 0)));
+    set('count-trades-stalking', by((t) => L(t) === 'WAIT'));
+    set('count-trades-target-hit', by((t) => G(t) === 'DONE'));
+    set('count-trades-stopped', by((t) => G(t) === 'DEAD'));
   },
 
   async loadScoreboard() {
     const panel = document.getElementById('trades-scoreboard-panel');
     if (!panel) return;
     try {
-      const [resScoreboard, resSources] = await Promise.all([
+      const [resScoreboard, resSources, trust] = await Promise.all([
         fetch('/api/scoreboard').then(r => r.ok ? r.json() : null).catch(() => null),
         fetch('/api/trades/sources').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/notifications/trust').then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
 
       const sources = (resSources && resSources.sources) ? resSources.sources : ((resScoreboard && resScoreboard.swing) ? resScoreboard.swing : []);
       const mainRec = (resScoreboard && resScoreboard.main_record) ? resScoreboard.main_record : {};
 
-      const totalTrades = mainRec.total_trades || mainRec.total || 35;
-      const meanR = (mainRec.mean_r !== undefined && mainRec.mean_r !== null) ? Number(mainRec.mean_r).toFixed(2) : '0.42';
-      const sumR = (mainRec.sum_r !== undefined && mainRec.sum_r !== null) ? Number(mainRec.sum_r).toFixed(1) : '14.9';
-      const winRate = (mainRec.win_rate !== undefined && mainRec.win_rate !== null) ? Number(mainRec.win_rate).toFixed(1) : '37.1';
-      const inZoneCount = this._summary.in_zone || 3;
-      const inTradeCount = this._summary.winners || 7;
-      const stalkingCount = this._summary.stalking || 5;
-
+      const num = (v, d = 2) => (v === undefined || v === null ? 'n/a' : Number(v).toFixed(d));
+      const sgn = (v) => (v === undefined || v === null ? 'n/a' : (v >= 0 ? '+' : '') + Number(v).toFixed(2));
+      const totalTrades = mainRec.total_trades || mainRec.total || 0;
+      const fun = (trust && trust.funnel) || {};
+      const gate = fun.gate || {};
+      const ready = (trust && trust.readiness) || {};
+      const scoredN = ((trust && trust.gated) || {}).n || 0;
+      
       let html = `
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
           <div style="display:flex; align-items:center; gap:10px;">
@@ -140,7 +116,7 @@ window.AppTrades = {
             </div>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
-            <span class="pill cyan" style="font-size:10px; font-weight:800;">Forward Edge Verified</span>
+            <span class="pill ${ready.ready ? 'green' : 'amber'}" style="font-size:10px; font-weight:800;">${ready.ready ? 'Ready to delegate' : 'Not proven: ' + scoredN + '/200 scored'}</span>
             <button class="btn secondary" onclick="AppTrades.loadScoreboard()" style="padding:4px 10px; font-size:11px; font-weight:700;">🔄 Refresh</button>
           </div>
         </div>
@@ -149,45 +125,45 @@ window.AppTrades = {
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:14px;">
           <!-- Card 1: Forward Expectancy -->
           <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Average Expectancy</div>
-            <div style="font-size:22px; font-weight:900; color:var(--emerald-light, #10b981); font-family:var(--font-mono); margin-top:2px;">
-              +${meanR}R <span style="font-size:12px; color:var(--text-muted); font-weight:600;">/ trade</span>
+            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Legacy record (ungated)</div>
+            <div style="font-size:22px; font-weight:900; color:var(--text-main); font-family:var(--font-mono); margin-top:2px;">
+              ${sgn(mainRec.mean_r)}R <span style="font-size:12px; color:var(--text-muted); font-weight:600;">/ trade, n=${totalTrades}</span>
             </div>
             <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-              Cumulative: <b style="color:var(--emerald-light);">+${sumR}R</b> (${totalTrades} scored setups)
+              Median ${sgn(mainRec.median_r)}R · sum ${sgn(mainRec.sum_r)}R. Mean is carried by a few winners; pre-gate trades, not the pipeline.
             </div>
           </div>
 
-          <!-- Card 2: Win Rate & Payoff -->
+          <!-- Card 2: Pipeline record -->
           <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Win Rate &amp; Asymmetry</div>
+            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Pipeline suggestions (gated)</div>
             <div style="font-size:22px; font-weight:900; color:var(--text-main); font-family:var(--font-mono); margin-top:2px;">
-              ${winRate}% <span style="font-size:12px; color:var(--cyan); font-weight:700;">(2.8 : 1 Avg R:R)</span>
+              ${scoredN} scored <span style="font-size:12px; color:var(--text-muted); font-weight:600;">/ ${(trust && trust.pending_gated) || 0} pending</span>
             </div>
             <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-              Profits exceed losses by <b style="color:var(--text-main);">2.8x</b> per winning trade
+              Legacy win rate ${num(mainRec.win_rate, 1)}%. No edge claim until 200 scored and the interval clears zero.
             </div>
           </div>
 
           <!-- Card 3: Active Funnel -->
           <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Active Stalking Funnel</div>
+            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Open suggestions</div>
             <div style="font-size:22px; font-weight:900; color:var(--cyan); font-family:var(--font-mono); margin-top:2px;">
-              17 In Play
+              ${this._trades.filter((t) => (t.action || {}).group === 'LIVE').length} live
             </div>
             <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-              <span style="color:#10b981; font-weight:700;">3 In Zone</span> · <span style="color:#06b6d4; font-weight:700;">7 In Trade</span> · <span style="color:#f59e0b; font-weight:700;">5 Stalking</span>
+              <span style="color:#10b981; font-weight:700;">${this._trades.filter((t) => (t.action || {}).label === 'ACT').length} act now</span> · <span style="color:#f59e0b; font-weight:700;">${this._trades.filter((t) => (t.action || {}).label === 'WAIT').length} waiting</span> · ${this._trades.filter((t) => t.is_taken).length} taken by you<br>Missed: ${(this._summary || {}).missed_touched || 0} touched the zone (fill was possible), ${(this._summary || {}).missed_never || 0} ran away untouched
             </div>
           </div>
 
-          <!-- Card 4: Capital Risk Gate -->
+          <!-- Card 4: Gate -->
           <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Level Gate Protection</div>
+            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">R:R gate</div>
             <div style="font-size:22px; font-weight:900; color:var(--purple-light, #a855f7); font-family:var(--font-mono); margin-top:2px;">
-              125 Filtered
+              ${gate.REJECTED_BY_GATE || 0} rejected
             </div>
             <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-              Flawed geometry (Stop ≥ Entry, R:R &lt; 2) quarantined
+              ${gate.PASS || 0} passed of ${fun.suggestions || 0} suggestions (floor R:R 2.0)
             </div>
           </div>
         </div>
@@ -326,6 +302,9 @@ window.AppTrades = {
         })
       });
       if (res && res.success) {
+        const row = this._trades.find((x) => (x.ticker || '').toUpperCase() === sym && !x.is_taken && (x.action || {}).group === 'LIVE');
+        if (row) this.logDecision(row, 'TAKE', null);
+        if (res.warnings && res.warnings.length) alert('Trade recorded, but:\n' + res.warnings.join('\n'));
         await this.loadSuggestedTrades();
         if (window.AppWatchlist && typeof window.AppWatchlist.loadWatchlist === 'function') {
           try { await window.AppWatchlist.loadWatchlist(); } catch (e) { }
@@ -336,6 +315,50 @@ window.AppTrades = {
     } catch (e) {
       alert('Error recording taken trade: ' + e);
     }
+  },
+
+  REASONS: [['RR_TOO_LOW', 'R:R too low'], ['DONT_LIKE_CHART', "don't like the chart"], ['EARNINGS_SOON', 'earnings soon'], ['TOO_EXTENDED', 'too extended'],
+    ['ALREADY_OWN', 'already own it'], ['NO_CASH', 'no cash'], ['MARKET_RISK', 'market risk'], ['OTHER', 'other']],
+
+  async logDecision(t, decision, reason) {
+    const a = t.action || {};
+    try {
+      await window.AppApi.request('/api/trades/decision', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: t.id, ticker: t.ticker, date: t.date, decision, reason, label: a.label, rr: t.rr_live, spot: t.last_price })
+      });
+    } catch (e) { console.warn('decision not saved', e); }
+  },
+
+  async skipTrade(id) {
+    const t = this._trades.find((x) => x.id === id);
+    if (!t) return;
+    const menu = this.REASONS.map((r, i) => `${i + 1} ${r[1]}`).join('\n');
+    const pick = prompt(`Why skip $${t.ticker}? (system says ${(t.action || {}).label})\n${menu}`, '1');
+    const r = this.REASONS[parseInt(pick, 10) - 1];
+    if (!r) return;
+    await this.logDecision(t, 'SKIP', r[0]);
+    await this.loadSuggestedTrades();
+  },
+
+  renderTopOpportunities() {
+    const el = document.getElementById('trades-top-opps');
+    if (!el) return;
+    const cand = this._trades
+      .filter((t) => !t.is_taken && !t.my_decision && ['ACT', 'WAIT'].includes((t.action || {}).label) && ((t.action.label === 'ACT' ? t.rr_live : t.action.rr_top) || 0) >= 2)
+      .sort((a, b) => (a.action.label === 'ACT' ? 0 : 1) - (b.action.label === 'ACT' ? 0 : 1) || ((b.action.label === 'ACT' ? b.rr_live : b.action.rr_top) - (a.action.label === 'ACT' ? a.rr_live : a.action.rr_top)))
+      .slice(0, 6);
+    if (!cand.length) {
+      el.innerHTML = '<div style="padding:10px 14px; font-size:12px; color:var(--text-muted);">No setup meets R:R 2.0 right now. Nothing to do is a valid answer.</div>';
+      return;
+    }
+    el.innerHTML = '<div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:800; padding:8px 14px 0;">Best setups now (R:R 2.0+, highest first)</div><div style="display:flex; gap:10px; flex-wrap:wrap; padding:8px 14px 12px;">' +
+      cand.map((t) => {
+        const a = t.action, act = a.label === 'ACT', rr = act ? t.rr_live : a.rr_top, c = act ? '#10b981' : '#f59e0b';
+        return `<div style="border:1px solid ${c}; border-radius:8px; padding:8px 12px; min-width:190px; cursor:pointer;" onclick="AppSwing.handleTickerClick(event,'${t.ticker}','${t.date}','trades')">
+          <b style="font-family:var(--font-mono);">${t.ticker}</b> <span style="color:${c}; font-weight:900; font-size:11px;">${a.label}</span> <span style="font-size:11px;">R:R ${Number(rr).toFixed(1)}${act ? '' : ' at zone top'}</span>
+          <div style="font-size:10.5px; color:var(--text-muted); margin-top:3px;">${act ? 'in zone now' : 'limit $' + Number(t.entry_zone_high).toFixed(2)} · stop $${Number(t.tactical_stop).toFixed(2)} · T1 $${Number(t.target_1).toFixed(2)}</div></div>`;
+      }).join('') + '</div>';
   },
 
   async untakeTrade(sym, id) {
@@ -399,15 +422,14 @@ window.AppTrades = {
     // 1. Filter
     if (this._activeFilter !== 'ALL') {
       list = list.filter(t => {
-        if (this._activeFilter === 'MY_TRADES' || this._activeFilter === 'TAKEN') {
-          return Boolean(t.is_taken || t.user_taken || t.taken);
-        }
-        const st = (t.status || '').toUpperCase();
-        if (this._activeFilter === 'IN_ZONE') return st === 'IN_ZONE' || st === 'ENTER';
-        if (this._activeFilter === 'STALKING') return st === 'STALKING';
-        if (this._activeFilter === 'TARGET_HIT') return st === 'TARGET_HIT' || st === 'COMPLETED';
-        if (this._activeFilter === 'STOP_BREACHED') return st === 'STOP_BREACHED' || st === 'STOPPED' || st === 'INVALIDATED';
-        return st === this._activeFilter;
+        const act = t.action || {};
+        if (this._activeFilter === 'MY_TRADES' || this._activeFilter === 'TAKEN') return Boolean(t.is_taken || t.user_taken || t.taken);
+        if (this._activeFilter === 'LIVE') return act.group === 'LIVE';
+        if (this._activeFilter === 'IN_ZONE') return act.label === 'ACT' || act.label === 'CHECK' || (act.label === 'SKIP' && (t.distance_to_entry_pct || 0) === 0);
+        if (this._activeFilter === 'STALKING') return act.label === 'WAIT';
+        if (this._activeFilter === 'TARGET_HIT') return act.group === 'DONE';
+        if (this._activeFilter === 'STOP_BREACHED') return act.group === 'DEAD';
+        return (t.status || '').toUpperCase() === this._activeFilter;
       });
     }
 
@@ -499,18 +521,10 @@ window.AppTrades = {
       const t1 = Number(t.target_1 || 0);
       const t2 = Number(t.target_2 || 0);
 
-      // Status Badge
-      const statusRaw = (t.status || 'STALKING').toUpperCase();
-      let statusBadge = `<span class="pill amber" style="font-size:10px; padding:2px 7px; font-weight:700;">⏳ STALKING</span>`;
-      if (statusRaw === 'IN_ZONE' || statusRaw === 'ENTER') {
-        statusBadge = `<span class="pill green pulse" style="font-size:10px; padding:2px 7px; font-weight:700;">🎯 IN ZONE</span>`;
-      } else if (statusRaw === 'TARGET_HIT' || statusRaw === 'COMPLETED') {
-        statusBadge = `<span class="pill green" style="font-size:10px; padding:2px 7px; font-weight:800; background:rgba(16,185,129,0.25); border:1px solid #10b981;">🏁 TARGET HIT</span>`;
-      } else if (statusRaw === 'STOP_BREACHED' || statusRaw === 'STOPPED' || statusRaw === 'INVALIDATED') {
-        statusBadge = `<span class="pill red" style="font-size:10px; padding:2px 7px; font-weight:700;">🛑 STOPPED</span>`;
-      } else if (statusRaw === 'IN_TRADE') {
-        statusBadge = `<span class="pill cyan" style="font-size:10px; padding:2px 7px; font-weight:700;">💼 IN TRADE</span>`;
-      }
+      const act = t.action || { label: 'WAIT', group: 'LIVE', tone: 'amber', why: '' };
+      const TONE = { green: ['#10b981', 'rgba(16,185,129,0.22)'], yellow: ['#facc15', 'rgba(250,204,21,0.18)'], orange: ['#f97316', 'rgba(249,115,22,0.18)'], amber: ['#f59e0b', 'rgba(245,158,11,0.16)'], cyan: ['#06b6d4', 'rgba(6,182,212,0.16)'],
+                     red: ['#f43f5e', 'rgba(244,63,94,0.16)'], muted: ['var(--text-muted)', 'var(--bg-subtle)'] };
+      const tone = TONE[act.tone] || TONE.muted;
 
       // Theoretical PnL Calculation
       let pnlDisplay = '-';
@@ -557,38 +571,17 @@ window.AppTrades = {
       }
 
       // Verdict & Conviction
-      const vClass = (t.verdict || '').toUpperCase().includes('ENTER') ? 'green' : 'blue';
-      const verdictStr = `${t.verdict || 'STALK'} (${t.conviction || 5}/10)`;
-
       // Distance to entry
       const distNum = Number(t.distance_to_entry_pct || 0);
       const distSign = distNum >= 0 ? '+' : '';
       const distStr = `${distSign}${distNum.toFixed(2)}%`;
 
-      // Execution Priority Badge
-      const isTerminated = ['TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'MISSED_RUNAWAY', 'EXPIRED', 'REJECTED_BY_GATE'].includes(statusRaw);
-      const isStrictlyInZone = entryLow > 0 && entryHigh > 0 && spot >= entryLow && spot <= entryHigh;
-      const isActionable = !isTerminated && Boolean(t.is_actionable_now) && isStrictlyInZone;
-      const evalVerdict = (t.evaluation_verdict || '').toUpperCase();
-      const pScore = this.getTradePriority(t);
-      const pTier = t.priority_tier || (pScore >= 1100 ? 1 : (pScore >= 950 ? 2 : (pScore >= 750 ? 3 : (pScore >= 550 ? 4 : (pScore >= 350 ? 5 : 6)))));
-      
-      let priorityBadge = '';
-      if (statusRaw === 'TARGET_HIT' || statusRaw === 'COMPLETED' || evalVerdict === 'TARGET_HIT') {
-        priorityBadge = `<span class="pill" style="font-size:8.5px; padding:1px 5px; color:var(--emerald-light); background:rgba(16,185,129,0.1);">🏁 TARGET HIT</span>`;
-      } else if (isTerminated || evalVerdict === 'STAND_ASIDE' || statusRaw === 'INVALIDATED' || statusRaw === 'STOP_BREACHED') {
-        priorityBadge = `<span class="pill red" style="font-size:8.5px; padding:2px 6px; font-weight:800; border:1px solid rgba(244,63,94,0.5); background:rgba(244,63,94,0.18);">⛔ VETOED / STOPPED</span>`;
-      } else if (isActionable) {
-        priorityBadge = `<span class="pill green pulse" style="font-size:9.5px; padding:3px 8px; font-weight:900; border:1px solid #10b981; background:rgba(16,185,129,0.3); color:#10b981; letter-spacing:0.4px;">🟢 BUY SHARES NOW</span>`;
-      } else if (statusRaw === 'IN_ZONE' || statusRaw === 'ENTER' || isStrictlyInZone) {
-        priorityBadge = `<span class="pill amber pulse" style="font-size:9.5px; padding:2px 7px; font-weight:800; border:1px solid #f59e0b; background:rgba(245,158,11,0.22); letter-spacing:0.3px;">⚡ IN ZONE</span>`;
-      } else if (pTier === 3 || t.is_taken || statusRaw === 'IN_TRADE') {
-        priorityBadge = `<span class="pill cyan" style="font-size:9px; padding:2px 6px; font-weight:800; border:1px solid rgba(6,182,212,0.5); background:rgba(6,182,212,0.18);">💼 P2: RUNNER</span>`;
-      } else if (pTier === 4 || (statusRaw === 'STALKING' && spot > 0 && Math.abs(distNum) <= 3.0)) {
-        priorityBadge = `<span class="pill amber" style="font-size:9px; padding:2px 6px; font-weight:800; border:1px solid rgba(245,158,11,0.5); background:rgba(245,158,11,0.18);">⚡ P3: HOT STALK (${distStr})</span>`;
-      } else {
-        priorityBadge = `<span class="pill" style="font-size:8.5px; padding:1px 5px; color:var(--text-muted); background:var(--bg-subtle);">⏳ STALKING</span>`;
-      }
+      const isTerminated = act.group !== 'LIVE';
+      const isActionable = act.label === 'ACT';
+      const priorityBadge = `<span class="pill" style="font-size:10.5px; padding:2px 8px; font-weight:900; letter-spacing:0.4px; color:${tone[0]}; background:${tone[1]}; border:1px solid ${tone[0]};">${act.label}</span>`;
+      const ag = t.agent;
+      const agentLine = ag ? `<div style="margin-top:3px; font-size:10.5px; font-weight:700; color:${ag.stance === 'PASS' || ag.stance === 'CANCELLED' ? 'var(--text-muted)' : 'var(--cyan)'};">🤖 Agent: ${ag.stance === 'OPEN' ? 'took it @ $' + Number(ag.fill_px).toFixed(2) : ag.stance === 'PENDING' ? 'limit order placed' : ag.stance === 'CLOSED' ? 'closed ' + (ag.r_net >= 0 ? '+' : '') + Number(ag.r_net).toFixed(2) + 'R' : ag.stance === 'PASS' ? 'passed' : ag.stance.toLowerCase()}${ag.reason && ['PASS', 'CANCELLED'].includes(ag.stance) ? ': ' + String(ag.reason).slice(0, 110) : ''}</div>` : '';
+      const whyLine = (act.why || t.missed_reason) ? `<div style="margin-top:4px; font-size:10.5px; line-height:1.35; max-width:230px; white-space:normal; color:var(--text-muted);">${act.why}${t.missed_reason ? ' ' + t.missed_reason.charAt(0).toUpperCase() + t.missed_reason.slice(1) + '.' : ''}${t.my_decision === 'SKIP' ? ' You skipped it.' : ''}</div>${agentLine}` : agentLine;
 
       return `
         <tr style="border-bottom:1px solid var(--border); transition:background 0.15s ease; ${isActionable ? 'background:rgba(16,185,129,0.04);' : ''}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='${isActionable ? 'rgba(16,185,129,0.04)' : 'transparent'}'">
@@ -597,6 +590,7 @@ window.AppTrades = {
             <div style="margin-bottom:4px;">
               ${priorityBadge}
             </div>
+            ${whyLine}
             <div style="font-size:11px; font-weight:700; color:var(--text-main); font-family:var(--font-mono);">${timeInfo.primary}</div>
             <div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-top:2px;">
               <span class="pill cyan" style="font-size:9px; padding:1px 5px; font-weight:700;">${t.setup_lane || 'DEFAULT'}</span>
@@ -621,11 +615,6 @@ window.AppTrades = {
             <div style="font-size:10.5px; color:var(--text-muted); max-width:145px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${compTitle}">
               ${compName}
             </div>
-            ${t.evaluation_playbook ? `
-              <div style="margin-top:5px; font-size:9.5px; line-height:1.3; color:${isActionable ? 'var(--emerald-light, #10b981)' : 'var(--text-muted)'}; background:${isActionable ? 'rgba(16,185,129,0.08)' : 'var(--bg-surface)'}; border:1px solid ${isActionable ? 'rgba(16,185,129,0.3)' : 'var(--border)'}; border-radius:5px; padding:3px 6px; max-width:240px;" title="${t.evaluation_playbook.replace(/"/g, '&quot;')}">
-                ${isActionable ? '<b>🎯 Direct Plan:</b> ' : ''}${t.evaluation_playbook.split('\n')[0].substring(0, 80)}...
-              </div>
-            ` : ''}
           </td>
 
           <!-- 3. VEHICLE & STRUCTURE -->
@@ -640,7 +629,7 @@ window.AppTrades = {
             <span style="font-weight:700; color:var(--amber-light, #f59e0b);">$${entryLow.toFixed(2)} - $${entryHigh.toFixed(2)}</span>
             <div style="font-size:10px; color:var(--text-muted);">Mid: $${entryMid.toFixed(2)}</div>
             <div style="font-size:10px; color:var(--cyan-glow, #06b6d4); font-weight:700; margin-top:2px;">
-              R:R: ${t.rr_at_market ? Number(t.rr_at_market).toFixed(2) : (t.planned_rr ? Number(t.planned_rr).toFixed(2) : (t.rr_ratio ? Number(t.rr_ratio).toFixed(2) : 'n/a'))}
+              R:R now: ${t.rr_live != null ? Number(t.rr_live).toFixed(2) : 'n/a'}
             </div>
           </td>
 
@@ -690,8 +679,8 @@ window.AppTrades = {
               </div>
             ` : `
               <div style="display:flex; flex-direction:column; gap:4px; align-items:center;">
-                ${statusBadge}
-                ${!isTerminated ? `<button class="btn secondary" onclick="event.stopPropagation(); AppTrades.promptTakeTrade('${sym}', ${entryMid || spot})" style="font-size:9px; padding:2px 6px; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.08); font-weight:700; cursor:pointer;" title="Mark this trade as taken in your personal portfolio">🎯 Take</button>` : ''}
+                ${!isTerminated ? `<button class="btn secondary" onclick="event.stopPropagation(); AppTrades.promptTakeTrade('${sym}', ${entryMid || spot})" style="font-size:9px; padding:2px 6px; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.08); font-weight:700; cursor:pointer;" title="Mark this trade as taken in your personal portfolio">🎯 Take</button>
+                <button class="btn secondary" onclick="event.stopPropagation(); AppTrades.skipTrade(${t.id})" style="font-size:9px; padding:2px 6px; color:var(--text-muted); font-weight:700; cursor:pointer;" title="Skip it and say why, so the system can learn whether you or it was right">${t.my_decision === 'SKIP' ? '✓ Skipped' : 'Skip'}</button>` : ''}
               </div>
             `)}
           </td>

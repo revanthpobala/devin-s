@@ -97,14 +97,14 @@ def _posture(regime: Dict[str, Any], in_zone: List[Dict[str, Any]],
         return {
             "action": "HARVEST / HEDGE",
             "tone": "rose",
-            "why": f"Fear & Greed is {fg_score:.0f} (extreme greed) — top-side complacency. Take premium on strength and protect winners instead of chasing entries.",
+            "why": f"Fear & Greed is {fg_score:.0f} (extreme greed) — top-side complacency. Take premium on strength and protect winners instead of chasing entries. UNMEASURED: Fear & Greed was never tested on the corpus.",
             "size": "sell premium, no new debit risk",
         }
     if fg_score <= 25:
         return {
             "action": "DEPLOY INTO QUALITY",
             "tone": "green",
-            "why": f"Fear & Greed is {fg_score:.0f} (extreme fear) with a bullish tide — the asymmetric window. Scale into the in-zone setups.",
+            "why": f"Fear & Greed is {fg_score:.0f} (extreme fear) with a bullish tide — the asymmetric window. Scale into the in-zone setups. UNMEASURED: Fear & Greed was never tested on the corpus.",
             "size": "up to 60% of dry powder",
         }
     if vix_px < 15:
@@ -307,6 +307,13 @@ def get_event_radar(movers: Optional[List[Dict[str, Any]]] = None,
         deduped.append(m)
     radical = deduped
 
+    # The cause lookup is a network call per mover; run them together instead of one after another.
+    causes: Dict[str, str] = {}
+    if radical:
+        cause_syms = [(m.get("ticker") or "").upper() for m in radical]
+        with ThreadPoolExecutor(max_workers=len(cause_syms)) as ex:
+            causes = dict(zip(cause_syms, ex.map(_mover_cause, cause_syms)))
+
     for m in radical:
         sym = (m.get("ticker") or "").upper()
         m["held"] = m.get("held", sym in held)
@@ -322,7 +329,7 @@ def get_event_radar(movers: Optional[List[Dict[str, Any]]] = None,
                 "contract": leg.get("description") or (leg.get("symbol") if leg.get("asset_type") == "OPTION" else None),
             }
         m["on_board"] = sym in on_board
-        m["cause"] = _mover_cause(sym)
+        m["cause"] = causes.get(sym) or _mover_cause(sym)
 
         exposure = m.get("exposure") or {}
         mv = exposure.get("market_value")
@@ -714,10 +721,13 @@ def build_action_panel(opportunities: Optional[List[Dict[str, Any]]] = None,
             logger.debug(f"action panel {fn.__name__} failed: {e}")
             return {}
 
-    bat = _safe(get_bat_signal, opportunities, regime, open_positions)
-    flags = _safe(get_risk_flags, opportunities)
-    radar = _safe(get_event_radar, movers, opportunities)
-    calib = _safe(get_calibration_panel)
+    # The four sections are independent reads; building them together keeps the cold build to the slowest one.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_bat = ex.submit(_safe, get_bat_signal, opportunities, regime, open_positions)
+        f_flags = ex.submit(_safe, get_risk_flags, opportunities)
+        f_radar = ex.submit(_safe, get_event_radar, movers, opportunities)
+        f_calib = ex.submit(_safe, get_calibration_panel)
+        bat, flags, radar, calib = f_bat.result(), f_flags.result(), f_radar.result(), f_calib.result()
 
     panel = {
         "available": bool(bat),

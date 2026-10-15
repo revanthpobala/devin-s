@@ -787,6 +787,41 @@ def test_sweep_expired_watch_targets(tmp_path):
 
 
 
+def test_sync_does_not_rearm_expired_target_without_newer_suggestion(tmp_path):
+    from datetime import date, timedelta
+
+    old_day = (date.today() - timedelta(days=3)).isoformat()
+    new_day = date.today().isoformat()
+    with patch.object(watch_manager, "DB_PATH", tmp_path / "t.db"):
+        watch_manager.init_watch_db()
+        with watch_manager._get_connection() as conn:
+            conn.execute(
+                "CREATE TABLE suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, date TEXT, side TEXT, entry_low REAL,"
+                " entry_high REAL, stop REAL, target_1 REAL, target_2 REAL, signal_pack REAL, fade REAL, action_long REAL, ext_z REAL,"
+                " atr_at_signal REAL, rr_at_market_at_signal REAL, verdict TEXT, setup_lane TEXT, gate_status TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO suggestions (ticker, date, side, entry_low, entry_high, stop, target_1, target_2, verdict, gate_status)"
+                " VALUES ('ZZZ', ?, 'LONG', 10, 11, 9, 14, 16, 'PASS', 'PASS')", (old_day,))
+            conn.commit()
+        assert watch_manager.sync_active_suggestions_to_watch_targets() == 1
+        with watch_manager._get_connection() as conn:
+            conn.execute("UPDATE watch_targets SET status='EXPIRED', is_active=0 WHERE ticker='ZZZ'")
+            conn.commit()
+
+        watch_manager.sync_active_suggestions_to_watch_targets()
+        assert {t["ticker"]: t["status"] for t in watch_manager.get_all_watch_targets()}["ZZZ"] == "EXPIRED"
+
+        with watch_manager._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO suggestions (ticker, date, side, entry_low, entry_high, stop, target_1, target_2, verdict, gate_status)"
+                " VALUES ('ZZZ', ?, 'LONG', 10, 11, 9, 14, 16, 'PASS', 'PASS')", (new_day,))
+            conn.commit()
+        watch_manager.sync_active_suggestions_to_watch_targets()
+        row = {t["ticker"]: t for t in watch_manager.get_all_watch_targets()}["ZZZ"]
+        assert row["status"] == "STALKING" and row["date"] == new_day
+
+
 def _write_stored_plan(tmp_path, ticker, date_str, breakout_level):
     """A plan of record on disk, as deep research writes it."""
     plan_dir = tmp_path / "data" / "raw" / date_str / ticker
@@ -889,3 +924,21 @@ def test_sync_never_invents_a_trigger_when_the_plan_has_none(tmp_path):
     mock_upsert.assert_called_once()
     assert "breakout_level" not in fake_data["shares_plan"]
     assert not fake_data.get("force_update")
+
+
+def test_non_terminal_evaluation_does_not_revive_expired_row(tmp_path):
+    with patch.object(watch_manager, "DB_PATH", tmp_path / "t.db"):
+        watch_manager.init_watch_db()
+        watch_manager.upsert_watch_target({
+            "ticker": "EXP", "date": "2026-10-05", "verdict": "PASS", "side": "LONG",
+            "shares_plan": {"entry_type": "LIMIT", "side": "LONG", "entry_zone_low": 10.0, "entry_zone_high": 11.0,
+                            "tactical_stop": 9.0, "target_1": 14.0, "target_2": 16.0},
+        })
+        with watch_manager._get_connection() as conn:
+            conn.execute("UPDATE watch_targets SET status='EXPIRED', is_active=0 WHERE ticker='EXP'")
+            conn.commit()
+        status = lambda: {t["ticker"]: t["status"] for t in watch_manager.get_all_watch_targets()}["EXP"]
+        watch_manager.update_target_live_state("EXP", 12.0, "STALKING")
+        assert status() == "EXPIRED"
+        watch_manager.update_target_live_state("EXP", 12.0, "TARGET_HIT")
+        assert status() == "TARGET_HIT"

@@ -423,3 +423,16 @@ def test_prior_plan_outcome_absent_means_absent():
     assert outcome.get("error") == "no stored plan"
     md = plan_outcome_markdown(outcome)
     assert "no stored plan" in md
+
+
+def test_rebuilt_t1_is_not_a_wick_inside_one_atr_of_the_trigger(monkeypatch):
+    """META 10-12: the lowest daily high above 747.60 was 750.58 (0.4%), so T1 sat on noise and the breakout R:R was ~0.2."""
+    import pandas as pd
+
+    from src.logic import level_validation as lv
+    from src.tracking import execution_validator
+
+    bars = pd.DataFrame({"High": [750.58, 762.0, 779.82, 740.0]})
+    monkeypatch.setattr(execution_validator, "get_bars_since_date", lambda *a, **k: bars)
+    t1, t2, basis = lv._rebuild_targets_above_trigger(747.6, 700.0, 710.0, 705.8, 15.0, ticker="META", date_str="2026-10-12")
+    assert basis == "next_resistance" and t1 == 779.82

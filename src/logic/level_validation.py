@@ -180,8 +180,9 @@ def _rebuild_targets_above_trigger(
     A broken trigger is never zeroed (plan/no-lost-movers follow-up): the trigger
     stays armed and its targets are rebuilt above it, tagged ``targets_rebuilt``.
     Order of preference, each one a real number rather than an invented one:
-      1. the next daily-bar resistance above the trigger (a level price actually
-         reached, from the same bars source as _compute_atr14_from_bars)
+      1. the next daily-bar resistance at least 1 ATR above the trigger (a level price
+         actually reached, from the same bars source as _compute_atr14_from_bars). A high
+         closer than 1 ATR is a wick inside the trigger's own noise, not a target.
       2. an ATR multiple: T1 = trigger + 2x ATR, T2 = trigger + 4x ATR
       3. the plan's own stop distance: T1 = trigger + 2x risk, T2 = trigger + 4x risk
     Returns (t1, t2, basis) — basis names which rule produced the numbers.
@@ -205,7 +206,7 @@ def _rebuild_targets_above_trigger(
                 for i in range(len(bars)):
                     row = bars.iloc[i]
                     h = _f(row.get("High") if hasattr(row, "get") else None)
-                    if h > trigger:
+                    if h > trigger + max(atr, 0.0):
                         highs.append(h)
                 if highs:
                     highs.sort()
@@ -367,6 +368,30 @@ def _compute_atr14_from_bars(ticker: str, date_str: str) -> float:
     except Exception as e:
         logger.debug(f"Failed to compute fallback ATR14 for {ticker}: {e}")
     return 0.0
+
+
+EARNINGS_BLOCK_DAYS = 5
+
+
+def earnings_days_for(ticker: str, date_str: Optional[str] = None, dw: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Trading days to the next earnings from date_str (today if absent); None when unknown."""
+    from datetime import date, datetime
+
+    signal_d = None
+    if date_str:
+        try:
+            signal_d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        except Exception:
+            signal_d = None
+    if signal_d is None:
+        signal_d = date.today()
+    from src.clients.earnings_client import get_next_earnings_days
+
+    days = get_next_earnings_days(ticker, as_of_date=signal_d)
+    dw_days = _dw_num(dw or {}, "earnings_days", "days_to_earnings", "bars_to_earnings")
+    if dw_days > 0 and (days is None or dw_days < days):
+        days = int(dw_days)
+    return days
 
 
 def validate_levels(
@@ -533,20 +558,22 @@ def validate_levels(
                     f"rsi2_geometry: stop ${stop:.2f} (exp ${exp_stop:.2f}) or target_1 ${target_1:.2f} (exp ${exp_t1:.2f}) deviates > 0.05 ATR (${tol:.2f}) from close +/- 2/4 ATR"
                 )
     elif has_shares_entry:
-        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW, JUDGE): stop floor
+        # Judge-invented levels (FLOOR_DEFENSE, BREAKOUT, WATCH_SHADOW, JUDGE): the stop may not be tighter than
+        # Pine's own stop (the geometry the measured edge was earned with). With no Pine stop the floor is the
+        # measured minimum width, STOP_ATR_MIN (0.7 ATR), below the fill.
         fill = breakout_level if (entry_type == "BREAKOUT" and breakout_level > 0) else (entry_low if entry_low > 0 else entry_high)
         if atr > 0 and fill > 0:
             pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
             from src.tracking.rr_config import STOP_ATR_MIN
-            stop_mult = max(LEVEL_ATR_STOP_MIN, STOP_ATR_MIN)
-            min_buffer = stop_mult * atr
-            max_allowed_stop = fill - min_buffer
             if pine_stop > 0:
-                max_allowed_stop = min(max_allowed_stop, pine_stop)
-            if stop > max_allowed_stop:
+                max_allowed_stop = pine_stop
+                basis = "Pine stop"
+            else:
+                max_allowed_stop = fill - STOP_ATR_MIN * atr
+                basis = f"fill - {STOP_ATR_MIN:.2f}*ATR"
+            if stop > max_allowed_stop + 0.005:
                 reasons.append(
-                    f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} "
-                    f"(must be <= min(fill - {stop_mult:.2f}*ATR, Pine stop))"
+                    f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} (must be <= {basis})"
                 )
 
     # ── 4. R:R floor & At-Market R:R ───────────────────────────
@@ -555,6 +582,24 @@ def validate_levels(
     else:
         rr_at_market = 0.0
     plan["rr_at_market"] = rr_at_market
+
+    # A resting limit above the live price is a plan to wait, not an order at market: judge it at the zone top,
+    # the price it can actually fill at. The measured gate (in zone AND R:R at market >= floor) is enforced again
+    # at fire time by the watch cycle, so nothing executes on this number.
+    deferred_limit = (
+        has_shares_entry and entry_type not in ("MARKET", "BREAKOUT")
+        and entry_high > 0 and spot > entry_high and stop < entry_high < target_1
+        # Structural limit on "wait for a pullback": once price has covered half the zone-to-target move the
+        # plan is a chase, not a wait (LLY, META). The half is a structural cut, not a measured number.
+        and (spot - entry_high) <= 0.5 * (target_1 - entry_high)
+    )
+    deferred_breakout = (
+        has_shares_entry and entry_type == "BREAKOUT" and breakout_level > 0 and spot > 0 and spot < breakout_level
+    )
+    plan["deferred"] = bool(deferred_limit or deferred_breakout)
+    rr_at_zone = round((target_1 - entry_high) / (entry_high - stop), 4) if deferred_limit else None
+    plan["rr_at_zone"] = rr_at_zone
+    rr_gate_value = rr_at_zone if rr_at_zone is not None else rr_at_market
 
     # Planned R:R floor to T1 (non-measured lanes)
     if has_shares_entry and not is_measured_lane:
@@ -568,9 +613,10 @@ def validate_levels(
     # At-market R:R floor applies to ALL lanes (including measured lanes)
     if has_shares_entry:
         from src.tracking.rr_config import min_rr as at_market_floor
-        if rr_at_market < at_market_floor():
+        if rr_gate_value < at_market_floor():
+            basis = "zone-top" if rr_at_zone is not None else "at-market"
             reasons.append(
-                f"at-market R:R {rr_at_market:.2f} below {at_market_floor():.2f} floor "
+                f"{basis} R:R {rr_gate_value:.3f} below {at_market_floor():.3f} floor "
                 f"for lane {setup_lane or 'DEFAULT'}"
             )
 
@@ -587,28 +633,17 @@ def validate_levels(
                     f"target_1 ${target_1:.2f} exceeds 1.5x 21b expected move ceiling ${max_t1:.2f}"
                 )
 
-    # ── 6. Earnings inside 21 bars (reject NEW) ────────────────
+    # ── 6. Earnings inside 21 bars ─────────────────────────────
+    # Plans that act now are rejected; plans that wait (deferred limit / untriggered breakout) carry the days as a
+    # flag and are blocked at fire time inside EARNINGS_BLOCK_DAYS instead (watch cycle / zone arrival).
     kind = str(plan.get("kind") or "NEW").upper()
     if kind == "NEW" and ticker:
         try:
-            from datetime import date, datetime
-            signal_d = None
-            if date_str:
-                try:
-                    signal_d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
-                except Exception:
-                    signal_d = None
-            if signal_d is None:
-                signal_d = date.today()
-
-            from src.clients.earnings_client import get_next_earnings_days
-            days_to_earnings = get_next_earnings_days(ticker, as_of_date=signal_d)
-            dw_days = _dw_num(dw, "earnings_days", "days_to_earnings", "bars_to_earnings")
-            if dw_days > 0 and (days_to_earnings is None or dw_days < days_to_earnings):
-                days_to_earnings = int(dw_days)
-            if days_to_earnings is not None and 0 <= days_to_earnings <= 21:
+            days_to_earnings = earnings_days_for(ticker, date_str, dw)
+            plan["earnings_days"] = days_to_earnings
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 21 and not plan["deferred"]:
                 reasons.append(
-                    f"earnings inside 21 bars ({days_to_earnings} trading bars away from {signal_d}) — fail for NEW"
+                    f"earnings inside 21 bars ({days_to_earnings} trading bars away) — fail for NEW"
                 )
         except Exception as e:
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")

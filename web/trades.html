@@ -68,12 +68,6 @@
 </a>
 </nav>
 <div class="status-ribbon" id="status-ribbon">
-<button class="btn header-chat-btn" id="btn-header-chat" onclick="AppChat.toggleCollapse()" title="Toggle Rev Chat Sidebar"><span class="chat-icon">💬</span> <span id="txt-header-chat">Rev Chat</span></button>
-<button class="pill sys-pill" id="pill-market" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
-<button class="pill sys-pill" id="pill-llm" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
-<button class="pill sys-pill" id="pill-schwab" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
-<button class="pill sys-pill" id="pill-tracker" onclick="AppSettings.open()" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
-<button class="pill sys-pill" id="pill-tasty" onclick="AppSettings.open()" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
 <button class="btn secondary" id="btn-settings" onclick="AppSettings.open()" title="Settings, services &amp; diagnostics">⚙️</button>
 </div>
 </header>
@@ -88,6 +82,17 @@
 <button class="btn secondary" onclick="AppSettings.close()" style="padding:3px 10px; font-size:11px;">✕ Close</button>
 </div>
 <div style="padding:16px 18px; display:flex; flex-direction:column; gap:16px;">
+<!-- Status -->
+<div>
+<div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">STATUS</div>
+<div style="display:flex; flex-wrap:wrap; gap:6px;">
+<button class="pill sys-pill" id="pill-market" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-market">Checking…</span></button>
+<button class="pill sys-pill" id="pill-llm" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-llm">LLM</span></button>
+<button class="pill sys-pill" id="pill-schwab" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-schwab">Schwab</span></button>
+<button class="pill sys-pill" id="pill-tracker" title="Open system status &amp; settings"><span class="dot"></span><span id="txt-tracker">Ingestor</span></button>
+<button class="pill sys-pill" id="pill-tasty" title="Tastytrade cloud quote alerts"><span class="dot"></span><span id="txt-tasty">TT</span></button>
+</div>
+</div>
 <!-- Services -->
 <div>
 <div style="font-size:9.5px; font-weight:900; letter-spacing:0.8px; color:var(--text-dim); margin-bottom:8px;">SERVICES</div>
@@ -204,23 +209,23 @@
 <!-- KPI Summary Counters -->
 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-top:8px;">
 <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-<div style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Total Tracked</div>
+<div style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Plans tracked</div>
 <div id="kpi-trades-total" style="font-size:22px; font-weight:800; color:var(--text-main); font-family:var(--font-mono); margin-top:2px;">0</div>
 </div>
 <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-<div style="font-size:11px; color:#10b981; font-weight:700; text-transform:uppercase;">🎯 In Entry Zone</div>
+<div style="font-size:11px; color:#10b981; font-weight:700; text-transform:uppercase;">🎯 Act now</div>
 <div id="kpi-trades-in-zone" style="font-size:22px; font-weight:800; color:#10b981; font-family:var(--font-mono); margin-top:2px;">0</div>
 </div>
 <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-<div style="font-size:11px; color:#f59e0b; font-weight:700; text-transform:uppercase;">⏳ Stalking Entry</div>
+<div style="font-size:11px; color:#f59e0b; font-weight:700; text-transform:uppercase;">⏳ Waiting for zone</div>
 <div id="kpi-trades-stalking" style="font-size:22px; font-weight:800; color:#f59e0b; font-family:var(--font-mono); margin-top:2px;">0</div>
 </div>
 <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-<div style="font-size:11px; color:#06b6d4; font-weight:700; text-transform:uppercase;">🏁 Target Hit / In Trade</div>
+<div style="font-size:11px; color:#06b6d4; font-weight:700; text-transform:uppercase;">🏁 Done (T1 reached)</div>
 <div id="kpi-trades-winners" style="font-size:22px; font-weight:800; color:#06b6d4; font-family:var(--font-mono); margin-top:2px;">0</div>
 </div>
 <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-<div style="font-size:11px; color:#f43f5e; font-weight:700; text-transform:uppercase;">🛑 Stopped / Out</div>
+<div style="font-size:11px; color:#f43f5e; font-weight:700; text-transform:uppercase;">🛑 Dead or missed</div>
 <div id="kpi-trades-stopped" style="font-size:22px; font-weight:800; color:#f43f5e; font-family:var(--font-mono); margin-top:2px;">0</div>
 </div>
 </div>
@@ -228,12 +233,13 @@
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
 <!-- Status Filter Pills -->
 <div style="display:flex; gap:6px; flex-wrap:wrap;">
-<button class="btn secondary trades-filter-btn active" data-filter="ALL" onclick="AppTrades.setFilter('ALL')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">All Trades</button>
+<button class="btn secondary trades-filter-btn active" data-filter="LIVE" onclick="AppTrades.setFilter('LIVE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;" title="Plans still worth watching or holding">Live (<span id="count-trades-live">0</span>)</button>
+<button class="btn secondary trades-filter-btn" data-filter="ALL" onclick="AppTrades.setFilter('ALL')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">All</button>
 <button class="btn secondary trades-filter-btn" data-filter="MY_TRADES" onclick="AppTrades.setFilter('MY_TRADES')" style="padding:4px 11px; font-size:11.5px; font-weight:800; color:var(--cyan); border-color:rgba(6,182,212,0.4); background:rgba(6,182,212,0.12);" title="Show trades you personally marked as taken in your portfolio">💼 My Taken Trades (<span id="count-trades-taken">0</span>)</button>
 <button class="btn secondary trades-filter-btn" data-filter="IN_ZONE" onclick="AppTrades.setFilter('IN_ZONE')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🎯 In Zone (<span id="count-trades-in-zone">0</span>)</button>
-<button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Stalking (<span id="count-trades-stalking">0</span>)</button>
-<button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Target Hit (<span id="count-trades-target-hit">0</span>)</button>
-<button class="btn secondary trades-filter-btn" data-filter="STOP_BREACHED" onclick="AppTrades.setFilter('STOP_BREACHED')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🛑 Stopped (<span id="count-trades-stopped">0</span>)</button>
+<button class="btn secondary trades-filter-btn" data-filter="STALKING" onclick="AppTrades.setFilter('STALKING')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">⏳ Waiting (<span id="count-trades-stalking">0</span>)</button>
+<button class="btn secondary trades-filter-btn" data-filter="TARGET_HIT" onclick="AppTrades.setFilter('TARGET_HIT')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🏁 Done (<span id="count-trades-target-hit">0</span>)</button>
+<button class="btn secondary trades-filter-btn" data-filter="STOP_BREACHED" onclick="AppTrades.setFilter('STOP_BREACHED')" style="padding:4px 10px; font-size:11.5px; font-weight:700;">🛑 Dead / Missed (<span id="count-trades-stopped">0</span>)</button>
 </div>
 <!-- Search input -->
 <div style="display:flex; align-items:center; gap:8px;">
@@ -241,6 +247,7 @@
 </div>
 </div>
 </div>
+<div class="station-card" id="trades-top-opps" style="margin-bottom:14px; padding:0;"></div>
 <!-- Executive Trading Edge & Opportunity Scoreboard Panel -->
 <div class="station-card" id="trades-scoreboard-panel" style="margin-bottom:14px; padding:14px 16px;">
 <!-- Dynamically populated by AppTrades.loadScoreboard() -->
@@ -251,7 +258,7 @@
 <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
 <thead>
 <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border);">
-<th onclick="AppTrades.setSort('priority')" style="text-align:left; padding:10px 14px; cursor:pointer;" title="Sort by execution urgency: In Zone &gt; In Trade &gt; Hot Stalk">Priority &amp; Setup ⇅</th>
+<th onclick="AppTrades.setSort('priority')" style="text-align:left; padding:10px 14px; cursor:pointer;" title="ACT first, then exits, holds, waits">What to do ⇅</th>
 <th onclick="AppTrades.setSort('ticker')" style="text-align:left; padding:10px 14px; cursor:pointer;">Ticker &amp; Company ⇅</th>
 <th style="text-align:left; padding:10px 14px;">Vehicle &amp; Structure</th>
 <th style="text-align:right; padding:10px 14px;">Entry Zone &amp; R:R</th>
@@ -1495,17 +1502,18 @@
 <script src="/static/js/state.js?v=88"></script>
 <script src="/static/js/utils.js?v=88"></script>
 <script src="/static/js/api.js?v=88"></script>
-<script src="/static/js/status.js?v=88"></script>
-<script src="/static/js/swing.js?v=88"></script>
+<script src="/static/js/status.js?v=90"></script>
+<script src="/static/js/swing.js?v=89"></script>
 <script src="/static/js/watchlist.js?v=88"></script>
 <script src="/static/js/trades.js?v=88"></script>
-<script src="/static/js/intraday.js?v=88"></script>
+<script src="/static/js/intraday.js?v=89"></script>
 <script src="/static/js/portfolio.js?v=88"></script>
 <script src="/static/js/logs.js?v=88"></script>
 <script src="/static/js/alerts.js?v=88"></script>
-<script src="/static/js/chat.js?v=88"></script>
-<script src="/static/js/desk.js?v=88"></script>
+<script src="/static/js/chat.js?v=91"></script>
+<script src="/static/js/desk.js?v=97"></script>
 <script src="/static/js/tv_hover.js?v=88"></script>
-<script src="/static/js/app.js?v=88"></script>
+<script src="/static/js/app.js?v=89"></script>
+<script src="/static/js/notifications.js?v=3"></script>
 </body>
 </html>

@@ -259,6 +259,40 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class _AlwaysConnected:
+    """The generation runs detached from the HTTP connection, so it never sees a disconnect."""
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+_DETACHED_TASKS: set = set()
+
+
+async def _detached_stream(gen):
+    """Run `gen` as its own task and relay its events; the task finishes (and saves the answer)
+    even when the browser leaves the page and this relay is cancelled."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def pump():
+        try:
+            async for item in gen:
+                queue.put_nowait(item)
+        except Exception as e:
+            logger.error(f"Detached chat generation failed: {e}", exc_info=True)
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(pump())
+    _DETACHED_TASKS.add(task)
+    task.add_done_callback(_DETACHED_TASKS.discard)
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        yield item
+
+
 @router.post("/api/copilot/chat/stream")
 async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request):
     """
@@ -267,6 +301,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
     Persists all turns into SQLite copilot_chat_history.
     Supports WYSIWYG board telemetry and multimodal vision input (Qwen 27B --mmproj).
     """
+    request = _AlwaysConnected()
     try:
         question_text = (req.question or "").strip()
         if not question_text and req.image_data:
@@ -284,6 +319,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                 return
 
             from starlette.concurrency import run_in_threadpool
+            session_id = req.session_id or f"sess_{initial_ticker or 'GENERAL'}_{uuid.uuid4().hex[:8]}"
+            _save_chat_turn(session_id, initial_ticker, req.date, "user", question_text)
             try:
                 build_task = asyncio.create_task(run_in_threadpool(
                     _build_copilot_context_and_tools,
@@ -306,12 +343,10 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         break
             except Exception as ce:
                 logger.error(f"Error compiling copilot context: {ce}", exc_info=True)
+                _save_chat_turn(session_id, initial_ticker, req.date, "assistant", f"❌ Context compilation error: {ce}")
                 yield f"data: {json.dumps({'error': f'Context compilation error: {ce}'})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
-
-            session_id = req.session_id or f"sess_{ticker_u}_{date_str}_{uuid.uuid4().hex[:8]}"
-            _save_chat_turn(session_id, ticker_u, date_str, "user", question_text)
 
             # Fast socket check
             import socket
@@ -391,6 +426,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     self.function = _MockFunc(name, arguments)
 
             full_answer_chunks = []
+            answer_saved = False
             max_turns = 2
             turn = 0
             tools_enabled = True
@@ -402,6 +438,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
             first_token_t = None
             last_token_t = None
             busy_notice_sent = False
+            generating_notice_sent = False
 
             try:
                 while turn < max_turns:
@@ -436,8 +473,33 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         create_kwargs["tools"] = TOOLS
                         create_kwargs["tool_choice"] = "auto"
 
+                    # The call itself blocks while the GPU has no free slot, before any token loop
+                    # exists, so poll it and keep the user informed instead of a silent stream.
+                    from src.utils import chat_priority
+
+                    chat_priority.mark_waiting()
+                    open_task = asyncio.create_task(client.chat.completions.create(**create_kwargs))
+                    client_gone = False
+                    while True:
+                        opened, _ = await asyncio.wait([open_task], timeout=CHAT_WAIT_TICK_S)
+                        if opened:
+                            chat_priority.clear()
+                            break
+                        chat_priority.mark_waiting()
+                        if await request.is_disconnected():
+                            open_task.cancel()
+                            chat_priority.clear()
+                            client_gone = True
+                            break
+                        if not busy_notice_sent and time.monotonic() - stream_t0 >= CHAT_FIRST_TOKEN_BUSY_S:
+                            busy_notice_sent = True
+                            yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees.'})}\n\n"
+                        else:
+                            yield ": ping\n\n"
+                    if client_gone:
+                        break
                     try:
-                        stream_response = await client.chat.completions.create(**create_kwargs)
+                        stream_response = open_task.result()
                     except Exception as stream_call_err:
                         if tools_enabled and ("400" in str(stream_call_err) or "tool" in str(stream_call_err).lower()):
                             tools_enabled = False
@@ -466,7 +528,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             ):
                                 busy_notice_sent = True
                                 yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees.'})}\n\n"
-                            if not full_answer_chunks:
+                            if not full_answer_chunks and not generating_notice_sent:
+                                generating_notice_sent = True
                                 yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⚡ Generating response on GPU Slot 0 (shared compute)...'})}\n\n"
                             else:
                                 yield ": ping\n\n"
@@ -563,7 +626,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         mock_tc = _MockToolCall(tc_dict["id"], tc_dict["name"], tc_dict["arguments"])
                         _t0 = asyncio.get_event_loop().time()
                         try:
-                            tool_res = await asyncio.to_thread(execute_tool_call, mock_tc, date_str)
+                            tool_res = await asyncio.to_thread(execute_tool_call, mock_tc, date_str, False, ticker_u or initial_ticker or "")
                             res_str = str(tool_res) if tool_res is not None else "No output."
                             ok, err = True, None
                         except Exception as ex_tool:
@@ -611,8 +674,9 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                 complete_answer = re.sub(r"</?[a-zA-Z0-9_]+>", "", complete_answer)
                 complete_answer = re.sub(r"⚙️\s*\*Executing live tool.*?\(s\):.*?\*", "", complete_answer)
                 complete_answer = complete_answer.strip()
-                if complete_answer and len(complete_answer) > 20 and not (await request.is_disconnected()):
+                if complete_answer and len(complete_answer) > 20:
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", complete_answer)
+                    answer_saved = True
 
                 yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
                 yield "data: [DONE]\n\n"
@@ -622,7 +686,16 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
                     yield "data: [DONE]\n\n"
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", err_msg)
+                    answer_saved = True
             finally:
+                from src.utils import chat_priority as _cp
+
+                _cp.clear()
+                if not answer_saved and full_answer_chunks:
+                    import re as _re
+                    partial = _re.sub(r"<tool_call>.*?</tool_call>|<function=.*?>.*?</function>|<parameter=.*?>.*?</parameter>|</?[a-zA-Z0-9_]+>", "", "".join(full_answer_chunks), flags=_re.DOTALL).strip()
+                    if len(partial) > 20:
+                        _save_chat_turn(session_id, ticker_u, date_str, "assistant", partial + "\n\n_(interrupted: you left the page before the answer finished)_")
                 if stream_response is not None:
                     try:
                         await stream_response.close()
@@ -634,7 +707,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     pass
 
         return StreamingResponse(
-            token_generator(),
+            _detached_stream(token_generator()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
