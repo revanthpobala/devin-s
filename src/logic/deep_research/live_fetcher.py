@@ -139,6 +139,13 @@ def fetch_live_context(
 
     # Load earnings synchronously (cheap, synchronous, deterministic)
     ctx.earnings_fact_block = earnings_client.format_earnings_fact_block(ticker, dw=dw_dict)
+    try:
+        from src.logic.earnings_packet import build_earnings_packet, format_earnings_packet
+
+        spot = float(dw_dict.get("close") or dw_dict.get("Close") or 0) or None
+        ctx.earnings_fact_block += "\n\n" + format_earnings_packet(build_earnings_packet(ticker, spot))
+    except Exception as e_pkt:
+        logger.warning(f"[{ticker}] earnings packet skipped: {e_pkt}")
 
     logger.info(f"[{ticker}] ⚡ Parallel live context retrieval (News, AlphaVantage, Finnhub, Google Grounding)...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:

@@ -37,6 +37,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from src.clients import net_health
+
+net_health.install_dns_cache()
+_YAHOO_SESSION = net_health.new_session()
+_ALPACA_SESSION = net_health.new_session()
+_CONNECT_S, _READ_S = 3.0, 6.0
+
 logger = logging.getLogger(__name__)
 
 # Broad market index tickers that must route to Yahoo REST (^ prefix)
@@ -95,12 +102,17 @@ class CircuitBreaker:
         self.cooldown_seconds = cooldown_seconds
         self._failures: int = 0
         self._cooldown_until: float = 0.0
+        self.probe_window_s = 5.0
         self._lock = threading.Lock()
 
     def is_available(self) -> bool:
+        """Open breaker admits ONE probe after the cooldown; the rest wait for its result, not 8 timeouts at once."""
         with self._lock:
-            if time.time() < self._cooldown_until:
+            now = time.time()
+            if now < self._cooldown_until:
                 return False
+            if self._failures >= self.failure_threshold:
+                self._cooldown_until = now + self.probe_window_s
             return True
 
     def record_success(self) -> None:
@@ -771,7 +783,7 @@ class QuoteRouter:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1m&range=1d"
 
         try:
-            r = requests.get(url, headers=headers, timeout=(8.0, 8.0))
+            r = _YAHOO_SESSION.get(url, headers=headers, timeout=(_CONNECT_S, _READ_S))
             if r.status_code == 429 or r.status_code >= 500:
                 self.yahoo_breaker.record_failure(f"HTTP {r.status_code}")
             elif r.status_code == 200:
@@ -857,7 +869,7 @@ class QuoteRouter:
             syms_param = ",".join(chunk)
             url = f"{base_url}/stocks/snapshots?symbols={syms_param}"
             try:
-                r = requests.get(url, headers=headers, timeout=(10.0, 10.0))
+                r = _ALPACA_SESSION.get(url, headers=headers, timeout=(_CONNECT_S, _READ_S))
                 if r.status_code == 429 or r.status_code >= 500:
                     self.alpaca_breaker.record_failure(f"HTTP {r.status_code}")
                 elif r.status_code == 200:

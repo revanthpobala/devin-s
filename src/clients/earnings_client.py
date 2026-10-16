@@ -1,10 +1,205 @@
 from __future__ import annotations
 
+import concurrent.futures
+import json
 import logging
-from datetime import datetime, timedelta
+import re
+import threading
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+_CACHE_TTL_S = 12 * 3600
+_NEG_TTL_S = 1800
+_cache_lock = threading.Lock()
+
+
+def _cache_path():
+    from src import config
+
+    return config.BASE_DIR / "data" / "cache" / "earnings_dates.json"
+
+
+def _cache_read() -> dict:
+    try:
+        return json.loads(_cache_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _cache_write(sym: str, entry: dict) -> None:
+    with _cache_lock:
+        data = _cache_read()
+        data[sym] = entry
+        try:
+            p = _cache_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(data), encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"earnings cache write failed: {e}")
+
+
+def _to_date(v: Any) -> Optional[date]:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if hasattr(v, "date"):
+        try:
+            return v.date()
+        except Exception:
+            return None
+    if isinstance(v, str) and len(v) >= 10:
+        try:
+            return datetime.strptime(v[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+    return None
+
+
+def _tasty_date(sym: str) -> Optional[date]:
+    from src.clients.tastytrade_client import get_tastytrade_client
+
+    for m in get_tastytrade_client().get_market_metrics(sym) or []:
+        if str(m.get("symbol", "")).upper() == sym:
+            return _to_date((m.get("earnings") or {}).get("expected-report-date"))
+    return None
+
+
+def _yf_dates(sym: str) -> tuple[Optional[date], Optional[date]]:
+    """(next future earnings date, last reported date) from yfinance."""
+    import yfinance as yf
+
+    t = yf.Ticker(sym)
+    today = date.today()
+    nxt = last = None
+    try:
+        cal = t.calendar
+        raw = cal.get("Earnings Date") if hasattr(cal, "get") else None
+        for v in raw or []:
+            d = _to_date(v)
+            if d and d >= today and (nxt is None or d < nxt):
+                nxt = d
+    except Exception:
+        pass
+    try:
+        ed = t.get_earnings_dates(limit=12)
+        if ed is not None and not ed.empty:
+            for idx, row in ed.iterrows():
+                d = _to_date(idx)
+                if d is None:
+                    continue
+                if d >= today and nxt is None:
+                    nxt = d
+                elif d < today and str(row.get("Reported EPS")) not in ("nan", "None") and (last is None or d > last):
+                    last = d
+    except Exception:
+        pass
+    return nxt, last
+
+
+def _finnhub_date(sym: str) -> Optional[date]:
+    from src.clients import finnhub_client
+
+    key = finnhub_client._fh_key()
+    if not key:
+        return None
+    today = date.today()
+    url = (
+        f"https://finnhub.io/api/v1/calendar/earnings?from={today:%Y-%m-%d}"
+        f"&to={today + timedelta(days=120):%Y-%m-%d}&symbol={sym}&token={key}"
+    )
+    data = finnhub_client._cached_get(url, ttl=3600)
+    rows = (data or {}).get("earningsCalendar") if isinstance(data, dict) else None
+    ds = sorted(d for d in (_to_date(r.get("date")) for r in rows or []) if d and d >= today)
+    return ds[0] if ds else None
+
+
+def _grounded_date(sym: str, last_report: Optional[date]) -> Optional[date]:
+    """Last resort. Accepts a Google-grounded date only if it fits the ~quarterly cadence."""
+    from src.clients.google_grounding_client import ask_grounded
+
+    res = ask_grounded(
+        f"What is the next quarterly earnings report date for {sym}? "
+        f"Answer with only the date as YYYY-MM-DD, or UNKNOWN if not announced or confirmed."
+    )
+    m = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", res.get("text") or "")
+    d = _to_date(m.group(1)) if m else None
+    today = date.today()
+    if d is None or d < today or (d - today).days > 120:
+        return None
+    if last_report is not None and not 60 <= (d - last_report).days <= 125:
+        logger.warning(f"[{sym}] grounded earnings date {d} rejected: breaks quarterly cadence after {last_report}")
+        return None
+    return d
+
+
+def resolve_next_earnings_date(ticker: str) -> tuple[Optional[date], str]:
+    """Next earnings date and the source that supplied it, cached 12h on disk.
+
+    Order: Tastytrade expected-report-date, yfinance, Finnhub calendar, Google grounding (cadence-checked).
+    """
+    sym = (ticker or "").strip().upper()
+    if not sym or sym in ("UNKNOWN", "NONE"):
+        return None, "none"
+    cached = _cache_read().get(sym)
+    if cached:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(cached["fetched"])).total_seconds()
+            d = _to_date(cached.get("date"))
+            if d is None and age < _NEG_TTL_S:
+                return None, "none"
+            if d is not None and d >= date.today() and age < _CACHE_TTL_S:
+                return d, cached.get("source", "cache")
+        except Exception:
+            pass
+
+    last_report: Optional[date] = None
+    found: Optional[date] = None
+    source = "none"
+
+    def _try(name, fn):
+        nonlocal found, source
+        if found is not None:
+            return
+        try:
+            d = fn()
+            if d and d >= date.today():
+                found, source = d, name
+        except Exception as e:
+            logger.debug(f"[{sym}] earnings via {name} failed: {e}")
+
+    _try("tastytrade", lambda: _tasty_date(sym))
+    if found is None:
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(_yf_dates, sym)
+        try:
+            nxt, last_report = fut.result(timeout=8.0)
+            if nxt:
+                found, source = nxt, "yfinance"
+        except Exception as e:
+            logger.debug(f"[{sym}] earnings via yfinance failed: {e}")
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+    _try("finnhub", lambda: _finnhub_date(sym))
+    _try("google-grounding (cadence-checked)", lambda: _grounded_date(sym, last_report))
+
+    _cache_write(sym, {
+        "date": found.isoformat() if found else None,
+        "source": source,
+        "fetched": datetime.now().isoformat(timespec="seconds"),
+    })
+    return found, source
+
+
+def _bdays_between(start: date, end: date) -> int:
+    import pandas as pd
+
+    return max(len(pd.bdate_range(start=start, end=end)) - 1, 0)
+
 
 
 def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int | None:
@@ -30,6 +225,10 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
                     ref_date = date.today()
             if ref_date < date.today():
                 is_past = True
+
+        if not is_past:
+            nd, _src = resolve_next_earnings_date(ticker)
+            return _bdays_between(ref_date, nd) if nd else None
 
         import concurrent.futures
 
@@ -104,21 +303,25 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
 
 def format_earnings_fact_block(ticker: str, dw: Optional[Dict[str, Any]] = None) -> str:
     """Formats deterministic earnings date, gate status, and historical reactions/PEAD table."""
-    days = get_next_earnings_days(ticker)
-    lines = ["--- DETERMINISTIC EARNINGS DATE & CATALYST HISTORY (yfinance) ---"]
+    nd, src = resolve_next_earnings_date(ticker)
+    days = _bdays_between(date.today(), nd) if nd else None
+    lines = [f"--- DETERMINISTIC EARNINGS DATE & CATALYST HISTORY ({src}) ---"]
 
-    if days is not None:
-        est_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    if nd is not None:
         gate_status = "FAIL (<3d)" if days < 3 else "WARNING (<7d)" if days < 7 else "CLEAR (>=7d)"
+        trust = (
+            "Trust this over anything found via search for this ticker's earnings date."
+            if not src.startswith("google")
+            else "Date comes from Google grounding and passed a quarterly-cadence check; call it 'unconfirmed'."
+        )
         lines.append(
-            f"Next earnings in {days} day(s) (~{est_date}). "
-            f"Earnings Gate: {gate_status}.\n"
-            f"Trust this over anything found via search/grounding for this ticker's earnings date."
+            f"Next earnings: {nd:%Y-%m-%d} ({days} trading day(s) away, {(nd - date.today()).days} calendar day(s); source: {src}). "
+            f"Earnings Gate: {gate_status}.\n{trust}"
         )
     else:
         lines.append(
-            "Next earnings date: UNAVAILABLE via yfinance calendar (verify manually). "
-            "If unverified, state 'earnings date unverified'."
+            "Next earnings date: UNAVAILABLE (Tastytrade, yfinance, Finnhub and grounding all failed). "
+            "State 'earnings date unverified'; do NOT infer a date from the gate's trading-bar count."
         )
 
     # 1. Pull historical quarterly reaction events from dw if enriched

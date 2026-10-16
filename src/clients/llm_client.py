@@ -165,7 +165,43 @@ def _parse_text_tool_calls(text: str) -> list:
 
 import io
 
-def encode_image_to_base64(image_path: str, max_dim: int = 640) -> str:
+def _stop_tool_calls(kwargs: dict, provider: str) -> None:
+    """End the tool loop without changing the rendered prompt on the local server.
+
+    Qwen's chat template prints the tool definitions at the very start of the system message, so dropping `tools`
+    changes the first tokens and forces llama.cpp to re-prefill the whole ~50k-token prompt (the cached prefix
+    stops matching at token 0). Keeping `tools` and setting tool_choice="none" keeps the prefix cacheable.
+    """
+    if provider == "local" and kwargs.get("tools"):
+        kwargs["tool_choice"] = "none"
+    else:
+        kwargs.pop("tools", None)
+        kwargs.pop("tool_choice", None)
+
+
+_IMAGE_CHAR_EQUIV = 5000  # ~1.2k vision tokens per 1280px chart
+
+
+def _message_text_chars(messages: list) -> int:
+    """Characters of real text in a chat history. Image parts are base64 blobs that cost a few hundred vision tokens,
+    not 100k+ characters, so each counts as a fixed ~1k-token equivalent toward the context-volume safety limit."""
+    total = 0
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content", "")
+        if isinstance(content, list):
+            for p in content:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    total += len(str(p.get("text", "")))
+                elif isinstance(p, dict) and p.get("type") == "image_url":
+                    total += _IMAGE_CHAR_EQUIV
+        else:
+            total += len(str(content or ""))
+    return total
+
+
+def encode_image_to_base64(image_path: str, max_dim: int = int(os.getenv("LLM_IMAGE_MAX_DIM", "1280"))) -> str:
     try:
         from PIL import Image
         with Image.open(image_path) as img:
@@ -2020,14 +2056,13 @@ def query_local_llm(
                 MAX_TOTAL_MSG_CHARS = int(os.getenv("MAX_TOTAL_MSG_CHARS", "450000"))
                 
                 # Check accumulated message character length to prevent context explosion
-                total_msg_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+                total_msg_chars = _message_text_chars(messages)
                 if tool_call_count >= MAX_ALLOWED_TOOL_BATCHES or total_msg_chars > MAX_TOTAL_MSG_CHARS:
                     logger.info(
                         f"Reached safety limit of tool batches ({tool_call_count}/{MAX_ALLOWED_TOOL_BATCHES}) "
                         f"or msg volume ({total_msg_chars:,}/{MAX_TOTAL_MSG_CHARS:,} chars). Directing model to output final markdown report."
                     )
-                    kwargs.pop("tools", None)
-                    kwargs.pop("tool_choice", None)
+                    _stop_tool_calls(kwargs, provider)
                     messages.append({
                         "role": "user",
                         "content": (
@@ -2059,8 +2094,7 @@ def query_local_llm(
 
                     # Build continuation payload (without tools)
                     kwargs_cont = dict(kwargs)
-                    kwargs_cont.pop("tools", None)
-                    kwargs_cont.pop("tool_choice", None)
+                    _stop_tool_calls(kwargs_cont, provider)
 
                     cont_messages = list(messages)
                     if full_content.strip():

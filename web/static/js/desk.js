@@ -1241,6 +1241,8 @@ window.AppDesk = {
       }
 
       const [todayData, coverageData, missedMovesData] = await Promise.all(requests);
+      const ticketsData = await Promise.resolve(window.AppApi.request('/api/desk/tickets', { timeoutMs: 6000 })).catch(() => null);
+      const ticketList = (ticketsData && ticketsData.tickets) || [];
       const feedbackData = await feedbackPromise;
       const briefingData = await briefingPromise;
 
@@ -1387,6 +1389,9 @@ window.AppDesk = {
           </button>
           <button id="subtab-today-coverage" class="btn ${activeTab === 'coverage' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('coverage')">
             🛡️ Pipeline Coverage &amp; Deferrals (<span id="subtab-count-coverage">${capDeferred.length}</span> Deferred · <span id="subtab-count-coverage-stalking">${watchNoDeep.length}</span> Stalking)
+          </button>
+          <button id="subtab-today-tickets" class="btn ${activeTab === 'tickets' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('tickets')">
+            🎟️ Tickets (<span id="subtab-count-tickets">${ticketList.length}</span>)
           </button>
           <button id="subtab-today-missed" class="btn ${activeTab === 'missed_moves' ? '' : 'secondary'}" style="font-size:12px; font-weight:800; padding:6px 16px;" onclick="AppDesk.setTodaySubTab('missed_moves')">
             📉 Missed Moves (<span id="subtab-count-missed">${missedList.length}</span>)
@@ -2073,6 +2078,22 @@ window.AppDesk = {
             </div>
           </div>
           `;
+        }
+
+        else if (activeTab === 'tickets') {
+          const esc = (v) => String(v == null ? '' : v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+          html += `<div style="display:flex; flex-direction:column; gap:12px;">${ticketList.length ? ticketList.map(t => `
+            <div class="station-card" style="padding:14px 18px;">
+              <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                <span style="font-weight:900;">${esc(t.ticker)} · BUY ${esc(t.qty)} ${esc(t.order_type)} @ ${esc(t.limit_price)}</span>
+                <span class="pill ${t.levels_source === 'pine' ? 'green' : 'amber'}">${esc(t.lane)} · ${esc(t.levels_source)}</span>
+              </div>
+              <div style="font-family:var(--font-mono); font-size:11px; margin-top:6px;">
+                Chase cap ${esc(t.max_chase_price)} · Stop ${esc(t.stop)} · T1 ${esc(t.target_1)}${t.target_2 ? ' · T2 ' + esc(t.target_2) : ''} · R:R ${esc(t.rr_at_limit)} · Risk $${esc(t.risk_usd)}
+              </div>
+              <div style="font-size:11px; margin-top:4px;">Good til ${esc(t.good_til)} · Cancel if ${esc(t.cancel_if)}${t.earnings_stance ? ' · Earnings ' + esc(t.earnings_stance) : ''}</div>
+              ${t.option_alternative && t.option_alternative.cost_usd ? `<div style="font-size:11px; margin-top:4px;">Option: ${esc(t.option_alternative.structure)} ${esc(t.option_alternative.expiration)} ${esc(t.option_alternative.long_strike)}${t.option_alternative.short_strike ? '/' + esc(t.option_alternative.short_strike) : ''} @ ${esc(t.option_alternative.mid_debit)} ($${esc(t.option_alternative.cost_usd)})</div>` : ''}
+            </div>`).join('') : '<div class="station-card" style="padding:16px;">No open tickets.</div>'}</div>`;
         }
 
         else if (activeTab === 'missed_moves') {

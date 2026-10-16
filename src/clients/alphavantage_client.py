@@ -58,7 +58,7 @@ def format_av_block(ticker: str) -> str:
     try:
         logger.info(f"[{ticker}] Fetching Alpha Vantage OVERVIEW...")
         params = {"function": "OVERVIEW", "symbol": ticker, "apikey": API_KEY}
-        resp = requests.get(BASE_URL, params=params, timeout=10)
+        resp = requests.get(BASE_URL, params=params, timeout=(3, 8))
         data = resp.json()
 
         if "Information" in data and "rate limit" in data.get("Information", "").lower():

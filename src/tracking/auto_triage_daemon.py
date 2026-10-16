@@ -76,6 +76,16 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
     )
     if has_report:
         return
+    try:
+        from src.logic.research_freshness import needs_fresh_research
+        from src.tracking.catalyst_ledger import held_book
+
+        fresh, why = needs_fresh_research(ticker, date_str, held=ticker in set(held_book()["equity"]))
+        if not fresh:
+            logger.info(f"[AutoTriageDaemon] {ticker}: {why}; no re-research.")
+            return
+    except Exception as e_fr:
+        logger.debug(f"freshness check skipped for {ticker}: {e_fr}")
     db_path = config.research_watch_db_path()
     if not db_path.exists():
         return
@@ -99,6 +109,43 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
         logger.info(f"🤖 [AutoTriageDaemon] Enqueued local research triage for {ticker}: {job_id}")
     except Exception as e:
         logger.warning(f"Failed to dispatch research for {ticker}: {e}")
+
+def _top_up_idle_deep_slots():
+    """Capacity governor: when a deep slot idles and nothing is queued, enqueue held names then today's queue names with a stale/missing plan."""
+    try:
+        from src.ui.services.research_queue import (
+            MAX_CONCURRENT_DEEP,
+            get_active_deep_research_count,
+            get_active_local_research_count,
+        )
+        from src.tracking.catalyst_ledger import held_book
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        db_path = config.research_watch_db_path()
+        if not db_path.exists():
+            return
+        with _db_lock:
+            with _get_connection() as conn:
+                queued = conn.execute("SELECT COUNT(*) FROM active_research_jobs WHERE status = 'QUEUED'").fetchone()[0]
+        idle = MAX_CONCURRENT_DEEP - get_active_deep_research_count() - get_active_local_research_count() - queued
+        if idle <= 0:
+            return
+        held = list(held_book()["equity"])
+        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+            pool = [r[0].strip().upper() for r in conn.execute("SELECT symbol FROM research_queue WHERE date = ?", (today,)) if r[0]]
+        for sym in list(dict.fromkeys(held + pool)):
+            if idle <= 0:
+                break
+            before = queued
+            _dispatch_deep_research_if_needed(sym, today)
+            with _db_lock:
+                with _get_connection() as conn:
+                    queued = conn.execute("SELECT COUNT(*) FROM active_research_jobs WHERE status = 'QUEUED'").fetchone()[0]
+            if queued > before:
+                idle -= 1
+    except Exception as e:
+        logger.debug(f"capacity governor note: {e}")
+
 
 _daemon_instance: Optional["AutoTriageDaemon"] = None
 _daemon_lock = threading.Lock()
@@ -339,6 +386,13 @@ class AutoTriageDaemon(threading.Thread):
                     except Exception as e_db:
                         logger.warning(f"[AutoTriageDaemon] Error updating attempt count for {msg_id}: {e_db}")
 
+            _top_up_idle_deep_slots()
+            try:
+                from src.logic.ticket_preopen import maybe_run_preopen
+
+                maybe_run_preopen()
+            except Exception as e_pre:
+                logger.debug(f"preopen note: {e_pre}")
             self.last_run_time = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
             logger.info(f"✅ [AutoTriageDaemon] Batch complete: {batch_count} alert(s) triaged.")
         except Exception as err:

@@ -2,7 +2,7 @@
 dossier's fundamental thesis; the LLM answers TAKE or PASS. TAKE opens a PAPER position (ACT: at the live price,
 WAIT: a limit order at the zone top that expires), managed to the plan's stop and T1 and scored in R after fees.
 
-Hard rules stay in code, not in the prompt: earnings inside EARNINGS_DAYS, open-position and aggregate-risk caps.
+Hard rules stay in code (src/tracking/trade_rules.py), the same ones the user trades by: R:R gate, 100 shares, no earnings blackout.
 The LLM can only say TAKE or PASS; it cannot resize or move levels. No broker order is ever sent from here.
 Agent results are reported apart from yours (decision_log), so 'is the machine worth trusting' is its own record.
 """
@@ -20,15 +20,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from src import config
-from src.tracking import rr_config
+from src.tracking import rr_config, trade_rules
 
 logger = logging.getLogger(__name__)
 
-MAX_OPEN = 8
-RISK_PCT = 1.0
-MAX_TOTAL_RISK_PCT = 5.0
-MAX_NOTIONAL_PCT = 10.0
-EARNINGS_DAYS = 5
 PENDING_DAYS = 10
 MAX_HOLD_DAYS = 30
 LOOK_COOLDOWN_S = 1800
@@ -108,10 +103,7 @@ def candidates(plans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def size(equity: float, entry: float, stop: float) -> int:
-    risk = entry - stop
-    if risk <= 0 or equity <= 0:
-        return 0
-    return max(0, math.floor(min(equity * RISK_PCT / 100 / risk, equity * MAX_NOTIONAL_PCT / 100 / entry)))
+    return trade_rules.SHARES_PER_TRADE if entry > stop > 0 and equity > 0 else 0
 
 
 def _r(entry: float, exit_px: float, stop: float) -> float:
@@ -162,7 +154,6 @@ def propose(plans: List[Dict[str, Any]], equity: float, earnings_days: Callable[
     ev, calls = [], 0
     with _conn() as conn:
         live = conn.execute("SELECT * FROM agent_order WHERE state IN ('PENDING','OPEN')").fetchall()
-        risk_open = sum(o["risk_usd"] or 0 for o in live)
         have = {o["plan_id"] for o in conn.execute("SELECT plan_id FROM agent_order").fetchall()}
         for p in candidates(plans):
             pid, tk = p["id"], p["ticker"]
@@ -176,14 +167,8 @@ def propose(plans: List[Dict[str, Any]], equity: float, earnings_days: Callable[
             qty = size(equity, entry, stop)
             ed = earnings_days(tk)
             veto = None
-            if len(live) >= MAX_OPEN:
-                veto = f"{MAX_OPEN} positions already open"
-            elif risk_open + qty * (entry - stop) > equity * MAX_TOTAL_RISK_PCT / 100:
-                veto = f"total open risk would pass {MAX_TOTAL_RISK_PCT}% of equity"
-            elif ed is not None and 0 <= ed <= EARNINGS_DAYS:
-                veto = f"earnings in {ed} days"
-            elif qty < 1:
-                veto = "position size under 1 share at 1% risk"
+            if qty < 1:
+                veto = "no valid entry above the stop"
             if veto:
                 conn.execute("INSERT INTO agent_look VALUES (?,?,?,?,?,?)", (pid, tk, "PASS", veto, time.time(), "rule"))
                 continue
@@ -208,7 +193,6 @@ def propose(plans: List[Dict[str, Any]], equity: float, earnings_days: Callable[
                                (pid, tk, p["date"], "OPEN" if act else "PENDING", "MARKET" if act else "LIMIT", entry, stop, p["target_1"], qty,
                                 round(qty * (entry - stop), 2), _now(), entry if act else None, _now() if act else None, why))
             o = dict(conn.execute("SELECT * FROM agent_order WHERE id=?", (cur.lastrowid,)).fetchone())
-            risk_open += o["risk_usd"]
             live.append(o)
             ev.append(_event(o, "AGENT_TAKE", f"{'bought' if act else 'limit order'} {qty} @ ${entry:.2f}", "WARN"))
     return ev

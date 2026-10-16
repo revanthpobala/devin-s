@@ -25,6 +25,7 @@ window.AppSwing = {
     const tickers = rawInput.split(/[,\s]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
     if (tickers.length === 0) return alert('Please enter a valid ticker');
 
+    const targetDate = dateOverride || null;
     const modeSelect = document.getElementById('mode-select');
     const mode = modeSelect ? modeSelect.value : 'full';
     const forceCheckbox = document.getElementById('research-force-checkbox');

@@ -196,15 +196,6 @@ def evaluate_target_on_zone_arrival(
             f"🏁 COMPLETED / TRIM — Price reached ${spot_price:.2f}, crossing Target 1 (${target_1:.2f}). "
             f"Do not chase new share entries here; lock gains on runners."
         )
-    elif days_to_earnings is not None and days_to_earnings <= 2:
-        verdict = "STAND_ASIDE"
-        verdict_label = "⚠️ EARNINGS BLACKOUT (<48H)"
-        is_actionable = False
-        reasons.append(f"Binary earnings catalyst in {days_to_earnings} day(s).")
-        playbook = (
-            f"⚠️ EARNINGS GATE VETO — Earnings report due in {days_to_earnings} day(s). "
-            f"Avoid establishing new equity swing positions ahead of overnight gap risk."
-        )
     elif in_zone:
         if live_rr >= 2.0 and side == "LONG":
             dw = watch_target.get("datawindow") or watch_target.get("_datawindow")
@@ -238,14 +229,6 @@ def evaluate_target_on_zone_arrival(
             is_no_entry = str(watch_target.get("entry_type") or "").upper() == "NO_ENTRY"
             is_gate_rejected = bool(watch_target.get("level_gate_rejected"))
             act_ok, act_reasons = check_is_actionable(gate_in, {"side": side.lower(), "entry": spot_price})
-            try:
-                from src.logic.level_validation import EARNINGS_BLOCK_DAYS, earnings_days_for
-                _ed = earnings_days_for(sym)
-                if _ed is not None and 0 <= _ed <= EARNINGS_BLOCK_DAYS:
-                    act_ok = False
-                    act_reasons.append(f"earnings in {_ed} trading days (blocked inside {EARNINGS_BLOCK_DAYS})")
-            except Exception:
-                pass
             if is_no_entry:
                 act_ok = False
                 act_reasons.append("entry_type is NO_ENTRY")

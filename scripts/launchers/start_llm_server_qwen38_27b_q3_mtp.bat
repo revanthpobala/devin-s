@@ -8,7 +8,7 @@ echo Hardware: Dual GPU (RTX 5070 Ti + RTX 5060 Ti) - Layer Split + Flash Attent
 echo ===================================================================
 cd /d "%~dp0"
 
-set "LLM_LOG=%TEMP%\llama_server_qwen38_q3_mtp.log"
+set "LLM_LOG=D:\My-Projects\Stock\logs\llama_server.log"
 if exist "%LLM_LOG%" del /f /q "%LLM_LOG%"
 
 REM -m: Qwen3.8-27B UD-Q3_K_XL (12.24 GB) - Fast Unsloth Dynamic Quant

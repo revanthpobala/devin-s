@@ -730,6 +730,8 @@ def run_research_worker(
             cmd.extend(["--ticker", ticker_u, "--job-id", job_id, "--tier", tier_u])
             if force:
                 cmd.extend(["--force", ticker_u])
+                if mode in ("full", "scrape_deep"):
+                    cmd.append("--skip-local")
             _run_subproc(cmd, f"Deep research phase [{tier_u}]")
 
             # Verify reports exist before declaring success

@@ -91,6 +91,10 @@ def main() -> None:
         logger.info("backend already running; exiting")
         return
     bc.update(pid=os.getpid(), started_at=time.time(), stop_requested=False, heartbeat=time.time())
+    from src.clients import net_health
+
+    net_health.install_dns_cache()
+    net_health.start_probe()
     start_daemons()
     logger.info("backend daemons started (pid %s)", os.getpid())
     seen: dict = {}

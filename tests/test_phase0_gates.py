@@ -76,15 +76,26 @@ def test_market_entry_keeps_at_market_rr():
     assert any("at-market R:R" in r for r in reasons)
 
 
-def test_earnings_rejects_enter_now_plan():
+def test_earnings_is_not_a_blackout_when_stance_declared():
+    plan = _plan(entry_zone_high=104.0, earnings_stance="hold through")
+    ok, reasons = _run(plan, _dw(Close=103.0), earn=10)
+    assert plan["earnings_stance"] == "HOLD_THROUGH"
+    assert not any("earnings" in r for r in reasons)
+
+
+def test_judge_plan_inside_earnings_window_must_declare_stance():
     plan = _plan(entry_zone_high=104.0)
-    ok, reasons = _run(plan, _dw(Close=103.0), earn=10)  # spot inside zone -> acts now
-    assert plan["deferred"] is False
-    assert any("earnings inside 21 bars" in r for r in reasons)
+    ok, reasons = _run(plan, _dw(Close=103.0), earn=10)
+    assert any("earnings_stance missing" in r for r in reasons)
 
 
-def test_earnings_is_flag_for_waiting_plan():
-    plan = _plan()
+def test_no_stance_needed_outside_window():
+    ok, reasons = _run(_plan(), _dw(), earn=40)
+    assert not any("earnings" in r for r in reasons)
+
+
+def test_earnings_days_ride_on_a_waiting_plan():
+    plan = _plan(earnings_stance="EXIT_BEFORE")
     ok, reasons = _run(plan, _dw(Close=103.0), earn=10)
     assert plan["deferred"] is True
     assert plan["earnings_days"] == 10

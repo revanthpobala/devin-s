@@ -25,7 +25,7 @@ def _detect_provider(use_remote: bool) -> tuple[bool, str]:
         os.getenv("META_AI_API_KEY") or os.getenv("OPENROUTER_KEY") or os.getenv("OPENROUTER_API_KEY")
     )
     if not has_key:
-        return False, "local-gpu (no remote key — forced sequential)"
+        return False, "local-gpu (no remote key)"
     meta_key = os.getenv("META_AI_API_KEY")
     if meta_key:
         model = os.getenv("META_LLM", "muse-spark-1.2-contributor")
@@ -118,17 +118,19 @@ def run_pass2(
         )
         return Pass2Result(response=response, ind_response="")
 
-    if will_use_remote:
+    from src import config
+
+    if will_use_remote or config.LLM_LOCAL_CONCURRENCY >= 2:
         logger.info(f"[{ticker}] Pass 2 — launching Models A & B CONCURRENTLY ({provider_label})...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             fut_a = executor.submit(
                 _call_model, system_prompt, user_prompt, image_paths_model_a,
-                date_str, True, "Model A (Pine Gem)", ticker, False,
+                date_str, will_use_remote, "Model A (Pine Gem)", ticker, False,
                 max_tool_batches_a, stats_a,
             )
             fut_b = executor.submit(
                 _call_model, system_prompt_independent, independent_user_prompt, image_paths_model_b,
-                date_str, True, "Model B (Independent)", ticker, True,
+                date_str, will_use_remote, "Model B (Independent)", ticker, True,
                 max_tool_batches_b, stats_b,
             )
             response = fut_a.result()

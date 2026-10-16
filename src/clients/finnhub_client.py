@@ -16,6 +16,8 @@ _fh_last_call = 0.0
 _fh_backoff_until = 0.0
 _fh_min_interval = 1.1  # ~54 calls/min safe headroom under the 60/min cap
 _fh_backoff_seconds = 10.0  # cool-down after a 429
+_fh_down_until = 0.0
+_fh_down_seconds = 180.0  # skip all calls after a network failure or 5xx
 
 _cache: dict = {}
 _cache_ts: dict = {}
@@ -47,19 +49,28 @@ def _trigger_fh_backoff():
         _fh_backoff_until = max(_fh_backoff_until, __import__("time").time() + _fh_backoff_seconds)
 
 
+def _mark_down():
+    global _fh_down_until
+    _fh_down_until = __import__("time").time() + _fh_down_seconds
+
+
 def _cached_get(url: str, ttl: int = 60) -> object:
     now = __import__("time").time()
     if url in _cache and (now - _cache_ts.get(url, 0)) < ttl:
         return _cache[url]
+    if now < _fh_down_until:
+        return None
     _fh_throttle()
     try:
-        r = requests.get(url, timeout=8)
+        r = requests.get(url, timeout=(3, 6))
         if r.status_code == 429:
             logger.warning("Finnhub 429 rate limit hit — backing off.")
             _trigger_fh_backoff()
             return None
         if r.status_code != 200:
             logger.warning(f"Finnhub returned {r.status_code}: {r.text[:120]}")
+            if r.status_code >= 500:
+                _mark_down()
             return None
         data = r.json()
         _cache[url] = data
@@ -67,7 +78,7 @@ def _cached_get(url: str, ttl: int = 60) -> object:
         return data
     except Exception as e:
         logger.warning(f"Finnhub request failed: {e}")
-        _trigger_fh_backoff()
+        _mark_down()
         return None
 
 

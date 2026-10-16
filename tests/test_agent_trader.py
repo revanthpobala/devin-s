@@ -51,10 +51,14 @@ def test_pass_opens_nothing_and_is_not_asked_twice():
     assert len(calls) == 1 and ag.summary()["open"] == [] and ag.by_plan()[1]["stance"] == "PASS"
 
 
-def test_earnings_veto_never_reaches_the_llm():
+def test_earnings_is_context_not_a_veto():
     calls = []
-    run([plan()], lambda s, u: calls.append(1) or take(s, u), ed=lambda t: 3)
-    assert calls == [] and ag.by_plan()[1]["reason"] == "earnings in 3 days"
+    run([plan()], lambda s, u: calls.append(u) or take(s, u), ed=lambda t: 3)
+    assert len(calls) == 1 and '"earnings_in_days": 3' in calls[0]
+
+
+def test_size_is_always_one_hundred_shares():
+    assert ag.size(100000.0, 100.0, 95.0) == 100 and ag.size(1000.0, 400.0, 380.0) == 100 and ag.size(100000.0, 100.0, 100.0) == 0
 
 
 def test_wait_plan_becomes_limit_order_that_fills_then_expires_unfilled_otherwise():

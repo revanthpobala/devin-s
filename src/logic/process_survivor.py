@@ -484,17 +484,6 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
             rr_low = False
         if triage.get("missed") or "chased" in flags or rr_low:
             blocked = True
-    # Plans that act now (already in zone) cannot carry earnings inside 21 bars; deferred plans are blocked at
-    # fire time instead, so only the in-zone case is cut before paid research.
-    if triage.get("in_zone") and triage.get("ticker"):
-        try:
-            from src.logic.level_validation import earnings_days_for
-
-            _ed = earnings_days_for(str(triage["ticker"]))
-            if _ed is not None and 0 <= _ed <= 21:
-                blocked = True
-        except Exception:
-            pass
     mode = triage.get("mode") or "NONE"
     is_reversion = mode.startswith("REVERSION")
     rev_raw = triage.get("rev")

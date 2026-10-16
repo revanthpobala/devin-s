@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src import config
 from src.logic.strike_validator import validate_strike_geometry
+from src.tracking import trade_rules
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 LEVEL_RR_FLOOR = config.LEVEL_RR_FLOOR
 LEVEL_ATR_STOP_MIN = config.LEVEL_ATR_STOP_MIN
 LEVEL_PINE_DRIFT_ATR = config.LEVEL_PINE_DRIFT_ATR
+T1_MAX_EM_MULT = trade_rules.T1_MAX_EXPECTED_MOVE_MULT
 
 
 def _dw_num(dw: Dict[str, Any], *keys: str) -> float:
@@ -370,7 +372,6 @@ def _compute_atr14_from_bars(ticker: str, date_str: str) -> float:
     return 0.0
 
 
-EARNINGS_BLOCK_DAYS = 5
 
 
 def earnings_days_for(ticker: str, date_str: Optional[str] = None, dw: Optional[Dict[str, Any]] = None) -> Optional[int]:
@@ -565,12 +566,8 @@ def validate_levels(
         if atr > 0 and fill > 0:
             pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
             from src.tracking.rr_config import STOP_ATR_MIN
-            if pine_stop > 0:
-                max_allowed_stop = pine_stop
-                basis = "Pine stop"
-            else:
-                max_allowed_stop = fill - STOP_ATR_MIN * atr
-                basis = f"fill - {STOP_ATR_MIN:.2f}*ATR"
+            max_allowed_stop = trade_rules.max_allowed_stop(fill, atr, pine_stop)
+            basis = "Pine stop" if pine_stop > 0 else f"fill - {STOP_ATR_MIN:.2f}*ATR"
             if stop > max_allowed_stop + 0.005:
                 reasons.append(
                     f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} (must be <= {basis})"
@@ -627,24 +624,28 @@ def validate_levels(
         if exp_move_pct > 1.0:
             exp_move_pct = exp_move_pct / 100.0
         if close_px > 0 and exp_move_pct > 0 and target_1 > 0:
-            max_t1 = close_px * (1.0 + 1.5 * exp_move_pct)
+            max_t1 = close_px * (1.0 + T1_MAX_EM_MULT * exp_move_pct)
             if target_1 > round(max_t1 + 0.05, 2):
                 reasons.append(
                     f"target_1 ${target_1:.2f} exceeds 1.5x 21b expected move ceiling ${max_t1:.2f}"
                 )
 
-    # ── 6. Earnings inside 21 bars ─────────────────────────────
-    # Plans that act now are rejected; plans that wait (deferred limit / untriggered breakout) carry the days as a
-    # flag and are blocked at fire time inside EARNINGS_BLOCK_DAYS instead (watch cycle / zone arrival).
+    # ── 6. Earnings: a stance, not a blackout (src/tracking/trade_rules.py) ──
+    # Entries are taken through earnings. The days always ride on the plan; a judge plan inside the window must name
+    # its stance (HOLD_THROUGH / EXIT_BEFORE / EARNINGS_PLAY), backed by the earnings packet it was shown.
     kind = str(plan.get("kind") or "NEW").upper()
     if kind == "NEW" and ticker:
         try:
             days_to_earnings = earnings_days_for(ticker, date_str, dw)
             plan["earnings_days"] = days_to_earnings
-            if days_to_earnings is not None and 0 <= days_to_earnings <= 21 and not plan["deferred"]:
-                reasons.append(
-                    f"earnings inside 21 bars ({days_to_earnings} trading bars away) — fail for NEW"
-                )
+            if trade_rules.earnings_in_window(days_to_earnings):
+                stance = trade_rules.normalize_stance(plan.get("earnings_stance"))
+                plan["earnings_stance"] = stance
+                if is_judge and has_shares_entry and stance is None:
+                    reasons.append(
+                        f"earnings_stance missing: earnings {days_to_earnings} trading bars away, "
+                        f"plan must declare {'/'.join(trade_rules.EARNINGS_STANCES)}"
+                    )
         except Exception as e:
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")
 

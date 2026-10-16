@@ -175,6 +175,12 @@ if __name__ == "__main__":
         help="Tracking job ID in SQLite active_research_jobs.",
     )
 
+    parser.add_argument(
+        "--skip-local",
+        action="store_true",
+        help="Local triage already ran for this job; do not repeat it before deep research.",
+    )
+
     args = parser.parse_args()
 
     target_date = args.date
@@ -191,7 +197,7 @@ if __name__ == "__main__":
     # --force requires a local-research pass that routes the ticker into the
     # force subdir BEFORE deep research runs. If no explicit target/ticker is
     # given, force the listed tickers through local research first.
-    if force_tickers:
+    if force_tickers and not args.skip_local:
         from run_local_research import run_local_research
 
         run_local_research(target_date, target_ticker, force_tickers)

@@ -739,25 +739,10 @@ def evaluate_technical_coiling(
 
 
 def check_earnings_blackout(ticker: str, window_days: Optional[int] = None) -> bool:
-    """Gate 4: Returns True if earnings are safely > window_days away (default from config, 14 days).
-    Fail-closed: Returns False if within window_days, if earnings date is unknown/unavailable,
-    or on any error."""
-    if window_days is None:
-        window_days = getattr(config, "SCREENER_EARNINGS_BLACKOUT_DAYS", 14)
-    try:
-        from src.clients.earnings_client import get_next_earnings_days
+    """Earnings never disqualify a candidate (trade_rules); the stance is declared in the plan. Always True."""
+    from src.tracking import trade_rules
 
-        days = get_next_earnings_days(ticker)
-        if days is None:
-            logger.info(f"[{ticker}] Earnings date unknown: fail-closed blackout triggered. Disqualified.")
-            return False
-        if days <= window_days:
-            logger.info(f"[{ticker}] Earnings blackout triggered: reports in {days} days (<= {window_days}). Disqualified.")
-            return False
-        return True
-    except Exception as e:
-        logger.warning(f"[{ticker}] Earnings lookup failed ({e}): fail-closed blackout triggered. Disqualified.")
-        return False
+    return not trade_rules.earnings_blocks_entry(None)
 
 
 def print_funnel_summary(funnel_tracker: Dict[str, Any]):

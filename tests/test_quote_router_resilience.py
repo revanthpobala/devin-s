@@ -41,7 +41,7 @@ def test_yahoo_breaker_skips_calls_when_open():
 
 
 def test_alpaca_bad_print_far_from_bid_ask_is_replaced_by_mid(monkeypatch):
-    import requests
+    from src.clients import quote_router
 
     r = QuoteRouter()
     monkeypatch.setenv("ALPACA_API_KEY", "k")
@@ -54,7 +54,7 @@ def test_alpaca_bad_print_far_from_bid_ask_is_replaced_by_mid(monkeypatch):
             return {"AAPL": {"latestTrade": {"p": 361.26}, "latestQuote": {"bp": 342.8, "ap": 343.0},
                              "dailyBar": {}, "prevDailyBar": {"c": 341.27}}}
 
-    monkeypatch.setattr(requests, "get", lambda *a, **k: Resp())
+    monkeypatch.setattr(quote_router._ALPACA_SESSION, "get", lambda *a, **k: Resp())
     q = r._fetch_alpaca_snapshot_single("AAPL")
     assert q and abs(q.last_price - 342.9) < 0.01
 

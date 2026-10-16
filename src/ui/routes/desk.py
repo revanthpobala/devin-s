@@ -193,6 +193,30 @@ def get_today(force: bool = False):
     return today_service.get_today_payload(force=force)
 
 
+@router.get("/books")
+def get_books():
+    from src.tracking.book_scorecard import book_stats
+    return book_stats()
+
+
+@router.get("/tickets")
+def get_tickets(days: int = 10):
+    """Order tickets from the last N calendar days that are still inside good-til, newest first."""
+    root = config.BASE_DIR / "reports"
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = []
+    for i in range(max(1, min(days, 21))):
+        d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        for f in sorted((root / d).glob("*_ticket.json")) if (root / d).exists() else []:
+            try:
+                t = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if str(t.get("good_til") or "") >= today:
+                out.append(t)
+    return {"tickets": out}
+
+
 from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior
 
 # setup_lane -> triage reason, so the PB-split priors can be resolved from a ledger row.

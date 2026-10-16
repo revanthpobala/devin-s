@@ -403,7 +403,12 @@ class TVScraper:
 
             logger.info("Waiting for chart canvas to render...")
             try:
-                page.wait_for_selector("canvas", timeout=30000)
+                try:
+                    page.wait_for_selector("canvas", timeout=30000)
+                except Exception:
+                    logger.warning(f"[{symbol}] canvas not rendered in 30s; reloading the chart once.")
+                    page.reload(wait_until="domcontentloaded")
+                    page.wait_for_selector("canvas", timeout=30000)
             except Exception as e:
                 error_screenshot = self.screenshots_dir / f"{symbol}_error.png"
                 try:

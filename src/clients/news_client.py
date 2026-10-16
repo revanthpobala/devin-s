@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -294,3 +294,75 @@ def get_ticker_news(symbol: str, days: int = 2) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to fetch news for {symbol}: {e}")
         return default_result
+
+
+def _alpaca_news_text(symbol: str, days: int = 3, limit: int = 15) -> str:
+    from datetime import datetime, timedelta
+
+    if not ALPACA_KEY or not ALPACA_SECRET:
+        return ""
+    end = datetime.utcnow()
+    params = {
+        "symbols": symbol,
+        "start": (end - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": limit,
+    }
+    headers = {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
+    try:
+        r = requests.get(f"{DATA_HOST}/v1beta1/news", headers=headers, params=params, timeout=(3, 5))
+        if r.status_code != 200:
+            return ""
+        return "".join(
+            f"[{(a.get('created_at') or '')[:10]}] {a.get('headline', '')}\nSummary: {a.get('summary', '')}\n\n"
+            for a in r.json().get("news", [])
+        )
+    except Exception as e:
+        logger.warning(f"Alpaca news fetch failed for {symbol}: {e}")
+        return ""
+
+
+def _yahoo_news_text(symbol: str, limit: int = 10) -> str:
+    try:
+        import yfinance as yf
+
+        out = ""
+        for item in (yf.Ticker(symbol).news or [])[:limit]:
+            c = item.get("content") or item
+            title = c.get("title") or ""
+            if title:
+                out += f"[{(c.get('pubDate') or '')[:10]}] {title}\nSummary: {c.get('summary') or ''}\n\n"
+        return out
+    except Exception as e:
+        logger.warning(f"Yahoo news fetch failed for {symbol}: {e}")
+        return ""
+
+
+def get_fresh_news(ticker: str, date_str: Optional[str] = None, days: int = 3) -> str:
+    """Ticker news for deep research: Finnhub + Alpaca, Yahoo only when both are empty."""
+    sym = (ticker or "").upper().strip()
+    parts = [t for t in (_fetch_finnhub_news(sym, days), _alpaca_news_text(sym, days)) if t]
+    if not parts:
+        y = _yahoo_news_text(sym)
+        parts = [y] if y else []
+    return "\n".join(parts)
+
+
+def get_macro_news(date_str: Optional[str] = None) -> str:
+    """Macro timeline (CPI/FOMC/NFP) plus Finnhub general market headlines."""
+    parts = []
+    try:
+        from src.clients.macro_client import get_upcoming_macro_events
+
+        parts.append(get_upcoming_macro_events(date_str))
+    except Exception as e:
+        logger.debug(f"Macro timeline failed: {e}")
+    try:
+        from src.clients.finnhub_client import format_news_context, get_general_news
+
+        gen = format_news_context(get_general_news(), days=2, max_items=8)
+        if gen:
+            parts.append(gen)
+    except Exception as e:
+        logger.debug(f"Finnhub general news failed: {e}")
+    return "\n\n".join(p for p in parts if p)

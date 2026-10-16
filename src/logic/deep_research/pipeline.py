@@ -413,7 +413,9 @@ def run_deep_research(
 
     gem_text = original_gem_path.read_text(encoding="utf-8")
     response_text = response_path.read_text(encoding="utf-8")
-    bible_text = bible_path.read_text(encoding="utf-8")
+    from src.logic.deep_research.bible_slice import slim_bible
+
+    bible_text = slim_bible(bible_path.read_text(encoding="utf-8"))
     ponytail_text = ponytail_path.read_text(encoding="utf-8") if ponytail_path.exists() else ""
     independent_gem_text = independent_gem_path.read_text(encoding="utf-8") if independent_gem_path.exists() else ""
     independent_response_text = independent_response_path.read_text(encoding="utf-8") if independent_response_path.exists() else ""
@@ -656,6 +658,14 @@ def run_deep_research(
         from src.plugins.schwab_plugin import format_active_position_block
         pre_ctx = prefetch_deep_research_context(ticker, date_str)
         preloaded_block = build_preloaded_block(pre_ctx)
+        try:
+            from src.logic.prefetch_facts import build_prefetch_block
+
+            _pf = build_prefetch_block(ticker, float(dw_dict.get("close") or dw_dict.get("Close") or 0) or None)
+            if _pf:
+                preloaded_block += "\n\n" + _pf
+        except Exception as e_pf:
+            logger.debug(f"[{ticker}] prefetch facts skipped: {e_pf}")
         active_pos_block = format_active_position_block(ticker)
 
         prefetch_sec = round(time.time() - t_prefetch_start, 3)
