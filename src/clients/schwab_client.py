@@ -9,6 +9,8 @@ import httpx
 import schwab
 from dotenv import load_dotenv
 
+import threading
+
 logger = logging.getLogger(__name__)
 
 # Load env in case it's run independently
@@ -22,6 +24,44 @@ TOKEN_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "schwab
 _SCHWAB_CLIENT = None
 _SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
 _SCHWAB_429_COOLDOWN_UNTIL = 0.0
+
+
+class SchwabTokenBucket:
+    """
+    Intelligent rate limiter to enforce Schwab API quotas (~120 req/min).
+    Paces requests across all threads and processes smoothly (max ~3.5 req/sec),
+    preventing burst-induced HTTP 429 and connection timeouts.
+    """
+    def __init__(self, rate_per_sec: float = 3.5, burst: int = 6):
+        self.rate = rate_per_sec
+        self.capacity = float(burst)
+        self.tokens = float(burst)
+        self.last_check = time.time()
+        self._lock = threading.Lock()
+
+    def acquire(self, timeout: float = 15.0) -> bool:
+        start_t = time.time()
+        while True:
+            with self._lock:
+                now = time.time()
+                elapsed = now - self.last_check
+                self.last_check = now
+                self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    return True
+
+                needed = 1.0 - self.tokens
+                wait_sec = max(0.02, needed / self.rate)
+
+            if (time.time() - start_t) + wait_sec > timeout:
+                return False
+            time.sleep(min(wait_sec, 0.15))
+
+
+_SCHWAB_RATE_LIMITER = SchwabTokenBucket(rate_per_sec=3.5, burst=6)
+
 
 def get_schwab_client(force_new: bool = False):
     global _SCHWAB_CLIENT, _SCHWAB_AUTH_COOLDOWN_UNTIL
@@ -41,7 +81,21 @@ def get_schwab_client(force_new: bool = False):
             SCHWAB_API_CLIENT_SECRET
         )
         if hasattr(_SCHWAB_CLIENT, "session"):
-            _SCHWAB_CLIENT.session.timeout = httpx.Timeout(15.0, connect=5.0, read=12.0, write=5.0)
+            _SCHWAB_CLIENT.session.timeout = httpx.Timeout(20.0, connect=10.0, read=15.0, write=5.0)
+            if not getattr(_SCHWAB_CLIENT.session, "_rate_limiter_wrapped", False):
+                _orig_send = _SCHWAB_CLIENT.session.send
+
+                def _paced_send(request, *args, **kwargs):
+                    _SCHWAB_RATE_LIMITER.acquire()
+                    resp = _orig_send(request, *args, **kwargs)
+                    if getattr(resp, "status_code", None) == 429:
+                        global _SCHWAB_429_COOLDOWN_UNTIL
+                        _SCHWAB_429_COOLDOWN_UNTIL = time.time() + 3.0
+                        logger.warning("Schwab API returned HTTP 429 (rate limit exceeded); throttling for 3s.")
+                    return resp
+
+                _SCHWAB_CLIENT.session.send = _paced_send
+                _SCHWAB_CLIENT.session._rate_limiter_wrapped = True
         _SCHWAB_AUTH_COOLDOWN_UNTIL = 0.0
         return _SCHWAB_CLIENT
     except FileNotFoundError:

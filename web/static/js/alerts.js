@@ -283,7 +283,6 @@ window.AppAlerts = {
         const dateStr = r.date || this._drSelectedDate;
         const v = (r.verdict || 'PENDING').toUpperCase();
         const vClass = v === 'ENTER' ? 'in_zone' : (v === 'STALK' ? 'stalking' : 'danger');
-        const conv = r.conviction !== undefined && r.conviction !== null ? `${r.conviction}/10` : '--';
 
         const spotVal = Number(r.spot_price || 0);
         const spotStr = spotVal > 0 ? `$${spotVal.toFixed(2)}` : '--';
@@ -315,9 +314,7 @@ window.AppAlerts = {
               ${dateStr}
             </td>
             <td style="padding:10px 10px; text-align:center;">
-              <span class="badge ${vClass}" style="font-size:10.5px; font-weight:800; padding:2px 7px;">
-                ${v} (${conv})
-              </span>
+              ${(window.AppUtils && window.AppUtils.tradeStateBadge ? window.AppUtils.tradeStateBadge : () => '')(r.trade_state, 10.5) || `<span class="badge ${vClass}" style="font-size:10.5px; font-weight:800; padding:2px 7px;">${v}</span>`}
             </td>
             <td style="padding:10px 10px; text-align:right; font-family:var(--font-mono); font-size:12px; font-weight:700;">
               ${spotStr}
@@ -2662,7 +2659,7 @@ window.AppAlerts = {
             <button class="daily-dr-chip" onclick="AppSwing.openReportModal('${r.date}', '${r.ticker}')" title="Open ${r.ticker} (${r.date}) Deep Research Dossier · ${r.options_summary || ''}">
               <span>📑</span>
               <strong style="color:var(--text-main); font-size:12px;">${r.ticker}</strong>
-              <span class="badge ${vClass}" style="font-size:9.5px; padding:1px 5px;">${r.verdict} (${r.conviction}/10)</span>
+              ${(window.AppUtils && window.AppUtils.tradeStateBadge ? window.AppUtils.tradeStateBadge : () => '')(r.trade_state, 9.5) || `<span class="badge ${vClass}" style="font-size:9.5px; padding:1px 5px;">${r.verdict}</span>`}
             </button>
           `;
         }).join('');
@@ -2896,8 +2893,8 @@ window.AppAlerts = {
         const vClass = rep.verdict === 'ENTER' ? 'in_zone' : (rep.verdict === 'STALK' ? 'stalking' : 'danger');
         aiBadge = `
           <div style="display:inline-flex; flex-direction:column; align-items:center; gap:2px;">
-            <span class="badge ${vClass}" style="font-size:11px; font-weight:900; cursor:pointer;" onclick="event.stopPropagation(); AppSwing.openReportModal('${rep.date || dateKey}', '${sym}')" title="Deep Research Senior-PM Arbitration Verdict: ${rep.verdict} (Conviction: ${rep.conviction}/10)">
-              🏆 ${rep.verdict} (${rep.conviction}/10)
+            <span class="badge ${vClass}" style="font-size:11px; font-weight:900; cursor:pointer;" onclick="event.stopPropagation(); AppSwing.openReportModal('${rep.date || dateKey}', '${sym}')" title="${(rep.trade_state && rep.trade_state.detail) || rep.verdict}">
+              🏆 ${(rep.trade_state && rep.trade_state.label) || rep.verdict}
             </span>
             <span style="font-size:9px; font-family:var(--font-mono); color:var(--cyan); font-weight:800;">Deep Research</span>
           </div>

@@ -314,7 +314,13 @@ def _score_and_sort_queued_jobs(queued_rows: list) -> list:
         key = deep_research_sort_key(rec)
         scored_jobs.append((key, job))
 
-    scored_jobs.sort(key=lambda x: x[0], reverse=True)
+    try:
+        from src.tracking.catalyst_ledger import held_book
+
+        held = set(held_book()["equity"])
+    except Exception:
+        held = set()
+    scored_jobs.sort(key=lambda x: (str(x[1]["ticker"]).upper() in held, x[0]), reverse=True)
     return [job for _, job in scored_jobs]
 
 

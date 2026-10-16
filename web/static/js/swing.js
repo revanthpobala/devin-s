@@ -1927,9 +1927,8 @@ window.AppSwing = {
     // 1. Verdict & Status
     const vBadge = document.getElementById('pane-verdict-badge');
     const verdict = (wl.verdict || 'ENTER').toUpperCase();
-    const conv = wl.conviction ? ` (${wl.conviction}/10)` : '';
     if (vBadge) {
-      vBadge.textContent = `${verdict}${conv}`;
+      vBadge.textContent = verdict;
       const vClass = (window.AppUtils && typeof window.AppUtils.getVerdictBadgeClass === 'function')
         ? window.AppUtils.getVerdictBadgeClass(verdict)
         : 'in_zone';
@@ -2147,7 +2146,7 @@ window.AppSwing = {
     }
 
     const verdict = (wl.verdict || 'ENTER').toUpperCase();
-    const conv = wl.conviction ? `${wl.conviction}/10` : '--';
+    const conv = (wl.trade_state && wl.trade_state.label) || '--';
     const status = (wl.status || 'STALKING').toUpperCase();
     const statusClass = (status === 'IN_ZONE' || status === 'IN_TRADE') ? 'pill green' : (status === 'INVALIDATED' ? 'pill red' : 'pill amber');
     const optPlan = wl.options_plan || {};
@@ -2186,7 +2185,7 @@ window.AppSwing = {
               <span style="font-size:20px; font-weight:800; color:var(--text-main);">$${ticker} SUGGESTED TRADE PLAN</span>
               <span class="badge in_zone" style="font-size:12px; font-weight:800; padding:2px 8px;">${verdict}</span>
               <span class="${statusClass}" style="font-size:11px; font-weight:800; padding:2px 8px;">${status}</span>
-              <span style="font-size:12px; color:var(--text-muted); font-weight:600;">Conviction: <strong>${conv}</strong></span>
+              <span style="font-size:12px; color:var(--text-muted); font-weight:600;">State: <strong>${conv}</strong></span>
               ${gateRejected ? `<span class="badge" style="border-color:rgba(217,119,6,0.6); color:#d97706; font-size:10px; font-weight:800;">⚠️ GATE REJECTED</span>` : ''}
             </div>
             <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">

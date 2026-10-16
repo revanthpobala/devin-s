@@ -215,11 +215,22 @@ def extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
+    from src.logic.trade_state import trade_state
+
+    dbt = db_target or {}
+    state = trade_state(
+        dbt.get("last_price"), *(entry_zone[:2] if len(entry_zone) >= 2 else (None, None)), stop, t1,
+        dbt.get("atr_at_signal"), side=levels_data.get("side") or dbt.get("side") or "LONG",
+        gate_rejected=bool(levels_data.get("level_gate_rejected")), reasons=levels_data.get("gate_reasons"),
+        fade=dbt.get("fade"),
+    )
+
     return {
         "ticker": ticker_u,
         "date": date,
         "verdict": verdict,
         "conviction": conviction,
+        "trade_state": state,
         "options_summary": options_summary,
         "entry_zone": entry_zone,
         "tactical_stop": stop,

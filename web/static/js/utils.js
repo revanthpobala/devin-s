@@ -3,6 +3,16 @@
  */
 window.AppUtils = {
   /**
+   * ACTIONABLE / ARMED / NO TRADE badge from the server's measured trade_state.
+   */
+  tradeStateBadge(ts, size) {
+    if (!ts || !ts.state) return '';
+    const cls = ts.state === 'ACTIONABLE' ? 'in_zone' : (ts.state === 'ARMED' ? 'stalking' : 'danger');
+    const e = (x) => String(x || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    return `<span class="badge ${cls}" style="font-size:${size || 10}px; font-weight:800; padding:1px 6px;" title="${e(ts.detail)}">${e(ts.label)}</span>`;
+  },
+
+  /**
    * Escape HTML entities safely
    */
   escapeHtml(str) {

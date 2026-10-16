@@ -580,15 +580,15 @@ def get_realtime_quote(ticker: str) -> Optional[str]:
     except Exception as e_qr:
         logger.debug(f"[{ticker}] QuoteRouter format_quote_text failed: {e_qr}")
 
-    # 1. Try Alpaca Realtime Quote
-    result = _alpaca_quote(ticker)
-    if result:
-        return result
-        
-    # 2. Try Tastytrade Realtime Quote
+    # 1. Try Tastytrade Realtime Quote
     tt_result = _tastytrade_quote(ticker)
     if tt_result:
         return tt_result
+
+    # 2. Try Alpaca Realtime Quote
+    result = _alpaca_quote(ticker)
+    if result:
+        return result
 
     # 3. Fallback to yfinance
     logger.info(f"[{ticker}] Falling back to yfinance for realtime quote.")

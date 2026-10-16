@@ -6,12 +6,12 @@ echo ======================================================================
 echo   Starting Edge Scanner Real-Time Intraday Engine
 echo ======================================================================
 
-echo [1/2] Refreshing Active Coiled Universe from Schwab 1000...
-python scripts\generate_edge_universe.py --limit 150
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to generate universe CSV!
-    pause
-    exit /b %ERRORLEVEL%
+if exist "edge_scanner_tmp\data\universe.csv" (
+    echo [1/2] Existing universe found. Launching Edge Scanner immediately...
+    start /b python scripts\generate_edge_universe.py --limit 150 > logs\edge_universe_bg.log 2>&1
+) else (
+    echo [1/2] Generating initial Edge Scanner universe from Schwab 1000...
+    python scripts\generate_edge_universe.py --limit 150
 )
 
 echo.

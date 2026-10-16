@@ -126,39 +126,66 @@ def start_edge_scanner_process():
         return {"status": "missing", "path": str(run_live)}
 
     universe = edge_dir / "data" / "universe.csv"
-    if not universe.exists():
-        append_log("⚠️ [Startup] Edge Scanner universe missing; running generate_edge_universe.py first...")
+
+    def _launch_scanner():
+        cmd = [sys.executable, "scripts/run_live.py", "--log-level", "WARNING"]
+        state.EDGE_SCANNER_PROCESS = subprocess.Popen(
+            cmd,
+            cwd=str(edge_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        def _pipe_logs(proc):
+            try:
+                for line in proc.stdout:
+                    l_str = line.strip()
+                    if l_str:
+                        append_log(f"[EdgeScanner] {l_str}")
+            finally:
+                proc.wait()
+                append_log(f"⚠️ Edge Scanner stopped (code {proc.returncode}).")
+
+        threading.Thread(target=_pipe_logs, args=(state.EDGE_SCANNER_PROCESS,), daemon=True).start()
+
+    if universe.exists():
+        # Universe exists: launch Edge Scanner immediately with zero startup delay
+        _launch_scanner()
+        # If universe is older than 4 hours, refresh silently in the background
         try:
-            subprocess.run(
-                [sys.executable, "scripts/generate_edge_universe.py", "--limit", "150"],
-                cwd=str(config.BASE_DIR), capture_output=True, text=True, timeout=60,
-            )
-        except Exception as e_uni:
-            append_log(f"⚠️ [Startup] Universe pre-gen failed ({e_uni}); continuing with existing universe.")
+            if (time.time() - os.path.getmtime(universe)) > 14400:
+                def _bg_refresh():
+                    try:
+                        subprocess.run(
+                            [sys.executable, "scripts/generate_edge_universe.py", "--limit", "150"],
+                            cwd=str(config.BASE_DIR), capture_output=True, text=True, timeout=120,
+                        )
+                    except Exception as e_bg:
+                        logger.debug(f"Background universe refresh skipped: {e_bg}")
+                threading.Thread(target=_bg_refresh, daemon=True, name="EdgeUniverseBackgroundRefresh").start()
+        except Exception:
+            pass
+        return {"status": "started", "pid": state.EDGE_SCANNER_PROCESS.pid if state.EDGE_SCANNER_PROCESS else None}
+    else:
+        # First-time initial generation: run in background thread and launch when done
+        def _bg_init_and_launch():
+            append_log("⏳ [Startup] Edge Scanner universe missing; generating in background...")
+            try:
+                subprocess.run(
+                    [sys.executable, "scripts/generate_edge_universe.py", "--limit", "150"],
+                    cwd=str(config.BASE_DIR), capture_output=True, text=True, timeout=120,
+                )
+            except Exception as e_uni:
+                append_log(f"⚠️ [Startup] Universe pre-gen failed ({e_uni}).")
+            if universe.exists():
+                _launch_scanner()
+                append_log("⚡ [Startup] Edge Scanner started on port 7777.")
 
-    cmd = [sys.executable, "scripts/run_live.py", "--log-level", "WARNING"]
-    state.EDGE_SCANNER_PROCESS = subprocess.Popen(
-        cmd,
-        cwd=str(edge_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    def _pipe_logs(proc):
-        try:
-            for line in proc.stdout:
-                l_str = line.strip()
-                if l_str:
-                    append_log(f"[EdgeScanner] {l_str}")
-        finally:
-            proc.wait()
-            append_log(f"⚠️ Edge Scanner stopped (code {proc.returncode}).")
-
-    threading.Thread(target=_pipe_logs, args=(state.EDGE_SCANNER_PROCESS,), daemon=True).start()
-    return {"status": "started", "pid": state.EDGE_SCANNER_PROCESS.pid}
+        threading.Thread(target=_bg_init_and_launch, daemon=True, name="EdgeScannerInitLaunch").start()
+        return {"status": "initializing_in_background"}
 
 
 def stop_edge_scanner_process():

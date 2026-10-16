@@ -306,6 +306,9 @@ class ContinuousScreenerDaemon(threading.Thread):
             save_survivors_manifest,
         )
 
+        from src.tracking.screener_gate import set_screener_busy
+        set_screener_busy(True, duration_seconds=180.0, reason="Continuous Schwab 1000 screener scan")
+
         with self._lock:
             self.is_scanning = True
             self.last_status = "Scanning 983 Schwab 1000 constituents live..."
@@ -378,6 +381,7 @@ class ContinuousScreenerDaemon(threading.Thread):
                 self.last_error = None
                 self.is_scanning = False
 
+            set_screener_busy(False)
             logger.info(f"✅ [ContinuousScreener] {self.last_status}")
             return {
                 "success": True,
@@ -396,6 +400,7 @@ class ContinuousScreenerDaemon(threading.Thread):
                 self.last_status = f"Error in scan cycle: {err_msg[:80]}"
                 self.is_scanning = False
                 self.next_scan_time = (datetime.now() + timedelta(seconds=min(self.poll_interval, 120))).isoformat()
+            set_screener_busy(False)
             return {"success": False, "error": err_msg}
 
     def run(self):

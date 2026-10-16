@@ -272,6 +272,31 @@ def get_regime_lane():
         return {"lane": {"available": False}, "protection": None, "error": f"{type(e).__name__}: {e}"}
 
 
+@router.get("/universe-sweep")
+def get_universe_sweep():
+    """Latest universe sweep: market breadth, sector trend, pullback candidates queued for scrape."""
+    from src.tracking import universe_sweep
+    return universe_sweep.latest()
+
+
+@router.post("/universe-sweep")
+def run_universe_sweep(queue: bool = True):
+    """Start a sweep in the background (no-op while one is running)."""
+    from src.tracking import universe_sweep
+    return {"started": universe_sweep.start_background(queue)}
+
+
+@router.get("/miss-board")
+def get_miss_board(days: int = 21):
+    """Every researched name since its research bar: zone touch, stop/target, and why it was not taken."""
+    from src.tracking import miss_board
+    try:
+        return miss_board.board(days)
+    except Exception as e:
+        logger.error(f"miss board failed: {type(e).__name__} {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+
+
 @router.get("/thesis-ledger")
 def get_thesis_ledger():
     """Paper thesis ledger: theses, paper tranches, last research update, scores vs SPY."""
@@ -295,6 +320,13 @@ def seed_thesis_ledger(body: ThesisSeedBody):
         return thesis_ledger.seed(body.tickers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@router.post("/thesis-ledger/remove")
+def remove_thesis_ledger(body: ThesisSeedBody):
+    """Remove USER theses that have no paper tranches yet."""
+    from src.tracking import thesis_ledger
+    return {"removed": thesis_ledger.remove(body.tickers)}
 
 
 @router.get("/deploy-plan")

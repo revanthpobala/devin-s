@@ -187,6 +187,9 @@ def due_jobs(now_et: datetime, ctl: Dict[str, Any]) -> List[str]:
                 jobs.append("thesis")
         except Exception as e:
             logger.warning("thesis due check failed: %s", e)
+    sweep_retry = now_et.timestamp() - float(ctl.get("last_sweep_attempt_ts") or 0) > 3600
+    if after_close and ctl.get("last_sweep_date") != day and sweep_retry:
+        jobs.append("sweep")
     return jobs
 
 
@@ -207,6 +210,12 @@ def tick() -> None:
                 if job == "backup":
                     res = backup_databases(day)
                     bc.update(last_backup_date=day, last_backup=res)
+                elif job == "sweep":
+                    from src.tracking import universe_sweep
+
+                    bc.update(last_sweep_attempt_ts=time.time())
+                    res = universe_sweep.run()
+                    bc.update(last_sweep_date=day if res["with_bars"] else None)
                 elif job == "thesis":
                     from src.tracking import thesis_ledger
 

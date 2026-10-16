@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,6 +133,7 @@ def _get_active_processes() -> List[Dict[str, Any]]:
 
 
 _PROBE_CACHE: Dict[str, Any] = {}
+_PROBE_REFRESHING: set = set()
 
 
 def _cached_probe(key: str, ttl_s: float, fn):
@@ -140,9 +142,21 @@ def _cached_probe(key: str, ttl_s: float, fn):
     now_ts = time.time()
     if hit is not None and now_ts - hit[0] < ttl_s:
         return hit[1]
-    val = fn()
-    _PROBE_CACHE[key] = (now_ts, val)
-    return val
+    if hit is None:
+        val = fn()
+        _PROBE_CACHE[key] = (now_ts, val)
+        return val
+    if key not in _PROBE_REFRESHING:
+        _PROBE_REFRESHING.add(key)
+
+        def _refresh():
+            try:
+                _PROBE_CACHE[key] = (time.time(), fn())
+            finally:
+                _PROBE_REFRESHING.discard(key)
+
+        threading.Thread(target=_refresh, daemon=True).start()
+    return hit[1]
 
 
 def _probe_llm_online() -> bool:
@@ -284,6 +298,9 @@ def get_system_status():
 
     schwab_status = slow["schwab_status"]
 
+    from src.tracking.screener_gate import get_screener_gate_status
+    screener_gate = get_screener_gate_status()
+
     return {
         "time_mt": now_mt.strftime("%Y-%m-%d %I:%M:%S %p MT"),
         "time_et": now_et.strftime("%Y-%m-%d %I:%M:%S %p ET"),
@@ -293,6 +310,7 @@ def get_system_status():
         "llm_online": llm_online,
         "tasty_auth": tasty_auth,
         "schwab_status": schwab_status,
+        "screener_gate": screener_gate,
         "tracker_running": tracker_running,
         "tracker_pid": tracker_pid,
         "tasty_alert_count": tasty_count,
@@ -308,9 +326,12 @@ def get_system_status():
 
 @router.get("/api/schwab/status")
 def get_schwab_status_endpoint():
-    """Returns metadata and expiration time for Schwab OAuth token."""
+    """Returns metadata and expiration time for Schwab OAuth token + screener gate status."""
     from src.clients.schwab_client import get_schwab_token_status
-    return get_schwab_token_status()
+    from src.tracking.screener_gate import get_screener_gate_status
+    data = get_schwab_token_status()
+    data["screener_gate"] = get_screener_gate_status()
+    return data
 
 
 class KillProcessRequest(BaseModel):

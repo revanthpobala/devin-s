@@ -38,15 +38,18 @@ def test_store_is_idempotent(tmp_path, monkeypatch):
         assert conn.execute("select count(*) from chain").fetchone()[0] == 2
 
 
-def test_due_jobs_schedule():
+def test_due_jobs_schedule(monkeypatch):
+    from src.tracking import thesis_ledger
+    monkeypatch.setattr(thesis_ledger, "has_active", lambda: False)
     mon_after = datetime(2026, 10, 12, 16, 30, tzinfo=ET)
     mon_before = datetime(2026, 10, 12, 15, 0, tzinfo=ET)
     sat = datetime(2026, 10, 17, 17, 0, tzinfo=ET)
     assert bt.due_jobs(mon_before, {}) == ["backup"]
-    assert bt.due_jobs(mon_after, {}) == ["backup", "chain"]
-    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12"}) == []
+    assert bt.due_jobs(mon_after, {}) == ["backup", "chain", "sweep"]
+    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12"}) == ["sweep"]
+    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12", "last_sweep_date": "2026-10-12"}) == []
     assert bt.due_jobs(sat, {"last_backup_date": "2026-10-17"}) == []
-    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_attempt_ts": mon_after.timestamp() - 60}) == []
+    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_attempt_ts": mon_after.timestamp() - 60, "last_sweep_date": "2026-10-12"}) == []
 
 
 def test_backup_copies_and_prunes(tmp_path, monkeypatch):

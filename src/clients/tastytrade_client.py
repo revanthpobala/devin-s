@@ -88,19 +88,25 @@ class TastytradeClient:
             "refresh_token": self.refresh_token,
         }
 
-        try:
-            resp = requests.post(token_url, json=payload, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                self._save_tokens(data)
-                logger.info("Successfully refreshed Tastytrade OAuth access token.")
-                return True
-            else:
-                logger.error(f"Failed to refresh Tastytrade token (HTTP {resp.status_code}): {resp.text}")
-                return False
-        except Exception as e:
-            logger.error(f"Exception while refreshing Tastytrade token: {e}")
-            return False
+        for attempt in range(1, 3):
+            try:
+                resp = requests.post(token_url, json=payload, headers=headers, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self._save_tokens(data)
+                    logger.info("Successfully refreshed Tastytrade OAuth access token.")
+                    return True
+                else:
+                    logger.error(f"Failed to refresh Tastytrade token (HTTP {resp.status_code}): {resp.text}")
+                    return False
+            except Exception as e:
+                if attempt == 1:
+                    logger.warning(f"Tastytrade token refresh attempt 1 failed ({e}); retrying in 1s...")
+                    time.sleep(1.0)
+                else:
+                    logger.error(f"Exception while refreshing Tastytrade token: {e}")
+                    return False
+        return False
 
     def get_auth_headers(self) -> Optional[Dict[str, str]]:
         """Return valid Authorization headers, auto-refreshing expired tokens (one refresh at a time)."""
@@ -430,7 +436,7 @@ class TastytradeClient:
         if not headers:
             return None
         try:
-            r = requests.get(f"{BASE_URL}/api-quote-tokens", headers=headers, timeout=8)
+            r = requests.get(f"{BASE_URL}/api-quote-tokens", headers=headers, timeout=12)
             if r.status_code != 200:
                 return None
             data = r.json().get("data", {})
@@ -488,7 +494,7 @@ class TastytradeClient:
             return all(raw[s_].get("Quote") and raw[s_].get("Summary") for s_ in syms)
 
         async def _run():
-            async with websockets.connect(tok["dxlink-url"], open_timeout=4) as ws:
+            async with websockets.connect(tok["dxlink-url"], open_timeout=8) as ws:
                 async def _send(msg):
                     await ws.send(json.dumps(msg))
 
@@ -531,7 +537,7 @@ class TastytradeClient:
                 asyncio.get_running_loop()
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    pool.submit(asyncio.run, _run()).result(timeout=timeout + 4)
+                    pool.submit(asyncio.run, _run()).result(timeout=timeout + 6)
             except RuntimeError:
                 asyncio.run(_run())
         except Exception as e:

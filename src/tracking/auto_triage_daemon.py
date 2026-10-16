@@ -307,6 +307,11 @@ class AutoTriageDaemon(threading.Thread):
                         _dispatch_deep_research_if_needed(sym, d_str)
                     elif 'WATCH' in decision:
                         update_research_status(sym, d_str, 'LOCAL_WATCH')
+                        if str(alert_dict.get("strategy") or "").strip() != "Intraday":
+                            # The alert card cannot PASS without a scraped Data Window, and the scrape only happens inside
+                            # the local_only job, so a WATCH-only dispatch would never start. Real local research
+                            # (scrape + run_local_research) decides send_for_deep_research.
+                            _dispatch_deep_research_if_needed(sym, d_str)
                     elif 'CUT' in decision:
                         update_research_status(sym, d_str, 'LOCAL_CUT')
                     elif new_attempts >= 3 and not decision:

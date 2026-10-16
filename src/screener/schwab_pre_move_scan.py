@@ -221,36 +221,43 @@ def check_market_tide(client) -> Dict[str, Any]:
     Computes SPY 20 EMA and 50 SMA.
     """
     logger.info("Evaluating Market Tide Gate (SPY)...")
-    try:
-        r = client.get_price_history_every_day("SPY")
-        if r.status_code == 200:
-            candles = r.json().get("candles") or []
-            if len(candles) >= 50:
-                closes = pd.Series([float(c["close"]) for c in candles])
-                last_px = float(closes.iloc[-1])
-                ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
-                sma50 = float(closes.rolling(50).mean().iloc[-1])
+    for attempt in range(2):
+        try:
+            r = client.get_price_history_every_day("SPY")
+            if r.status_code == 200:
+                candles = r.json().get("candles") or []
+                if len(candles) >= 50:
+                    closes = pd.Series([float(c["close"]) for c in candles])
+                    last_px = float(closes.iloc[-1])
+                    ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+                    sma50 = float(closes.rolling(50).mean().iloc[-1])
 
-                is_bullish = last_px >= ema20 and ema20 >= sma50
-                is_neutral = last_px >= sma50
-                trend_str = "BULLISH (TIDE ON)" if is_bullish else ("NEUTRAL / CONSOLIDATION" if is_neutral else "DEFENSIVE / BEARISH")
+                    is_bullish = last_px >= ema20 and ema20 >= sma50
+                    is_neutral = last_px >= sma50
+                    trend_str = "BULLISH (TIDE ON)" if is_bullish else ("NEUTRAL / CONSOLIDATION" if is_neutral else "DEFENSIVE / BEARISH")
 
-                spy_20d_return = (last_px - float(closes.iloc[-21])) / float(closes.iloc[-21]) if len(closes) >= 21 else 0.0
+                    spy_20d_return = (last_px - float(closes.iloc[-21])) / float(closes.iloc[-21]) if len(closes) >= 21 else 0.0
 
-                logger.info(f"SPY: ${last_px:.2f} | 20 EMA: ${ema20:.2f} | 50 SMA: ${sma50:.2f} -> {trend_str}")
-                return {
-                    "last_px": last_px,
-                    "ema20": ema20,
-                    "sma50": sma50,
-                    "is_bullish": is_bullish,
-                    "is_neutral": is_neutral,
-                    "available": True,
-                    "trend_str": trend_str,
-                    "spy_20d_return": spy_20d_return,
-                    "candles": candles,
-                }
-    except Exception as e:
-        logger.warning(f"Failed to check SPY market tide: {e}")
+                    logger.info(f"SPY: ${last_px:.2f} | 20 EMA: ${ema20:.2f} | 50 SMA: ${sma50:.2f} -> {trend_str}")
+                    return {
+                        "last_px": last_px,
+                        "ema20": ema20,
+                        "sma50": sma50,
+                        "is_bullish": is_bullish,
+                        "is_neutral": is_neutral,
+                        "available": True,
+                        "trend_str": trend_str,
+                        "spy_20d_return": spy_20d_return,
+                        "candles": candles,
+                    }
+            elif r.status_code != 200 and attempt == 0:
+                time.sleep(1.0)
+                continue
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            logger.warning(f"Failed to check SPY market tide: {e}")
 
     # The failure path must keep the SAME key set as the success path: callers f-format last_px/ema20/
     # sma50 unconditionally, so a partial dict raises TypeError instead of degrading to "UNKNOWN".
@@ -792,7 +799,7 @@ def run_stage2_technical_scan(
     client,
     candidates: List[Dict[str, Any]],
     spy_20d_return: float,
-    max_workers: int = 6,
+    max_workers: int = 4,
     funnel_tracker: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Pulls historical daily candles for Stage 1 survivors and scores pre-move coiling."""
@@ -1071,7 +1078,7 @@ def evaluate_short_setup(candles: List[Dict[str, Any]]) -> Optional[Dict[str, An
 
 
 def run_stage2_short_scan(
-    client, candidates: List[Dict[str, Any]], max_workers: int = 6
+    client, candidates: List[Dict[str, Any]], max_workers: int = 4
 ) -> List[Dict[str, Any]]:
     """Pulls historical daily candles for Stage 1 short candidates and scores ceiling rejection."""
     survivors = []
@@ -1751,7 +1758,8 @@ def run_schwab_pre_move_scan(
     logger.info("=" * 80)
     logger.info(f"STARTING SCHWAB 1000 SCAN ({scan_mode.upper()} SIDE | {date_str})")
     logger.info("Universe: Schwab 1000 Index (SCHK ETF Constituents)")
-    logger.info("=" * 80)
+    from src.tracking.screener_gate import set_screener_busy
+    set_screener_busy(True, duration_seconds=180.0, reason=f"Schwab 1000 scan ({scan_mode})")
 
     client = get_schwab_client()
 
@@ -1908,11 +1916,12 @@ def run_schwab_pre_move_scan(
         else:
             run_autonomous_screener_pipeline(long_top_picks, auto_max=top_n, run_deep=True, date_str=date_str, headless=headless)
 
-    if scan_mode == "short":
-        return short_top_picks
-    elif scan_mode == "both":
-        return {"long": long_top_picks, "short": short_top_picks}
-    return long_top_picks
+        set_screener_busy(False)
+        if scan_mode == "short":
+            return short_top_picks
+        elif scan_mode == "both":
+            return {"long": long_top_picks, "short": short_top_picks}
+        return long_top_picks
 
 
 if __name__ == "__main__":

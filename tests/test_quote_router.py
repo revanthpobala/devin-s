@@ -77,7 +77,8 @@ def test_surveillance_channel_bypasses_schwab(mock_router):
         source="YAHOO_DIRECT",
         timestamp=time.time(),
     )
-    with patch.object(mock_router, "_fetch_alpaca_snapshot_single", return_value=None), \
+    with patch.object(mock_router, "_fetch_tastytrade_quote", return_value=None), \
+         patch.object(mock_router, "_fetch_alpaca_snapshot_single", return_value=None), \
          patch.object(mock_router, "_fetch_yahoo_direct", return_value=fake_yahoo) as mock_yh, \
          patch("src.clients.schwab_client.get_realtime_quote") as mock_schwab:
 
@@ -87,6 +88,29 @@ def test_surveillance_channel_bypasses_schwab(mock_router):
         assert q.source == "YAHOO_DIRECT"
         mock_schwab.assert_not_called()
         mock_yh.assert_called_once_with("TSLA")
+
+
+def test_surveillance_channel_prioritizes_tastytrade(mock_router):
+    """Watchlist stalking must prioritize Tastytrade over Alpaca, Yahoo, and Schwab."""
+    fake_tt = QuoteData(
+        symbol="AAPL",
+        last_price=245.5,
+        source="TASTYTRADE",
+        timestamp=time.time(),
+    )
+    with patch.object(mock_router, "_fetch_tastytrade_quote", return_value=fake_tt) as mock_tt, \
+         patch.object(mock_router, "_fetch_alpaca_snapshot_single") as mock_alpaca, \
+         patch.object(mock_router, "_fetch_yahoo_direct") as mock_yahoo, \
+         patch("src.clients.schwab_client.get_realtime_quote") as mock_schwab:
+
+        q = mock_router.get_watchlist_quote("AAPL")
+        assert q is not None
+        assert q.last_price == 245.5
+        assert q.source == "TASTYTRADE"
+        mock_tt.assert_called_once_with("AAPL")
+        mock_alpaca.assert_not_called()
+        mock_yahoo.assert_not_called()
+        mock_schwab.assert_not_called()
 
 
 def test_in_memory_cache_prevents_duplicate_calls(mock_router):
@@ -121,6 +145,7 @@ def test_circuit_breaker_cooldown_on_failure(mock_router):
     """When Schwab fails repeatedly, circuit breaker trips and routes to emergency fallback."""
     with patch("src.clients.schwab_client.get_realtime_quote", side_effect=Exception("401 Unauthorized")), \
          patch.object(mock_router, "_fetch_tastytrade_quote", return_value=None), \
+         patch.object(mock_router, "_fetch_alpaca_snapshot_single", return_value=None), \
          patch.object(mock_router, "_fetch_yahoo_direct") as mock_backup:
 
         mock_backup.return_value = QuoteData(

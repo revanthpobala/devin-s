@@ -19,93 +19,34 @@ def prompt() -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. ENTER only on the measured gate
+# 1-5. Pine levels bind; the judge vetoes, it does not draw levels or score conviction
 # ---------------------------------------------------------------------------
 
-def test_enter_requires_measured_gate(prompt):
-    """8-10 tier must cite the engine gate conditions, not just 'measured R:R >= 3.0'."""
-    assert "ENTER requires the engine gate to pass" in prompt
-    assert "Long RR At Market >= 2.0" in prompt
-    assert "rr_config.min_rr() = 2.0" in prompt
-    assert "PB funnel" in prompt
-    assert "Ext Z < 2.5" in prompt
+def test_levels_belong_to_pine(prompt):
+    assert "LEVELS ARE NOT YOURS TO SET" in prompt
+    assert "Never tighten the stop" in prompt
+    assert "do not invent one" in prompt
 
 
-def test_enter_rubric_does_not_say_do_not_downgrade(prompt):
-    """Removed per c7abf87: 'Do NOT artificially downgrade to STALK'."""
-    assert "Do NOT artificially downgrade" not in prompt
+def test_job_is_concrete_veto(prompt):
+    assert "concrete reason NOT to take the Pine plan" in prompt
+    assert "A veto needs a specific fact" in prompt
 
 
-def test_enter_stronger_tier_is_3(prompt):
-    """R:R >= 3.0 is documented as the stronger tier, not the gate floor."""
-    assert "R:R >= 3.0 is the stronger tier" in prompt
+def test_verdicts_follow_deterministic_state(prompt):
+    assert "DETERMINISTIC STATE" in prompt
+    assert "state is ACTIONABLE" in prompt and "state is ARMED" in prompt and "state is NO TRADE" in prompt
 
-
-# ---------------------------------------------------------------------------
-# 2. CASH_SKIP threshold is 2.0
-# ---------------------------------------------------------------------------
-
-def test_cash_skip_uses_2_not_3(prompt):
-    """1-5 tier: gate floor is 2.0, not 3.0."""
-    assert "R:R at market < 2.0 (gate floor)" in prompt
-    # The old 'Unfavorable R:R (< 3.0:1)' must not appear
-    assert "Unfavorable R:R" not in prompt
-
-
-def test_rubric_states_gate_floor_and_stronger_tier(prompt):
-    """The rubric in the sys prompt states both the gate floor (2.0) and the stronger tier (3.0)."""
-    # Gate floor appears in the ENTER rubric (not just in the ground_truth user block)
-    assert "Long RR At Market >= 2.0" in prompt
-    # Stronger tier documented in the ENTER rubric
-    assert "R:R >= 3.0 is the stronger tier" in prompt
-
-
-# ---------------------------------------------------------------------------
-# 3. ARMED must be armed
-# ---------------------------------------------------------------------------
-
-def test_armed_requires_armed_levels(prompt):
-    """6-7 tier must require non-zero breakout/entry zone, stop, and T1/T2 above trigger."""
-    assert "non-zero breakout level or entry zone" in prompt
-    assert "tactical stop" in prompt
-    assert "T1/T2 strictly above the trigger" in prompt
-    assert "Never emit breakout_level = 0 on an ARMED verdict" in prompt
-    assert "If the plan arms nothing, output CASH_SKIP instead" in prompt
-
-
-# ---------------------------------------------------------------------------
-# 4. WATCH verdict for unmeasured breaks
-# ---------------------------------------------------------------------------
 
 def test_watch_in_verdict_enum(prompt):
-    """WATCH must appear in the json:watch_levels verdict field comment."""
     assert "ARMED|WATCH|CASH_SKIP" in prompt
+    assert "UNMEASURED MOMENTUM" in prompt and "RVOL >= 1.0" in prompt and "No measured edge" in prompt
 
 
-def test_watch_rubric_entry_present(prompt):
-    """WATCH lane must be described with UNMEASURED MOMENTUM wording."""
-    assert "UNMEASURED MOMENTUM" in prompt
-    assert "RVOL >= 1.0" in prompt
-    assert "VERDICT = " in prompt
-    assert "WATCH" in prompt
-    assert "no measured edge" in prompt
-
-
-def test_watch_rubric_no_high_conviction(prompt):
-    """The WATCH description must explicitly say it never gets high conviction."""
-    assert "never receives high conviction or priority" in prompt
-
-
-# ---------------------------------------------------------------------------
-# 5. Conviction is a label
-# ---------------------------------------------------------------------------
-
-def test_conviction_is_a_label(prompt):
-    """The rubric must state conviction has no measured basis and only goes down."""
-    assert "CONVICTION IS A LABEL" in prompt
-    assert "no measured basis of its own" in prompt
-    assert "can only be lowered by cap_conviction" in prompt
-    assert "must never drive entry priority" in prompt
+def test_no_conviction_score(prompt):
+    assert "Do not write a conviction score" in prompt
+    assert "Conviction: X/10" not in prompt
+    assert '"conviction": 8' not in prompt
 
 
 # ---------------------------------------------------------------------------

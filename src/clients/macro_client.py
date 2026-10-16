@@ -346,15 +346,24 @@ def get_vix() -> str:
             chg = float(v.get("changePercentage", 0))
             return f"VIX: {price:.2f} ({chg:+.2f}%) [{_format_vix_flag(price, chg)}]"
 
-    # 2. Resilient fallback via yfinance
+    # 2. Resilient fallback via yfinance (bounded by 3.0s timeout to prevent UI/pipeline stalls)
     try:
+        from concurrent.futures import ThreadPoolExecutor
         import yfinance as yf
-        vix = yf.Ticker("^VIX").history(period="2d")
-        if not vix.empty:
-            price = float(vix["Close"].iloc[-1])
-            prev = float(vix["Close"].iloc[-2]) if len(vix) > 1 else price
-            chg = ((price - prev) / prev * 100) if prev > 0 else 0.0
-            return f"VIX: {price:.2f} ({chg:+.2f}%) [{_format_vix_flag(price, chg)}]"
+
+        def _fetch_yf():
+            vix = yf.Ticker("^VIX").history(period="2d")
+            if not vix.empty:
+                price = float(vix["Close"].iloc[-1])
+                prev = float(vix["Close"].iloc[-2]) if len(vix) > 1 else price
+                chg = ((price - prev) / prev * 100) if prev > 0 else 0.0
+                return f"VIX: {price:.2f} ({chg:+.2f}%) [{_format_vix_flag(price, chg)}]"
+            return None
+
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            res = ex.submit(_fetch_yf).result(timeout=3.0)
+            if res:
+                return res
     except Exception as e:
         logger.debug(f"yfinance VIX fetch failed: {e}")
 

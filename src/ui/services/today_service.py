@@ -674,7 +674,7 @@ def _build_today_payload_sync() -> Dict[str, Any]:
             ("deep_research_opps", ex.submit(_timed_call, "deep_research_opps", collect_active_deep_research_opportunities, 3), 20.0, []),
         )
         got = {}
-        subtasks_deadline = time.time() + 25.0
+        subtasks_deadline = time.time() + 35.0
         for label, fut, max_wait, empty in futs:
             rem = max(0.1, subtasks_deadline - time.time())
             wait_time = min(max_wait, rem)

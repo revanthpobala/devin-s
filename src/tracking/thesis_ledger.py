@@ -101,6 +101,21 @@ def seed(user: Optional[Iterable[str]] = None, book: Optional[Dict[str, Any]] = 
     return {"added": added, "skipped_over_cap": skipped, "active": len(have)}
 
 
+def remove(tickers: Iterable[str]) -> List[str]:
+    """Drop USER theses that have no tranches yet. HELD names and anything already tranched stay."""
+    gone = []
+    with _conn() as conn:
+        for t in (str(x).strip().upper() for x in tickers):
+            has = conn.execute("SELECT 1 FROM tranches WHERE ticker = ?", (t,)).fetchone()
+            cur = conn.execute("DELETE FROM thesis WHERE ticker = ? AND source = 'USER' AND status = 'ACTIVE'", (t,)) if not has else None
+            if cur and cur.rowcount:
+                for tb in ("thesis_updates", "marks"):
+                    conn.execute(f"DELETE FROM {tb} WHERE ticker = ?", (t,))
+                conn.execute("DELETE FROM state WHERE key IN (?, ?)", (f"done:{t}", f"queued:{t}"))
+                gone.append(t)
+    return gone
+
+
 def record_update(ticker: str, day: str, source: str, verdict: Optional[str], conviction: Optional[float],
                   rr_at_market: Optional[float], in_zone: Optional[int], fade: Optional[int], invalidation_px: Optional[float]) -> None:
     with _conn() as conn:
@@ -136,10 +151,12 @@ def _plan_doc(ticker: str, day: str) -> Dict[str, Any]:
 def ingest_research(ticker: str, since: str, suggestions: Optional[List[Dict[str, Any]]] = None) -> int:
     """Turn suggestion rows dated since `since` into thesis_updates. Judge rows win over rule rows for one date."""
     if suggestions is None:
+        from src.tracking.suggestions_ledger import ensure_suggestions_schema
         from src.tracking.watch_manager import _get_connection, _db_lock
 
         with _db_lock:
             with _get_connection() as conn:
+                ensure_suggestions_schema(conn)
                 conn.row_factory = sqlite3.Row
                 suggestions = [dict(r) for r in conn.execute(
                     "SELECT ticker, date, source, verdict, stop, rr_at_market_at_signal, signal_pack, gate_status, entry_low, entry_high, "
@@ -153,8 +170,10 @@ def ingest_research(ticker: str, since: str, suggestions: Optional[List[Dict[str
             verdict = s.get("verdict")
         day = str(s["date"])[:10]
         doc = _plan_doc(ticker, day) if s.get("source") == "judge" else {}
-        inv = (doc.get("invalidation") or {}).get("price_level") or 0.0
-        inv = float(inv) if inv and float(inv) > 0 else (float(s["stop"]) if s.get("stop") else None)
+        inv = None
+        if s.get("source") == "judge" and verdict != "REJECTED":
+            px = (doc.get("invalidation") or {}).get("price_level") or 0.0
+            inv = float(px) if px and float(px) > 0 else (float(s["stop"]) if s.get("stop") else None)
         spot, hi, lo = s.get("spot_at_signal"), s.get("entry_high"), s.get("entry_low")
         in_zone = int(bool(spot and hi and lo and lo <= spot <= hi)) if (hi and lo) else None
         conv = doc.get("conviction")
@@ -225,8 +244,8 @@ def tranche_decision(th: Dict[str, Any], marks: List[Dict[str, Any]], updates: L
         fresh = [u for u in updates if u["date"] in recent]
         if not fresh:
             return None
-        newest = max(fresh, key=lambda u: u["date"])
-        if newest.get("fade") != 0:
+        known = [u for u in fresh if u.get("fade") is not None]
+        if not known or max(known, key=lambda u: u["date"])["fade"] != 0:
             return None
         if n == TRANCHES:
             first = min(t["date"] for t in tranches)
@@ -279,8 +298,10 @@ def process_ticker(ticker: str, as_of: str, earnings: Optional[List[str]] = None
                 conn.execute("INSERT OR IGNORE INTO tranches VALUES (?,?,?,?,?,?)", (ticker, t["n"], t["date"], t["price"], t["shares"], t["risk_px"]))
             tr.append(t)
             out["tranches"].append(t)
-    with _conn() as conn:
-        conn.execute("INSERT INTO state VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"done:{ticker}", as_of))
+    seen = [m["date"] for m in marks if m["date"] <= as_of and m["date"] >= start]
+    if seen:
+        with _conn() as conn:
+            conn.execute("INSERT INTO state VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"done:{ticker}", seen[-1]))
     return out
 
 
@@ -291,8 +312,9 @@ def _default_bars(t: str) -> List[Dict[str, Any]]:
 
 
 def stalest(n: int = STALE_PER_NIGHT) -> List[str]:
-    rows = _rows("SELECT t.ticker, COALESCE(MAX(u.date), '') AS last FROM thesis t LEFT JOIN thesis_updates u ON u.ticker = t.ticker "
-                 "WHERE t.status = 'ACTIVE' GROUP BY t.ticker ORDER BY last, t.ticker LIMIT ?", (n,))
+    rows = _rows("SELECT t.ticker, COALESCE(MAX(u.date), '') AS last, COALESCE(s.value, '') AS queued FROM thesis t "
+                 "LEFT JOIN thesis_updates u ON u.ticker = t.ticker LEFT JOIN state s ON s.key = 'queued:' || t.ticker "
+                 "WHERE t.status = 'ACTIVE' GROUP BY t.ticker ORDER BY queued, last, t.ticker LIMIT ?", (n,))
     return [r["ticker"] for r in rows]
 
 
@@ -303,7 +325,7 @@ def run_nightly(as_of: str, bars_for: Callable[[str], List[Dict[str, Any]]] = _d
     if not names:
         return {"names": 0}
     spy = [b for b in bars_for("SPY") if str(b["date"])[:10] <= as_of]
-    killed, taken, errors = [], 0, []
+    killed, taken, errors, failed = [], 0, [], 0
     for t in names:
         try:
             bars = [b for b in bars_for(t) if str(b["date"])[:10] <= as_of]
@@ -316,6 +338,7 @@ def run_nightly(as_of: str, bars_for: Callable[[str], List[Dict[str, Any]]] = _d
             taken += len(res["tranches"])
         except Exception as e:
             errors.append(f"{t}: {e}")
+            failed += 1
             logger.warning("thesis ledger %s failed: %s", t, e)
     if queue is None:
         from src.tracking.alert_db import queue_for_research
@@ -327,10 +350,13 @@ def run_nightly(as_of: str, bars_for: Callable[[str], List[Dict[str, Any]]] = _d
         try:
             if queue(t):
                 queued.append(t)
+            with _conn() as conn:
+                conn.execute("INSERT INTO state VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"queued:{t}", as_of))
         except Exception as e:
             errors.append(f"queue {t}: {e}")
-    with _conn() as conn:
-        conn.execute("INSERT INTO state VALUES ('last_processed',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (as_of,))
+    if failed < len(names):
+        with _conn() as conn:
+            conn.execute("INSERT INTO state VALUES ('last_processed',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (as_of,))
     return {"names": len(names), "killed": killed, "tranches": taken, "queued": queued, "errors": errors}
 
 

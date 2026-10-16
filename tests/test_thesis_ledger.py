@@ -155,3 +155,57 @@ def test_backend_due_job_requires_seeded_ledger():
     tl.seed(user=["AAA"], book={"equity": {}})
     assert "thesis" in due_jobs(now, {})
     assert "thesis" not in due_jobs(now, {"last_thesis_attempt_ts": now.timestamp() - 60})
+
+
+def test_missing_bars_do_not_advance_done_marker():
+    days = _setup([100] * 6)
+    tl.process_ticker("AAA", days[-1], earnings=[])
+    tl.process_ticker("AAA", "2026-03-01", earnings=[])
+    tl.upsert_marks("AAA", _bars(_days(8), [100] * 7 + [94]), _bars(_days(8), [400.0] * 8))
+    out = tl.process_ticker("AAA", _days(8)[-1], earnings=[])
+    assert out["killed"] and out["killed"]["date"] == _days(8)[-1]
+
+
+def test_ingest_only_judge_rows_set_invalidation():
+    rows = [
+        {"ticker": "AAA", "date": "2026-01-05", "source": "rule", "verdict": "STALK", "stop": 90.0, "gate_status": "PASS"},
+        {"ticker": "AAA", "date": "2026-01-06", "source": "judge", "verdict": "ENTER", "stop": 95.0, "gate_status": "REJECTED_BY_GATE"},
+    ]
+    tl.seed(book={"equity": {"AAA": 1.0}}, today="2026-01-05")
+    tl.ingest_research("AAA", "2026-01-05", suggestions=rows)
+    assert tl._rows("SELECT invalidation_px FROM thesis")[0]["invalidation_px"] is None
+    rows.append({"ticker": "AAA", "date": "2026-01-07", "source": "judge", "verdict": "ARMED", "stop": 96.0, "gate_status": "PASS"})
+    tl.ingest_research("AAA", "2026-01-05", suggestions=rows)
+    assert tl._rows("SELECT invalidation_px FROM thesis")[0]["invalidation_px"] == 96.0
+
+
+def test_unknown_fade_blocks_add_but_rule_row_supplies_it():
+    days = _days(12)
+    _setup([100] * 12)
+    for d in days:
+        tl.record_update("AAA", d, "judge", "STALK", None, None, None, None, 95.0)
+    tl.process_ticker("AAA", days[-1], earnings=[])
+    assert len(tl._rows("SELECT * FROM tranches")) == 1
+    tl.record_update("AAA", days[-1], "rule", "STALK", None, None, None, 0, None)
+    with tl._conn() as c:
+        c.execute("DELETE FROM state WHERE key = 'done:AAA'")
+    tl.process_ticker("AAA", days[-1], earnings=[])
+    assert len(tl._rows("SELECT * FROM tranches")) == 2
+
+
+def test_stalest_rotates_after_queue():
+    days = _days(3)
+    tl.seed(user=["BBB", "CCC"], book={"equity": {"AAA": 1.0}}, today=days[0])
+    first = tl.stalest(2)
+    for t in first:
+        with tl._conn() as c:
+            c.execute("INSERT INTO state VALUES (?,?)", (f"queued:{t}", days[1]))
+    assert tl.stalest(2)[0] not in first
+
+
+def test_remove_only_untranched_user_theses():
+    tl.seed(user=["BBB", "CCC"], book={"equity": {"AAA": 1.0}}, today="2026-01-05")
+    with tl._conn() as c:
+        c.execute("INSERT INTO tranches VALUES ('CCC',1,'2026-01-06',10,1,9)")
+    assert tl.remove(["AAA", "BBB", "CCC"]) == ["BBB"]
+    assert sorted(tl.tickers()) == ["AAA", "CCC"]

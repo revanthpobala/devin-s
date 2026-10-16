@@ -844,7 +844,7 @@ window.AppWatchlist = {
             <a href="/research/${t.ticker}" target="_blank" onclick="event.stopPropagation()" style="text-decoration:none; font-size:11px; color:var(--cyan); opacity:0.8; margin-left:-2px;" title="Open direct URL /research/${t.ticker} in new tab">🔗</a>
             ${(t.side === 'SHORT' || (stop > 0 && entryHigh > 0 && stop > entryHigh)) ? `<span class="pill red" style="font-size:9.5px; padding:1px 5px; font-weight:800;">🔴 SHORT</span>` : ''}
             ${isOpenPos ? `<span class="pill cyan" style="font-size:9.5px; padding:1px 5px; font-weight:800;" title="You hold an active position in ${t.ticker}">💼 ${posQty} SHS</span>` : ''}
-            ${t.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${t.conviction}/10</span>` : ''}
+            ${(window.AppUtils && window.AppUtils.tradeStateBadge ? window.AppUtils.tradeStateBadge : () => '')(t.trade_state, 9.5)}
             <button class="btn secondary" onclick="AppSwing.openReportModal('${t.date}', '${t.ticker}')" style="padding:2px 7px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; background:rgba(6,182,212,0.1); border:1px solid rgba(6,182,212,0.4); color:var(--cyan); cursor:pointer; border-radius:2px; display:inline-flex; align-items:center; gap:4px;" title="Open ${t.ticker} Research Dossier">
               📑 Dossier
             </button>
@@ -1121,7 +1121,7 @@ window.AppWatchlist = {
               ${tickerPnlBadge}
               <span class="dist-pill ${distBadgeClass}" style="font-size:10px; padding:2px 6px;">${distText}</span>
               ${this.actionBadge(primary, true) || `<span class="status-badge-lg ${statusBadgeClass}" style="font-size:10.5px; padding:2px 7px;">${statusIcon} ${statusUpper}</span>`}
-              ${primary.conviction ? `<span class="pill" style="font-size:9.5px; padding:1px 5px;">${primary.conviction}/10</span>` : ''}
+              ${(window.AppUtils && window.AppUtils.tradeStateBadge ? window.AppUtils.tradeStateBadge : () => '')(primary.trade_state, 9.5)}
             </div>
             <div class="watch-group-actions" onclick="event.stopPropagation();">
               <button class="btn secondary" onclick="AppSwing.openReportModal('${primary.date}', '${sym}')" style="padding:2px 8px; font-size:11px; font-weight:700; color:var(--cyan-glow); background:rgba(6,182,212,0.12); border-color:rgba(6,182,212,0.4); cursor:pointer;" title="Open ${sym} Research Dossier">

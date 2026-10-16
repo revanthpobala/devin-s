@@ -103,3 +103,21 @@ def test_auto_triage_daemon_lifecycle(temp_alerts_db):
         daemon.stop()
         daemon.join(timeout=2.0)
         assert not daemon.is_alive()
+
+
+def test_watch_on_daily_alert_goes_to_local_research_but_not_intraday(temp_alerts_db):
+    from src.tracking.alert_db import get_eastern_date_str as _d
+
+    today = _d()
+    with sqlite3.connect(str(temp_alerts_db)) as c:
+        c.execute("INSERT INTO alerts (message_id, date, timestamp, symbol, action, strategy, raw_payload, created_at, llm_decision) "
+                  "VALUES ('d1', ?, ?, 'DELL', 'LONG', 'Daily', '{}', ?, NULL)", (today, f"{today} 10:20:00", today))
+    with patch("src.tracking.alert_db.DB_PATH", temp_alerts_db), \
+         patch("src.tracking.auto_triage_daemon._gate_exempt", return_value=True), \
+         patch("src.tracking.auto_triage_daemon.evaluate_alert_payload", return_value={"llm_decision": "⏳ WATCH (4/10)"}), \
+         patch("src.tracking.auto_triage_daemon.update_research_status"), \
+         patch("src.tracking.auto_triage_daemon._dispatch_deep_research_if_needed") as disp:
+        AutoTriageDaemon(poll_interval=1, batch_size=5)._process_batch()
+    syms = {c.args[0] for c in disp.call_args_list}
+    strategies = {r[0]: r[1] for r in sqlite3.connect(str(temp_alerts_db)).execute("SELECT symbol, strategy FROM alerts")}
+    assert syms == {"DELL"} and "AAPL" in strategies

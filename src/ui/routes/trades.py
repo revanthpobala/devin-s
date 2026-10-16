@@ -465,6 +465,10 @@ def get_suggested_trades_endpoint():
             t["agent"] = agent_rows.get(t.get("id"))
             t["my_decision"] = (my_decisions.get(t.get("id")) or {}).get("decision")
             t["missed_reason"] = _missed_reason(t, zstate) if act["label"] == "MISSED" else None
+            from src.logic.trade_state import trade_state
+
+            t["trade_state"] = trade_state(last_price, entry_low, entry_high, stop_loss, target_1, atr_num or None, side=side,
+                                           gate_rejected=status_str == "REJECTED_BY_GATE", fade=t.get("fade"))
 
             trades.append(t)
 

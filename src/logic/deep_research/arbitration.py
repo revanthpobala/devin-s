@@ -8,6 +8,8 @@ from pathlib import Path
 
 from src.clients.llm_client import query_local_llm
 
+MAX_LIMIT_ATR_BELOW_SPOT = 2.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,19 +78,27 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
         "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
-        "CONVICTION & VERDICT CALIBRATION RUBRIC:\n"
-        "- 8 to 10 / 10 (ENTER — measured gate): ENTER requires the engine gate to pass: Long In Zone, Long RR At Market >= 2.0 (rr_config.min_rr() = 2.0), PB funnel, fade off, stop >= 0.7 ATR, Ext Z < 2.5. R:R >= 3.0 is the stronger tier. ENTER (Breakout) is allowed only when that gate passes. Output VERDICT = 'ENTER (Limit @ Floor)' or 'ENTER (Breakout)'.\n"
-        "- 6 to 7 / 10 (ARMED): Armed setup awaiting trigger: requires a non-zero breakout level or entry zone, a tactical stop, and T1/T2 strictly above the trigger. Never emit breakout_level = 0 on an ARMED verdict. Output VERDICT = 'ARMED'. If the plan arms nothing, output CASH_SKIP instead.\n"
-        "- 1 to 5 / 10 (AVOID / CASH SKIP): R:R at market < 2.0 (gate floor), distribution / Stage 4 knife, or binary friction. Output VERDICT = 'CASH_SKIP'.\n"
-        "- WATCH (UNMEASURED MOMENTUM): A floor defense or level break on RVOL >= 1.0 that fails the measured gate. Start the summary with 'UNMEASURED MOMENTUM:' then RVOL, R:R at market, and a structural stop. Output VERDICT = 'WATCH' with the level armed. This lane has no measured edge and never receives high conviction or priority.\n"
-        "CONVICTION IS A LABEL: The conviction number has no measured basis of its own. It can only be lowered by cap_conviction — it must never drive entry priority. A WATCH or ARMED card with conviction 8 is a badge mismatch, not actionable.\n"
-        "CRITICAL CONSTRAINT: You CANNOT output ENTER if engine triage is 'no_setup' or the actionable gate fails. Output CASH_SKIP or ARMED instead.\n\n"
+        "LEVELS ARE NOT YOURS TO SET. When the ground truth shows a valid Pine plan, its entry zone, stop and target_1 "
+        "are the binding geometry and the code overwrites whatever you write with them. Copy them into shares_plan. "
+        "You may add target_2 only above the Pine target. Never tighten the stop: a stop inside one normal day's range is the "
+        "measured reason most of these trades stop out. When there is no valid Pine plan, do not invent one: output CASH_SKIP "
+        "and name the level you would want to see in the summary.\n\n"
+        "YOUR JOB is the judgment the engine cannot do: is there a concrete reason NOT to take the Pine plan (earnings or "
+        "another binary event inside the hold, news that changes the story, a broken trend the zone sits in, distribution on "
+        "volume), and what single event kills it. A veto needs a specific fact, not a mood.\n\n"
+        "VERDICTS (the ground truth's DETERMINISTIC STATE line already applies the measured gate):\n"
+        "- ENTER (Limit @ Floor): state is ACTIONABLE and you have no concrete veto.\n"
+        "- ARMED: state is ARMED (a resting limit within reach) and you have no concrete veto. Say which price fills it.\n"
+        "- CASH_SKIP: state is NO TRADE, or you have a concrete veto. Say which.\n"
+        "- WATCH (UNMEASURED MOMENTUM): a level break on RVOL >= 1.0 that fails the gate. Start the summary with "
+        "'UNMEASURED MOMENTUM:'. No measured edge.\n"
+        "Do not write a conviction score; it carries no information.\n"
+        "CRITICAL CONSTRAINT: You CANNOT output ENTER if engine triage is 'no_setup' or the actionable gate fails.\n\n"
         "Output in this exact markdown format (JSON BLOCK MUST COME FIRST):\n\n"
         "```json:watch_levels\n"
         "{\n"
         f'  "ticker": "{ticker}",\n'
         '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|ARMED|WATCH|CASH_SKIP",\n'
-        '  "conviction": 8,\n'
         '  "side": "LONG|SHORT",\n'
         '  "shares_plan": {\n'
         '    "side": "LONG|SHORT",\n'
@@ -169,9 +179,9 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "     - CREDIT-TO-WIDTH FLOOR: NEVER suggest a credit spread collecting < 25% of the spread width (risking > 3:1 against the trader). If an edge-appropriate credit spread does not exist at >= 1.25x ExpMove below the stop loss, set options_plan.structure = 'NONE' and actionable = false. Do NOT force an options trade when shares provide the superior R:R.\n"
         "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
         "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put strictly below invalidation floor).\n"
-        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ENTER (Breakout) / ENTER (Options Structure) / ARMED / CASH_SKIP]** (Conviction: X/10)\n\n"
+        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ARMED / CASH_SKIP / WATCH]**, plus the veto fact if any\n\n"
         "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
-        "* **Equity (Shares):** [Exact Limit Price, Tactical Stop, Target 1, Target 2, Breakout Trigger Level & Stop, R:R]\n"
+        "* **Equity (Shares):** [Pine zone, Pine stop, Pine target, optional Target 2, R:R at market]\n"
         "* **Options Directives (Tiered Menu):**\n"
         "  - **Primary Tactical Spread (30-45 DTE):** [Structure (favor Bull Call Debit Spread for longs), Expiry, Strikes, Net Debit/Credit, Max Loss, Break-Even, R:R]\n"
         "  - **Secular Trend LEAPS (6-12 Months):** [Expiry, Deep ITM Strike (0.75-0.85 Delta), Target Debit, Rationale]\n"
@@ -272,8 +282,21 @@ def run_arbitration(
 
     lane_prior_str = f"win={lane_prior_win:.0f}%, ev={lane_prior_ev:.2f}R" if lane_prior_win is not None and lane_prior_ev is not None else "N/A"
 
+    from src.logic.pine_levels import pine_long_plan
+    from src.logic.trade_state import trade_state
+
+    _pine = pine_long_plan(dw_dict)
+    if _pine:
+        _ts = trade_state(_pine["close"], _pine["zone_low"], _pine["zone_high"], _pine["stop"], _pine["target"],
+                          atr14_val if atr14_val != "N/A" else None, fade=dw_dict.get("fade_long"))
+        state_line = (f"- DETERMINISTIC STATE (binding Pine plan): {_ts['label']} — {_ts['detail']}. Pine zone "
+                      f"{_pine['zone_low']}–{_pine['zone_high']}, stop {_pine['stop']}, target {_pine['target']}\n")
+    else:
+        state_line = "- DETERMINISTIC STATE: NO TRADE — Pine has no valid long plan (stop below close below target). Do not invent levels.\n"
+
     ground_truth = (
         f"--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---\n"
+        f"{state_line}"
         f"- Ticker: {ticker} | Date: {date_str} | DW Bar Date: {dw_bar_date} | DW Close: {dw_close}\n"
         f"- Position Mode: {kind} (MANAGE = already owned in portfolio; NEW = prospective entry)\n"
         f"- Triage Lane & Setup: {setup_lane or 'STANDARD'}\n"
@@ -366,6 +389,10 @@ def run_arbitration(
         if not triage_lane or triage_lane in ("WATCH_SHADOW", "UNKNOWN", "DEFAULT", "STANDARD"):
             triage_lane = "JUDGE"
         watch_data["setup_lane"] = triage_lane
+
+        from src.logic.pine_levels import apply_pine_levels
+
+        apply_pine_levels(watch_data, dw_dict)
 
         from src.logic.report_level_extractor import _apply_options_cleanup
         from src.logic.level_validation import validate_levels
@@ -572,7 +599,15 @@ def run_arbitration(
                     atr_chk = float(atr_at_signal or (atr14_val if atr14_val and atr14_val != "N/A" else 1.0))
                 except Exception:
                     atr_chk = 1.0
-                if calc_limit > st and (curr_spot <= 0 or calc_limit < curr_spot) and (calc_limit - st) / max(0.01, atr_chk) >= 0.7:
+                far_atr = (curr_spot - calc_limit) / max(0.01, atr_chk) if curr_spot > 0 else 0.0
+                # Corpus touch odds (532 names, 21 bars): limit 2 ATR below close fills 46%, 3 ATR 29%, 4 ATR 19%.
+                if far_atr > MAX_LIMIT_ATR_BELOW_SPOT and calc_limit > st:
+                    watch_data["limit_too_far"] = True
+                    watch_data["wait_for"] = (
+                        f"R:R {spot_rr:.2f} at market; floor {active_floor:g} needs ${calc_limit:.2f}, "
+                        f"{far_atr:.1f} ATR below, unlikely to fill. No entry now."
+                    )
+                elif calc_limit > st and (curr_spot <= 0 or calc_limit < curr_spot) and (calc_limit - st) / max(0.01, atr_chk) >= 0.7:
                     limit_price = calc_limit
                     sp["limit_price"] = limit_price
                     sp["trigger_price"] = limit_price

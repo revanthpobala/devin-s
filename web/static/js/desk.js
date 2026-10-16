@@ -1272,7 +1272,7 @@ window.AppDesk = {
 
       const inZoneOpps = topOpps.filter(o => o.in_zone);
       const coilingOpps = topOpps.filter(o => !o.in_zone && o.priority_tier <= 2);
-      const highConvOpps = topOpps.filter(o => o.conviction >= 7);
+      const armedOpps = topOpps.filter(o => o && o.trade_state && o.trade_state.state !== 'NO_TRADE');
 
       // Sub-tab badge counts, computed once through _list() exactly as _patchLive() computes them.
       // They used to be re-derived inline with a raw `.length`, so a null hole made a controller
@@ -1288,7 +1288,7 @@ window.AppDesk = {
       let filteredOpps = [...topOpps];
       if (oppFilter === 'IN_ZONE') filteredOpps = inZoneOpps;
       else if (oppFilter === 'COILING') filteredOpps = coilingOpps;
-      else if (oppFilter === 'HIGH_CONVICTION') filteredOpps = highConvOpps;
+      else if (oppFilter === 'ARMED') filteredOpps = armedOpps;
 
       let html = `<div style="display:flex; flex-direction:column; gap:16px;">`;
 
@@ -1430,7 +1430,7 @@ window.AppDesk = {
               <button class="btn ${oppFilter === 'ALL' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('ALL')">All (${topOpps.length})</button>
               <button class="btn ${oppFilter === 'IN_ZONE' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('IN_ZONE')">🎯 In Entry Zone (${inZoneOpps.length})</button>
               <button class="btn ${oppFilter === 'COILING' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('COILING')">⚡ Coiling Triggers (${coilingOpps.length})</button>
-              <button class="btn ${oppFilter === 'HIGH_CONVICTION' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('HIGH_CONVICTION')">💎 High Conviction (${highConvOpps.length})</button>
+              <button class="btn ${oppFilter === 'ARMED' ? '' : 'secondary'}" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('ARMED')">🎯 Actionable / Armed (${armedOpps.length})</button>
             </div>
           </div>
 
@@ -1530,9 +1530,7 @@ window.AppDesk = {
                         <span class="pill ${String(opp.vintage || '').includes('TODAY') ? 'green' : 'cyan'}" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
                           ${opp.vintage || repDate}
                         </span>
-                        <span>Conviction: <b>${opp.conviction}/10</b></span>
-                        <span>·</span>
-                        <span>Score: <b>${opp.score}/100</b></span>
+                        ${window.AppUtils && window.AppUtils.tradeStateBadge ? window.AppUtils.tradeStateBadge(opp.trade_state, 10) : (opp.trade_state ? `<span class="badge">${opp.trade_state.label}</span>` : '')}
                       </div>
                     </div>
 

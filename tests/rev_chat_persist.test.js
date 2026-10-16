@@ -88,17 +88,16 @@ async function test(name, fn) {
     assert.strictEqual(chat._portfolioMode, false);
   });
 
-  await test('togglePortfolioCopilot toggles mode on and off', () => {
+  await test('portfolio mode setter persists on and off', () => {
     const store = {};
     const { chat } = load(store);
-    chat.renderRevChat = () => {};
     assert.strictEqual(chat._portfolioMode, false);
-    chat.togglePortfolioCopilot();
+    chat._portfolioMode = true;
     assert.strictEqual(chat._portfolioMode, true);
     assert.strictEqual(store.rev_chat_portfolio, '1');
-    chat.togglePortfolioCopilot();
+    chat._portfolioMode = false;
     assert.strictEqual(chat._portfolioMode, false);
-    assert.strictEqual(store.rev_chat_portfolio, undefined);
+    assert.strictEqual(store.rev_chat_portfolio, '0');
   });
 
   console.log(failed ? `\n${failed} failed` : '\nall passed');

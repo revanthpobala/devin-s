@@ -45,7 +45,7 @@ const scenarios = [
   { name: 'happy_opps', fixture: 'happy_opps' },
   { name: 'opps_filter_in_zone', fixture: 'happy_opps', filter: 'IN_ZONE' },
   { name: 'opps_filter_coiling', fixture: 'happy_opps', filter: 'COILING' },
-  { name: 'opps_no_match', fixture: 'happy_opps', filter: 'HIGH_CONVICTION' },
+  { name: 'opps_no_match', fixture: 'happy_opps', filter: 'ARMED' },
   { name: 'alerts_tab', fixture: 'happy_opps', subtab: 'alerts' },
   { name: 'positions_tab', fixture: 'happy_opps', subtab: 'positions' },
   { name: 'coverage_tab', fixture: 'happy_opps', subtab: 'coverage' },

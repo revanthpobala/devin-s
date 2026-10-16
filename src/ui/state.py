@@ -78,18 +78,28 @@ def db_path() -> "Path":
     return Path(override) if override else (config.research_watch_db_path())
 
 
+_INITIALIZED_DBS: set[str] = set()
+_INIT_LOCK = threading.Lock()
+
+
 def get_db():
     """Context manager for thread-safe SQLite connection with dictionary rows."""
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    p_str = str(path.resolve()) if path.exists() else str(path)
     conn = sqlite3.connect(str(path), check_same_thread=False, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    if p_str not in _INITIALIZED_DBS:
+        with _INIT_LOCK:
+            if p_str not in _INITIALIZED_DBS:
+                init_db(existing_conn=conn)
+                _INITIALIZED_DBS.add(p_str)
     return conn
 
 
-def init_db():
+def init_db(existing_conn: Optional[sqlite3.Connection] = None):
     """Ensure active_research_jobs and necessary tables exist in SQLite database."""
-    with get_db() as conn:
+    def _execute_init(conn):
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS active_research_jobs (
@@ -113,8 +123,6 @@ def init_db():
                 c.execute(f"ALTER TABLE active_research_jobs ADD COLUMN {col} TEXT")
             except Exception:
                 pass
-        # Partial unique index: only one active (RUNNING/QUEUED) job per ticker.
-        # Prevents duplicate-job race without blocking completed/failed history rows.
         try:
             c.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_per_ticker
@@ -135,6 +143,19 @@ def init_db():
             )
         """)
         conn.commit()
+
+    if existing_conn is not None:
+        _execute_init(existing_conn)
+    else:
+        # Avoid recursion: create a direct connection if existing_conn not passed
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        direct_conn = sqlite3.connect(str(path), check_same_thread=False, timeout=10.0)
+        direct_conn.row_factory = sqlite3.Row
+        try:
+            _execute_init(direct_conn)
+        finally:
+            direct_conn.close()
 
     try:
         from src.tracking.watch_manager import init_watch_db

@@ -112,7 +112,7 @@
           <button class="btn" style="margin-top:9px; width:100%; font-size:10.5px; font-weight:800; justify-content:center;" onclick="AppChat.askRevChat('Give me my bat signal for right now: the posture you would take, why, and the exact per-position actions for my book.')">💬 Ask the copilot to act on this</button>
         </div>
       </div>
-    </div></div><div id="desk-macro"></div><div id="desk-deploy-plan"></div><div id="desk-alert-setups"></div>
+    </div></div><div id="desk-macro"></div><div id="desk-deploy-plan"></div><div id="desk-alert-setups"></div><div id="desk-regime-lane"></div><div id="desk-thesis"></div>
       <div class="station-card" style="padding:14px 20px; border-left:4px solid var(--cyan-glow); background:linear-gradient(180deg, rgba(6,182,212,0.06) 0%, var(--bg-surface) 100%);">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px;">
           
@@ -204,7 +204,7 @@
                 <span style="font-size:14px; font-weight:900; color:var(--text-main); letter-spacing:0.5px;">
                   TOP QUALIFIED ACTIONABLE OPPORTUNITIES
                 </span>
-                <span class="pill cyan" style="font-weight:800; font-size:10px;">2 Setups</span>
+                <span class="pill cyan" style="font-weight:800; font-size:10px;">0 Setups</span>
               </div>
               <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
                 Institutional Senior PM directives with defined risk floors, binding invalidations, and specific options spread blueprints.
@@ -216,7 +216,7 @@
               <button class="btn secondary" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('ALL')">All (3)</button>
               <button class="btn secondary" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('IN_ZONE')">🎯 In Entry Zone (1)</button>
               <button class="btn secondary" style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('COILING')">⚡ Coiling Triggers (1)</button>
-              <button class="btn " style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('HIGH_CONVICTION')">💎 High Conviction (2)</button>
+              <button class="btn " style="padding:4px 10px; font-size:11px;" onclick="AppDesk.setOppsFilter('ARMED')">🎯 Actionable / Armed (0)</button>
             </div>
           </div>
 
@@ -265,219 +265,7 @@
           <!-- Opportunities Grid -->
           <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
         
-              <div style="background:var(--bg-main); border:1px solid var(--border-subtle); border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); transition:transform 0.15s ease, border-color 0.15s ease;">
-                <div>
-                  <div style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:9px;">
-              <span style="display:inline-flex; align-items:center; gap:4px; background:var(--bg-subtle); border:1px solid rgba(6,182,212,0.45); border-radius:4px; padding:2px 7px; font-size:9px; font-weight:800; letter-spacing:0.3px; color:var(--cyan-glow);" title="Long 100 sh in the Schwab book">👤 ALREADY HELD</span>
-              <span style="display:inline-flex; align-items:center; gap:4px; background:var(--bg-subtle); border:1px solid rgba(245,158,11,0.45); border-radius:4px; padding:2px 7px; font-size:9px; font-weight:800; letter-spacing:0.3px; color:var(--amber);" title="1.4 below the 2.0 measured floor">⚠️ WEAK R:R</span></div>
-                  
-                  <!-- Card Header -->
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                    <div>
-                      <div style="display:flex; align-items:center; gap:8px;">
-                        <span style="font-size:20px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('2026-10-10', 'MSFT', 'plan')">
-                          MSFT
-                        </span>
-                        <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:800; font-size:10px;">
-                          LONG
-                        </span>
-                        <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:800; font-size:10px;">
-                          🎯 IN ZONE
-                        </span>
-                        <span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); font-weight:800; font-size:9.5px;">🔬 DEEP RESEARCH</span>
-                        
-                      </div>
-                      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:10.5px; color:var(--text-muted); margin-top:3px;">
-                        <span class="pill green" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
-                          TODAY
-                        </span>
-                        <span>Conviction: <b>8/10</b></span>
-                        <span>·</span>
-                        <span>Score: <b>91/100</b></span>
-                      </div>
-                    </div>
-
-                    <div style="text-align:right;">
-                      <div style="font-size:18px; font-weight:900; font-family:var(--font-mono); color:var(--text-main);">$492.10</div>
-                      <div style="font-size:11px; font-family:var(--font-mono); font-weight:800; color:var(--green);">🎯 IN ZONE</div>
-                      <div style="font-size:9px; color:var(--text-muted); font-family:var(--font-mono); margin-top:1px;">schwab</div>
-                    </div>
-                  </div>
-
-                  <!-- Tactical Geometry Grid -->
-                  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:10px; background:var(--bg-surface); padding:8px 10px; border-radius:8px; border:1px solid var(--border); font-family:var(--font-mono); font-size:11px;">
-                    <div>
-                      <div style="font-size:9.5px; color:var(--text-muted); text-transform:uppercase;">Entry Zone</div>
-                      <div style="font-weight:700; color:var(--text-main);">$488.00–$492.50</div>
-                    </div>
-                    <div>
-                      <div style="font-size:9.5px; color:var(--rose-light); text-transform:uppercase;">Stop Loss</div>
-                      <div style="font-weight:700; color:var(--rose-light);">$481.40</div>
-                    </div>
-                    <div>
-                      <div style="font-size:9.5px; color:var(--green); text-transform:uppercase;">Target 1 (50%)</div>
-                      <div style="font-weight:700; color:var(--green);">$505.00</div>
-                    </div>
-                  </div>
-
-                  <!-- Execution Vehicle Blueprint -->
-                  <div style="margin-top:10px; background:rgba(168, 85, 247, 0.08); border:1px solid rgba(168, 85, 247, 0.3); border-radius:8px; padding:10px 12px; font-size:11.5px; line-height:1.4;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                      <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">
-                        📦 EXECUTION BLUEPRINT
-                      </div>
-                      <span class="badge" style="border-color:var(--green); color:var(--green); font-size:9.5px; font-weight:800;">
-                        R:R 2.65:1
-                      </span>
-                    </div>
-                    <div style="font-weight:700; color:var(--text-main);">MSFT 490/500 CALL DEBIT SPREAD</div>
-                    
-                  </div>
-
-                  <!-- PM Thesis / Takeaways -->
-                  
-                  <div style="margin-top:10px; font-size:11px; color:var(--text-main); line-height:1.4; background:var(--bg-surface); border-radius:8px; padding:8px 10px; border:1px solid var(--border);">
-                    <div style="font-size:9.5px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">⚖️ Institutional PM Directive / Thesis:</div>
-                    <div style="margin-bottom:3px;">• Stage 2 markup off a defended 20 EMA.</div><div style="margin-bottom:3px;">• PB funnel is set.</div>
-                  </div>
-
-                  <!-- Stalk Limit Price Target or Honest PB Note (Task f3) -->
-                  
-                  <div style="margin-top:8px; font-size:11px; color:var(--cyan); background:rgba(6,182,212,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(6,182,212,0.25); font-family:var(--font-mono); font-weight:700;">
-                    🎯 <b>Stalk Target Limit:</b> 492.50 limit <span style="font-weight:400; font-size:10px; color:var(--text-muted);">(to achieve measured R:R floor)</span>
-                  </div>
-
-                  <!-- Gate Reasons / Blocker -->
-                  
-
-                  <!-- Invalidation Rule -->
-                  
-                  <div style="margin-top:8px; font-size:10px; color:var(--rose-light); font-family:var(--font-mono); background:rgba(244,63,94,0.05); padding:6px 8px; border-radius:6px; border:1px solid rgba(244,63,94,0.2);">
-                    🛑 <b>Invalidation:</b> Daily close below the 20 EMA
-                  </div>
-
-                </div>
-
-                <!-- 1-Click Action Buttons -->
-                <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
-                  <button class="btn" style="flex:1; min-width:110px; font-size:11px; padding:6px 10px; font-weight:800; background:linear-gradient(135deg, #059669 0%, #10b981 100%); color:white;" onclick="AppDesk.openActionablePosition('MSFT', 'LONG', 488, 481.4, 505, 'MSFT 490/500 CALL DEBIT SPREAD')">
-                    🚀 Take Trade
-                  </button>
-                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:6px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('2026-10-10', 'MSFT', 'plan')">
-                    📑 Dossier
-                  </button>
-                  <button class="btn secondary" style="font-size:11px; padding:6px 10px;" onclick="AppDesk.triggerDeep('MSFT', this)" title="Re-run Multi-Pass Deep Research">
-                        🔬 Research
-                      </button>
-                  <a href="https://www.tradingview.com/chart/jPAQSlZC/?symbol=MSFT&interval=D" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open in your logged-in TradingView session with the Rev - Enhanced v2 layout">
-                    📈 TV
-                  </a>
-                </div>
-
-              </div>
-            
-              <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:12px; padding:16px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); transition:transform 0.15s ease, border-color 0.15s ease;">
-                <div>
-                  
-                  
-                  <!-- Card Header -->
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                    <div>
-                      <div style="display:flex; align-items:center; gap:8px;">
-                        <span style="font-size:20px; font-weight:900; color:var(--cyan); cursor:pointer;" onclick="AppSwing.openReportModal('2026-10-09', 'NVDA', 'plan')">
-                          NVDA
-                        </span>
-                        <span class="badge" style="border-color:var(--green); color:var(--green); font-weight:800; font-size:10px;">
-                          LONG
-                        </span>
-                        <span class="badge" style="border-color:var(--amber); color:var(--amber); font-weight:800; font-size:10px;">
-                          COILING
-                        </span>
-                        <span class="badge" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3); font-weight:800; font-size:9.5px;">⚡ SCREENER COIL</span>
-                        <span class="badge" style="background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(239,68,68,0.3); font-weight:800; font-size:9.5px;" title="Price moved > 1 ATR since triage — candidate needs re-triage">🏃 1.2 ATR</span>
-                      </div>
-                      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:10.5px; color:var(--text-muted); margin-top:3px;">
-                        <span class="pill cyan" style="font-size:9.5px; font-weight:800; padding:1px 6px;">
-                          1d old
-                        </span>
-                        <span>Conviction: <b>7/10</b></span>
-                        <span>·</span>
-                        <span>Score: <b>78/100</b></span>
-                      </div>
-                    </div>
-
-                    <div style="text-align:right;">
-                      <div style="font-size:18px; font-weight:900; font-family:var(--font-mono); color:var(--text-main);">$178.90</div>
-                      <div style="font-size:11px; font-family:var(--font-mono); font-weight:800; color:var(--amber);">-2.40%</div>
-                      <div style="font-size:9px; color:var(--text-muted); font-family:var(--font-mono); margin-top:1px;">⚠️ fallback quote</div>
-                    </div>
-                  </div>
-
-                  <!-- Tactical Geometry Grid -->
-                  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:10px; background:var(--bg-surface); padding:8px 10px; border-radius:8px; border:1px solid var(--border); font-family:var(--font-mono); font-size:11px;">
-                    <div>
-                      <div style="font-size:9.5px; color:var(--text-muted); text-transform:uppercase;">Entry Zone</div>
-                      <div style="font-weight:700; color:var(--text-main);">$174.00–$176.20</div>
-                    </div>
-                    <div>
-                      <div style="font-size:9.5px; color:var(--rose-light); text-transform:uppercase;">Stop Loss</div>
-                      <div style="font-weight:700; color:var(--rose-light);">$170.10</div>
-                    </div>
-                    <div>
-                      <div style="font-size:9.5px; color:var(--green); text-transform:uppercase;">Target 1 (50%)</div>
-                      <div style="font-weight:700; color:var(--green);">$188.00</div>
-                    </div>
-                  </div>
-
-                  <!-- Execution Vehicle Blueprint -->
-                  <div style="margin-top:10px; background:rgba(56, 189, 248, 0.08); border:1px solid rgba(56, 189, 248, 0.3); border-radius:8px; padding:10px 12px; font-size:11.5px; line-height:1.4;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                      <div style="font-size:10px; font-weight:800; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">
-                        📊 EXECUTION BLUEPRINT
-                      </div>
-                      <span class="badge" style="border-color:var(--amber); color:var(--amber); font-size:9.5px; font-weight:800;">
-                        R:R 1.40:1 · below measured floor
-                      </span>
-                    </div>
-                    <div style="font-weight:700; color:var(--text-main);">Straight shares</div>
-                    
-                  </div>
-
-                  <!-- PM Thesis / Takeaways -->
-                  
-
-                  <!-- Stalk Limit Price Target or Honest PB Note (Task f3) -->
-                  
-                  <div style="margin-top:8px; font-size:10.5px; color:var(--amber); background:rgba(245,158,11,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(245,158,11,0.25); font-weight:700;">
-                    ⏳ <b>Structure Note:</b> PB funnel unset — size down
-                  </div>
-
-                  <!-- Gate Reasons / Blocker -->
-                  
-                  <div style="margin-top:8px; font-size:10.5px; color:var(--amber); background:rgba(245,158,11,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(245,158,11,0.25);">
-                    ⚠️ <b>Gate Blocker:</b> R:R below the 2.0 measured floor
-                  </div>
-
-                  <!-- Invalidation Rule -->
-                  
-
-                </div>
-
-                <!-- 1-Click Action Buttons -->
-                <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
-                  <button class="btn" style="flex:1; min-width:110px; font-size:11px; padding:6px 10px; font-weight:800; background:linear-gradient(135deg, #059669 0%, #10b981 100%); color:white;" onclick="AppDesk.openActionablePosition('NVDA', 'LONG', 174, 170.1, 188, 'Straight shares')">
-                    🚀 Take Trade
-                  </button>
-                  <button class="btn secondary" style="flex:1; min-width:90px; font-size:11px; padding:6px 8px; font-weight:700; color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="AppSwing.openReportModal('2026-10-09', 'NVDA', 'plan')">
-                    📑 Dossier
-                  </button>
-                  <button class="btn" style="font-size:11px; padding:6px 12px; font-weight:800; background:linear-gradient(135deg, #7c3aed 0%, #a855f7 100%); color:white;" onclick="AppDesk.triggerDeep('NVDA', this)" title="Dispatch candidate into Autonomous Deep Research">
-                        🔬 Run Deep Research
-                      </button>
-                  <a href="https://www.tradingview.com/chart/jPAQSlZC/?symbol=NVDA&interval=D" target="_blank" class="btn secondary" style="font-size:11px; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;" title="Open in your logged-in TradingView session with the Rev - Enhanced v2 layout">
-                    📈 TV
-                  </a>
-                </div>
-
-              </div>
-            </div></div></div>
+            <div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-muted); font-size:13px; background:var(--bg-main); border-radius:10px; border:1px dashed var(--border);">
+              No setups matching filter "ARMED". Check all opportunities or launch deep research from Radar.
+            </div>
+          </div></div></div>

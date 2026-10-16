@@ -605,10 +605,6 @@ def _collect_opportunities_uncached(lookback_days: int = 3) -> List[Dict[str, An
             s["opportunity_state"] = "COILED_TRIGGER"
             s["state_label"] = f"⚡ COILED TRIGGER ({'+' if dist_pct > 0 else ''}{dist_pct}%)"
             s["priority_tier"] = 2
-        elif s.get("conviction", 0) >= 7 and s.get("is_actionable", False):
-            s["opportunity_state"] = "HIGH_CONVICTION"
-            s["state_label"] = f"💎 HIGH CONVICTION ({s['conviction']}/10)"
-            s["priority_tier"] = 3
         elif s.get("stage") == "SCREENER_COIL":
             s["opportunity_state"] = "SCREENER_UNMEASURED"
             s["state_label"] = "⏳ screener coil, unmeasured"
@@ -621,6 +617,10 @@ def _collect_opportunities_uncached(lookback_days: int = 3) -> List[Dict[str, An
             )
             s["priority_tier"] = 4
 
+        from src.logic.trade_state import trade_state
+
+        s["trade_state"] = trade_state(spot, e_low, e_high, stop, t1, atr_val or None, side=s.get("side") or "LONG",
+                                       fade=(dw or {}).get("fade_long") if dw else None)
         processed.append(s)
 
     today_mt_str = now_mt.strftime("%Y-%m-%d")
@@ -776,7 +776,7 @@ def get_actionable_alerts_stream(limit: int = 40) -> List[Dict[str, Any]]:
 
 _REGIME_CACHE: Dict[str, Any] = {}
 _REGIME_CACHE_TIME: float = 0.0
-_REGIME_TTL: float = 60.0
+_REGIME_TTL: float = 180.0  # 3 minutes (protects broker quotas)
 
 _REGIME_DROP_ALERT_PCT = 3.0
 _REGIME_DRASTIC_PCT = 5.0
@@ -891,22 +891,47 @@ def get_market_regime(force: bool = False) -> Dict[str, Any]:
     try:
         universe = _tracked_universe()
         if universe:
-            from concurrent.futures import ThreadPoolExecutor
-            from src.clients.schwab_client import get_schwab_client
+            from src.tracking.screener_gate import is_screener_busy
+            screener_busy = is_screener_busy()
 
-            def _quotes() -> Dict[str, Dict[str, Any]]:
-                client = get_schwab_client()
-                out: Dict[str, Dict[str, Any]] = {}
-                for i in range(0, len(universe), 400):
-                    resp = client.get_quotes(universe[i:i + 400])
-                    if resp.status_code == 200:
-                        for sym, val in resp.json().items():
-                            if isinstance(val, dict):
-                                out[sym] = val
-                return out
+            raw: Dict[str, Dict[str, Any]] = {}
+            if not screener_busy:
+                # When screener is idle, pull from Schwab batch
+                from concurrent.futures import ThreadPoolExecutor
+                from src.clients.schwab_client import get_schwab_client
 
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                raw = ex.submit(_quotes).result(timeout=40)
+                def _quotes() -> Dict[str, Dict[str, Any]]:
+                    client = get_schwab_client()
+                    out: Dict[str, Dict[str, Any]] = {}
+                    for i in range(0, min(len(universe), 400), 400):
+                        resp = client.get_quotes(universe[i:i + 400])
+                        if resp.status_code == 200:
+                            for sym, val in resp.json().items():
+                                if isinstance(val, dict):
+                                    out[sym] = val
+                    return out
+
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as ex:
+                        raw = ex.submit(_quotes).result(timeout=15)
+                except Exception as e_sc:
+                    logger.debug(f"Schwab regime quotes failed ({e_sc}); falling back to QuoteRouter/Tastytrade")
+                    raw = {}
+
+            if not raw:
+                # Screener is active OR Schwab busy: intelligently route to Tastytrade DXLink
+                from src.clients.quote_router import quote_router
+                qr_batch = quote_router.get_watchlist_quotes_batch(universe[:120])
+                for sym, qd in qr_batch.items():
+                    if qd and qd.last_price > 0:
+                        raw[sym] = {
+                            "netPercentChange": qd.net_percent_change,
+                            "quote": {
+                                "netPercentChange": qd.net_percent_change,
+                                "lastPrice": qd.last_price,
+                                "totalVolume": qd.volume,
+                            }
+                        }
 
             held: set[str] = set()
             try:

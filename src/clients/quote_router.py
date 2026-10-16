@@ -141,11 +141,11 @@ class QuoteRouter:
         self.ttl_index = 15.0          # Broad indices like VIX/SPX (15s)
         self.ttl_offhours = 300.0      # When market closed (5m)
 
-        # Circuit breakers
+        # Circuit breakers (resilient thresholds against transient Wi-Fi drops)
         self.schwab_breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=120.0)
-        self.yahoo_breaker = CircuitBreaker(failure_threshold=4, cooldown_seconds=60.0)
-        self.alpaca_breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=60.0)
-        self.tastytrade_breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=120.0)
+        self.yahoo_breaker = CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self.alpaca_breaker = CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self.tastytrade_breaker = CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
 
         # Single-flight locks to coalesce concurrent requests for the exact same ticker
         self._inflight_locks: Dict[str, threading.Lock] = {}
@@ -304,8 +304,15 @@ class QuoteRouter:
                 if cached and (now - cached[0] < self.ttl_execution):
                     return cached[1]
 
-            # 3. Call Schwab API
-            if self.schwab_breaker.is_available():
+            # Check if screener is actively running on Schwab
+            try:
+                from src.tracking.screener_gate import is_screener_busy
+                screener_active = is_screener_busy()
+            except Exception:
+                screener_active = False
+
+            # 3. Call Schwab API (if available and screener is not active)
+            if self.schwab_breaker.is_available() and not screener_active:
                 try:
                     from src.clients.schwab_client import get_realtime_quote as schwab_get_rt
                     schwab_sym = self._format_for_schwab(clean_sym)
@@ -337,9 +344,17 @@ class QuoteRouter:
                     else:
                         self.schwab_breaker.record_failure(str(e))
 
-            # 4. Fallback: If Schwab is hard down during live trading, protect capital via secondary
-            logger.warning(f"[ExecutionChannel:{clean_sym}] Schwab unavailable! Engaging safety backup.")
-            backup_quote = self._fetch_tastytrade_quote(clean_sym) or self._fetch_yahoo_direct(clean_sym)
+            # 4. Fallback: If Schwab is down or screener is active, follow hierarchy: TT -> Alpaca -> Yahoo -> yfinance
+            if screener_active:
+                logger.debug(f"[ExecutionChannel:{clean_sym}] Screener active on Schwab; intelligently routing quote to Tastytrade.")
+            else:
+                logger.warning(f"[ExecutionChannel:{clean_sym}] Schwab unavailable! Engaging backup hierarchy (TT -> Alpaca -> Yahoo -> yfinance).")
+            backup_quote = (
+                self._fetch_tastytrade_quote(clean_sym)
+                or self._fetch_alpaca_snapshot_single(clean_sym)
+                or self._fetch_yahoo_direct(clean_sym)
+                or self._call_bounded(self._fetch_yfinance_fast, clean_sym)
+            )
             if backup_quote:
                 backup_quote.source = f"{backup_quote.source}_EMERGENCY_FALLBACK"
                 with self._cache_lock:
@@ -380,8 +395,15 @@ class QuoteRouter:
         if not to_fetch:
             return results
 
-        # Schwab Batch Fetch
-        if self.schwab_breaker.is_available():
+        # Check if screener is actively running on Schwab
+        try:
+            from src.tracking.screener_gate import is_screener_busy
+            screener_active = is_screener_busy()
+        except Exception:
+            screener_active = False
+
+        # Schwab Batch Fetch (only when screener is not active)
+        if self.schwab_breaker.is_available() and not screener_active:
             try:
                 from src.clients.schwab_client import get_realtime_quotes_batch as schwab_batch
 
@@ -416,23 +438,45 @@ class QuoteRouter:
                 logger.warning(f"[ExecutionChannel] Schwab batch failed: {e}")
                 self.schwab_breaker.record_failure(str(e))
 
-        # Check missing equities
+        # Check missing equities - follow hierarchy: Tastytrade -> Alpaca -> Yahoo -> yfinance
         missing = [s for s in to_fetch if s not in results]
         if missing:
-            logger.warning(f"[ExecutionChannel] {len(missing)} missing from Schwab; pulling backup.")
-            backup_quotes = {}
-            for s_m in missing:
-                qd_tt = self._fetch_tastytrade_quote(s_m)
-                if qd_tt:
-                    backup_quotes[s_m] = qd_tt
-            left = [s_m for s_m in missing if s_m not in backup_quotes]
-            if left:
-                backup_quotes.update(self._fetch_yahoo_direct_batch(left))
-            with self._cache_lock:
-                for s, qd in backup_quotes.items():
+            logger.warning(f"[ExecutionChannel] {len(missing)} missing from Schwab; pulling backup hierarchy (TT -> Alpaca -> Yahoo -> yfinance).")
+            # 1. Tastytrade DXLink batch
+            tt_quotes = self._tastytrade_quotes_batch(missing)
+            for s, qd in tt_quotes.items():
+                qd.source = f"{qd.source}_EMERGENCY_FALLBACK"
+                results[s] = qd
+            still_missing = [s for s in missing if s not in results]
+
+            # 2. Alpaca snapshots batch
+            if still_missing and self.alpaca_breaker.is_available():
+                alp_quotes = self._fetch_alpaca_snapshots_batch(still_missing)
+                for s, qd in alp_quotes.items():
                     qd.source = f"{qd.source}_EMERGENCY_FALLBACK"
-                    self._cache_execution[s] = (now, qd)
                     results[s] = qd
+                still_missing = [s for s in still_missing if s not in results]
+
+            # 3. Yahoo Direct REST batch
+            if still_missing:
+                yahoo_quotes = self._fetch_yahoo_direct_batch(still_missing)
+                for s, qd in yahoo_quotes.items():
+                    qd.source = f"{qd.source}_EMERGENCY_FALLBACK"
+                    results[s] = qd
+                still_missing = [s for s in still_missing if s not in results]
+
+            # 4. yfinance fast_info
+            if still_missing:
+                for s in still_missing[:10]:
+                    q_yf = self._call_bounded(self._fetch_yfinance_fast, s)
+                    if q_yf:
+                        q_yf.source = f"{q_yf.source}_EMERGENCY_FALLBACK"
+                        results[s] = q_yf
+
+            with self._cache_lock:
+                for s in missing:
+                    if s in results:
+                        self._cache_execution[s] = (now, results[s])
 
         return results
 
@@ -499,11 +543,11 @@ class QuoteRouter:
         if neg_hit:
             return self._stale_surveillance(clean_sym)
 
-        # Alpaca -> Yahoo -> Tastytrade (5s cap, breaker) -> yfinance (3s cap); failures negative-cached.
+        # Surveillance hierarchy: Tastytrade -> Alpaca -> Yahoo -> yfinance; failures negative-cached.
         qd = (
-            self._fetch_alpaca_snapshot_single(clean_sym)
+            self._fetch_tastytrade_quote(clean_sym)
+            or self._fetch_alpaca_snapshot_single(clean_sym)
             or self._fetch_yahoo_direct(clean_sym)
-            or self._fetch_tastytrade_quote(clean_sym)
             or self._call_bounded(self._fetch_yfinance_fast, clean_sym)
         )
         with self._cache_lock:
@@ -606,6 +650,18 @@ class QuoteRouter:
                     st = self._stale_surveillance(s)
                     if st:
                         results[s] = st
+
+        # 4. Final safety net for any critical symbols still missing: Schwab (capped to 10 symbols)
+        final_missing = [s for s in to_fetch if s not in results and not self._is_index(s)]
+        if final_missing and self.schwab_breaker.is_available():
+            try:
+                schwab_res = self._schwab_quotes(final_missing[:10])
+                with self._cache_lock:
+                    for s, qd in schwab_res.items():
+                        self._cache_surveillance[s] = (now, qd)
+                        results[s] = qd
+            except Exception as e_sc:
+                logger.debug(f"Schwab final safety quote failed: {e_sc}")
 
         # Map back to whatever symbol representation the caller provided (e.g. BRK.B or BRK/B)
         for s in symbols:
@@ -715,7 +771,7 @@ class QuoteRouter:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1m&range=1d"
 
         try:
-            r = requests.get(url, headers=headers, timeout=(5.0, 5.0))
+            r = requests.get(url, headers=headers, timeout=(8.0, 8.0))
             if r.status_code == 429 or r.status_code >= 500:
                 self.yahoo_breaker.record_failure(f"HTTP {r.status_code}")
             elif r.status_code == 200:
@@ -801,7 +857,7 @@ class QuoteRouter:
             syms_param = ",".join(chunk)
             url = f"{base_url}/stocks/snapshots?symbols={syms_param}"
             try:
-                r = requests.get(url, headers=headers, timeout=(5.0, 5.0))
+                r = requests.get(url, headers=headers, timeout=(10.0, 10.0))
                 if r.status_code == 429 or r.status_code >= 500:
                     self.alpaca_breaker.record_failure(f"HTTP {r.status_code}")
                 elif r.status_code == 200:
@@ -890,8 +946,8 @@ class QuoteRouter:
         try:
             from src.clients.tastytrade_client import get_tastytrade_client
             client = get_tastytrade_client()
-            fut = self._slow_executor.submit(client.get_realtime_quotes_batch, syms, 5.0)
-            raw = fut.result(timeout=8.0)
+            fut = self._slow_executor.submit(client.get_realtime_quotes_batch, syms, 6.0)
+            raw = fut.result(timeout=10.0)
             for sym, q in (raw or {}).items():
                 px = float(q.get("last_price") or 0.0)
                 if px <= 0:
