@@ -738,13 +738,6 @@ def evaluate_technical_coiling(
     return res
 
 
-def check_earnings_blackout(ticker: str, window_days: Optional[int] = None) -> bool:
-    """Earnings never disqualify a candidate (trade_rules); the stance is declared in the plan. Always True."""
-    from src.tracking import trade_rules
-
-    return not trade_rules.earnings_blocks_entry(None)
-
-
 def print_funnel_summary(funnel_tracker: Dict[str, Any]):
     """Logs detailed count of how many tickers reach and drop out at each filter stage."""
     total = funnel_tracker.get("total_quotes", 0)
@@ -773,7 +766,6 @@ def print_funnel_summary(funnel_tracker: Dict[str, Any]):
     print(f"  ---------------------------------------------------------------------------------")
     print(f"  Stage 2 Technical Scanned:         {funnel_tracker.get('stage2_scanned', 0):>5}")
     print(f"  • Rejected - Technical / MA / R:R: {stg2_rej.get('technical_filter_failed', 0):>5}")
-    print(f"  • Rejected - Earnings Blackout:    {stg2_rej.get('earnings_blackout', 0):>5}")
     print(f"  • Rejected - Data Fetch Error:     {stg2_rej.get('data_error', 0):>5}")
     print(f"  ---------------------------------------------------------------------------------")
     print(f"  Passed Stage 2 Final Survivors:    {stg2_pass:>5}")
@@ -810,13 +802,6 @@ def run_stage2_technical_scan(
                     candles = data.get("candles") or []
                     metrics = evaluate_technical_coiling(candles, spy_20d_return, lane=cand_lane)
                     if metrics:
-                        # Check 14-day earnings blackout gate
-                        if not check_earnings_blackout(clean_sym):
-                            if funnel_tracker:
-                                funnel_tracker["stage2_rejections"]["earnings_blackout"] = (
-                                    funnel_tracker["stage2_rejections"].get("earnings_blackout", 0) + 1
-                                )
-                            return None
                         cand_copy = dict(cand)
                         cand_copy.update(metrics)
                         cand_copy["side"] = "LONG"
@@ -1083,9 +1068,6 @@ def run_stage2_short_scan(
                     candles = data.get("candles") or []
                     metrics = evaluate_short_setup(candles)
                     if metrics:
-                        # Check 14-day earnings blackout gate
-                        if not check_earnings_blackout(clean_sym):
-                            return None
                         cand_copy = dict(cand)
                         cand_copy.update(metrics)
                         return cand_copy
@@ -1568,7 +1550,7 @@ def run_autonomous_screener_pipeline(
                     if raw_send is not None:
                         send_to_deep = bool(raw_send) and triage_verdict != "CUT"
                     else:
-                        earn_gate = rec.get("earnings_gate", "PASS" if check_earnings_blackout(sym) else "FAIL")
+                        earn_gate = rec.get("earnings_gate", "PASS")
                         quality_pass, send, rank_score, has_plan = _deep_research_gate(triage_d, earn_gate)
                         send_to_deep = bool(send)
                 except Exception as e_gate:

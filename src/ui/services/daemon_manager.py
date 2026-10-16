@@ -257,14 +257,11 @@ def start_all_daemons():
         try:
             from src.tracking import backend_control as bc
 
-            if bc.read().get("stopped_by_user"):
-                append_log("⏸️ [Startup] Research backend was stopped by user; not auto-starting. Start it from the bell panel.")
-            else:
-                if bc.alive() and bc.code_is_newer(bc.read().get("started_at")):
-                    append_log("♻️ [Startup] Research backend is on old code; restarting it.")
-                    bc.stop_process()
-                res = bc.start_process()
-                append_log(f"🧠 [Startup] Research backend: {res.get('status')} (PID {res.get('pid')}).")
+            if bc.alive() and bc.code_is_newer(bc.read().get("started_at")):
+                append_log("♻️ [Startup] Research backend is on old code; restarting it.")
+                bc.stop_process()
+            res = bc.start_process()
+            append_log(f"🧠 [Startup] Research backend: {res.get('status')} (PID {res.get('pid')}).")
         except Exception as e_backend:
             logger.warning(f"Research backend failed to start: {e_backend}")
 

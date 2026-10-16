@@ -86,7 +86,7 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
         "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
-        "LEVELS ARE NOT YOURS TO SET. When the ground truth shows a valid Pine plan, its entry zone, stop and target_1 "
+        "PINE LEVELS BIND. When the ground truth shows a valid Pine plan, its entry zone, stop and target_1 "
         "are the binding geometry and the code overwrites whatever you write with them. Copy them into shares_plan. "
         "You may add target_2 only above the Pine target. Never tighten the stop: a stop inside one normal day's range is the "
         "measured reason most of these trades stop out. When there is no valid Pine plan, draw the levels yourself from the "
@@ -428,16 +428,16 @@ def run_arbitration(
 
         if str(watch_data.get("side") or "LONG").upper() == "LONG" and "CASH_SKIP" not in str(watch_data.get("verdict", "")).upper():
             try:
-                from src.logic.ticket_repair import options_span_earnings_ok, repair_long_shares_plan
+                from src.logic.order_ticket import options_span_earnings_ok, repair_long_shares_plan
                 from src.logic.level_validation import _compute_atr14_from_bars, _dw_num
 
                 _atr = _dw_num(dw_dict, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR", "wilder_atr14") or _compute_atr14_from_bars(ticker, date_str)
                 _sp = watch_data.setdefault("shares_plan", {})
                 _notes = repair_long_shares_plan(_sp, spot_num, _atr, pine_stop=watch_data.get("levels_source") == "pine")
                 try:
-                    from src.logic.earnings_packet import build_earnings_packet
+                    from src.clients.earnings_client import resolve_next_earnings_date
 
-                    _rep = build_earnings_packet(ticker, spot_num).get("report_date")
+                    _rep = str(resolve_next_earnings_date(ticker)[0] or "") or None
                 except Exception:
                     _rep = None
                 _opt_bad = options_span_earnings_ok(watch_data.get("options_plan") or {}, _rep, watch_data.get("earnings_stance"))

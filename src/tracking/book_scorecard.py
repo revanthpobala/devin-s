@@ -71,6 +71,21 @@ def _vetoed_scores() -> List[float]:
     return [v["r"] for v in cache.values() if v.get("closed")]
 
 
+def _user_scores() -> List[float]:
+    """Closed positions you took yourself (mode != MODEL), R from entry, exit and initial stop."""
+    from src.tracking.alert_db import DB_PATH
+
+    try:
+        with sqlite3.connect(str(DB_PATH), timeout=10.0) as conn:
+            rows = conn.execute(
+                """SELECT entry_price, exit_price, COALESCE(initial_stop, stop) FROM positions
+                   WHERE status = 'CLOSED' AND COALESCE(mode, 'MODEL') != 'MODEL' AND exit_price IS NOT NULL"""
+            ).fetchall()
+    except Exception:
+        return []
+    return [(x - e) / (e - st) for e, x, st in rows if e and st and e > st]
+
+
 def book_stats() -> Dict[str, Dict[str, Any]]:
     with _db_lock:
         with _get_connection() as conn:
@@ -81,7 +96,7 @@ def book_stats() -> Dict[str, Dict[str, Any]]:
             )]
     pine = [float(r["r_net"]) for r in rows if r["setup_lane"] in PINE_LANES]
     disc = [float(r["r_net"]) for r in rows if r["setup_lane"] == "LLM_DISCRETIONARY"]
-    return {"PINE_LANE": _stats(pine), "LLM_DISCRETIONARY": _stats(disc), "LLM_VETOED": _stats(_vetoed_scores())}
+    return {"USER": _stats(_user_scores()), "PINE_LANE": _stats(pine), "LLM_DISCRETIONARY": _stats(disc), "LLM_VETOED": _stats(_vetoed_scores())}
 
 
 def scorecard_text() -> str:
@@ -98,6 +113,7 @@ def scorecard_text() -> str:
 
     out = [
         "YOUR SCORECARD (same scorer, 21 bars, fees in; below n=30 it is noise):",
+        line("The user's own trades (reference, not yours)", b["USER"]),
         line("Pine-lane plans", b["PINE_LANE"]),
         line("Your discretionary plans", b["LLM_DISCRETIONARY"]),
         line("Plans you vetoed (CASH_SKIP, scored as if taken)", b["LLM_VETOED"]),

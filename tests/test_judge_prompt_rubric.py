@@ -23,9 +23,9 @@ def prompt() -> str:
 # ---------------------------------------------------------------------------
 
 def test_levels_belong_to_pine(prompt):
-    assert "LEVELS ARE NOT YOURS TO SET" in prompt
+    assert "PINE LEVELS BIND" in prompt
     assert "Never tighten the stop" in prompt
-    assert "do not invent one" in prompt
+    assert "LLM_DISCRETIONARY" in prompt and "EARNINGS IS NOT A BLACKOUT" in prompt
 
 
 def test_job_is_concrete_veto(prompt):

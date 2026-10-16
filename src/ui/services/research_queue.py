@@ -508,6 +508,7 @@ def run_research_worker(
         reader_t.start()
 
         last_output_ts = _time.monotonic()
+        idle_cap = min(IDLE_TIMEOUT_SEC, 600) if phase_label.startswith(("Scrape", "Triage")) else IDLE_TIMEOUT_SEC
         while True:
             try:
                 ln = line_q.get(timeout=30)
@@ -520,12 +521,12 @@ def run_research_worker(
                 if current_subproc.poll() is not None:
                     break  # process exited, drain remaining
                 elapsed_idle = _time.monotonic() - last_output_ts
-                if elapsed_idle >= IDLE_TIMEOUT_SEC:
+                if elapsed_idle >= idle_cap:
                     current_subproc.kill()
                     current_subproc.wait()
                     tail = "\n".join(list(recent_lines)[-20:])
                     raise RuntimeError(
-                        f"{phase_label} timed out after {IDLE_TIMEOUT_SEC // 60} min with no output.\n"
+                        f"{phase_label} timed out after {idle_cap // 60} min with no output.\n"
                         f"Process killed. Last 20 lines before hang:\n{tail}"
                     )
                 continue

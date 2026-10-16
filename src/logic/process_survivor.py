@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from src import config
 from src.clients.news_client import get_ticker_news
 from src.data.tv_scraper import TVScraper
+from src.tracking import trade_rules
 from src.logic.data_window_filter import normalize_number_str
 
 logger = logging.getLogger(__name__)
@@ -338,7 +339,6 @@ def _sanitize_llm_cut_verdict(
         or "warmup" in flags_set
     )
     is_delisted = "delisted" in flags_set or "test_symbol" in flags_set
-    is_earnings = earnings_gate == "FAIL"
 
     if is_toxic:
         return "CUT", "toxic_risk_geometry"
@@ -346,8 +346,6 @@ def _sanitize_llm_cut_verdict(
         return "CUT", "stage_0_warmup"
     if is_delisted:
         return "CUT", "delisted_or_test"
-    if is_earnings:
-        return "CUT", "earnings_inside_blackout"
 
     # Not a genuine CUT case -> local LLM tried to cut on stagnation / dead chart / no catalyst
     if (iv_rank is not None and iv_rank <= 25) or squeeze_on or "stagnation" in flags_set or "no_edge" in flags_set:
@@ -516,21 +514,13 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     # the moment ev_r changes -- so it is stated explicitly.
     income_only = bool(triage.get("no_fresh_long"))
 
-    # CAUTION intermediate effect: earnings within 3-7 days raises the
-    # conviction floor — CAUTION is neither PASS (no weight) nor FAIL
-    # (hard block). A near-dividend setup needs stronger deterministic
-    # conviction to justify paid deep research.
-    caution_floor = min_conviction + 10.0 if earnings_gate == "CAUTION" else 0.0
-    caution_pass = det_conv is None or det_conv >= caution_floor
 
     # Phase 6: PASS names are not blocked by ev_r or caution conviction floor
     ev_r_ok = quality_pass or (det_ev_r is None or det_ev_r >= min_ev_r)
     send = bool(
         quality_pass
         and triage.get("pursue", True) is True
-        and earnings_gate != "FAIL"
         and conviction_ok
-        and (quality_pass or caution_pass)
         and has_plan
         and not blocked
         and not income_only
@@ -679,15 +669,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     det_pass = triage.get("triage") == "PASS"
     det_ev_r = triage.get("ev_r")
     earnings_days = _next_earnings_days(ticker)
-    earnings_gate = (
-        "UNKNOWN"
-        if earnings_days is None
-        else "FAIL"
-        if earnings_days < 3
-        else "CAUTION"
-        if earnings_days < 7
-        else "PASS"
-    )
+    earnings_gate = trade_rules.earnings_gate(earnings_days)
 
     triage.setdefault("ticker", str(ticker).upper())
     # Single shared gate (identical logic to the enrichment pass) WITHOUT full news.
@@ -754,9 +736,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     }
     if quality_pass and not send:
         compact["triage"] = "WATCH"
-        if earnings_gate == "FAIL":
-            compact["earnings_override"] = f"earnings in {earnings_days}d"
-        elif det_ev_r is not None and det_ev_r < min_ev_r:
+        if det_ev_r is not None and det_ev_r < min_ev_r:
             compact["ev_floor_override"] = f"ev_r {det_ev_r} < {min_ev_r}"
 
     result_dict = {
@@ -976,14 +956,7 @@ def _screener_payload_verdict(ticker, safe_ticker, survivor, payload, thesis_jso
     # Lane-aware earnings gate (lane-aware policy per implementation plan): swing basing uses a
     # 14d blackout; a directional options setup would use 48h. This lane is always swing-family.
     earnings_days = _next_earnings_days(ticker)
-    if earnings_days is None:
-        earnings_gate = "UNKNOWN"
-    elif earnings_days < 3:
-        earnings_gate = "FAIL"
-    elif earnings_days < 14:
-        earnings_gate = "CAUTION"
-    else:
-        earnings_gate = "PASS"
+    earnings_gate = trade_rules.earnings_gate(earnings_days)
 
     # The free local LLM judges the OBSERVED thesis (levels + news), never a fabricated window.
     llm_conviction = None
@@ -1037,7 +1010,6 @@ def _screener_payload_verdict(ticker, safe_ticker, survivor, payload, thesis_jso
 
     send = bool(
         has_plan
-        and earnings_gate != "FAIL"
         and not news_negative
         and not contradicts
         and (llm_conviction is None or float(llm_conviction) >= 50.0)
@@ -1462,14 +1434,7 @@ def generate_thesis_task(
         headlines = [h for h in (raw_news.split("\n") if raw_news else []) if h.strip()]
 
     earnings_days = _next_earnings_days(ticker)
-    if earnings_days is None:
-        earnings_gate = "UNKNOWN"
-    elif earnings_days < 3:
-        earnings_gate = "FAIL"
-    elif earnings_days < 7:
-        earnings_gate = "CAUTION"
-    else:
-        earnings_gate = "PASS"
+    earnings_gate = trade_rules.earnings_gate(earnings_days)
 
     llm_input = {
         "ticker": ticker,
@@ -1733,7 +1698,7 @@ Output:
             "triage": triage.get("triage"),
             "dominant_side": side.lower(),
             "key_flags": list(triage.get("flags") or []),
-            "send_for_deep_research": bool(det_pass and earnings_gate != "FAIL"),
+            "send_for_deep_research": bool(det_pass),
             "llm_failed": True,
             "bull_case": None,
             "bear_case": None,
@@ -1742,9 +1707,6 @@ Output:
             "moderator_agreement": None,
             "moderator_disagreement": None,
         }
-        if det_pass and earnings_gate == "FAIL":
-            llm_json["triage"] = "WATCH"
-            llm_json["earnings_override"] = f"earnings in {earnings_days}d"
         logger.warning(
             f"[Analyzer-{worker_id}] {ticker}: LLM returned no parseable JSON — "
             f"falling back to deterministic verdict ({triage.get('triage')}), "
@@ -1920,9 +1882,7 @@ Output:
 
     if quality_pass and not send:
         llm_json["triage"] = "WATCH"
-        if earnings_gate == "FAIL":
-            llm_json["earnings_override"] = f"earnings in {earnings_days}d"
-        elif det_ev_r is not None and det_ev_r < min_ev_r:
+        if det_ev_r is not None and det_ev_r < min_ev_r:
             llm_json["ev_floor_override"] = f"ev_r {det_ev_r} < {min_ev_r}"
 
     # D2: the LLM's self-reported conviction is capped to the band its OWN verdict,

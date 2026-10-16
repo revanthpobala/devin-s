@@ -18,8 +18,9 @@ EARNINGS_STANCES = ("HOLD_THROUGH", "EXIT_BEFORE", "EARNINGS_PLAY")
 TICKET_GOOD_TIL_SESSIONS = 10
 
 
-def earnings_blocks_entry(days_to_earnings: Optional[int]) -> bool:
-    return False
+def earnings_gate(days_to_earnings: Optional[int]) -> str:
+    """Gate string for triage payloads. Earnings is context, never FAIL or CAUTION."""
+    return "UNKNOWN" if days_to_earnings is None else "PASS"
 
 
 def earnings_in_window(days_to_earnings: Optional[int]) -> bool:

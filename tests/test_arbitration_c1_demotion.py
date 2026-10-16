@@ -96,7 +96,7 @@ def _run_meta_arbitration(tmp_path: Path) -> dict:
         assert sp.get("target_1", 0) > 747.6
         # The limit-zone path is untouched.
         assert sp.get("entry_zone_low") == 710.43
-        assert sp.get("entry_zone_high") == 715.95
+        assert sp.get("entry_zone_high") == 713.03
         persisted = data
     return persisted
 

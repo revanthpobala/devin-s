@@ -201,20 +201,8 @@ def get_books():
 
 @router.get("/tickets")
 def get_tickets(days: int = 10):
-    """Order tickets from the last N calendar days that are still inside good-til, newest first."""
-    root = config.BASE_DIR / "reports"
-    today = datetime.now().strftime("%Y-%m-%d")
-    out = []
-    for i in range(max(1, min(days, 21))):
-        d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-        for f in sorted((root / d).glob("*_ticket.json")) if (root / d).exists() else []:
-            try:
-                t = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if str(t.get("good_til") or "") >= today:
-                out.append(t)
-    return {"tickets": out}
+    from src.logic.order_ticket import open_tickets
+    return {"tickets": open_tickets(days)}
 
 
 from src.logic.data_window_filter import LANE_TO_SETUP_LANE, lane_prior

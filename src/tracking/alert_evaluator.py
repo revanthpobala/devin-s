@@ -190,14 +190,7 @@ def build_live_market_context(symbol: str) -> Dict[str, Any]:
                 except Exception:
                     pass
 
-            gate = "CLEAR"
-            if days_away is not None:
-                if days_away < 3:
-                    gate = "FAIL (<3 days away - binary event risk)"
-                elif days_away < 7:
-                    gate = "WARNING (<7 days away - approach with caution)"
-                else:
-                    gate = f"CLEAR ({days_away} calendar days / {b_days_away} trading days away - NOT a near-term binary risk)"
+            gate = f"{days_away} calendar days / {b_days_away} trading days away; context for the earnings stance, not a veto" if days_away is not None else "UNKNOWN"
 
             context["earnings_proximity"] = {
                 "report_date": report_date_str or "N/A",
