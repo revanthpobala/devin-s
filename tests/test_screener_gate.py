@@ -37,10 +37,13 @@ def test_screener_gate_lifecycle():
 
 def test_screener_gate_auto_expires():
     """Verify screener gate automatically expires after duration_seconds."""
-    set_screener_busy(True, duration_seconds=0.1, reason="quick test")
-    assert is_screener_busy() is True
-    time.sleep(0.15)
-    assert is_screener_busy() is False
+    clock = [1000.0]
+    with patch("src.tracking.screener_gate.time") as fake:
+        fake.time.side_effect = lambda: clock[0]
+        set_screener_busy(True, duration_seconds=10, reason="quick test")
+        assert is_screener_busy() is True
+        clock[0] += 11
+        assert is_screener_busy() is False
 
 
 def test_quote_router_routes_to_tastytrade_when_screener_busy():
@@ -67,8 +70,17 @@ def test_schwab_token_bucket_paces_bursts():
     # 2 tokens available immediately
     assert limiter.acquire(timeout=0.1) is True
     assert limiter.acquire(timeout=0.1) is True
-    # 3rd token must wait ~0.1s
-    t0 = time.time()
-    assert limiter.acquire(timeout=0.5) is True
-    elapsed = time.time() - t0
-    assert elapsed >= 0.05
+    clock = [1000.0]
+    slept = []
+    limiter.last_check = clock[0]
+    limiter.tokens = 0.0
+
+    def _sleep(sec):
+        slept.append(sec)
+        clock[0] += sec
+
+    with patch("src.clients.schwab_client.time") as fake:
+        fake.time.side_effect = lambda: clock[0]
+        fake.sleep.side_effect = _sleep
+        assert limiter.acquire(timeout=0.5) is True
+    assert slept

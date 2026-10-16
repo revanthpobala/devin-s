@@ -585,7 +585,7 @@ window.AppWatchlist = {
         <tr style="opacity:0.85;">
           <td>
             <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-              <span class="ticker-cell-sym" onclick="AppSwing.openReportModal(null, '${sym}')" style="cursor:pointer; color:var(--text-main); font-weight:800;" title="${compTitle} ($${sym}) - Click to start Deep Research" data-ticker="${sym}">${sym}</span>
+              <span class="ticker-cell-sym" onclick="AppSwing.openReportModal(null, '${sym}')" style="cursor:pointer; color:var(--text-main); font-weight:800;" title="${compTitle} ($${sym}) - Click to view Dossier & Tactical Plan" data-ticker="${sym}">${sym}</span>
               <a href="/research/${sym}" target="_blank" onclick="event.stopPropagation()" style="text-decoration:none; font-size:11px; color:var(--text-muted); opacity:0.8; margin-left:-2px;" title="Open direct URL /research/${sym} in new tab">🔗</a>
               <span class="pill" style="font-size:9px; padding:1px 5px; opacity:0.75;">Constituent</span>
               <button class="btn secondary" onclick="AppSwing.openTradingViewModal('${sym}', 'D')" style="padding:2px 6px; font-size:10px; font-family:var(--font-mono); font-weight:700; background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-main); cursor:pointer; border-radius:2px;" title="Open Real-Time Interactive TradingView Chart">
@@ -624,7 +624,7 @@ window.AppWatchlist = {
           </td>
           <td>
             <div style="display:flex; align-items:center; gap:5px;">
-              <button class="btn" onclick="AppSwing.openReportModal(null, '${sym}')" style="padding:2px 8px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; background:rgba(6,182,212,0.15); border:1px solid rgba(6,182,212,0.45); color:var(--cyan-glow); cursor:pointer; border-radius:2px;" title="Open Dossier / Launch Deep Research for ${sym}">
+              <button class="btn" onclick="AppSwing.triggerDeepResearch('${sym}')" style="padding:2px 8px; font-size:10.5px; font-family:var(--font-mono); font-weight:700; background:rgba(6,182,212,0.15); border:1px solid rgba(6,182,212,0.45); color:var(--cyan-glow); cursor:pointer; border-radius:2px;" title="Queue Autonomous Deep Research for ${sym}">
                 🚀 Research
               </button>
               <button class="btn secondary" onclick="AppWatchlist.deleteTarget('${sym}', '')" style="padding:2px 6px; font-size:10.5px; border-radius:2px; background:rgba(244,63,94,0.1); border:1px solid rgba(244,63,94,0.35); color:var(--rose-light);" title="Untrack ${sym}">

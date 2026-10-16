@@ -27,8 +27,10 @@ window.AppSwing = {
 
     const modeSelect = document.getElementById('mode-select');
     const mode = modeSelect ? modeSelect.value : 'full';
-    const targetDate = dateOverride || null;
-    const force = (forceOverride !== null && forceOverride !== undefined) ? forceOverride : false;
+    const forceCheckbox = document.getElementById('research-force-checkbox');
+    const force = (forceOverride !== null && forceOverride !== undefined) 
+      ? forceOverride 
+      : (forceCheckbox ? forceCheckbox.checked : false);
 
     try {
       let startedCount = 0;
@@ -69,11 +71,22 @@ window.AppSwing = {
           }
         } else if (lastRes && lastRes.status === 'skipped') {
           const skipMsg = lastRes.message || `${t} already researched for ${lastRes.target_date || targetDate || 'today'}`;
-          if (window.AppUtils && AppUtils.showToast) {
-            AppUtils.showToast(`ℹ️ ${skipMsg}. Opening dossier...`, 'info');
-          }
-          if (typeof this.openReportModal === 'function') {
-            this.openReportModal(lastRes.target_date || targetDate || null, t);
+          const shouldForce = confirm(
+            `⚡ ${t} already has a research report for ${lastRes.target_date || targetDate || 'today'}.\n\n` +
+            `Do you want to FORCE a fresh Deep Research pass now with live market data?`
+          );
+          if (shouldForce) {
+            if (window.AppUtils && AppUtils.showToast) {
+              AppUtils.showToast(`🚀 Forcing fresh deep research for $${t}...`, 'info');
+            }
+            return await this.launchResearch(targetDate, true);
+          } else {
+            if (window.AppUtils && AppUtils.showToast) {
+              AppUtils.showToast(`ℹ️ ${skipMsg}. Opening dossier...`, 'info');
+            }
+            if (typeof this.openReportModal === 'function') {
+              this.openReportModal(lastRes.target_date || targetDate || null, t);
+            }
           }
         }
       } else {
@@ -2731,7 +2744,10 @@ window.AppSwing = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker: ticker, mode: 'full', date: date, force: true })
       });
-      const data = await res.json();
+      if (window.AppStatus) {
+        window.AppStatus.updateStatus();
+        window.AppStatus.loadJobs();
+      }
       if (window.AppUtils && window.AppUtils.showToast) {
         window.AppUtils.showToast(`🔬 Dispatched deep research for ${ticker}`, 'success');
       } else {
