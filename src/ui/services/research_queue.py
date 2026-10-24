@@ -168,6 +168,15 @@ def rehydrate_active_jobs():
 MAX_CONCURRENT_FULL = 1
 MAX_CONCURRENT_MID = 1
 MAX_CONCURRENT_LOCAL = 1
+LLM_SLOTS = 3
+CHAT_RESERVE = 1
+
+
+def local_slot_cap() -> int:
+    """Local triage may use llama slots deep research is not using, one per signed-in TV profile. One slot stays free for chat."""
+    from src.data.tv_scraper import signed_in_profiles
+    idle = LLM_SLOTS - CHAT_RESERVE - get_active_deep_research_count()
+    return max(0, min(idle, len(signed_in_profiles())))
 MAX_CONCURRENT_DEEP = MAX_CONCURRENT_FULL + MAX_CONCURRENT_MID
 
 
@@ -306,7 +315,7 @@ def _score_and_sort_queued_jobs(queued_rows: list) -> list:
                 rec["ticker"] = tkr
 
         reason = str(job["stage_detail"] or "")
-        if "MOVER" in reason or "Live mover" in reason:
+        if "MOVER" in reason or "Live mover" in reason or "TOUCH" in reason:
             rec["closest_to_gate"] = 1
             if not rec.get("mover_score"):
                 rec["mover_score"] = 5.0
@@ -334,9 +343,9 @@ def dispatch_next_queued_job():
             except Exception:
                 pass
 
-            # 1. Dispatch Local Research queue (MAX 1)
+            # 1. Dispatch Local Research queue (uses idle llama slots)
             active_local = get_active_local_research_count()
-            local_slots_available = MAX_CONCURRENT_LOCAL - active_local
+            local_slots_available = local_slot_cap() - active_local
             if local_slots_available > 0:
                 queued_local = c.execute(
                     "SELECT job_id, ticker, mode, target_date, stage_detail, tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode = 'local_only'"
@@ -364,7 +373,7 @@ def dispatch_next_queued_job():
 
             # 2. Dispatch Deep Research queue across open slots (MAX_CONCURRENT_DEEP = 2)
             active_deep = get_active_deep_research_count()
-            deep_slots_available = MAX_CONCURRENT_DEEP - active_deep
+            deep_slots_available = min(MAX_CONCURRENT_DEEP - active_deep, LLM_SLOTS - CHAT_RESERVE - active_deep - get_active_local_research_count())
             if deep_slots_available > 0:
                 queued_deep = c.execute(
                     "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only'"
@@ -621,6 +630,10 @@ def run_research_worker(
                         or (isinstance(th_json.get("llm_data"), dict) and th_json["llm_data"].get("send_for_deep_research"))
                     )
                     triage_pass = (verdict in ("PASS", "WATCH")) and send_flag
+                    _log_both(
+                        f"FUNNEL {ticker_u} verdict={verdict} lane={tr.get('setup_lane')} side={tr.get('chosen_side')} "
+                        f"chased={'chased' in (tr.get('flags') or [])} rr={tr.get('rr_at_market')} deep={send_flag}"
+                    )
                 except Exception as e:
                     _log_both(f"⚠️ Error parsing thesis JSON: {e}")
 

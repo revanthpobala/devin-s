@@ -299,6 +299,20 @@ window.AppApi = {
     return await res.json();
   },
 
+  async getDarkPool(ticker, force = false) {
+    const url = `/api/darkpool/${encodeURIComponent(ticker)}${force ? '?force=true' : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch dark pool tape: ${res.status}`);
+    return await res.json();
+  },
+
+  async getDarkPoolAiSummary(ticker, force = false) {
+    const url = `/api/darkpool/${encodeURIComponent(ticker)}/ai-summary${force ? '?force=true' : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch dark pool AI summary: ${res.status}`);
+    return await res.json();
+  },
+
   async getPositions() {
     const res = await fetch('/api/positions');
     if (!res.ok) throw new Error(`Failed to fetch positions: ${res.status}`);

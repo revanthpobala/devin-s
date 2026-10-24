@@ -247,7 +247,7 @@ not a new calibration sample.
 | **⚡ EXTREME EXTENSION** | Z-score extreme | Do not chase |
 | **TRAP** | False breakout | Fade the move |
 | **SWEEP** | Liquidity grab reversal (Green=Bullish, Red=Bearish) | Reversal play |
-| **💎 FAILURE SWEEP** | Previous sweep broken — momentum explosion | Aggressive entry |
+| **💎 FAILURE SWEEP** | Previous sweep failed | Fact about the bar, not an entry; the lime label lags the tape |
 | **🔑 KEY REV** | Key Reversal Bar — institutional rejection | Strong reversal |
 | **HIKKAKE** | Inside bar fake-out | Reversal |
 | **OOPS** | Larry Williams gap reversal | Institutional absorption |

@@ -28,12 +28,13 @@ def fetch_daily(tickers: Iterable[str], days: int = 60) -> Dict[str, List[Dict[s
     """{ticker: [{date, open, high, low, close, volume}]}. Missing tickers are absent; never raises."""
     names = sorted({str(t).upper() for t in tickers if t})
     now = time.time()
-    out = {t: _CACHE[t][1] for t in names if t in _CACHE and now - _CACHE[t][0] < TTL_SECONDS}
+    start = (date.today() - timedelta(days=days)).isoformat()
+    out = {t: _CACHE[t][1] for t in names
+           if t in _CACHE and now - _CACHE[t][0] < TTL_SECONDS and _CACHE[t][2] <= start}
     todo = [t for t in names if t not in out]
     key, secret, url = _creds()
     if not todo or not key or not secret:
         return out
-    start = (date.today() - timedelta(days=days)).isoformat()
     for i in range(0, len(todo), CHUNK):
         params = {"symbols": ",".join(todo[i:i + CHUNK]), "timeframe": "1Day", "start": start, "limit": 10000,
                   "adjustment": "raw", "feed": os.getenv("ALPACA_BARS_FEED", "sip")}
@@ -56,6 +57,6 @@ def fetch_daily(tickers: Iterable[str], days: int = 60) -> Dict[str, List[Dict[s
         except Exception as e:
             logger.warning(f"[bars_store] Alpaca batch failed: {type(e).__name__} {e}")
         for sym, bars in got.items():
-            _CACHE[sym] = (now, bars)
+            _CACHE[sym] = (now, bars, start)
             out[sym] = bars
     return out

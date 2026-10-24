@@ -47,9 +47,13 @@ def test_due_jobs_schedule(monkeypatch):
     assert bt.due_jobs(mon_before, {}) == ["backup"]
     assert bt.due_jobs(mon_after, {}) == ["backup", "chain", "sweep"]
     assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12"}) == ["sweep"]
-    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12", "last_sweep_date": "2026-10-12"}) == []
+    swept = {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12", "last_sweep_date": "2026-10-12"}
+    assert bt.due_jobs(mon_after, swept) == ["score"]
+    assert bt.due_jobs(mon_after, {**swept, "last_score_date": "2026-10-12"}) == []
+    assert bt.due_jobs(mon_after, {**swept, "last_score_attempt_ts": mon_after.timestamp() - 60}) == []
     assert bt.due_jobs(sat, {"last_backup_date": "2026-10-17"}) == []
-    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_attempt_ts": mon_after.timestamp() - 60, "last_sweep_date": "2026-10-12"}) == []
+    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_attempt_ts": mon_after.timestamp() - 60,
+                                   "last_sweep_date": "2026-10-12", "last_score_date": "2026-10-12"}) == []
 
 
 def test_backup_copies_and_prunes(tmp_path, monkeypatch):

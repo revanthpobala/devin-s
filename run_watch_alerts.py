@@ -1348,6 +1348,7 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                         onset_d = str(t.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10]
                         already_pushed = False
                         try:
+                            from src.tracking.watch_manager import _get_connection, _db_lock
                             with _db_lock:
                                 with _get_connection() as conn:
                                     cur = conn.cursor()
@@ -1363,40 +1364,16 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                         if not already_pushed:
                             alert_fired = "ENTRY_ACTIONABLE_BUY" if side == "LONG" else "ENTRY_ACTIONABLE_SHORT"
                             
-                            # Options line from plan + live quote
-                            opt_p = t.get("options_plan") or {}
-                            if not opt_p and t.get("raw_json"):
-                                try:
-                                    raw_j = json.loads(t["raw_json"])
-                                    opt_p = raw_j.get("options_plan") or {}
-                                except Exception:
-                                    pass
+                            from src.logic.order_ticket import act_on_touch
 
-                            opt_line = ""
-                            if opt_p and opt_p.get("structure") and opt_p.get("structure") != "NONE":
-                                struct = opt_p.get("structure")
-                                ls = opt_p.get("long_strike")
-                                ss = opt_p.get("short_strike")
-                                exp = opt_p.get("expiration") or ""
-                                strikes_str = f"${float(ls):.2f}" if (ls and not ss) else (f"${float(ls):.2f}/${float(ss):.2f}" if (ls and ss) else "")
-                                prem_str = None
-                                try:
-                                    from src.clients.options_client import get_live_option_quote
-                                    prem = get_live_option_quote(ticker, struct, float(ls) if ls else 0.0, float(ss) if ss else None, exp)
-                                    if prem is not None:
-                                        prem_str = f"premium ~${prem:.2f} at market"
-                                except Exception:
-                                    pass
-                                if not prem_str:
-                                    prem_str = "premium at market (live quote unavailable)"
-                                opt_line = f"OPTION: {struct} {strikes_str} {exp} {prem_str}".strip()
-
-                            rr_val = eval_res.get("live_rr") or 0.0
+                            act = (
+                                act_on_touch(ticker, live_price, datetime.now().strftime("%Y-%m-%d"), "touch", wd=t)
+                                if side == "LONG"
+                                else {"text": f"{ticker} short zone reached at {live_price:.2f}; levels only, no measured short edge"}
+                            )
                             lane_val = t.get("setup_lane") or t.get("lane") or "RR_SETUP"
                             lane_lbl = "MEASURED" if lane_val in ("CODE20", "RR_SETUP", "RSI2") else "UNMEASURED"
-                            msg = f"BUY 100 {ticker} at market ~${live_price:.2f} | stop ${eval_res['tactical_stop']:.2f} | T1 ${eval_res['target_1']:.2f} | R:R {rr_val:.2f}@mkt | lane {lane_val} [{lane_lbl}]"
-                            if opt_line:
-                                msg += f"\n{opt_line}"
+                            msg = f"{act['text']} | lane {lane_val} [{lane_lbl}]"
 
                             log_trigger_alert(ticker, alert_fired, msg, live_price)
                     else:
@@ -1540,7 +1517,17 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             qb = quote_router.get_watchlist_quotes_batch(syms)
             return {k: qd.last_price for k, qd in qb.items() if qd and qd.last_price > 0}
 
-        zone_ledger.run_cycle(prices, get_eastern_now().strftime("%Y-%m-%d"), _emit_level_alert, _fetch_zone_prices)
+        def _emit_zone(tk: str, typ: str, msg: str, px: float) -> bool:
+            if typ in ("ZONE_TOUCH", "ZONE_APPROACH"):
+                from src.logic.order_ticket import act_on_touch
+
+                act = act_on_touch(tk, px, get_eastern_now().strftime("%Y-%m-%d"), "touch" if typ == "ZONE_TOUCH" else "approach")
+                if act["action"] == "NO TRADE" and typ == "ZONE_APPROACH":
+                    return False
+                msg = msg + (" | " if act["action"] == "NO TRADE" else " -> ") + act["text"]
+            return _emit_level_alert(tk, typ, msg, px)
+
+        zone_ledger.run_cycle(prices, get_eastern_now().strftime("%Y-%m-%d"), _emit_zone, _fetch_zone_prices)
     except Exception as e_zone:
         logger.debug(f"zone ledger failed: {e_zone}")
 

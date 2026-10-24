@@ -2764,7 +2764,7 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
         from src.tracking import spread_check as _sc
 
         macro_release_block = "\n\n".join(b for b in (_mc.context_text(_now_et, _mc.fetch_events(_now_et), _pos),
-                                                      _sc.context_text(_sc.spread_flags(_pos, _now_et.date()))) if b)
+                                                      _sc.vertical_context(_pos), _sc.context_text(_sc.spread_flags(_pos, _now_et.date()))) if b)
     except Exception as _e:
         logger.debug(f"Economic release context unavailable: {_e}")
         macro_release_block = ""

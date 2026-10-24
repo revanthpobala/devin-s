@@ -490,8 +490,15 @@ class TastytradeClient:
                     if sym in raw:
                         raw[sym].setdefault(etype, {}).update({n: row[n] for n in names[1:]})
 
+        start_time = time.time()
+
         def _done():
-            return all(raw[s_].get("Quote") and raw[s_].get("Summary") for s_ in syms)
+            have_any = sum(1 for s_ in syms if raw[s_].get("Quote") or raw[s_].get("Trade") or raw[s_].get("Summary"))
+            if have_any >= len(syms):
+                return True
+            if len(syms) >= 10 and have_any >= len(syms) * 0.90 and (time.time() - start_time) >= 2.0:
+                return True
+            return False
 
         async def _run():
             async with websockets.connect(tok["dxlink-url"], open_timeout=8) as ws:
@@ -549,12 +556,12 @@ class TastytradeClient:
         for sym, ev in raw.items():
             q, t, sm = ev.get("Quote", {}), ev.get("Trade", {}), ev.get("Summary", {})
             bid, ask = _f(q.get("bidPrice")), _f(q.get("askPrice"))
-            if not bid and not ask:
-                continue
-            mid = round((bid + ask) / 2.0, 4) if (bid and ask) else (bid or ask)
             last = _f(t.get("price"))
-            price = last if (last and bid and ask and bid * 0.99 <= last <= ask * 1.01) else mid
             prev = _f(sm.get("prevDayClosePrice"))
+            mid = round((bid + ask) / 2.0, 4) if (bid and ask) else (bid or ask)
+            price = last if (last and bid and ask and bid * 0.99 <= last <= ask * 1.01) else (last or mid or prev)
+            if not price or price <= 0:
+                continue
             out[sym] = {
                 "symbol": sym, "bid": bid, "ask": ask, "mid": mid, "price": price, "last_price": price,
                 "prev_close": prev, "open": _f(sm.get("dayOpenPrice")), "high": _f(sm.get("dayHighPrice")),
@@ -565,6 +572,41 @@ class TastytradeClient:
     def get_realtime_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Single-symbol wrapper over the batch call."""
         return self.get_realtime_quotes_batch([symbol]).get(str(symbol).upper())
+
+    def get_option_chain_quotes(self, symbol: str, min_dte: int = 14, max_dte: int = 120, strike_low: float = 0.0,
+                                strike_high: float = 1e9, expiration: Optional[str] = None, n_exp: int = 2,
+                                per_exp: int = 12) -> Dict[str, Any]:
+        """Nested chain from REST, then live bid/ask for the strikes nearest spot over one DXLink socket.
+        Returns {"spot": float|None, "rows": [{exp, dte, strike, calls, puts}]}; calls/puts are {bid, ask, mid, vol} or None."""
+        headers = self.get_auth_headers()
+        if not headers:
+            return {"spot": None, "rows": []}
+        r = requests.get(f"{BASE_URL}/option-chains/{symbol.upper()}/nested", headers=headers, timeout=12)
+        if r.status_code != 200:
+            return {"spot": None, "rows": []}
+        items = (r.json().get("data") or {}).get("items") or []
+        exps = [e for it in items for e in it.get("expirations", [])]
+        exps = [e for e in exps if (e.get("expiration-date") == expiration if expiration else min_dte <= int(e.get("days-to-expiration", -1)) <= max_dte)]
+        exps = sorted(exps, key=lambda e: e["expiration-date"])[:1 if expiration else n_exp]
+        quote = self.get_realtime_quote(symbol) or {}
+        spot = quote.get("last_price")
+        picks = []
+        for e in exps:
+            ks = [k for k in e.get("strikes", []) if strike_low <= float(k["strike-price"]) <= strike_high]
+            if spot:
+                ks = sorted(ks, key=lambda k: abs(float(k["strike-price"]) - spot))
+            picks.extend((e, k) for k in ks[:per_exp])
+        syms = [k[f"{side}-streamer-symbol"] for _, k in picks for side in ("call", "put") if k.get(f"{side}-streamer-symbol")]
+        q = self.get_realtime_quotes_batch(syms, timeout=8.0) if syms else {}
+        rows = []
+        for e, k in picks:
+            row = {"exp": e["expiration-date"], "dte": int(e["days-to-expiration"]), "strike": float(k["strike-price"]), "calls": None, "puts": None}
+            for side, key in (("call", "calls"), ("put", "puts")):
+                d = q.get(str(k.get(f"{side}-streamer-symbol", "")).upper())
+                if d:
+                    row[key] = {"bid": d["bid"], "ask": d["ask"], "mid": d["mid"], "vol": d.get("volume") or 0}
+            rows.append(row)
+        return {"spot": spot, "rows": rows}
 
 
 _CLIENT: Optional[TastytradeClient] = None

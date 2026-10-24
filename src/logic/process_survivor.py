@@ -393,8 +393,9 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         (quality_pass, send, rank_score, has_plan)
 
     Eligibility (``send``) requires ALL of:
-      - quality_pass: deterministic PASS, OR a WATCH whose conviction clears
-        WATCH_MIN_CONVICTION (near-zone, high-quality, not-yet-triggered setups),
+      - quality_pass: deterministic PASS, OR a WATCH with R:R >= GREEN_RR at the zone top
+        (a resting limit; Buy Score does not count),
+      - not a short (shorts have no measured edge),
       - pursue: the technical verdict is not CUT,
       - conviction >= MIN_CONVICTION_FOR_DEEP_RESEARCH (stable deterministic score,
         NOT the flaky LLM 1-10),
@@ -413,7 +414,6 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     min_conviction = config.MIN_CONVICTON_FOR_DEEP_RESEARCH
     min_rev_zone = config.MIN_REV_ZONE_FOR_DEEP_RESEARCH
     min_ev_r = config.TIER_A_MIN_EV_R
-    min_watch_conv = config.WATCH_MIN_CONVICTION
 
     det = triage.get("triage")
     det_pass = det == "PASS"
@@ -437,11 +437,26 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         except (ValueError, TypeError):
             det_ev_r = None
 
-    watch_pass = bool(det == "WATCH" and (det_conv is not None and det_conv >= min_watch_conv))
-    quality_pass = det_pass or watch_pass
+    from src.tracking.rr_config import GREEN_RR, min_rr
+
     plan = (
         triage.get("long_plan") if triage.get("chosen_side") == "long" else triage.get("short_plan")
     )
+    rr_chk = triage.get("rr_at_market") if triage.get("rr_at_market") is not None else triage.get("rr")
+    try:
+        z = (plan or {}).get("zone") or [None, None]
+        z_hi, st, tg = z[1], (plan or {}).get("stop"), (plan or {}).get("target")
+        if z_hi and st and tg and float(st) < float(z_hi) < float(tg):
+            rr_chk = (float(tg) - float(z_hi)) / (float(z_hi) - float(st))
+    except (TypeError, ValueError, IndexError):
+        pass
+    try:
+        rr_zone_ok = rr_chk is not None and float(rr_chk) >= GREEN_RR
+    except (TypeError, ValueError):
+        rr_zone_ok = False
+    # WATCH runs deep research only as a resting limit with R:R >= GREEN_RR at the zone top (the measured edge).
+    watch_pass = bool(det == "WATCH" and rr_zone_ok)
+    quality_pass = det_pass or watch_pass
     is_rsi2_setup = (triage.get("mode") == "RSI2_LONG") or bool(triage.get("rsi2_setup_event"))
     has_plan = bool(
         plan
@@ -466,16 +481,6 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         # A WATCH that already ran past its zone or has no R:R left fails the level gate after the paid
         # pass (LLY 0.03, META 0.25), so do not pay for it. A resting limit is judged at the zone top, the
         # same basis the level validator uses; the at-market check happens again at fire time.
-        from src.tracking.rr_config import min_rr
-
-        rr_chk = triage.get("rr_at_market") if triage.get("rr_at_market") is not None else triage.get("rr")
-        try:
-            z = (plan or {}).get("zone") or [None, None]
-            z_hi, st, tg = z[1], (plan or {}).get("stop"), (plan or {}).get("target")
-            if z_hi and st and tg and float(st) < float(z_hi) < float(tg):
-                rr_chk = (float(tg) - float(z_hi)) / (float(z_hi) - float(st))
-        except (TypeError, ValueError, IndexError):
-            pass
         try:
             rr_low = rr_chk is not None and float(rr_chk) < min_rr()
         except (TypeError, ValueError):
@@ -513,7 +518,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
     # so an extended/faded name almost always failed TIER_A_MIN_EV_R. That is fragile -- it breaks
     # the moment ev_r changes -- so it is stated explicitly.
     income_only = bool(triage.get("no_fresh_long"))
-
+    is_short = str(triage.get("chosen_side") or "").lower() == "short"
 
     # Phase 6: PASS names are not blocked by ev_r or caution conviction floor
     ev_r_ok = quality_pass or (det_ev_r is None or det_ev_r >= min_ev_r)
@@ -525,6 +530,7 @@ def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_ne
         and not blocked
         and not income_only
         and ev_r_ok
+        and not is_short
     )
     # Informational scalar (mirrors deep_research_sort_key's news penalty on the
     # ev axis so the logged number tracks the real ordering intent).

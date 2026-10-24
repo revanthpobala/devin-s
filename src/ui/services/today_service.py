@@ -57,7 +57,7 @@ _CACHE: Dict[str, Any] = {
 _PAYLOAD_TTL_S: Dict[str, float] = {
     "today": 15.0,
     "coverage": 15.0,
-    "missed_moves": 15.0,
+    "missed_moves": 120.0,
     "morning_briefing": 300.0,
     "feedback_loop": 120.0,
 }
@@ -1231,19 +1231,26 @@ def _background_cycle(force: bool = False):
         return
 
     try:
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(due)))
-        try:
-            futures = {
-                name: executor.submit(_run_build, name, builder)
-                for name, builder in builders.items() if name in due
-            }
-            for name, fut in futures.items():
-                try:
-                    fut.result(timeout=_PAYLOAD_TIMEOUT_S.get(name, 30.0))
-                except Exception as e:
-                    logger.error(f"[TodayBackgroundService] {name} cycle error: {type(e).__name__} {e}")
-        finally:
-            executor.shutdown(wait=False)
+        # Run primary desk payloads first (today, coverage) so user sees UI instantly
+        # and quotes cache is primed, followed by secondary background analyses.
+        primary = [name for name in ("today", "coverage") if name in due]
+        secondary = [name for name in due if name not in primary]
+        ordered_stages = [s for s in (primary, secondary) if s]
+
+        for stage_names in ordered_stages:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(stage_names)))
+            try:
+                futures = {
+                    name: executor.submit(_run_build, name, builders[name])
+                    for name in stage_names
+                }
+                for name, fut in futures.items():
+                    try:
+                        fut.result(timeout=_PAYLOAD_TIMEOUT_S.get(name, 30.0))
+                    except Exception as e:
+                        logger.error(f"[TodayBackgroundService] {name} cycle error: {type(e).__name__} {e}")
+            finally:
+                executor.shutdown(wait=False)
 
         logger.info(
             f"⚡ [TodayBackgroundService] Cycle refreshed {','.join(due)} "

@@ -124,6 +124,75 @@ def _alpaca_underlying_last(ticker: str) -> Optional[float]:
         return None
 
 
+def _render_chain(ticker, grid, all_expiries, direction, explicit_exp, spot, source):
+    """Compact markdown chain table (front 2 expiries, 12 strikes nearest spot) from a {(exp, strike): row} grid."""
+    if not grid:
+        logger.warning(f"[{ticker}] {source} chain came back empty after parsing.")
+        return None
+
+    # Filter expiries: pick the front 1-2 standard expiries unless explicit_exp is given
+    sorted_exp = sorted(list(all_expiries))
+    if explicit_exp and explicit_exp in all_expiries:
+        selected_exp = [explicit_exp]
+    else:
+        selected_exp = sorted_exp[:2]
+
+
+    # Build rows for selected expiries, prioritizing strikes nearest spot
+    final_rows = []
+    for exp in selected_exp:
+        exp_rows = [v for v in grid.values() if v["exp"] == exp]
+        if spot:
+            exp_rows.sort(key=lambda r: abs(r["strike"] - spot))
+        else:
+            exp_rows.sort(key=lambda r: r["strike"])
+        # Cap to top 12 most liquid/relevant strikes per expiry
+        exp_rows = exp_rows[:12]
+        exp_rows.sort(key=lambda r: r["strike"])
+        final_rows.extend(exp_rows)
+
+    if not final_rows:
+        return None
+
+    if direction == "BOTH":
+        header = "| Expiry | DTE | Strike | Call Bid/Ask | Call Mid | Call Delta | Put Bid/Ask | Put Mid | Put Delta | Vol (C/P) |"
+        sep    = "|--------|-----|--------|--------------|----------|------------|-------------|---------|-----------|-----------|"
+        lines = [header, sep]
+        for r in final_rows:
+            c = r["calls"] or {}
+            p = r["puts"] or {}
+            c_ba = f"{c.get('bid', '-')}/{c.get('ask', '-')}" if c else "-"
+            p_ba = f"{p.get('bid', '-')}/{p.get('ask', '-')}" if p else "-"
+            c_mid = f"{c.get('mid', '-')}" if c else "-"
+            p_mid = f"{p.get('mid', '-')}" if p else "-"
+            c_d = f"{c.get('delta', '-')}" if c else "-"
+            p_d = f"{p.get('delta', '-')}" if p else "-"
+            vol_c = c.get("vol", 0)
+            vol_p = p.get("vol", 0)
+            lines.append(
+                f"| {r['exp']} | {r['dte']} | {r['strike']} | {c_ba} | {c_mid} | {c_d} | {p_ba} | {p_mid} | {p_d} | {vol_c}/{vol_p} |"
+            )
+    else:
+        # Single-side table
+        is_call = (direction == "CALL")
+        header = f"| Expiry | DTE | Strike | {'Call' if is_call else 'Put'} Bid/Ask | Mid | Delta | Vol | OI |"
+        sep    = "|--------|-----|--------|--------------|-----|-------|-----|----|"
+        lines = [header, sep]
+        for r in final_rows:
+            side = r["calls"] if is_call else r["puts"]
+            if not side:
+                continue
+            ba = f"{side.get('bid', '-')}/{side.get('ask', '-')}"
+            mid = side.get("mid", "-")
+            d = side.get("delta", "-")
+            vol = side.get("vol", 0)
+            oi = side.get("oi", 0)
+            lines.append(f"| {r['exp']} | {r['dte']} | {r['strike']} | {ba} | {mid} | {d} | {vol} | {oi} |")
+
+    logger.info(f"[{ticker}] {source} compact options chain table: {len(final_rows)} rows ({direction})")
+    return "\n".join(lines)
+
+
 def _fetch_alpaca_chain(ticker: str, intent: dict) -> Optional[str]:
     """Fetch live options chain from Alpaca's snapshot endpoint. Returns a
     compact, high-density markdown table string (Calls + Puts unified, or single-side),
@@ -206,72 +275,8 @@ def _fetch_alpaca_chain(ticker: str, intent: dict) -> Optional[str]:
             else:
                 grid[k]["puts"] = data_dict
 
-        if not grid:
-            logger.warning(f"[{ticker}] Alpaca chain came back empty after parsing.")
-            return None
-
-        # Filter expiries: pick the front 1-2 standard expiries unless explicit_exp is given
-        sorted_exp = sorted(list(all_expiries))
-        if explicit_exp and explicit_exp in all_expiries:
-            selected_exp = [explicit_exp]
-        else:
-            selected_exp = sorted_exp[:2]
-
         spot = _alpaca_underlying_last(ticker)
-
-        # Build rows for selected expiries, prioritizing strikes nearest spot
-        final_rows = []
-        for exp in selected_exp:
-            exp_rows = [v for v in grid.values() if v["exp"] == exp]
-            if spot:
-                exp_rows.sort(key=lambda r: abs(r["strike"] - spot))
-            else:
-                exp_rows.sort(key=lambda r: r["strike"])
-            # Cap to top 12 most liquid/relevant strikes per expiry
-            exp_rows = exp_rows[:12]
-            exp_rows.sort(key=lambda r: r["strike"])
-            final_rows.extend(exp_rows)
-
-        if not final_rows:
-            return None
-
-        if direction == "BOTH":
-            header = "| Expiry | DTE | Strike | Call Bid/Ask | Call Mid | Call Delta | Put Bid/Ask | Put Mid | Put Delta | Vol (C/P) |"
-            sep    = "|--------|-----|--------|--------------|----------|------------|-------------|---------|-----------|-----------|"
-            lines = [header, sep]
-            for r in final_rows:
-                c = r["calls"] or {}
-                p = r["puts"] or {}
-                c_ba = f"{c.get('bid', '-')}/{c.get('ask', '-')}" if c else "-"
-                p_ba = f"{p.get('bid', '-')}/{p.get('ask', '-')}" if p else "-"
-                c_mid = f"{c.get('mid', '-')}" if c else "-"
-                p_mid = f"{p.get('mid', '-')}" if p else "-"
-                c_d = f"{c.get('delta', '-')}" if c else "-"
-                p_d = f"{p.get('delta', '-')}" if p else "-"
-                vol_c = c.get("vol", 0)
-                vol_p = p.get("vol", 0)
-                lines.append(
-                    f"| {r['exp']} | {r['dte']} | {r['strike']} | {c_ba} | {c_mid} | {c_d} | {p_ba} | {p_mid} | {p_d} | {vol_c}/{vol_p} |"
-                )
-        else:
-            # Single-side table
-            is_call = (direction == "CALL")
-            header = f"| Expiry | DTE | Strike | {'Call' if is_call else 'Put'} Bid/Ask | Mid | Delta | Vol | OI |"
-            sep    = "|--------|-----|--------|--------------|-----|-------|-----|----|"
-            lines = [header, sep]
-            for r in final_rows:
-                side = r["calls"] if is_call else r["puts"]
-                if not side:
-                    continue
-                ba = f"{side.get('bid', '-')}/{side.get('ask', '-')}"
-                mid = side.get("mid", "-")
-                d = side.get("delta", "-")
-                vol = side.get("vol", 0)
-                oi = side.get("oi", 0)
-                lines.append(f"| {r['exp']} | {r['dte']} | {r['strike']} | {ba} | {mid} | {d} | {vol} | {oi} |")
-
-        logger.info(f"[{ticker}] Alpaca compact options chain table: {len(final_rows)} rows ({direction})")
-        return "\n".join(lines)
+        return _render_chain(ticker, grid, all_expiries, direction, explicit_exp, spot, "Alpaca")
     except Exception as e:
         logger.error(f"[{ticker}] _fetch_alpaca_chain failed: {e}")
         return None
@@ -395,8 +400,88 @@ def _fetch_yfinance_chain(ticker: str, intent: dict) -> Optional[str]:
         return None
 
 
+def _fetch_schwab_chain(ticker: str, intent: dict) -> Optional[str]:
+    """Live chain from Schwab, rendered as the same compact table as the Alpaca path."""
+    try:
+        from src.clients.schwab_client import get_schwab_client
+
+        direction = str(intent.get("direction", "BOTH")).upper()
+        strike_low = float(intent.get("strike_low", 0))
+        strike_high = float(intent.get("strike_high", 1e9))
+        today = date.today()
+        client = get_schwab_client()
+        r = client.get_option_chain(
+            ticker.replace(".", "/"),
+            contract_type=client.Options.ContractType.ALL,
+            strike_count=40,
+            from_date=today + timedelta(days=max(int(intent.get("min_dte", 14)), 1)),
+            to_date=today + timedelta(days=int(intent.get("max_dte", 120))),
+        )
+        if r.status_code != 200:
+            logger.warning(f"[{ticker}] Schwab options chain HTTP {r.status_code}")
+            return None
+        data = r.json()
+        grid, all_expiries = {}, set()
+        for side_key, otype in (("callExpDateMap", "calls"), ("putExpDateMap", "puts")):
+            for exp_key, strikes in (data.get(side_key) or {}).items():
+                exp_str = exp_key.split(":")[0]
+                all_expiries.add(exp_str)
+                dte = (date.fromisoformat(exp_str) - today).days
+                for strike_s, contracts in strikes.items():
+                    strike = float(strike_s)
+                    if not contracts or strike < strike_low or strike > strike_high:
+                        continue
+                    c = contracts[0]
+                    bid, ask = _safe_float(c.get("bid")), _safe_float(c.get("ask"))
+                    if bid is None and ask is None:
+                        continue
+                    mid = round((bid + ask) / 2, 2) if bid is not None and ask is not None else (bid or ask)
+                    delta = _safe_float(c.get("delta"))
+                    row = grid.setdefault((exp_str, strike), {"exp": exp_str, "dte": dte, "strike": strike, "calls": None, "puts": None})
+                    row[otype] = {"bid": round(bid, 2) if bid is not None else None, "ask": round(ask, 2) if ask is not None else None,
+                                  "mid": mid, "delta": round(delta, 3) if delta is not None and delta > -1.5 else None,
+                                  "vol": _safe_int(c.get("totalVolume")) or 0, "oi": _safe_int(c.get("openInterest")) or 0}
+        return _render_chain(ticker, grid, all_expiries, direction, intent.get("expiration"), _safe_float(data.get("underlyingPrice")), "Schwab")
+    except Exception as e:
+        logger.warning(f"[{ticker}] _fetch_schwab_chain failed: {e}")
+        return None
+
+
+def _fetch_tastytrade_chain(ticker: str, intent: dict) -> Optional[str]:
+    """Live chain from Tastytrade (REST structure + DXLink quotes), same table as the other sources."""
+    try:
+        from src.clients.tastytrade_client import get_tastytrade_client
+
+        direction = str(intent.get("direction", "BOTH")).upper()
+        res = get_tastytrade_client().get_option_chain_quotes(
+            ticker.replace(".", "/"), min_dte=int(intent.get("min_dte", 14)), max_dte=int(intent.get("max_dte", 120)),
+            strike_low=float(intent.get("strike_low", 0)), strike_high=float(intent.get("strike_high", 1e9)),
+            expiration=intent.get("expiration"))
+        grid, all_expiries = {}, set()
+        for r in res["rows"]:
+            if r["calls"] is None and r["puts"] is None:
+                continue
+            all_expiries.add(r["exp"])
+            for side in ("calls", "puts"):
+                if r[side]:
+                    r[side].update({"bid": round(r[side]["bid"], 2) if r[side]["bid"] is not None else None,
+                                    "ask": round(r[side]["ask"], 2) if r[side]["ask"] is not None else None,
+                                    "mid": round(r[side]["mid"], 2), "delta": None, "oi": 0})
+            grid[(r["exp"], r["strike"])] = r
+        return _render_chain(ticker, grid, all_expiries, direction, intent.get("expiration"), res["spot"], "Tastytrade")
+    except Exception as e:
+        logger.warning(f"[{ticker}] _fetch_tastytrade_chain failed: {e}")
+        return None
+
+
 def fetch_targeted_chain(ticker: str, intent: dict) -> Optional[str]:
-    """Fetch live options chain. Primary source: Alpaca; falls back to yfinance."""
+    """Fetch live options chain. Schwab first, then Tastytrade, then Alpaca, then yfinance."""
+    result = _fetch_schwab_chain(ticker, intent)
+    if result:
+        return result
+    result = _fetch_tastytrade_chain(ticker, intent)
+    if result:
+        return result
     result = _fetch_alpaca_chain(ticker, intent)
     if result:
         return result

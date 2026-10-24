@@ -37,8 +37,9 @@
     return `<div data-nid="${n.id}" ${n.ticker ? `data-explain="${esc(n.ticker)}"` : ''} style="padding:8px 10px;border-bottom:1px solid var(--border);opacity:${n.read_at ? 0.55 : 1};${n.ticker ? 'cursor:pointer' : ''}" title="${n.ticker ? 'Click: open ' + esc(n.ticker) + ' in chat and explain this alert' : ''}">
       <div style="display:flex;gap:8px;align-items:center">
         <span style="width:8px;height:8px;border-radius:50%;background:${SEV[n.severity] || SEV.INFO};flex:none"></span>
-        <b style="font-size:12px">${esc(n.title)}</b>
-        <span style="margin-left:auto;font-size:10px;color:var(--text-muted);white-space:nowrap">${esc(t)} UTC</span>
+        <b style="font-size:12px;flex:1">${esc(n.title)}</b>
+        <span style="font-size:10px;color:var(--text-muted);white-space:nowrap">${esc(t)} UTC</span>
+        <button class="notif-row-close" data-close-nid="${n.id}" title="Dismiss / Mark read" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:13px;padding:0 3px;margin-left:4px;line-height:1;border-radius:4px" onmouseover="this.style.color='var(--text-main)'" onmouseout="this.style.color='var(--text-muted)'">✕</button>
       </div>
       ${n.body ? `<div style="font-size:11px;color:var(--text-muted);margin:3px 0 0 16px;white-space:pre-line">${esc(n.body)}</div>` : ''}${chips}
     </div>`;
@@ -110,6 +111,19 @@
         panel.onscroll = () => { if (panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 80) loadMore(); };
         body.onclick = (e) => {
           if (e.target.closest('#notif-more')) { loadMore(); return; }
+          const closeBtn = e.target.closest('[data-close-nid]');
+          if (closeBtn) {
+            e.stopPropagation();
+            const nid = closeBtn.dataset.closeNid;
+            const rowEl = closeBtn.closest('[data-nid]');
+            if (rowEl) {
+              rowEl.style.transition = 'opacity 0.2s';
+              rowEl.style.opacity = '0.35';
+              closeBtn.remove();
+            }
+            getJson('/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(nid) }) }).then(poll);
+            return;
+          }
           const el = e.target.closest('[data-explain]');
           if (!el) return;
           const rowEl = el.closest('[data-nid]');
@@ -191,12 +205,13 @@
 
     panel = document.createElement('div');
     panel.style.cssText = 'display:none;position:fixed;top:54px;right:14px;width:430px;max-height:70vh;overflow:auto;z-index:9999;background:var(--bg-card,#111827);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.45)';
-    panel.innerHTML = `<div style="display:flex;gap:12px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:inherit">
+    panel.innerHTML = `<div style="display:flex;gap:12px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:inherit;z-index:1">
       <button data-tab="alerts" style="background:none;border:0;cursor:pointer;color:inherit">Alerts</button>
       <button data-tab="trust" style="background:none;border:0;cursor:pointer;color:inherit">Trust</button>
       <button data-tab="risk" style="background:none;border:0;cursor:pointer;color:inherit">Risk</button>
       <button data-tab="backend" style="background:none;border:0;cursor:pointer;color:inherit">Backend</button>
-      <button id="notif-readall" style="margin-left:auto;background:none;border:0;cursor:pointer;font-size:11px;color:var(--cyan)">Mark all read</button></div>
+      <button id="notif-readall" style="margin-left:auto;background:none;border:0;cursor:pointer;font-size:11px;color:var(--cyan)">Mark all read</button>
+      <button id="notif-close" style="background:none;border:0;cursor:pointer;font-size:14px;color:var(--text-muted);padding:0 4px;margin-left:4px;line-height:1" title="Close panel" onmouseover="this.style.color='var(--text-main)'" onmouseout="this.style.color='var(--text-muted)'">✕</button></div>
       <div id="notif-body"></div>`;
     document.body.appendChild(panel);
 
@@ -207,6 +222,7 @@
     };
     panel.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { tab = b.dataset.tab; render(); }; });
     panel.querySelector('#notif-readall').onclick = markAll;
+    panel.querySelector('#notif-close').onclick = () => { panel.style.display = 'none'; };
     document.addEventListener('click', (e) => {
       if (!panel.contains(e.target) && !bell.contains(e.target)) panel.style.display = 'none';
     });
@@ -232,16 +248,37 @@
     toastHost.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:10000;display:flex;flex-direction:column;gap:8px;max-width:360px';
     const el = document.createElement('div');
     const tk = tickersOf(n)[0];
-    el.style.cssText = `padding:9px 12px;border-radius:8px;background:var(--bg-card,#111827);border:1px solid var(--border);border-left:4px solid ${SEV[n.severity] || SEV.INFO};box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:12px;cursor:${tk ? 'pointer' : 'default'}`;
-    el.innerHTML = `<b>${esc(n.title)}</b>${n.body ? `<div style="color:var(--text-muted);margin-top:3px;white-space:pre-line">${esc(String(n.body).split('\n').slice(0, 3).join('\n'))}</div>` : ''}${tk ? '<div style="color:var(--cyan);margin-top:4px">Click: open in chat and explain</div>' : ''}`;
-    el.onclick = () => {
-      el.remove();
+    el.style.cssText = `position:relative;padding:9px 12px;border-radius:8px;background:var(--bg-card,#111827);border:1px solid var(--border);border-left:4px solid ${SEV[n.severity] || SEV.INFO};box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:12px;cursor:${tk ? 'pointer' : 'default'};transition:all 0.25s ease;`;
+    el.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+      <b style="flex:1">${esc(n.title)}</b>
+      <button class="notif-toast-close" title="Close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;line-height:1;margin-left:4px;flex:none;opacity:0.8" onmouseover="this.style.color='var(--text-main)';this.style.opacity='1'" onmouseout="this.style.color='var(--text-muted)';this.style.opacity='0.8'">✕</button>
+    </div>${n.body ? `<div style="color:var(--text-muted);margin-top:3px;white-space:pre-line">${esc(String(n.body).split('\n').slice(0, 3).join('\n'))}</div>` : ''}${tk ? '<div style="color:var(--cyan);margin-top:4px">Click: open in chat and explain</div>' : ''}`;
+
+    let timer = null;
+    const dismiss = () => {
+      if (timer) clearTimeout(timer);
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(10px)';
+      setTimeout(() => { if (el.parentNode) el.remove(); }, 250);
+    };
+
+    const closeBtn = el.querySelector('.notif-toast-close');
+    if (closeBtn) {
+      closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        dismiss();
+        fetch('/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: n.id }) }).then(poll);
+      };
+    }
+    el.onclick = (e) => {
+      if (e.target.closest('.notif-toast-close')) return;
+      dismiss();
       if (!tk) return;
       fetch('/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: n.id }) }).then(poll);
       explain(tk, n);
     };
     toastHost.appendChild(el);
-    if (n.severity !== 'CRITICAL') setTimeout(() => el.remove(), n.severity === 'WARN' ? 20000 : 8000);
+    if (n.severity !== 'CRITICAL') timer = setTimeout(dismiss, n.severity === 'WARN' ? 20000 : 8000);
   }
 
   function live() {

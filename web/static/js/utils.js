@@ -380,15 +380,27 @@ window.AppUtils = {
     }
     const t = document.createElement('div');
     const bg = type === 'error' ? '#ef4444' : (type === 'success' ? '#10b981' : '#0ea5e9');
-    t.style.cssText = `background:${bg};color:#fff;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.3);transition:all 0.3s ease;opacity:0;transform:translateY(10px);`;
-    t.innerText = msg;
-    container.appendChild(t);
-    requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateY(0)'; });
-    setTimeout(() => {
+    t.style.cssText = `background:${bg};color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.3);transition:all 0.3s ease;opacity:0;transform:translateY(10px);pointer-events:auto;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;`;
+    t.innerHTML = `<span style="flex:1;">${window.esc ? window.esc(msg) : msg}</span><button type="button" class="toast-close-btn" style="background:none;border:none;color:#fff;cursor:pointer;font-size:13px;font-weight:700;padding:0 2px;opacity:0.8;line-height:1;margin-left:4px" title="Close" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">✕</button>`;
+    
+    let timer = null;
+    const dismiss = () => {
+      if (timer) clearTimeout(timer);
       t.style.opacity = '0';
       t.style.transform = 'translateY(-8px)';
-      setTimeout(() => t.remove(), 300);
-    }, 3000);
+      setTimeout(() => { if (t.parentNode) t.remove(); }, 300);
+    };
+    const closeBtn = t.querySelector('.toast-close-btn');
+    if (closeBtn) {
+      closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        dismiss();
+      };
+    }
+    t.onclick = dismiss;
+    container.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateY(0)'; });
+    timer = setTimeout(dismiss, 3500);
   }
 };
 

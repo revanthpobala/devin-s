@@ -2178,8 +2178,16 @@ window.AppSwing = {
     const gateRejected = Boolean(wl.level_gate_rejected);
     const gateReasons = wl.gate_reasons || [];
 
+    let graphHtml = '';
+    if (window.TradeLevelGraph && typeof window.TradeLevelGraph.renderLevelGraphHtml === 'function') {
+      graphHtml = window.TradeLevelGraph.renderLevelGraphHtml(data);
+    }
+
     container.innerHTML = `
       <div style="padding:22px; max-width:1050px; margin:0 auto; font-family:'Outfit',sans-serif;">
+        <!-- Visual Trade Level Graph & P&L Map -->
+        ${graphHtml}
+
         ${gateRejected ? `
         <div style="background:rgba(217,119,6,0.10); border:1px solid rgba(217,119,6,0.45); border-radius:8px; padding:10px 16px; margin-bottom:16px; display:flex; align-items:flex-start; gap:10px;">
           <span style="font-size:20px; line-height:1;">⚠️</span>
@@ -2382,6 +2390,10 @@ window.AppSwing = {
 
       </div>
     `;
+
+    if (window.TradeLevelGraph && typeof window.TradeLevelGraph.attachHandlers === 'function') {
+      window.TradeLevelGraph.attachHandlers(container);
+    }
   },
 
   askCopilotExecutionPlan(event) {
@@ -2777,7 +2789,7 @@ window.AppSwing = {
       const activeChat = window.AppState.activeChats.find(c => c.ticker === window.AppState.activeChatTicker);
       if (activeChat) activeChat.activeTab = tab;
     }
-    ['plan', 'local', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow'].forEach(t => {
+    ['plan', 'local', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow', 'dp'].forEach(t => {
       const btn = document.getElementById(`tab-${t}-btn`);
       if (btn) btn.className = `tab-btn ${t === tab ? 'active' : ''}`;
     });
@@ -2832,7 +2844,14 @@ window.AppSwing = {
     } else if (tab === 'arb') {
       const arbContent = (data.arbitration_md && !data.arbitration_md.includes('LOCAL RESEARCH DOSSIER')) ? data.arbitration_md : null;
       if (arbContent) {
-        bodyEl.innerHTML = window.AppUtils.renderMarkdown(arbContent);
+        let graphHtml = '';
+        if (window.TradeLevelGraph && typeof window.TradeLevelGraph.renderLevelGraphHtml === 'function') {
+          graphHtml = window.TradeLevelGraph.renderLevelGraphHtml(data);
+        }
+        bodyEl.innerHTML = graphHtml + window.AppUtils.renderMarkdown(arbContent);
+        if (window.TradeLevelGraph && typeof window.TradeLevelGraph.attachHandlers === 'function') {
+          window.TradeLevelGraph.attachHandlers(bodyEl);
+        }
       } else {
         bodyEl.innerHTML = `
           <div style="padding:40px; text-align:center; color:var(--text-muted);">
@@ -3091,6 +3110,8 @@ window.AppSwing = {
       `;
     } else if (tab === 'flow') {
       this.renderOptionsFlowTab(data.ticker);
+    } else if (tab === 'dp') {
+      this.renderDarkPoolTab(data.ticker);
     }
   },
 
@@ -3510,6 +3531,469 @@ window.AppSwing = {
 
       </div>
     `;
+  },
+
+  async renderDarkPoolTab(ticker, forceRefresh = false) {
+    const bodyEl = document.getElementById('modal-body');
+    if (!bodyEl) return;
+    const sym = (ticker || 'STOCK').toUpperCase();
+
+    bodyEl.innerHTML = `
+      <div style="padding:48px 20px; text-align:center; color:var(--text-muted); font-family:var(--font-mono, monospace);">
+        <div style="font-size:32px; margin-bottom:12px; display:inline-block; animation:pulse 1.5s infinite;">🟣</div>
+        <div style="font-size:14px; font-weight:700; color:var(--text-main);">Querying On-Demand Dark Pool Tape for $${sym}...</div>
+        <div style="font-size:11.5px; margin-top:6px; color:#64748b;">Filtering off-exchange FINRA TRF prints (exchange 'D') via Alpaca SIP feed</div>
+      </div>
+    `;
+
+    try {
+      const dp = await (window.AppApi && window.AppApi.getDarkPool
+        ? window.AppApi.getDarkPool(sym, forceRefresh)
+        : fetch(`/api/darkpool/${encodeURIComponent(sym)}${forceRefresh ? '?force=true' : ''}`).then(r => r.json()));
+
+      if (!dp || dp.status !== 'ok') {
+        bodyEl.innerHTML = `
+          <div style="padding:30px; text-align:center; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; margin:20px;">
+            <div style="font-size:28px; margin-bottom:8px;">⚠️</div>
+            <div style="font-weight:700; color:#dc2626; font-size:14px; margin-bottom:6px;">Dark Pool Data Unavailable</div>
+            <p style="font-size:12.5px; color:var(--text-muted); max-width:450px; margin:0 auto 14px; line-height:1.5;">${dp ? (dp.message || 'Could not retrieve off-exchange trades.') : 'API did not respond.'}</p>
+            <button class="btn" style="background:#a855f7; color:#fff; font-weight:700; font-size:11.5px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.renderDarkPoolTab('${sym}', true)">🔄 Retry Live Pull</button>
+          </div>
+        `;
+        return;
+      }
+
+      window.AppState.currentDarkPoolData = dp;
+
+      const ladder = dp.ladder || [];
+      const sigs = dp.signature_prints || [];
+      const shelves = dp.major_shelves || [];
+      const buyPct = Number(dp.dp_buy_pct || 50.0).toFixed(1);
+      const sentiment = dp.sentiment || 'BALANCED';
+      const isBullish = sentiment.includes('BULLISH') || sentiment.includes('ACCUMULATION');
+      const isBearish = sentiment.includes('BEARISH') || sentiment.includes('DISTRIBUTION');
+      const sentColor = isBullish ? '#10b981' : (isBearish ? '#f43f5e' : '#38bdf8');
+      const sentBadgeStyle = isBullish 
+        ? 'background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3);' 
+        : (isBearish 
+          ? 'background:rgba(244,63,94,0.12); color:#f43f5e; border:1px solid rgba(244,63,94,0.3);' 
+          : 'background:rgba(56,189,248,0.12); color:#38bdf8; border:1px solid rgba(56,189,248,0.3);');
+
+      bodyEl.innerHTML = `
+        <div class="dp-container">
+          <!-- Header Bar -->
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:4px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <h2 style="margin:0; font-size:18px; font-weight:800; display:flex; align-items:center; gap:6px; color:var(--text-main);">
+                  <span>🟣 Off-Exchange / Dark Pool Order Flow</span>
+                </h2>
+                <span class="pill purple" style="font-size:10px; font-weight:800; font-family:var(--font-mono, monospace);">FINRA TRF TAPE</span>
+                <span class="pill" style="font-size:10px; font-weight:700; font-family:var(--font-mono, monospace);">${dp.trade_date || 'Session'}</span>
+              </div>
+              <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">
+                Real-time off-exchange block trades aggregated into institutional volume shelves.
+              </div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="btn secondary" onclick="AppSwing.renderDarkPoolTab('${sym}', true)" style="font-size:11px; padding:4px 10px; font-weight:700;" title="Bypass cache and query fresh Alpaca SIP tape">
+                🔄 Refresh Tape
+              </button>
+              <button class="btn secondary" onclick="AppSwing.copyDarkPoolFullSummary()" style="font-size:11px; padding:4px 10px; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
+                📋 Copy Summary
+              </button>
+              <button class="btn secondary" onclick="AppSwing.syncTastytradeDarkPoolAlerts('${sym}')" style="font-size:11px; padding:4px 10px; color:#f87171; border-color:rgba(239,68,68,0.4); background:rgba(239,68,68,0.12);" title="Push primary dark pool support & resistance shelves to Tastytrade Mobile Alerts">
+                🔔 Arm Tastytrade
+              </button>
+            </div>
+          </div>
+
+          <!-- Hero Metrics Grid -->
+          <div class="dp-hero-grid">
+            <div class="dp-card">
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">🏛️ Total Off-Exchange Volume</span>
+              <span style="color:#c084fc; font-size:16px; font-weight:800; font-family:var(--font-mono, monospace); margin-top:2px;">
+                ${Number(dp.dp_total_volume || 0).toLocaleString()} <span style="font-size:11px; font-weight:600; color:var(--text-muted);">shares</span>
+              </span>
+              <span style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">
+                $${Number(dp.dp_total_notional || 0).toLocaleString(undefined, {maximumFractionDigits:0})} across ${Number(dp.dp_trades_count || 0).toLocaleString()} prints
+              </span>
+            </div>
+
+            <div class="dp-card">
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⚖️ Institutional Flow Sentiment</span>
+              <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+                <span class="pill" style="font-size:10px; font-weight:800; padding:2px 7px; ${sentBadgeStyle}">${sentiment}</span>
+                <span style="font-family:var(--font-mono, monospace); font-weight:800; color:${sentColor}; font-size:13px;">${buyPct}%</span>
+              </div>
+              <div style="height:4px; width:100%; background:rgba(255,255,255,0.08); border-radius:2px; margin-top:6px; overflow:hidden;">
+                <div style="height:100%; width:${buyPct}%; background:${sentColor}; border-radius:2px;"></div>
+              </div>
+            </div>
+
+            <div class="dp-card">
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">📊 Tape Share</span>
+              <span style="color:var(--cyan); font-size:16px; font-weight:800; font-family:var(--font-mono, monospace); margin-top:2px;">
+                ${Number(dp.dp_share_of_tape_pct || 0).toFixed(1)}%
+              </span>
+              <span style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">of total traded volume off-exchange</span>
+            </div>
+
+            <div class="dp-card">
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⭐ Primary Defense Shelf</span>
+              <span style="color:#a855f7; font-size:16px; font-weight:800; font-family:var(--font-mono, monospace); margin-top:2px;">
+                ${shelves.length > 0 ? '$' + Number(shelves[0].price).toFixed(2) : '--'}
+              </span>
+              <span style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">
+                ${shelves.length > 0 ? Number(shelves[0].volume).toLocaleString() + ' shs (' + shelves[0].prints + ' prints)' : 'No dense cluster'}
+              </span>
+            </div>
+
+            <div class="dp-card">
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⚡ Tastytrade Volatility</span>
+              <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+                <span class="pill" style="font-size:10px; font-weight:800; padding:2px 7px; background:rgba(239,68,68,0.18); color:#f87171;">IVR ${dp.tastytrade_volatility?.iv_rank != null ? dp.tastytrade_volatility.iv_rank + '%' : '--'}</span>
+                <span style="font-family:var(--font-mono, monospace); font-weight:700; font-size:12px; color:var(--text-main);">${dp.tastytrade_volatility?.hv_30d != null ? dp.tastytrade_volatility.hv_30d + '% HV' : ''}</span>
+              </div>
+              <span style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">
+                IV %ile: ${dp.tastytrade_volatility?.iv_percentile != null ? dp.tastytrade_volatility.iv_percentile + '%' : '--'} | Spread: ${dp.tastytrade_volatility?.iv_hv_spread != null ? (dp.tastytrade_volatility.iv_hv_spread > 0 ? '+' : '') + dp.tastytrade_volatility.iv_hv_spread + ' pts' : '--'}
+              </span>
+            </div>
+          </div>
+
+          <!-- AI Institutional Order Flow Synthesis Card -->
+          <div class="dp-ai-card" id="dp-ai-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; border-bottom:1px solid rgba(148,163,184,0.12); padding-bottom:8px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:16px;">🤖</span>
+                <span style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main);">Institutional AI Order Flow Synthesis</span>
+                <span class="pill" id="dp-ai-badge" style="font-size:9.5px; font-weight:800; font-family:var(--font-mono, monospace); background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-muted);">${dp.ai_provider ? (dp.ai_provider === 'local_llm' ? 'LOCAL LLM' : 'INSTITUTIONAL RULES') : 'AI BRIEFING'}</span>
+              </div>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button class="btn-action btn-secondary" onclick="AppSwing.fetchDarkPoolAiSummary('${sym}', true)" style="font-size:11px; padding:4px 10px; cursor:pointer;" title="Re-run institutional AI analysis">
+                  🔄 Re-Analyze
+                </button>
+                <button class="btn-action btn-secondary" onclick="AppSwing.copyDarkPoolAiSummary()" style="font-size:11px; padding:4px 10px; cursor:pointer;" title="Copy AI summary text">
+                  📋 Copy Analysis
+                </button>
+              </div>
+            </div>
+            <div class="dp-ai-body" id="dp-ai-content">
+              ${dp.ai_summary ? (window.AppUtils && window.AppUtils.renderMarkdown ? window.AppUtils.renderMarkdown(dp.ai_summary) : (window.marked ? window.marked.parse(dp.ai_summary) : dp.ai_summary)) : `
+                <div style="padding:14px; text-align:center; color:var(--text-muted); font-size:12px; font-family:var(--font-mono, monospace);">
+                  <span style="display:inline-block; animation:pulseAnim 1.5s infinite; margin-right:6px;">⚡</span> Synthesizing institutional tape with AI...
+                </div>
+              `}
+            </div>
+          </div>
+
+          <!-- Volume Profile Ladder -->
+          <div class="dp-ladder-wrapper">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:8px;">
+              <div style="font-family:'Outfit',sans-serif; font-size:13px; font-weight:800; color:#f8fafc; display:flex; align-items:center; gap:6px;">
+                <span>📈 INSTITUTIONAL VOLUME PROFILE LADDER</span>
+                <span style="font-size:10.5px; color:#94a3b8; font-weight:600;">(${ladder.length} price tiers)</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-family:var(--font-mono, monospace);">
+                Higher prices at top · Purple bars = Volume share
+              </div>
+            </div>
+
+            ${ladder.length === 0 ? `
+              <div style="padding:24px; text-align:center; color:#94a3b8;">No volume levels recorded for this session.</div>
+            ` : `
+              <div style="max-height:480px; overflow-y:auto; scrollbar-width:thin;">
+                <table class="dp-ladder-table">
+                  <thead>
+                    <tr>
+                      <th style="text-align:left;">Price ($)</th>
+                      <th style="text-align:center;">Prints</th>
+                      <th style="text-align:left;">Volume (Shares)</th>
+                      <th style="text-align:right;">Notional ($)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${ladder.slice(0, 100).map(row => {
+                      const isShelf = row.is_major_shelf;
+                      return `
+                        <tr class="dp-row ${isShelf ? 'major-shelf' : ''}">
+                          <td class="dp-cell-price">
+                            ${isShelf ? '⭐ ' : ''}$${Number(row.price).toFixed(2)}
+                          </td>
+                          <td class="dp-cell-prints">
+                            ${row.prints}
+                          </td>
+                          <td class="dp-cell-bar">
+                            <div class="dp-bar-bg ${isShelf ? 'intense' : ''}" style="width:${Math.max(row.pct_of_max, 2)}%;"></div>
+                            <span class="dp-bar-label">${Number(row.volume).toLocaleString()}</span>
+                          </td>
+                          <td class="dp-cell-notional">
+                            $${Number(row.notional).toLocaleString(undefined, {maximumFractionDigits:0})}
+                          </td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+            `}
+          </div>
+
+          <!-- Top Signature Block Trades Table -->
+          <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:16px 20px;">
+            <div style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main); margin-bottom:12px; display:flex; align-items:center; gap:6px;">
+              <span>🐋 Institutional Signature Block Prints</span>
+              <span class="pill" style="font-size:10px; font-weight:700;">Top Transactions &ge; 2.5K shs / $250K</span>
+            </div>
+
+            ${sigs.length === 0 ? `
+              <div style="color:var(--text-muted); font-size:12px; padding:12px 0;">No single block prints &ge; 2,500 shares recorded in this sample.</div>
+            ` : `
+              <div style="overflow-x:auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:11.5px; font-family:var(--font-mono, monospace);">
+                  <thead>
+                    <tr style="border-bottom:1px solid var(--border); color:var(--text-muted); text-align:left;">
+                      <th style="padding:6px 10px;">Time (UTC)</th>
+                      <th style="padding:6px 10px;">Direction</th>
+                      <th style="padding:6px 10px;">Price</th>
+                      <th style="padding:6px 10px;">Shares</th>
+                      <th style="padding:6px 10px; text-align:right;">Notional Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${sigs.map(s => {
+                      const isBuy = s.direction === 'BUY';
+                      const timeStr = s.timestamp ? s.timestamp.split('T')[1].slice(0, 8) : '--';
+                      return `
+                        <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+                          <td style="padding:6px 10px; color:var(--text-muted);">${timeStr}</td>
+                          <td style="padding:6px 10px;">
+                            <span style="color:${isBuy ? '#10b981' : '#f43f5e'}; font-weight:800;">${s.direction}</span>
+                          </td>
+                          <td style="padding:6px 10px; font-weight:800; color:var(--text-main);">$${Number(s.price).toFixed(2)}</td>
+                          <td style="padding:6px 10px; font-weight:700; color:#c084fc;">${Number(s.shares).toLocaleString()}</td>
+                          <td style="padding:6px 10px; text-align:right; color:var(--text-main); font-weight:700;">$${Number(s.notional).toLocaleString(undefined, {maximumFractionDigits:0})}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+
+      if (dp.ai_summary) {
+        this._currentDarkPoolAiSummary = dp.ai_summary;
+      } else {
+        this.fetchDarkPoolAiSummary(sym, false);
+      }
+    } catch (e) {
+      bodyEl.innerHTML = `
+        <div style="padding:24px; color:#dc2626;">
+          <strong>Error loading Dark Pool order flow:</strong> ${e.message}
+        </div>
+      `;
+    }
+  },
+
+  _currentDarkPoolAiSummary: '',
+
+  async fetchDarkPoolAiSummary(sym, force = false) {
+    const contentEl = document.getElementById('dp-ai-content');
+    const badgeEl = document.getElementById('dp-ai-badge');
+    if (!contentEl) return;
+    contentEl.innerHTML = `
+      <div style="padding:14px; text-align:center; color:var(--text-muted); font-size:12px; font-family:var(--font-mono, monospace);">
+        <span style="display:inline-block; animation:pulseAnim 1.5s infinite; margin-right:6px;">⚡</span> Analyzing institutional dark pool blocks with AI...
+      </div>
+    `;
+    try {
+      let data = null;
+      try {
+        data = await (window.AppApi && window.AppApi.getDarkPoolAiSummary
+          ? window.AppApi.getDarkPoolAiSummary(sym, force)
+          : fetch(`/api/darkpool/${encodeURIComponent(sym)}/ai-summary${force ? '?force=true' : ''}`).then(r => {
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              return r.json();
+            }));
+      } catch (fetchErr) {
+        // Fallback: If 404 (server not restarted yet) or connection error, synthesize client-side
+        const dp = window.AppState?.currentDarkPoolData || window._lastDarkPoolData;
+        if (dp && dp.status === 'ok') {
+          const fallbackSummary = this.generateClientDarkPoolSummary(sym, dp);
+          this._currentDarkPoolAiSummary = fallbackSummary;
+          if (window.AppUtils && window.AppUtils.renderMarkdown) {
+            contentEl.innerHTML = window.AppUtils.renderMarkdown(fallbackSummary);
+          } else if (window.marked && typeof window.marked.parse === 'function') {
+            contentEl.innerHTML = window.marked.parse(fallbackSummary);
+          } else {
+            contentEl.innerHTML = `<div style="white-space:pre-wrap;">${fallbackSummary}</div>`;
+          }
+          if (badgeEl) badgeEl.textContent = 'INSTITUTIONAL RULES';
+          return;
+        }
+        throw fetchErr;
+      }
+
+      if (data && data.status === 'ok' && data.summary) {
+        this._currentDarkPoolAiSummary = data.summary;
+        if (window.AppUtils && window.AppUtils.renderMarkdown) {
+          contentEl.innerHTML = window.AppUtils.renderMarkdown(data.summary);
+        } else if (window.marked && typeof window.marked.parse === 'function') {
+          contentEl.innerHTML = window.marked.parse(data.summary);
+        } else {
+          contentEl.innerHTML = `<div style="white-space:pre-wrap;">${data.summary}</div>`;
+        }
+        if (badgeEl) {
+          badgeEl.textContent = data.provider === 'local_llm' ? 'LOCAL LLM' : 'INSTITUTIONAL RULES';
+        }
+      } else {
+        contentEl.innerHTML = `<div style="color:var(--rose, #f43f5e); padding:8px 0;">Could not generate AI analysis: ${data?.message || 'Unknown error'}</div>`;
+      }
+    } catch (err) {
+      const dp = window.AppState?.currentDarkPoolData || window._lastDarkPoolData;
+      if (dp && dp.status === 'ok') {
+        const fallbackSummary = this.generateClientDarkPoolSummary(sym, dp);
+        this._currentDarkPoolAiSummary = fallbackSummary;
+        if (window.AppUtils && window.AppUtils.renderMarkdown) {
+          contentEl.innerHTML = window.AppUtils.renderMarkdown(fallbackSummary);
+        } else if (window.marked && typeof window.marked.parse === 'function') {
+          contentEl.innerHTML = window.marked.parse(fallbackSummary);
+        } else {
+          contentEl.innerHTML = `<div style="white-space:pre-wrap;">${fallbackSummary}</div>`;
+        }
+        if (badgeEl) badgeEl.textContent = 'INSTITUTIONAL RULES';
+        return;
+      }
+      contentEl.innerHTML = `<div style="color:var(--rose, #f43f5e); padding:8px 0;">Error fetching AI analysis: ${err.message}</div>`;
+    }
+  },
+
+  generateClientDarkPoolSummary(ticker, dp) {
+    const sym = (ticker || '').toUpperCase();
+    const buyPct = Number(dp.dp_buy_pct || 50.0).toFixed(1);
+    const totalVol = Number(dp.dp_total_volume || 0).toLocaleString();
+    const totalNotional = Number(dp.dp_total_notional || 0).toLocaleString(undefined, {maximumFractionDigits:0});
+    const printsCnt = Number(dp.dp_trades_count || 0).toLocaleString();
+    const tapePct = Number(dp.dp_share_of_tape_pct || 0).toFixed(1);
+    const sentiment = dp.sentiment || 'BALANCED / CONTESTED';
+    const shelves = dp.major_shelves || [];
+    const sigs = dp.signature_prints || [];
+
+    let biasDesc = '';
+    if (Number(buyPct) >= 58.0) {
+      biasDesc = `**Aggressive Institutional Accumulation (${buyPct}% Buy Flow)**. Buyers are actively lifting offers on the off-exchange tape across ${totalVol} shares ($${totalNotional} notional).`;
+    } else if (Number(buyPct) <= 42.0) {
+      biasDesc = `**Institutional Distribution / Net Liquidation (${(100 - Number(buyPct)).toFixed(1)}% Sell Flow)**. Sellers are actively hitting bids on the off-exchange tape across ${totalVol} shares ($${totalNotional} notional).`;
+    } else {
+      biasDesc = `**Balanced / Contested Tape (${buyPct}% Buy / ${(100 - Number(buyPct)).toFixed(1)}% Sell)**. Order flow is two-way and evenly matched across ${totalVol} shares ($${totalNotional} notional). No dominant breakout trend is underway; institutions are trading range-bound inventory.`;
+    }
+
+    const tapeDesc = Number(tapePct) > 0 
+      ? `With **${tapePct}%** of all observed volume executing off-exchange across ${printsCnt} prints, institutions are heavily internalizing order flow.`
+      : `Off-exchange volume accounts for ${printsCnt} TRF prints.`;
+
+    let sigInterp = '';
+    if (sigs && sigs.length > 0) {
+      const topS = sigs[0];
+      const sPx = Number(topS.price || 0).toFixed(2);
+      const sSh = Number(topS.shares || 0).toLocaleString();
+      const sNotional = Number(topS.notional || 0).toLocaleString(undefined, {maximumFractionDigits:0});
+      const sDir = topS.direction || 'NEUTRAL';
+      const sTs = topS.timestamp ? topS.timestamp.split('T')[1].slice(0, 8) : '--';
+      const nearShelf = shelves.some(s => Math.abs(Number(s.price) - Number(topS.price)) <= 0.15);
+
+      if (sDir === 'SELL') {
+        if (nearShelf) {
+          sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC). While tagged as a \`SELL\` (printed on bid/downtick), it executed directly inside a primary volume shelf, indicating **passive limit absorption by buyers** rather than aggressive market dumping.`;
+        } else {
+          sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC), tagged as a \`SELL\` (seller-initiated on bid). Treat this level as potential overhead supply.`;
+        }
+      } else if (sDir === 'BUY') {
+        sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC), tagged as a \`BUY\` (buyer-initiated on ask). Institutions were aggressive at this level, establishing a defense floor.`;
+      } else {
+        sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC).`;
+      }
+    } else {
+      sigInterp = 'No single block trades \u2265 2,500 shares or $250k notional detected. Order flow is fragmented across retail and algorithmic sizes.';
+    }
+
+    let shelvesDesc = '';
+    let minShelf = null, maxShelf = null;
+    if (shelves && shelves.length > 0) {
+      const shelfItems = shelves.slice(0, 3).map(s => `**$${Number(s.price).toFixed(2)}** (${Number(s.volume).toLocaleString()} shs / $${Number(s.notional).toLocaleString(undefined, {maximumFractionDigits:0})})`);
+      shelvesDesc = `Major institutional liquidity clusters are anchored at: ${shelfItems.join(', ')}. These dense price shelves represent high-volume absorption points where market makers and institutions have accumulated inventory.`;
+      const prices = shelves.map(s => Number(s.price));
+      minShelf = Math.min(...prices);
+      maxShelf = Math.max(...prices);
+    } else {
+      shelvesDesc = 'Flow is broadly dispersed across price tiers with no single high-density liquidity shelf.';
+    }
+
+    let gameplan = '';
+    if (minShelf !== null && maxShelf !== null) {
+      if (Math.abs(maxShelf - minShelf) < 0.80) {
+        gameplan = `Price is coiling tightly within a $${minShelf.toFixed(2)} \u2013 $${maxShelf.toFixed(2)} pocket. Treat **$${(minShelf - 0.05).toFixed(2)}** as the primary absorption floor and **$${(maxShelf + 0.05).toFixed(2)}** as the immediate ceiling. Expect rotation between these bounds until volume expands significantly.`;
+      } else {
+        gameplan = `Key institutional support floor is **$${minShelf.toFixed(2)}** (absorption floor). Key overhead resistance is **$${maxShelf.toFixed(2)}**. A confirmed break below $${minShelf.toFixed(2)} invalidates institutional defense, while clearing $${maxShelf.toFixed(2)} on volume opens runway.`;
+      }
+    } else {
+      gameplan = `Flow sentiment is ${sentiment}. Anchor tactical stops around the primary defense shelf where institutional liquidity was absorbed.`;
+    }
+
+    return `* **Net Institutional Bias**: ${biasDesc} ${tapeDesc}\n\n* **Signature Block Trades**: ${sigInterp}\n\n* **Key Defense / Resistance Shelves**: ${shelvesDesc}\n\n* **Tactical Gameplan**: ${gameplan}`;
+  },
+
+  copyDarkPoolAiSummary() {
+    const text = this._currentDarkPoolAiSummary || document.getElementById('dp-ai-content')?.innerText || '';
+    if (text) {
+      navigator.clipboard.writeText(text);
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast('Institutional AI analysis copied!');
+      } else {
+        alert('Copied AI analysis!');
+      }
+    }
+  },
+
+  copyDarkPoolFullSummary() {
+    const aiText = this._currentDarkPoolAiSummary || document.getElementById('dp-ai-content')?.innerText || '';
+    const rawBlock = window.AppState?.currentReportData?.darkpool_summary || '';
+    const textToCopy = aiText ? `🏛️ OFF-EXCHANGE / DARK POOL AI ANALYSIS\n\n${aiText}\n\n${rawBlock}` : (rawBlock || aiText);
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast('Dark pool summary copied!');
+      } else {
+        alert('Copied!');
+      }
+    }
+  },
+
+  async syncTastytradeDarkPoolAlerts(sym) {
+    if (!sym) return;
+    const btn = event?.currentTarget;
+    const origText = btn ? btn.innerText : '';
+    if (btn) btn.innerText = '⏳ Arming...';
+    try {
+      const resp = await fetch(`/api/darkpool/${encodeURIComponent(sym)}/sync-tastytrade-alerts`, { method: 'POST' });
+      const res = await resp.json();
+      if (btn) btn.innerText = origText;
+      if (res.status === 'ok') {
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(res.message, 'success');
+        } else {
+          alert(`✅ ${res.message}`);
+        }
+      } else {
+        alert(`⚠️ ${res.message || 'Could not arm Tastytrade alerts.'}`);
+      }
+    } catch (e) {
+      if (btn) btn.innerText = origText;
+      alert(`⚠️ Failed to arm Tastytrade alerts: ${e.message}`);
+    }
   },
 
   _cachedCalibrationData: null,

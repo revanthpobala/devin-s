@@ -104,9 +104,9 @@ def get_missed_moves(
         for dt_dir in d.iterdir():
             if dt_dir.is_dir() and len(dt_dir.name) == 10 and dt_dir.name <= today_str:
                 dates_set.add(dt_dir.name)
-    recent_dates = sorted(list(dates_set), reverse=True)[: max(10, lookback_days * 2)]
+    recent_dates = sorted(list(dates_set), reverse=True)[: min(5, max(1, lookback_days))]
 
-    from src.clients.price_client import get_current_prices_batch, get_current_price
+    from src.clients.price_client import get_current_prices_batch
 
     candidate_entries: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -191,8 +191,8 @@ def get_missed_moves(
                 except Exception:
                     pass
 
-    # Batch fetch live market prices
-    syms_to_check = list(candidate_entries.keys())
+    # Batch fetch live market prices (capped to at most 100 candidates to prevent overwhelming providers)
+    syms_to_check = list(candidate_entries.keys())[:100]
     live_prices: Dict[str, float] = {}
     if syms_to_check:
         try:
@@ -203,10 +203,7 @@ def get_missed_moves(
     for sym, entries in candidate_entries.items():
         live_p = live_prices.get(sym)
         if live_p is None or live_p <= 0:
-            try:
-                live_p = get_current_price(sym)
-            except Exception:
-                continue
+            continue
         if live_p is None or live_p <= 0:
             continue
 

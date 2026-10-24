@@ -19,6 +19,7 @@ class LiveContext:
     macro_grounded_block: str = ""
     live_quote_block: str = ""
     gex_block: str = ""
+    darkpool_block: str = ""
     market_sentiment_block: str = ""
     social_block: str = ""
     earnings_fact_block: str = ""
@@ -147,11 +148,14 @@ def fetch_live_context(
     except Exception as e_pkt:
         logger.warning(f"[{ticker}] earnings packet skipped: {e_pkt}")
 
-    logger.info(f"[{ticker}] ⚡ Parallel live context retrieval (News, AlphaVantage, Finnhub, Google Grounding)...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    logger.info(f"[{ticker}] ⚡ Parallel live context retrieval (News, AlphaVantage, Finnhub, Google Grounding, Dark Pool)...")
+    from src.data import darkpool
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         fut_news = executor.submit(_fetch_safe, pull_fresh_news, ticker, date_str)
         fut_av = executor.submit(_fetch_safe, alphavantage_client.format_av_block, ticker)
         fut_inst = executor.submit(_fetch_safe, finnhub_client.format_finnhub_institutional_block, ticker)
+        fut_dp = executor.submit(_fetch_safe, darkpool.format_darkpool_block, ticker)
         fut_ground = executor.submit(
             _fetch_safe,
             google_grounding_client.format_grounded_block,
@@ -168,6 +172,7 @@ def fetch_live_context(
         ctx.fresh_news = fut_news.result() or "No fresh news could be retrieved via live search."
         ctx.av_block = fut_av.result() or ""
         ctx.institutional_block = fut_inst.result() or ""
+        ctx.darkpool_block = fut_dp.result() or ""
         ctx.grounded_block = fut_ground.result() or ""
         ctx.macro_grounded_block = fut_macro_ground.result() or ""
 
@@ -206,12 +211,14 @@ def save_deep_context(
         "social_block": ctx.social_block,
         "earnings_fact_block": ctx.earnings_fact_block,
         "institutional_block": ctx.institutional_block,
+        "darkpool_block": ctx.darkpool_block,
         "grounded_block": ctx.grounded_block,
         "macro_grounded_block": ctx.macro_grounded_block,
         "live_quote_block": ctx.live_quote_block,
         "gex_block": ctx.gex_block,
         "tv_strat_block": tv_strat_block,
     }
+
     try:
         safe = ticker.replace(":", "_")
         (tdir / f"{safe}_deep_context.json").write_text(

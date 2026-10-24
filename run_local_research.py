@@ -314,7 +314,7 @@ def run_local_research(
                 if res:
                     batch_updates.append(res)
             except Exception as e:
-                logger.error(f"Thesis worker thread failed: {e}")
+                logger.exception(f"Thesis worker thread failed: {type(e).__name__}: {e!r}")
 
     # Rebuild the staging ledger from the authoritative per-ticker _thesis.json
     # files. The parallel workers' per-ticker ledger writes can race (lost

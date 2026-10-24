@@ -1883,12 +1883,12 @@ def run_schwab_pre_move_scan(
         else:
             run_autonomous_screener_pipeline(long_top_picks, auto_max=top_n, run_deep=True, date_str=date_str, headless=headless)
 
-        set_screener_busy(False)
-        if scan_mode == "short":
-            return short_top_picks
-        elif scan_mode == "both":
-            return {"long": long_top_picks, "short": short_top_picks}
-        return long_top_picks
+    set_screener_busy(False)
+    if scan_mode == "short":
+        return short_top_picks
+    if scan_mode == "both":
+        return {"long": long_top_picks, "short": short_top_picks}
+    return long_top_picks
 
 
 if __name__ == "__main__":

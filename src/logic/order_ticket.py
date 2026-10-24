@@ -29,6 +29,126 @@ def _add_sessions(start: date, n: int) -> date:
     return d
 
 
+def spread_math(structure: str, long_k: float, short_k: float, mid_long: float, mid_short: float, t1: float, stop: float):
+    """(numbers, None) from leg mids, or (None, reason). Per-share price, per-contract dollars."""
+    s, width = str(structure).upper(), abs(long_k - short_k)
+    if s == "BULL_CALL_SPREAD":
+        debit = mid_long - mid_short
+        if not (long_k < short_k and 0 < debit < width):
+            return None, f"bad call spread: debit {debit:.2f}, width {width:.2f}"
+        if short_k > t1:
+            return None, f"short strike {short_k:g} above target {t1:.2f}"
+        pnl = min(width, max(0.0, t1 - long_k)) - debit
+        return {"mid_debit": round(debit, 2), "max_loss": round(debit * 100, 2), "max_profit": round((width - debit) * 100, 2),
+                "breakeven": round(long_k + debit, 2), "r_at_t1": round(pnl / debit, 2)}, None
+    if s == "BULL_PUT_SPREAD":
+        credit = mid_short - mid_long
+        if not (long_k < short_k and 0 < credit < width):
+            return None, f"bad put spread: credit {credit:.2f}, width {width:.2f}"
+        if credit / width < 0.25:
+            return None, f"credit/width {credit / width:.0%} below 25%"
+        if short_k >= stop:
+            return None, f"short strike {short_k:g} at or above stop {stop:.2f}"
+        return {"mid_credit": round(credit, 2), "max_loss": round((width - credit) * 100, 2), "max_profit": round(credit * 100, 2),
+                "breakeven": round(short_k - credit, 2), "r_at_t1": round(credit / (width - credit), 2)}, None
+    if s == "LONG_CALL":
+        if mid_long <= 0:
+            return None, "no call price"
+        return {"mid_debit": round(mid_long, 2), "max_loss": round(mid_long * 100, 2), "max_profit": None,
+                "breakeven": round(long_k + mid_long, 2), "r_at_t1": round((t1 - long_k - mid_long) / mid_long, 2)}, None
+    return None, f"{s} not priced"
+
+
+def _leg_mid(chain_side, strike: float):
+    rows = chain_side[chain_side["strike"] == strike]
+    if rows.empty:
+        return None
+    b, a = float(rows["bid"].iloc[0]), float(rows["ask"].iloc[0])
+    mid = (a + b) / 2
+    return mid if a > 0 and (a - b) / mid <= 0.25 else None
+
+
+def price_option(ticker: str, opt: Dict[str, Any], t1: float, stop: float):
+    """Replace the LLM's option numbers with chain mids: (alternative dict, None) or (None, reason)."""
+    structure = str(opt.get("structure") or "").upper()
+    exp, lk, sk = str(opt.get("expiration") or ""), _f(opt.get("long_strike")), _f(opt.get("short_strike"))
+    try:
+        import yfinance as yf
+
+        ch = yf.Ticker(ticker).option_chain(exp)
+    except Exception as e:
+        return None, f"no chain for {exp}: {e}"
+    side = ch.puts if structure == "BULL_PUT_SPREAD" else ch.calls
+    ml, ms = _leg_mid(side, lk), (_leg_mid(side, sk) if sk else 0.0)
+    if ml is None or ms is None:
+        return None, "leg missing or quote wider than 25% of mid"
+    nums, why = spread_math(structure, lk, sk, ml, ms, t1, stop)
+    if nums is None:
+        return None, why
+    return {"structure": structure, "expiration": exp, "long_strike": lk, "short_strike": sk or None, **nums,
+            "cost_usd": nums["max_loss"]}, None
+
+
+def _expiries(ticker: str) -> List[str]:
+    import yfinance as yf
+
+    return list(yf.Ticker(ticker).options)
+
+
+def _calls(ticker: str, exp: str):
+    import yfinance as yf
+
+    return yf.Ticker(ticker).option_chain(exp).calls
+
+
+def bounce_play(ticker: str, entry: float, stop: float, t1: float, atr: float, date_str: str,
+                stance: Optional[str] = None, report_date: Optional[str] = None) -> Dict[str, Any]:
+    """Time-boxed bounce to entry + BOUNCE_ATR*ATR (capped at T1): the option expiring just after the exit-by date, or shares only."""
+    target = min(t1, entry + trade_rules.BOUNCE_ATR * atr)
+    exit_by = _add_sessions(date.fromisoformat(date_str), trade_rules.BOUNCE_BARS)
+    out = {"bounce_target": round(target, 2), "exit_by": str(exit_by), "horizon_bars": trade_rules.BOUNCE_BARS,
+           "play": "SHARES", "option": None, "option_note": None}
+    if target <= entry:
+        out["option_note"] = "no room to bounce target"
+        return out
+    try:
+        exp = next((e for e in sorted(_expiries(ticker)) if e >= str(exit_by + timedelta(days=3))), None)
+        if not exp:
+            out["option_note"] = "no expiry after exit-by"
+            return out
+        bad = options_span_earnings_ok({"expiration": exp, "actionable": True}, report_date, stance)
+        if bad:
+            out["option_note"] = bad
+            return out
+        calls = _calls(ticker, exp)
+        strikes = sorted(float(k) for k in calls["strike"].unique())
+        lk = max((k for k in strikes if k <= entry), default=None)
+        sk = max((k for k in strikes if lk and lk < k <= target), default=None)
+        if not lk:
+            out["option_note"] = "no strike at or below entry"
+            return out
+        ml = _leg_mid(calls, lk)
+        tries = []
+        if sk:
+            tries.append(("BULL_CALL_SPREAD", sk, _leg_mid(calls, sk)))
+        tries.append(("LONG_CALL", 0.0, 0.0))
+        why = "leg missing or quote wider than 25% of mid"
+        for structure, short_k, ms in tries:
+            if ml is None or ms is None:
+                continue
+            nums, why = spread_math(structure, lk, short_k, ml, ms, target, stop)
+            if nums and nums["r_at_t1"] >= 1.0:
+                out["option"] = {"structure": structure, "expiration": exp, "long_strike": lk, "short_strike": short_k or None,
+                                 **nums, "cost_usd": nums["max_loss"]}
+                out["play"] = "SHARES+SPREAD" if structure == "BULL_CALL_SPREAD" else "SHARES+CALL"
+                return out
+            why = why or f"R at bounce target {nums['r_at_t1']} below 1"
+        out["option_note"] = why
+    except Exception as e:
+        out["option_note"] = f"no chain: {e}"
+    return out
+
+
 def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str) -> Optional[Dict[str, Any]]:
     sp = watch_data.get("shares_plan") or {}
     if str(watch_data.get("side") or "LONG").upper() != "LONG":
@@ -45,15 +165,26 @@ def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str) -> Opti
         return None
     qty = trade_rules.SHARES_PER_TRADE
     opt = watch_data.get("options_plan") or {}
-    alt = None
+    alt, opt_note = None, None
     if opt.get("actionable") and str(opt.get("structure") or "NONE").upper() != "NONE":
-        debit = _f(opt.get("target_debit"))
-        alt = {
-            "structure": opt.get("structure"), "expiration": opt.get("expiration"),
-            "long_strike": opt.get("long_strike"), "short_strike": opt.get("short_strike"),
-            "mid_debit": debit or None, "cost_usd": round(debit * 100, 2) if debit else None,
-            "max_loss": opt.get("max_loss"),
-        }
+        alt, opt_note = price_option(str(watch_data.get("ticker") or ""), opt, t1, stop)
+    bounce = None
+    atr = _f(watch_data.get("atr14"))
+    if atr > 0:
+        rep = watch_data.get("next_earnings_date")
+        if not rep:
+            try:
+                from src.clients.earnings_client import resolve_next_earnings_date
+
+                rep = str(resolve_next_earnings_date(str(watch_data.get("ticker") or ""))[0] or "") or None
+            except Exception:
+                rep = None
+        bounce = bounce_play(str(watch_data.get("ticker") or ""), limit, stop, t1, atr, date_str,
+                             watch_data.get("earnings_stance"), rep)
+        if bounce["option"]:
+            alt, opt_note = bounce["option"], None
+        else:
+            opt_note = bounce["option_note"] if alt is None else opt_note
     inv = watch_data.get("invalidation") or {}
     return {
         "ticker": watch_data.get("ticker"),
@@ -69,6 +200,11 @@ def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str) -> Opti
         "risk_usd": round(trade_rules.risk_usd(limit, stop, qty), 2),
         "rr_at_limit": round((t1 - limit) / (limit - stop), 2),
         "option_alternative": alt,
+        "option_dropped": opt_note,
+        "play": bounce["play"] if bounce else "SHARES",
+        "bounce_target": bounce["bounce_target"] if bounce else None,
+        "exit_by": bounce["exit_by"] if bounce else None,
+        "horizon_bars": bounce["horizon_bars"] if bounce else None,
         "good_til": str(_add_sessions(date.fromisoformat(date_str), trade_rules.TICKET_GOOD_TIL_SESSIONS)),
         "cancel_if": f"daily close below {_f(inv.get('price_level')) or round(stop, 2):.2f}, or price trades above {entry_max:.2f} before fill",
         "earnings_stance": trade_rules.normalize_stance(watch_data.get("earnings_stance")),
@@ -88,12 +224,13 @@ def ticket_text(t: Dict[str, Any]) -> str:
         f"stop {t['stop']} T1 {t['target_1']}" + (f" T2 {t['target_2']}" if t.get("target_2") else "")
         + f" | R:R {t['rr_at_limit']} risk ${t['risk_usd']:.0f} | {t['lane']} ({t['levels_source']})"
         + (f" | earnings {t['earnings_stance']}" if t.get("earnings_stance") else "")
-        + (f" | opt {alt['structure']} {alt['expiration']} ${alt['cost_usd']}" if alt and alt.get("cost_usd") else "")
+        + (f" | opt {alt['structure']} {alt['expiration']} {alt['long_strike']:g}/{alt['short_strike'] or 0:g} max loss ${alt['cost_usd']:.0f} BE {alt['breakeven']} R@T1 {alt['r_at_t1']}" if alt else "")
+        + (f" | {t['play']}: bounce to {t['bounce_target']} by {t['exit_by']} ({t['horizon_bars']} bars)" if t.get("bounce_target") else "")
         + f" | good til {t['good_til']}"
     )
 
 
-def persist_and_notify(ticket: Dict[str, Any]) -> None:
+def persist_ticket(ticket: Dict[str, Any]) -> None:
     tk, d = ticket["ticker"], ticket["date"]
     try:
         out = config.BASE_DIR / "reports" / d / f"{tk}_ticket.json"
@@ -101,12 +238,64 @@ def persist_and_notify(ticket: Dict[str, Any]) -> None:
         out.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning(f"[{tk}] ticket write failed: {e}")
+
+
+def persist_and_notify(ticket: Dict[str, Any]) -> None:
+    persist_ticket(ticket)
+    tk, d = ticket["ticker"], ticket["date"]
     try:
         from src.tracking.notify import notify
 
         notify("ENTRY", f"{tk} ticket", ticket_text(ticket), dedupe_key=f"ticket:{tk}:{d}:{ticket['limit_price']}")
     except Exception as e:
         logger.warning(f"[{tk}] ticket notify failed: {e}")
+
+
+def _latest_watch_levels(ticker: str, today: str) -> Optional[Dict[str, Any]]:
+    root = config.BASE_DIR / "reports"
+    for d in sorted((p for p in root.iterdir() if p.is_dir() and p.name <= today), reverse=True)[:30] if root.exists() else []:
+        fp = d / f"{ticker}_watch_levels.json"
+        if fp.exists():
+            try:
+                return json.loads(fp.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+    return None
+
+
+def act_on_touch(ticker: str, price: float, today: str, mode: str = "touch", wd: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """A zone touch (mode 'touch') or approach (mode 'approach') becomes one of: TICKET, RESEARCH (stale dossier, MID queued), NO TRADE."""
+    ticker = ticker.upper()
+    wd = dict(wd or _latest_watch_levels(ticker, today) or {})
+    if not wd.get("shares_plan") and wd.get("raw_json"):
+        try:
+            raw = wd["raw_json"]
+            wd = {**(json.loads(raw) if isinstance(raw, str) else raw), **{k: v for k, v in wd.items() if k != "raw_json"}}
+        except Exception:
+            pass
+    if not wd.get("shares_plan"):
+        return {"action": "NO TRADE", "text": f"{ticker}: no stored plan"}
+    from src.tracking.auto_triage_daemon import enqueue_touch_mid, needs_fresh_research
+
+    stale, why = needs_fresh_research(ticker, today)
+    if stale:
+        if mode == "approach":
+            return {"action": "NO TRADE", "text": f"{ticker}: dossier stale ({why})"}
+        enqueue_touch_mid(ticker, today)
+        return {"action": "RESEARCH", "text": f"{ticker} at {price:.2f} in its zone; dossier stale ({why}), priority MID research queued, ticket follows"}
+    wd["actionable"] = 1
+    if not _f(wd.get("atr14")):
+        try:
+            from src.logic.level_validation import _compute_atr14_from_bars
+
+            wd["atr14"] = _compute_atr14_from_bars(ticker, today)
+        except Exception:
+            pass
+    tk = build_ticket(wd, price, today)
+    if not tk:
+        return {"action": "NO TRADE", "text": f"{ticker}: plan no longer builds a valid ticket at {price:.2f}"}
+    persist_ticket(tk)
+    return {"action": "TICKET", "text": ticket_text(tk)}
 
 
 # --- repair: turn a good idea at a bad price into a resting limit before the gate ---

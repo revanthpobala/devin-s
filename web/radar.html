@@ -1081,6 +1081,7 @@
 <button class="tab-btn" id="tab-chart-btn" onclick="AppSwing.switchDossierTab('chart')">📸 Scraped Charts</button>
 <button class="tab-btn" id="tab-tv-btn" onclick="AppSwing.switchDossierTab('tv')">📈 Live TradingView</button>
 <button class="tab-btn" id="tab-flow-btn" onclick="AppSwing.switchDossierTab('flow')">🔥 Options Flow</button>
+<button class="tab-btn" id="tab-dp-btn" onclick="AppSwing.switchDossierTab('dp')">🟣 Dark Pool</button>
 </div>
 <div id="modal-date-select-wrap" style="display:flex; align-items:center; gap:6px;">
 <span style="font-size:11px; color:var(--text-muted); font-weight:700;">📅 Switch Date:</span>
@@ -1596,7 +1597,11 @@
 <script src="/static/js/utils.js?v=89"></script>
 <script src="/static/js/api.js?v=88"></script>
 <script src="/static/js/status.js?v=90"></script>
-<script src="/static/js/swing.js?v=91"></script>
+<!-- Open Source TradingView Lightweight Charts (Apache 2.0) -->
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<!-- Deep Research Suggested Trade Level & P&L Visualizer -->
+<script src="/static/js/trade_level_graph.js?v=3"></script>
+<script src="/static/js/swing.js?v=92"></script>
 <script src="/static/js/watchlist.js?v=90"></script>
 <script src="/static/js/trades.js?v=88"></script>
 <script src="/static/js/intraday.js?v=89"></script>

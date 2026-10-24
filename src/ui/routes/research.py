@@ -864,8 +864,116 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
     return dossier_md, watch_levels
 
 
+@router.get("/api/darkpool/{ticker}")
+def get_darkpool_data_endpoint(ticker: str, force: bool = False, limit: int = 10000):
+    """On-demand Dark Pool & off-exchange order flow analysis for a ticker."""
+    ticker_u = validate_ticker(ticker)
+    try:
+        from src.data.darkpool import fetch_darkpool_data, format_darkpool_block, _AI_SUMMARY_CACHE
+        data = fetch_darkpool_data(ticker_u, limit=limit, force_refresh=force)
+        if data.get("status") == "ok":
+            data["markdown_summary"] = format_darkpool_block(ticker_u)
+            if ticker_u in _AI_SUMMARY_CACHE:
+                _, cached = _AI_SUMMARY_CACHE[ticker_u]
+                data["ai_summary"] = cached.get("summary")
+                data["ai_provider"] = cached.get("provider")
+        return data
+    except Exception as e:
+        logger.error(f"[{ticker_u}] Dark pool API error: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "ticker": ticker_u,
+            "ladder": [],
+            "signature_prints": [],
+            "major_shelves": [],
+        }
+
+
+@router.get("/api/darkpool/{ticker}/ai-summary")
+def get_darkpool_ai_summary_endpoint(ticker: str, force: bool = False):
+    """On-demand institutional AI summary of off-exchange / dark pool tape for a ticker."""
+    ticker_u = validate_ticker(ticker)
+    try:
+        from src.data.darkpool import generate_darkpool_ai_summary
+        res = generate_darkpool_ai_summary(ticker_u, force_refresh=force)
+        return res
+    except Exception as e:
+        logger.error(f"[{ticker_u}] Dark pool AI summary endpoint error: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "ticker": ticker_u,
+            "message": str(e),
+            "summary": "⚠️ Unable to generate AI summary at this moment. Please retry.",
+            "provider": "error",
+        }
+
+
+@router.post("/api/darkpool/{ticker}/sync-tastytrade-alerts")
+def sync_darkpool_tastytrade_alerts_endpoint(ticker: str):
+    """Sync primary dark pool support absorption floor & resistance ceiling to Tastytrade mobile cloud alerts."""
+    ticker_u = validate_ticker(ticker)
+    try:
+        from src.data.darkpool import fetch_darkpool_data
+        from src.clients.tastytrade_client import get_tastytrade_client
+
+        dp = fetch_darkpool_data(ticker_u)
+        shelves = dp.get("major_shelves") or []
+        if not shelves:
+            return {
+                "status": "error",
+                "ticker": ticker_u,
+                "message": f"No dense dark pool liquidity shelves detected for {ticker_u} to arm as alerts.",
+            }
+
+        p_prices = [s["price"] for s in shelves]
+        min_shelf = min(p_prices)
+        max_shelf = max(p_prices)
+
+        tt = get_tastytrade_client()
+        created_alerts = []
+
+        # 1. Arm support absorption floor alert (< threshold)
+        floor_thresh = round(min_shelf - 0.05, 2)
+        a_floor = tt.create_quote_alert(
+            symbol=ticker_u,
+            threshold=floor_thresh,
+            operator="<",
+            expires_days=30,
+        )
+        if a_floor:
+            created_alerts.append({"type": "support_floor", "threshold": floor_thresh, "operator": "<", "alert": a_floor})
+
+        # 2. Arm overhead resistance ceiling alert (> threshold)
+        ceil_thresh = round(max_shelf + 0.05, 2)
+        if max_shelf > min_shelf:
+            a_ceil = tt.create_quote_alert(
+                symbol=ticker_u,
+                threshold=ceil_thresh,
+                operator=">",
+                expires_days=30,
+            )
+            if a_ceil:
+                created_alerts.append({"type": "overhead_ceiling", "threshold": ceil_thresh, "operator": ">", "alert": a_ceil})
+
+        return {
+            "status": "ok",
+            "ticker": ticker_u,
+            "message": f"Successfully armed Tastytrade Cloud Alerts for {ticker_u} at floor ${floor_thresh:.2f} and ceiling ${ceil_thresh:.2f}.",
+            "alerts": created_alerts,
+        }
+    except Exception as e:
+        logger.error(f"[{ticker_u}] Error syncing Tastytrade dark pool alerts: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "ticker": ticker_u,
+            "message": f"Failed to arm Tastytrade alerts: {e}",
+        }
+
+
 @router.get("/api/report/{ticker}")
 def get_report_bundle_single(ticker: str):
+
     """Convenience alias resolving the latest available report bundle for a ticker."""
     return get_report_bundle("latest", ticker)
 
@@ -1135,8 +1243,9 @@ def get_report_bundle(date: str, ticker: str):
     # Note: If deep reports are missing and only local_dossier_md exists, do NOT mirror it into
     # arbitration_md or summary_md. Each tab maintains its true content so pending states render cleanly.
 
-    zoom_path = find_chart_path(target_date, ticker_u, "zoom")
-    plain_path = find_chart_path(target_date, ticker_u, "plain")
+    # Find newest available charts for this ticker across all dates
+    zoom_path = find_chart_path("", ticker_u, "zoom") or find_chart_path(target_date, ticker_u, "zoom")
+    plain_path = find_chart_path("", ticker_u, "plain") or find_chart_path(target_date, ticker_u, "plain")
 
     timeline = []
     for d_str in available_dates:
@@ -1334,17 +1443,19 @@ def get_report_bundle(date: str, ticker: str):
             "is_current": (d_str == date),
         })
 
-    live_price = None
-    try:
-        with get_db() as conn:
-            r = conn.cursor().execute(
-                "SELECT last_price FROM watch_targets WHERE ticker = ? ORDER BY date DESC LIMIT 1",
-                (ticker_u,)
-            ).fetchone()
-            if r and r["last_price"]:
-                live_price = float(r["last_price"])
-    except Exception:
-        pass
+    from src.clients.price_client import get_current_price
+    live_price = get_current_price(ticker_u)
+    if not live_price:
+        try:
+            with get_db() as conn:
+                r = conn.cursor().execute(
+                    "SELECT last_price FROM watch_targets WHERE ticker = ? ORDER BY date DESC LIMIT 1",
+                    (ticker_u,)
+                ).fetchone()
+                if r and r["last_price"]:
+                    live_price = float(r["last_price"])
+        except Exception:
+            pass
 
     watch_levels = None
     levels_file = raw_root / target_date / ticker_u / f"{ticker_u}_watch_levels.json"
@@ -1531,8 +1642,8 @@ def get_report_bundle(date: str, ticker: str):
         "watch_levels": watch_levels,
         "has_zoom_chart": zoom_path is not None,
         "has_plain_chart": plain_path is not None,
-        "zoom_chart_url": f"/api/charts/{target_date}/{ticker_u}/zoom" if zoom_path else None,
-        "plain_chart_url": f"/api/charts/{target_date}/{ticker_u}/plain" if plain_path else None,
+        "zoom_chart_url": f"/api/charts/{re.search(r'(\d{4}-\d{2}-\d{2})', str(zoom_path)).group(1) if (zoom_path and re.search(r'(\d{4}-\d{2}-\d{2})', str(zoom_path))) else 'latest'}/{ticker_u}/zoom" if zoom_path else None,
+        "plain_chart_url": f"/api/charts/{re.search(r'(\d{4}-\d{2}-\d{2})', str(plain_path)).group(1) if (plain_path and re.search(r'(\d{4}-\d{2}-\d{2})', str(plain_path))) else 'latest'}/{ticker_u}/plain" if plain_path else None,
     }
 
     _REPORT_BUNDLE_CACHE[cache_key] = (now_ts, result_payload)

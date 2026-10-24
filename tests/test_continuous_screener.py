@@ -705,3 +705,24 @@ def test_continuous_screener_pause_endpoints():
 
 
 
+
+
+def test_scan_returns_picks_without_autonomous_flags(monkeypatch):
+    from src.screener import schwab_pre_move_scan as sc
+
+    pick = {"symbol": "QCOM", "price": 150.0, "lane": "BASING", "priority_score": 80.0, "weinstein_stage": 2}
+    monkeypatch.setattr(sc, "get_schwab_client", lambda: object())
+    monkeypatch.setattr(sc, "check_market_tide", lambda c: {"spy_20d_return": 0.0, "trend_str": "UP", "last_px": 500.0})
+    monkeypatch.setattr(sc, "load_biotech_exclusion_set", lambda: set())
+    monkeypatch.setattr(sc, "load_schwab_1000_tickers", lambda: ["QCOM"])
+    monkeypatch.setattr(sc, "fetch_all_quotes_batch", lambda c, t: {"QCOM": {}})
+    monkeypatch.setattr(sc, "stage1_fast_filter", lambda *a, **k: [pick])
+    monkeypatch.setattr(sc, "run_stage2_technical_scan", lambda *a, **k: [pick])
+    monkeypatch.setattr(sc, "stage1_short_filter", lambda *a, **k: [])
+    monkeypatch.setattr(sc, "run_stage2_short_scan", lambda *a, **k: [])
+    monkeypatch.setattr(sc, "save_survivors_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(sc, "save_short_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(sc, "save_scan_funnel", lambda *a, **k: None)
+    monkeypatch.setattr("src.screener.continuous_screener_daemon.enrich_candidates_with_tastytrade", lambda *a, **k: None)
+    res = sc.run_schwab_pre_move_scan(top_n=5, side="both", target_date="2026-10-16", autonomous=False, auto_scrape=False)
+    assert [p["symbol"] for p in res["long"]] == ["QCOM"] and res["short"] == []

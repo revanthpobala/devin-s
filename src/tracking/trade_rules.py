@@ -16,6 +16,10 @@ T1_MAX_EXPECTED_MOVE_MULT = 1.5
 EARNINGS_WINDOW_BARS = 21
 EARNINGS_STANCES = ("HOLD_THROUGH", "EXIT_BEFORE", "EARNINGS_PLAY")
 TICKET_GOOD_TIL_SESSIONS = 10
+# Measured (near_zone_lane.py --bounce, full_v4_av2, in zone & R:R at market >= 2): reaching entry + 1.0 ATR before the
+# stop within 10 bars beats break-even in all four eras and both ticker halves (43.5% vs 41.2%). Shorter windows do not.
+BOUNCE_ATR = 1.0
+BOUNCE_BARS = 10
 
 
 def earnings_gate(days_to_earnings: Optional[int]) -> str:

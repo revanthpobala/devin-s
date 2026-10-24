@@ -2,7 +2,7 @@
 
 Candidates are queued for the TradingView scrape so the engine's zone and at-market R:R decide. The screen itself
 (above 50d, 3%+ off the 20d high, within 1.5 ATR of the 10d low, proxy R:R >= 2) has no measured edge; it only picks
-what to scrape first. Runs standalone: python -m src.tracking.universe_sweep [--no-queue] [--loop MINUTES]
+what to scrape first. The same bars feed rsi2_scan, which writes measured RSI2 suggestions. Runs standalone: python -m src.tracking.universe_sweep [--no-queue] [--loop MINUTES]
 """
 
 from __future__ import annotations
@@ -91,7 +91,14 @@ def run(queue: bool = True, bars_fetch=None, tickers: Optional[List[str]] = None
         tickers = [t.replace("/", ".") for t in load_constituents()]
     started = time.time()
     names = sorted(set(tickers) | {"SPY", "QQQ", "IWM"})
-    bars = bars_fetch(names, 320)
+    bars = bars_fetch(names, 760)
+    try:
+        from src.tracking import rsi2_scan
+
+        rsi2 = rsi2_scan.run(bars, write=queue)
+    except Exception as e:
+        logger.warning("rsi2 scan failed: %s", e)
+        rsi2 = {"error": str(e)}
     rows = {t: m for t in names if t in bars and (m := metrics(bars[t])) is not None}
     etfs = {t: rows.pop(t) for t in ("SPY", "QQQ", "IWM") if t in rows}
     if held is None:
@@ -122,6 +129,7 @@ def run(queue: bool = True, bars_fetch=None, tickers: Optional[List[str]] = None
            "candidates": [{"ticker": t, "proxy_rr": round(rows[t]["proxy_rr"], 2), "atrs_above_low": round(rows[t]["atrs_above_low"], 2),
                            "off_high_pct": round(100 * rows[t]["off_high20"], 1), "held": t in held} for t in cands],
            "queued": queued,
+           "rsi2": rsi2,
            "note": "Screen only picks scrape order; no measured edge. The engine zone and at-market R:R decide."}
     out_path().write_text(json.dumps(res, indent=1), encoding="utf-8")
     return res

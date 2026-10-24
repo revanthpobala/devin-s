@@ -117,13 +117,6 @@ EXPLORE_SAMPLE_N = int(os.getenv("EXPLORE_SAMPLE_N", "10"))
 # eligible for deep research, even if it is a deterministic PASS. Prevents
 # thin-EV names (e.g. ev_r < 0.05) from crowding out high-EV names.
 TIER_A_MIN_EV_R = float(os.getenv("TIER_A_MIN_EV_R", "0.05"))
-# WATCH_MIN_CONVICTION: a deterministic WATCH ticker (not in entry zone yet) is
-# still eligible for deep research when its conviction meets this bar. Deep
-# research (the paid pass) is the right tool to assess near-zone, high-quality,
-# not-yet-triggered setups — so requiring a literal in-zone PASS would starve it
-# of candidates most days. CUT / bad_data never qualify. Stored on the SAME 0-10
-# scale as det_conv / MIN_CONVICTION_FOR_DEEP_RESEARCH (so 7.0 == conviction 70).
-WATCH_MIN_CONVICTION = float(os.getenv("WATCH_MIN_CONVICTION", "7.0"))
 
 # NVIDIA free model (used for the remote rescue attempt in local research).
 # The user provisions a working free NVIDIA model via NVDIA_FREE_MODEL in .env;

@@ -6,6 +6,7 @@ and automatically runs local LLM triage without requiring manual user interactio
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -114,11 +115,40 @@ def _prior_close_and_daily_atr(ticker: str, d: str) -> Tuple[Optional[float], Op
         return None, None
 
 
+def _todays_dossier(ticker: str, today: str) -> Optional[Tuple[bool, str]]:
+    """Research done today is extended, not redone: stale only when price broke its stop or reached target 1."""
+    levels = None
+    for f in (config.BASE_DIR / "data" / "raw" / today / ticker / f"{ticker}_watch_levels.json",
+              config.BASE_DIR / "reports" / today / f"{ticker}_watch_levels.json"):
+        if f.exists():
+            try:
+                levels = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                levels = None
+            break
+    if levels is None:
+        rep = config.BASE_DIR / "reports" / today
+        return (False, "researched today") if (rep / f"{ticker}_arbitration.md").exists() or (rep / f"{ticker}_summary.md").exists() else None
+    plan = levels.get("shares_plan") or {}
+    stop = plan.get("tactical_stop") or plan.get("breakout_stop")
+    t1 = plan.get("target_1")
+    px = _live_price(ticker)
+    sign = -1.0 if str(plan.get("side") or levels.get("side") or "LONG").upper() == "SHORT" else 1.0
+    if px and stop and sign * (px - float(stop)) < 0:
+        return True, f"price {px:g} broke today's stop {float(stop):g}"
+    if px and t1 and sign * (px - float(t1)) >= 0:
+        return True, f"price {px:g} reached today's target 1 {float(t1):g}"
+    return False, "researched today, levels intact"
+
+
 def needs_fresh_research(ticker: str, today: str, held: bool = False) -> Tuple[bool, str]:
     """True when no recent plan exists, the plan is >= 5 sessions old, or price moved >= 1 ATR since it. Held names always refresh."""
     ticker = ticker.upper()
     if held:
         return True, "held position"
+    done = _todays_dossier(ticker, today)
+    if done is not None:
+        return done
     prior = last_report_date(ticker, today)
     if not prior:
         return True, "no prior plan"
@@ -175,6 +205,31 @@ def _dispatch_deep_research_if_needed(ticker: str, date_str: str):
         logger.info(f"🤖 [AutoTriageDaemon] Enqueued local research triage for {ticker}: {job_id}")
     except Exception as e:
         logger.warning(f"Failed to dispatch research for {ticker}: {e}")
+
+def enqueue_touch_mid(ticker: str, date_str: str) -> bool:
+    """Priority MID deep job for a zone touch on a stale dossier. One live job per ticker."""
+    ticker = ticker.upper()
+    try:
+        with _db_lock:
+            with _get_connection() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT 1 FROM active_research_jobs WHERE LOWER(ticker) = ? AND mode != 'local_only' AND status IN ('QUEUED', 'RUNNING')",
+                    (ticker.lower(),),
+                )
+                if c.fetchone():
+                    return False
+                c.execute(
+                    "INSERT INTO active_research_jobs (job_id, ticker, mode, stage, status, started_at, target_date, stage_detail, tier) VALUES (?, ?, 'deep_only', 'QUEUED', 'QUEUED', ?, ?, 'TOUCH zone arrival', 'MID')",
+                    (f"touch-{ticker}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}", ticker, datetime.now(timezone.utc).isoformat(), date_str),
+                )
+                conn.commit()
+        dispatch_next_queued_job()
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to queue touch research for {ticker}: {e}")
+        return False
+
 
 def _top_up_idle_deep_slots():
     """Capacity governor: when a deep slot idles and nothing is queued, enqueue held names then today's queue names with a stale/missing plan."""

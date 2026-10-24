@@ -617,7 +617,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_darkpool_levels",
+            "description": (
+                "Fetches on-demand off-exchange / Dark Pool order flow (FINRA TRF tape) for a ticker:\n"
+                "1. Price Ladder: Volume clusters and print counts at each price level.\n"
+                "2. Major Institutional Shelves: Key price levels where institutional volume concentrated (support/defense and overhead walls).\n"
+                "3. Signature Block Prints: The largest individual institutional block transactions of the session (>25k shares or >$1M).\n"
+                "4. Net Flow Sentiment: Accumulation vs. Distribution classification via tick-rule analysis."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'NVDA', 'AAPL', 'SPY')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_sec_filings",
+
             "description": (
                 "Queries official U.S. SEC EDGAR records for a company:\n"
                 "1. Recent Filings: 10-K (Annual), 10-Q (Quarterly), 8-K (Material Events/Dilution), Form 4 (Insider Transactions) with direct SEC.gov URLs.\n"
@@ -1202,6 +1226,15 @@ def format_schwab_positions_tool(ticker: Optional[str] = None) -> str:
         return f"Error retrieving Schwab positions: {e}"
 
 
+def fetch_darkpool_levels_tool(ticker: str) -> str:
+    """Fetch on-demand off-exchange / Dark Pool volume clusters and signature blocks."""
+    try:
+        from src.data.darkpool import format_darkpool_block
+        return format_darkpool_block(ticker)
+    except Exception as e:
+        return f"Dark pool levels unavailable for {ticker}: {e}"
+
+
 def invoke_skill(skill_name: str, topic: str = "") -> dict:
     """Reads and returns an institutional skill card from skills/ directory."""
     skills_dir = config.BASE_DIR / "skills"
@@ -1348,6 +1381,12 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         logger.info(f"LLM executed tool: fetch_alpaca_news(ticker='{ticker}')")
         result_dict = get_ticker_news(ticker, days=3)
         res_str = result_dict.get("raw_news") if result_dict and result_dict.get("raw_news") else f"No Alpaca/Yahoo news found for {ticker}."
+        artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "fetch_darkpool_levels":
+        from src.data.darkpool import format_darkpool_block
+        logger.info(f"LLM executed tool: fetch_darkpool_levels(ticker='{ticker}')")
+        res_str = format_darkpool_block(ticker)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
     elif function_name == "scrape_tradingview_options_finder":

@@ -334,6 +334,12 @@ window.AppChat = {
           name: `Options Flow (${sym})`,
           context: `**CURRENTLY VISIBLE OPTIONS FLOW TABLE FOR ${sym}:**\n${tableText || 'Options Flow view active.'}`
         };
+      } else if (currentTab === 'dp') {
+        const text = document.getElementById('modal-body') ? document.getElementById('modal-body').innerText.slice(0, 4000) : '';
+        return {
+          name: `Dark Pool Tape (${sym})`,
+          context: `**CURRENTLY VISIBLE DARK POOL / OFF-EXCHANGE ORDER FLOW FOR ${sym}:**\n${text || 'Dark Pool view active.'}`
+        };
       } else if (currentTab === 'arb') {
         const text = data.arbitration_md || (document.getElementById('modal-body') ? document.getElementById('modal-body').innerText : '');
         return {

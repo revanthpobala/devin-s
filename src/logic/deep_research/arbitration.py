@@ -189,11 +189,12 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "## ⚖️ THE JUDGE'S FINAL RULING\n"
         "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
         "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
-        "* **Tiered Options Directives & Strict Soundness Rules:** Always provide a 3-tiered options menu across durations and account structures:\n"
+        "* **Tiered Options Directives & Strict Soundness Rules:** Evaluate a 3-tiered options menu; fill a tier only when it passes these rules, otherwise set it to NONE:\n"
         "  1. Tactical 30-45 DTE Directional Spread (primary options vehicle):\n"
         "     - FOR LONG / BULLISH SETUPS: Strongly favor BULL CALL DEBIT SPREADS (e.g. 30-45 DTE, ATM Long Call / OTM Short Call at Target 1, targeting >= 1.5:1 to 3:1 R:R in trader's favor) or Deep ITM LEAPS (0.75-0.85 delta).\n"
         "     - FORBIDDEN NEAR-THE-MONEY CREDIT SPREADS: NEVER sell a Bull Put Spread whose short strike is within 5% of spot or above the tactical stop loss! If price hitting your stop loss would put the short put in the money, the trade is structurally invalid.\n"
         "     - CREDIT-TO-WIDTH FLOOR: NEVER suggest a credit spread collecting < 25% of the spread width (risking > 3:1 against the trader). If an edge-appropriate credit spread does not exist at >= 1.25x ExpMove below the stop loss, set options_plan.structure = 'NONE' and actionable = false. Do NOT force an options trade when shares provide the superior R:R.\n"
+        "     - STRIKES ONLY: the system re-prices both legs from the live chain (mid) and overwrites target_debit, target_credit, max_loss and max_profit, so do not invent them. A bull call's short strike must be <= Target 1; a bull put's short strike must be below the tactical stop. If either rule or a liquid chain quote is missing, set structure = 'NONE'.\n"
         "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
         "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put strictly below invalidation floor).\n"
         "* **Final Verdict:** **[ENTER (Limit @ Floor) / ARMED / CASH_SKIP / WATCH]**, plus the veto fact if any\n\n"
@@ -432,12 +433,14 @@ def run_arbitration(
                 from src.logic.level_validation import _compute_atr14_from_bars, _dw_num
 
                 _atr = _dw_num(dw_dict, "RSI2 ATR14", "rsi2_atr14", "atr14", "ATR 14", "atr_14", "ATR", "wilder_atr14") or _compute_atr14_from_bars(ticker, date_str)
+                watch_data["atr14"] = _atr
                 _sp = watch_data.setdefault("shares_plan", {})
                 _notes = repair_long_shares_plan(_sp, spot_num, _atr, pine_stop=watch_data.get("levels_source") == "pine")
                 try:
                     from src.clients.earnings_client import resolve_next_earnings_date
 
                     _rep = str(resolve_next_earnings_date(ticker)[0] or "") or None
+                    watch_data["next_earnings_date"] = _rep
                 except Exception:
                     _rep = None
                 _opt_bad = options_span_earnings_ok(watch_data.get("options_plan") or {}, _rep, watch_data.get("earnings_stance"))

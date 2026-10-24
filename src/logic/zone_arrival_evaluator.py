@@ -251,39 +251,39 @@ def evaluate_target_on_zone_arrival(
                     f"• Risk & Target: Tactical Stop = ${stop:.2f} (Risk: -{risk_pct}%) | Tactical Stop = ${stop:.2f} | Target 1 = ${target_1:.2f} (+{reward_pct}%) | R:R = {live_rr:.2f}:1."
                 )
             else:
-                verdict = "STALKING"
-                verdict_label = f"⏳ IN ZONE (GATE VETO)"
+                verdict = "NO_TRADE"
+                verdict_label = "🚫 NO TRADE (GATE VETO)"
                 is_actionable = False
                 reasons.extend(act_reasons)
                 playbook = (
-                    f"⏳ STALK — Spot ${spot_price:.2f} is in zone, but gate vetoed execution: {'; '.join(act_reasons)}."
+                    f"NO TRADE: spot ${spot_price:.2f} is in zone, but the gate vetoed execution: {'; '.join(act_reasons)}."
                 )
         else:
-            verdict = "STALKING"
-            verdict_label = f"⏳ IN ZONE (POOR R:R {live_rr:.1f}:1)"
+            verdict = "NO_TRADE"
+            verdict_label = f"🚫 NO TRADE (R:R {live_rr:.1f}:1 below 2.0)"
             is_actionable = False
             reasons.append(f"Price is in zone but reward/risk ratio ({live_rr:.2f}:1) is under minimum 2.0:1 institutional threshold.")
             playbook = (
-                f"⏳ STALK FOR BETTER FILL — Spot ${spot_price:.2f} is in zone, but current stop distance "
-                f"yields only {live_rr:.2f}:1 R:R. Wait for pullback closer to ${stop:.2f} before entry."
+                f"NO TRADE at market: spot ${spot_price:.2f} gives {live_rr:.2f}:1 R:R to Target 1 (${target_1:.2f}) with stop ${stop:.2f}. "
+                f"A resting limit at the zone top ${entry_high:.2f} qualifies only if R:R there is 2.0:1 or better."
             )
     elif near_zone:
-        verdict = "STALKING"
-        verdict_label = f"⚡ HOT STALK ({dist_to_zone:.1f}% to zone)"
+        verdict = "RESTING"
+        verdict_label = f"🎯 RESTING LIMIT ${entry_high:.2f} ({dist_to_zone:.1f}% away)"
         is_actionable = False
         reasons.append(f"Price ${spot_price:.2f} is within {dist_to_zone:.1f}% of entry zone [${entry_low:.2f}–${entry_high:.2f}].")
         playbook = (
-            f"⚡ STALKING PULLBACK — Price ${spot_price:.2f} is approaching the designated entry zone "
-            f"[${entry_low:.2f}–${entry_high:.2f}]. Awaiting test of support shelf at ${stop:.2f}."
+            f"RESTING LIMIT: buy limit at ${entry_high:.2f} (zone top), stop ${stop:.2f}, Target 1 ${target_1:.2f}. "
+            f"Spot ${spot_price:.2f} is {dist_to_zone:.1f}% away; do not chase above the zone."
         )
     else:
-        verdict = "STALKING"
-        verdict_label = "⏳ WAITING"
+        verdict = "NO_TRADE"
+        verdict_label = "🚫 NO TRADE (outside zone)"
         is_actionable = False
         reasons.append(f"Price ${spot_price:.2f} is outside entry zone [${entry_low:.2f}–${entry_high:.2f}].")
         playbook = (
-            f"⏳ WAITING — Price ${spot_price:.2f} remains outside the entry zone. "
-            f"No execution permitted until price pulls back to [${entry_low:.2f}–${entry_high:.2f}]."
+            f"NO TRADE: price ${spot_price:.2f} is outside the entry zone [${entry_low:.2f}–${entry_high:.2f}]; "
+            f"no order until it trades into the zone."
         )
 
     eval_result = {

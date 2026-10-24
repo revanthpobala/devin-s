@@ -549,11 +549,19 @@ def validate_levels(
                     f"{setup_lane} lane requires target_1 to match Pine Long Target (${pine_target:.2f}), got ${target_1:.2f}"
                 )
     elif has_shares_entry and is_rsi2:
+        # A pending signal waits for an opening below its ceiling, so today's close/ATR can differ from the
+        # signal bar's; Pine's fixed levels are the reference when exported.
         close_px = spot if spot > 0 else _dw_num(dw, "close", "Close")
-        if close_px > 0 and atr > 0:
-            exp_stop = close_px - (2.0 * atr)
-            exp_t1 = close_px + (4.0 * atr)
-            tol = 0.05 * atr
+        sig_atr = atr
+        pine_stop = _dw_num(dw, "RSI2 Fixed Stop", "rsi2_fixed_stop")
+        pine_t1 = _dw_num(dw, "RSI2 Fixed Target", "rsi2_fixed_target")
+        if pine_stop > 0 and pine_t1 > pine_stop:
+            sig_atr = (pine_t1 - pine_stop) / 6.0
+            close_px = pine_stop + 2.0 * sig_atr
+        if close_px > 0 and sig_atr > 0:
+            exp_stop = close_px - (2.0 * sig_atr)
+            exp_t1 = close_px + (4.0 * sig_atr)
+            tol = 0.05 * sig_atr
             if abs(stop - exp_stop) > tol or abs(target_1 - exp_t1) > tol:
                 reasons.append(
                     f"rsi2_geometry: stop ${stop:.2f} (exp ${exp_stop:.2f}) or target_1 ${target_1:.2f} (exp ${exp_t1:.2f}) deviates > 0.05 ATR (${tol:.2f}) from close +/- 2/4 ATR"

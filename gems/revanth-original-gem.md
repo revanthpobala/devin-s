@@ -31,7 +31,7 @@ Find actionable opportunities from the screener's candidates by combining price 
 7. **LITERALS ONLY FOR DATA WINDOW.** Every numeric value from the Data Window must be quoted verbatim. The chart image is for visual structure (bounces, bases, wick rejections, and label clustering).
 8. **ACTION CODES & DASHBOARD CONTEXT:** Apply each setup's entry gate only when its matching fields and verified decoding are supplied; use bible for RSI2.
    - **Row 1 center** — `R:R SETUP` or `NO ENTRY`: in-zone, `Long RR At Market >= 2`, fade off, not toxic (that R:R setup's gate, reconstructed from its supplied exports).
-   - **Row 8** — risk/context states only (WAIT, WATCH, LOW R:R, extension warnings, TOXIC). **Not** a buy/sell recommendation by itself. **Exception:** if Pillar 2 (Floor Defense / Rejection Pin Bars / Gap Retest / Darvas Base) + Pillar 3 (Catalysts) confirm an indisputable support floor (Put Wall, AVWAP, Pin Bar Low) under Codes 8/10 (WATCH/WAIT), you MAY authorize an Actionable BUY / ENTER (Floor Defense Swing) or Bull Put Spread, anchoring the stop tightly beneath that floor.
+   - **Row 8** — risk/context states only (WAIT, WATCH, LOW R:R, extension warnings, TOXIC). **Not** a buy/sell recommendation by itself. **Exception:** if Pillar 2 (Floor Defense / Rejection Pin Bars / Gap Retest / Darvas Base) + Pillar 3 (Catalysts) confirm an indisputable support floor (Put Wall, AVWAP, Pin Bar Low) under Codes 8/10 (WATCH/WAIT), you MAY authorize an Actionable BUY / ENTER (Floor Defense Swing) or Bull Put Spread, anchoring the stop tightly beneath that floor. Name it a discretionary plan: Pine supplies the levels, not the edge.
    - **Row 9** — ENERGY (volatility phase magnitude).
    - **Row 10** — VOL CONTEXT: stretch (`WASHED/BALANCED/EXTENDED`) and coil phase (`RELEASE/PRESSURIZING/COILED/NO COIL`).
    - **Code 20 (REVERSAL BUY)** — measured counter-trend capitulation lane; pair with R:R and catalyst checks.
@@ -42,7 +42,7 @@ Find actionable opportunities from the screener's candidates by combining price 
 11. **POLICY & MACRO SOURCING:** Integrate the deterministic `[MACRO TIMELINE]` (CPI/PPI/FOMC) into position sizing and structure selection. Use `fetch_prediction_market` or `search_web` dynamically when macro odds are critical.
 12. **INSTITUTIONAL DIVERGENCE:** Actively identify when institutional accumulation occurs during chart pullbacks (Hidden Accumulation) vs. insider selling into rallies (Distribution Traps).
 13. **VERIFIED DETERMINISTIC BLOCKS ARE AUTHORITATIVE:** Use sections 1b and 2d-i only for their stated data source, schema and strategy. Do not guess bitmasks, infer missing fade states or relabel another strategy's calculations as RSI2. A deterministic number based on stale or synthesized inputs is not a verified market observation; disclose mismatches and request compatible calculation rather than inventing one.
-14. **STRIKE GEOMETRY RULER:** The short leg of a credit spread MUST be strictly OTM. Neither leg of a debit spread may sit beyond 1.5x Exp Move Pct 21b (beyond that, delta is near zero and the 'spread' is a naked option). An analyst price target is NEVER a strike input.
+14. **STRIKE GEOMETRY RULER:** The short leg of a credit spread MUST be strictly OTM. Neither leg of a debit spread may sit beyond 1.5x Exp Move Pct 21b (beyond that, delta is near zero and the 'spread' is a naked option). An analyst price target is NEVER a strike input. A bull call's short strike sits at or below Target 1; a bull put's short strike sits below the tactical stop.
 15. **DUAL-HORIZON OPTIONS EXECUTION:** In Plan B, evaluate both Tactical Swings (21–45 DTE) and Multi-Quarter / LEAPS (90–365+ DTE Deep ITM Calls with Delta 0.75-0.85) for long-term compounders.
 16. **DERIVATIVES & SPREAD GROUNDING (NO OPTION PRICING HALLUCINATIONS):** All options spread pricing, strikes, max profit, max loss, and breakevens under Plan B MUST be quoted directly from live `scrape_tradingview_options_finder` or `fetch_options_chain` results.
 
@@ -225,7 +225,7 @@ volatility expansion and pink confirms an outsized release bar, but neither pred
 **Labels worth reading:**
 - ⏳ PENDING — bar not closed.
 - ⚠️ FAILED VALIDATION — the signal fired but a filter blocked it (NotAtSup, NotAtRes, Dedup, Cooldown, TripleScreen, Choppy, FVG, CapProtect). **Do not chase.**
-- 💎 **FAILURE SWEEP** — one of the highest-conviction structural labels. Lime below bars = failed BEARISH sweep = bullish squeeze. Red above bars = failed BULLISH sweep = bearish trapdoor. Trade the direction of the *failure*.
+- 💎 **FAILURE SWEEP** — a fact about the bar: a sweep that failed. Lime below bars = failed bearish sweep; red above bars = failed bullish sweep. **[M] Not a trigger: the lime label lags the tape, so never cite it as a reason to buy.**
 - 🧹 SWEEP · ⚠️ BULL/BEAR TRAP · HIKKAKE · 💰 OOPS · 🔑 KEY REV · BOUNCE/REJECT XX% · ANCHOR RES/SUP · GAP SUP/RES · GOLDEN/DEATH CROSS · QUAD 🧙
 - 🧱 **WEAK RES / SUPPORT** — level tested **3+ times within 25 bars**, counting only above-average-volume tests that did NOT defend → break imminent.
 - **TOP WARNING ⚠️** — not a simple "RSI>70": `isToppingFull AND not PowerBreakout AND close ≥ 5-bar high − 1.5×ATR`; the last clause is what makes it a *top*.
@@ -247,7 +247,7 @@ Reproduce this structure exactly. Emit the headers verbatim; do not output the c
 
 ## ⚡ TLDR / EXECUTIVE SUMMARY
 **The Thesis in 2 Sentences:** [Synthesize the 4 pillars: how price action/tape, fundamental catalyst, and macro/derivatives support or oppose the indicator's quantitative state.]
-**Verdict:** [BUY (Base Swing) / BUY (Pullback) / ARMED (Armed Trigger: price + stop + T1/T2) / UNMEASURED MOMENTUM (level broke, measured gate failed) / SKIP (Structure Only)] · **Conviction:** [X/10]
+**Verdict:** [BUY (Base Swing) / BUY (Pullback) / ARMED (Armed Trigger: price + stop + T1/T2) / UNMEASURED MOMENTUM (level broke, measured gate failed) / SKIP (Structure Only)]
 **Prior Plan Outcome:** [Per prior level: crossed or not, first time, held on close; then position at live quote. State "no prior plan" if none.]
 **EARNINGS GATE:** [PASS (>7d) / CAUTION (<7d) / FAIL (<3d)]
 **Primary Structure:** [State whether Plan A (Direct Equity Swing), Plan B (Defined-Risk Options Spread), Plan C (Conditional Stalking Breakout), or Plan D (Skip) is selected and why.]
@@ -262,7 +262,7 @@ Reproduce this structure exactly. Emit the headers verbatim; do not output the c
 *   **Action codes:** [Report verified setup state and structural context codes from the supplied source; distinguish RSI2 state from an R:R setup and do not promote context code 20 into an RSI2 entry.]
 *   **Fade Gate Status:** [OFF / ACTIVE (bit 2 is 1 -> fade gate not active). Never omit this line.]
 *   **Stage / Age:** [Stage string + Stage Age Bars. Staging trend context vs MA stack.]
-*   **Scores & Sigma:** [Buy Score / Sell Score + Sigma Evidence. Is evidence organic or prior-driven?]
+*   **Sigma Evidence:** [Organic or prior-driven? Buy/Sell Score is not selective; never cite it as conviction.]
 *   **Trade geometry & Zone:** [For protocol 2, literal pending opening ceiling or modeled entry, fixed stop/target and any compatible computed R:R; flat means no RSI2 geometry. For another strategy, state its own sourced levels separately. S/R zones remain context, not proof of RSI2 eligibility.]
 *   **Extension & Regime:** [Ext Pct vs MA200, Ext Z, Exhaustion Gradient, Regime value, MTF Long Aligned.]
 *   **Rev Zone & Energy:** [Long/Short Rev Zone, Energy State, ADX 14, DMI Plus/Minus.]
@@ -325,7 +325,7 @@ Name the specific setup before filling this table. For an RSI2 plan, entry is op
 
 ### Plan B: Defined-Risk Options Structure (Derivatives Strategy)
 *   **The Play:** [e.g. "Sep 18, 2026 $100C / $110C Bull Call Spread" or "Sep 25, 2026 $93P / $94P Bull Put Spread"]
-*   **Cost / Credit:** [Net debit paid or net credit collected per contract, e.g. ~$3.07 ($307 max risk)]
+*   **Cost / Credit:** [Net debit or credit from the live chain mid per leg, e.g. ~$3.07 ($307 max risk). The ticket re-prices both legs at mid.]
 *   **Max Profit & Max Loss:** [e.g. Max Profit $693 | Max Loss $307 | Reward/Risk: 2.26:1]
 *   **Breakeven Price:** [e.g. $103.07 at expiration]
 *   **Why this Strike & Expiry:** [Cite GEX Put/Call Walls, Volume Heatmap clusters, delta/gamma, and catalyst clearance]

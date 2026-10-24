@@ -314,6 +314,7 @@ def build_debate_payload(
     earnings_fact_block: str,
     preloaded_block: str,
     active_pos_block: str = "",
+    darkpool_block: str = "",
 ) -> str:
     return f"""
         RESEARCH DATE: {date_str}
@@ -344,6 +345,8 @@ def build_debate_payload(
 
         {gex_block}
 
+        {darkpool_block}
+
         --- 2d. ENGINE FLAGS ---
         {flags_block}
         {engine_math_block}
@@ -353,6 +356,7 @@ def build_debate_payload(
 
         {preloaded_block}
         """
+
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +392,7 @@ def build_user_prompt(
     active_pos_block: str = "",
     stale: bool = False,
     prior_plan_outcome_block: str = "",
+    darkpool_block: str = "",
 ) -> str:
     prior_plan_section = (
         f"""
@@ -446,6 +451,8 @@ Data Window below; never conclude a level was untriggered from the spot price al
 
         --- 2c-ii. MACRO GROUNDING (Google Search) ---
         {macro_grounded_block}
+
+        {darkpool_block}
 
         --- 2d. ENGINE FLAGS (deterministic) ---
         {flags_block}

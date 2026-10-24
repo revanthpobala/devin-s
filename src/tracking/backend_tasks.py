@@ -1,4 +1,5 @@
-"""Scheduled jobs run by the detached backend: daily options-chain log and daily database backups.
+"""Scheduled jobs run by the detached backend: daily options-chain log, database backups, universe sweep, and the
+nightly suggestion scorer (forward record).
 
 The chain log is irreplaceable history (there is no options data in the corpus), so it starts now and runs
 once per trading day after the close. Rows are the raw quotes the premium-selling question needs:
@@ -190,6 +191,9 @@ def due_jobs(now_et: datetime, ctl: Dict[str, Any]) -> List[str]:
     sweep_retry = now_et.timestamp() - float(ctl.get("last_sweep_attempt_ts") or 0) > 3600
     if after_close and ctl.get("last_sweep_date") != day and sweep_retry:
         jobs.append("sweep")
+    score_retry = now_et.timestamp() - float(ctl.get("last_score_attempt_ts") or 0) > 3600
+    if after_close and ctl.get("last_sweep_date") == day and ctl.get("last_score_date") != day and score_retry:
+        jobs.append("score")
     return jobs
 
 
@@ -216,6 +220,13 @@ def tick() -> None:
                     bc.update(last_sweep_attempt_ts=time.time())
                     res = universe_sweep.run()
                     bc.update(last_sweep_date=day if res["with_bars"] else None)
+                elif job == "score":
+                    from src.tracking.suggestion_scorer import evaluate_all_suggestions
+
+                    bc.update(last_score_attempt_ts=time.time())
+                    out = evaluate_all_suggestions()
+                    res = {"scored": out["scored"], "errors": len(out["errors"])}
+                    bc.update(last_score_date=day, last_score=res)
                 elif job == "thesis":
                     from src.tracking import thesis_ledger
 

@@ -2092,7 +2092,8 @@ window.AppDesk = {
                 Chase cap ${esc(t.max_chase_price)} · Stop ${esc(t.stop)} · T1 ${esc(t.target_1)}${t.target_2 ? ' · T2 ' + esc(t.target_2) : ''} · R:R ${esc(t.rr_at_limit)} · Risk $${esc(t.risk_usd)}
               </div>
               <div style="font-size:11px; margin-top:4px;">Good til ${esc(t.good_til)} · Cancel if ${esc(t.cancel_if)}${t.earnings_stance ? ' · Earnings ' + esc(t.earnings_stance) : ''}</div>
-              ${t.option_alternative && t.option_alternative.cost_usd ? `<div style="font-size:11px; margin-top:4px;">Option: ${esc(t.option_alternative.structure)} ${esc(t.option_alternative.expiration)} ${esc(t.option_alternative.long_strike)}${t.option_alternative.short_strike ? '/' + esc(t.option_alternative.short_strike) : ''} @ ${esc(t.option_alternative.mid_debit)} ($${esc(t.option_alternative.cost_usd)})</div>` : ''}
+              ${t.bounce_target ? `<div style="font-size:11px; margin-top:4px;">${esc(t.play)}: bounce to ${esc(t.bounce_target)} by ${esc(t.exit_by)} (${esc(t.horizon_bars)} bars)</div>` : ''}
+              ${t.option_alternative && t.option_alternative.cost_usd ? `<div style="font-size:11px; margin-top:4px;">Option: ${esc(t.option_alternative.structure)} ${esc(t.option_alternative.expiration)} ${esc(t.option_alternative.long_strike)}${t.option_alternative.short_strike ? '/' + esc(t.option_alternative.short_strike) : ''} @ ${esc(t.option_alternative.mid_debit != null ? t.option_alternative.mid_debit : 'credit ' + t.option_alternative.mid_credit)} (max loss $${esc(t.option_alternative.cost_usd)}, BE ${esc(t.option_alternative.breakeven)}, R@T1 ${esc(t.option_alternative.r_at_t1)})</div>` : (t.option_dropped ? `<div style="font-size:11px; margin-top:4px; color:#999;">Option dropped: ${esc(t.option_dropped)}</div>` : '')}
             </div>`).join('') : '<div class="station-card" style="padding:16px;">No open tickets.</div>'}</div>`;
         }
 
