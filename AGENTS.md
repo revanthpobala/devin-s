@@ -592,3 +592,10 @@ One-off experiments and targeted tests (not part of the daily pipeline). Highlig
 pytest
 ```
 
+
+## Off-exchange / dark-pool tape (`src/data/darkpool.py`) — descriptive only
+
+Measured Oct 2026: inferred buy%, block direction and volume clusters have no era- or ticker-half-stable edge (3,190 + 876 intraday events; 35k R:R events x FINRA off-exchange share / short-volume ratio 2018-2026). Do not arm alerts, scores or stops from them; Tastytrade alert sync is disabled. Window is the last <=10k regular-session trades (minutes reported in `window_minutes`), odd lots and non-price conditions excluded, direction by NBBO quote rule with tick fallback, midpoint unclassified. Each fetch is recorded in `data/darkpool_ledger.jsonl`. Full evidence and the reproduction script live in the Pine repo (`AGENTS.md`, `data-windows/scripts/offexchange_edge.py`).
+
+## Net dealer GEX — descriptive only (`src/data/gex.py`)
+Snapshots append to `data/gex_ledger.jsonl` (one per ticker per 30 min; `GEX_NO_LEDGER` disables) for later scoring. `options_skew_gex_plugin` now takes flip/regime from here (None/UNKNOWN when unavailable). Calls +, puts − (assumed dealer sign), BS gamma from each contract's IV, flip = spot where net GEX crosses zero (±10%). Scopes: 0-1 DTE and ≤45 DTE. Source Schwab chain, yfinance fallback. Unmeasured; context line in the 0DTE prompt, never a gate. `format_gex_block` uses it; old OI walls remain as fallback, relabelled.

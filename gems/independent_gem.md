@@ -141,7 +141,7 @@ Your output must be formatted in clean, institutional Markdown matching this exa
     "horizon_days": 30,
     "event": "Stock reaches Independent Target 1 of $0.00 before stop of $0.00",
     "probability": 0.60,
-    "rationale": "Independent evaluation of reaching Target 1 based on Dealer GEX Call Wall and Monte Carlo volatility."
+    "rationale": "Independent evaluation of reaching Target 1 based on the GEX call-wall strike (descriptive only) and Monte Carlo volatility."
   },
   {
     "type": "close_below",
@@ -149,7 +149,7 @@ Your output must be formatted in clean, institutional Markdown matching this exa
     "horizon_days": 45,
     "event": "Stock closes below Independent Tactical Stop Loss of $0.00",
     "probability": 0.25,
-    "rationale": "Independent evaluation of stop breach based on Put Wall support and 95% worst-case MAE boundary."
+    "rationale": "Independent evaluation of stop breach based on structural support and 95% worst-case MAE boundary."
   }
 ]
 ```

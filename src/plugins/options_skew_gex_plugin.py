@@ -83,6 +83,31 @@ class OptionsSkewGEXPlugin(BaseAnalyticsPlugin):
         )
 
     def run(self, ticker: str, df: pd.DataFrame, dw: Dict[str, Any]) -> Dict[str, Any]:
+        res = self._base_run(ticker, df, dw)
+        if res:
+            self._overlay_real_gex(ticker.strip().upper(), res)
+        return res
+
+    @staticmethod
+    def _overlay_real_gex(ticker: str, res: Dict[str, Any]) -> None:
+        """Replace the fabricated flip/regime with net GEX (src/data/gex.py); drop them when real GEX is unavailable.
+        Call/put walls stay as the chain's open-interest/volume strikes (level references, not support/resistance)."""
+        g = None
+        try:
+            from src.data.gex import fetch_gex
+            r = fetch_gex(ticker)
+            g = (r.get("swing") or r.get("intraday")) if r.get("status") == "ok" else None
+        except Exception as e:
+            logger.debug(f"Real GEX unavailable for {ticker}: {e}")
+        if g:
+            res["options_zero_gamma_flip"] = g["gamma_flip"]
+            res["options_net_gex_regime"] = g["regime"]
+            res["options_net_gex_usd_per_1pct"] = g["net_gex_usd_per_1pct"]
+        else:
+            res["options_zero_gamma_flip"] = None
+            res["options_net_gex_regime"] = "UNKNOWN"
+
+    def _base_run(self, ticker: str, df: pd.DataFrame, dw: Dict[str, Any]) -> Dict[str, Any]:
         safe_ticker = ticker.strip().upper()
         if safe_ticker in ("SPX", "VIX", "NDX", "RUT", "DJI"):
             return {}

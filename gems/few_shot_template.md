@@ -62,7 +62,7 @@
 * **Plan B-1: High-IV Credit Spread (Primary only when IV Rank > 70% AND short strike ≥ 1.25× Expected Move AND outside the major GEX Put/Call wall):**
   * **Structure:** [Bull Put Spread] [Short Strike] / [Long Strike] ([DTE] DTE).
   * **Net Credit:** $[X.XX] per contract. Max Profit: $[XXX] | Max Loss: $[XXX] | Break-Even: $[XXX.XX].
-  * **Edge:** Sits below structural support shelf ($[SupportShelf]) at ≥1.25× Expected Move, outside the dealer pin corridor; captures rich IV without needing an immediate stock rally. If the short strike is closer than 1.25× EM or inside a GEX wall, defer this structure and lead with Plan A (equity) or a debit by side.
+  * **Edge:** Sits below structural support shelf ($[SupportShelf]) at ≥1.25× Expected Move, outside the GEX wall strikes; captures rich IV without needing an immediate stock rally. If the short strike is closer than 1.25× EM or inside a GEX wall, defer this structure and lead with Plan A (equity) or a debit by side.
 * **Plan B-2: Multi-Quarter LEAPS (90–365+ DTE):**
   * **Structure:** [Deep ITM Call Delta 0.75-0.85] [Strike]C ([DTE] DTE).
   * **Assessment:** [Deploy if IV Rank is reasonable; if IV Rank >70%, explicitly defer or structure as debit spread to mitigate extrinsic crush].

@@ -790,10 +790,15 @@ def fetch_options_chain_tool(
     return res
 
 
-def format_gex_block(ticker: str) -> str:
-    """Compute and format a clean Options Gamma Exposure (GEX) & Open Interest
-    wall summary for the deep-research prompt. Identifies Put Walls (dealer support),
-    Call Walls (dealer resistance), and Put/Call positioning."""
+def format_gex_block(ticker: str, intraday: bool = True) -> str:
+    """Net dealer GEX block (src/data/gex.py); falls back to open-interest walls when no IV/OI chain."""
+    try:
+        from src.data.gex import format_gex_block as _net_gex_block
+        net = _net_gex_block(ticker, intraday=intraday)
+        if net:
+            return net
+    except Exception as e:
+        logger.debug(f"[{ticker}] net GEX unavailable: {e}")
     try:
         import yfinance as yf
         import pandas as pd
@@ -828,21 +833,21 @@ def format_gex_block(ticker: str) -> str:
         pcr = round(total_put_oi / max(total_call_oi, 1), 2)
 
         lines = [
-            f"--- OPTIONS POSITIONING & GAMMA WALLS (GEX) FOR {ticker} ---",
+            f"--- OPEN-INTEREST WALLS FOR {ticker} (front 4 expiries; not gamma-weighted, descriptive only) ---",
             f"• Put/Call Open Interest Ratio: {pcr}",
-            "• Major Put Walls (Dealer Support / Floor Pins):",
+            "• Largest put open interest:",
         ]
         for s, oi in p_walls.items():
             lines.append(f"  - Strike ${s:.2f}: {int(oi):,} open contracts")
 
-        lines.append("• Major Call Walls (Dealer Resistance / Ceiling Pins):")
+        lines.append("• Largest call open interest:")
         for s, oi in c_walls.items():
             lines.append(f"  - Strike ${s:.2f}: {int(oi):,} open contracts")
 
         top_put = p_walls.index[0] if len(p_walls) > 0 else "N/A"
         top_call = c_walls.index[0] if len(c_walls) > 0 else "N/A"
         lines.append(
-            f"• Dealer Expected Pinning Corridor: ${top_put} (Put Floor) to ${top_call} (Call Ceiling)"
+            f"• Largest-OI strikes: ${top_put} (put) and ${top_call} (call)"
         )
         return "\n".join(lines)
     except Exception as e:

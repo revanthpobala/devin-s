@@ -100,7 +100,7 @@ def _load_or_fetch_gex(ticker: str, gex_path: Path, tdir: Path, date_str: str) -
             pass
 
     try:
-        result = options_client.format_gex_block(ticker) or ""
+        result = options_client.format_gex_block(ticker, intraday=False) or ""
         if result:
             safe_path = tdir / f"{ticker.replace(':', '_')}_gex.json"
             safe_path.write_text(

@@ -8,6 +8,25 @@ import pytest
 from src.plugins.options_skew_gex_plugin import OptionsSkewGEXPlugin
 
 
+@pytest.fixture(autouse=True)
+def _no_real_gex(monkeypatch):
+    monkeypatch.setattr("src.data.gex.fetch_gex", lambda t, force_refresh=False: {"status": "error"})
+
+
+def test_real_gex_overlay(monkeypatch):
+    g = {"gamma_flip": 99.5, "regime": "SHORT_GAMMA", "net_gex_usd_per_1pct": -5}
+    monkeypatch.setattr("src.data.gex.fetch_gex", lambda t, force_refresh=False: {"status": "ok", "swing": g, "intraday": None})
+    res = {"options_zero_gamma_flip": 123.0, "options_net_gex_regime": "LONG_GAMMA"}
+    OptionsSkewGEXPlugin._overlay_real_gex("X", res)
+    assert res["options_zero_gamma_flip"] == 99.5 and res["options_net_gex_regime"] == "SHORT_GAMMA"
+
+
+def test_fake_flip_dropped_without_real_gex():
+    res = {"options_zero_gamma_flip": 123.0, "options_net_gex_regime": "LONG_GAMMA"}
+    OptionsSkewGEXPlugin._overlay_real_gex("X", res)
+    assert res["options_zero_gamma_flip"] is None and res["options_net_gex_regime"] == "UNKNOWN"
+
+
 def test_options_skew_gex_index_skip():
     plugin = OptionsSkewGEXPlugin()
     df = pd.DataFrame({"close": [5000.0, 5010.0]})

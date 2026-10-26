@@ -23,6 +23,10 @@ def test_build_live_market_context_mocked():
     with patch("src.tracking.alert_evaluator.TastytradeClient") as mock_tt, \
          patch("src.tracking.alert_evaluator.search_web") as mock_search, \
          patch("src.plugins.order_flow_plugin.read_tape", return_value={"verdict": "bullish"}), \
+         patch("src.data.darkpool.fetch_darkpool_data", return_value={
+             "status": "ok", "dp_trades_count": 10, "window_minutes": 7.5, "dp_share_of_tape_pct": 50.0,
+             "dp_buy_pct": 55.0, "dp_classified_pct": 80.0, "direction_method": "quote",
+             "major_shelves": [{"price": 150.0}]}), \
          patch("src.tracking.alert_evaluator.fetch_options_chain_tool") as mock_options:
         
         mock_tt.return_value.get_market_metrics.return_value = [{
@@ -38,6 +42,7 @@ def test_build_live_market_context_mocked():
         assert ctx["expected_earnings"] == "2026-11-15"
         assert len(ctx["news"]) == 1
         assert "150" in ctx["options_snippet"]
+        assert "top volume cluster 150.0" in ctx["offexchange"]
 
 
 def test_evaluate_alert_payload_daily_mocked(temp_db):

@@ -108,6 +108,8 @@ Do a FAST lookup, anchored to the date/clock on the chart. Use `search_web` / `r
 - "[date] OPEX" / triple-witching / monthly OpEx → gamma pin risk.
 
 **B) Tape / breaking news:**
+- The "Off-exchange tape" line in the context is descriptive only (inferred buy%, volume cluster, last few minutes). It has no measured edge: never use it to take, size or veto a trade.
+- The "Dealer gamma" line (net GEX per 1%, flip, wall strikes) is descriptive and unmeasured; dealer sign is assumed. Wall strikes are reference levels, not support or resistance claims. Never use it to take, size or veto a trade.
 - "SPY OR QQQ today [date]" / "site:reuters.com markets today" / "stock market today live" → what's moving the index right now (Fed speakers, geopolitics, yields, megacap headline).
 - For SPX/SPY/QQQ the catalyst is usually **macro or a megacap (AAPL/NVDA/MSFT/AMZN/GOOGL/META) headline**, not the index itself.
 

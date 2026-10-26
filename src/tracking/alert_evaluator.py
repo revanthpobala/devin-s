@@ -230,6 +230,36 @@ def build_live_market_context(symbol: str) -> Dict[str, Any]:
         logger.debug(f"Tape fetch bypassed for {symbol}: {e}")
         context["tape"] = {"verdict": "unavailable"}
 
+    # 5-6. Off-exchange tape and net dealer gamma: descriptive context only, no measured edge
+    # (src/data/darkpool.py, src/data/gex.py). Run concurrently so latency is max, not sum.
+    context["offexchange"] = "unavailable"
+    context["gex"] = "unavailable"
+    try:
+        import concurrent.futures as _cf
+        from src.data.darkpool import fetch_darkpool_data
+        from src.data.gex import fetch_gex, gex_summary_line
+        _ex = _cf.ThreadPoolExecutor(max_workers=2)
+        f_dp = _ex.submit(fetch_darkpool_data, symbol)
+        f_gx = _ex.submit(fetch_gex, symbol)
+        try:
+            dp = f_dp.result(timeout=4)
+            if dp.get("status") == "ok" and dp.get("dp_trades_count"):
+                top = (dp.get("major_shelves") or [{}])[0].get("price")
+                context["offexchange"] = (
+                    f"last {dp.get('window_minutes')} min: {dp.get('dp_share_of_tape_pct')}% of volume off-exchange, "
+                    f"{dp.get('dp_buy_pct')}% buy over {dp.get('dp_classified_pct')}% classified ({dp.get('direction_method')} rule), "
+                    f"top volume cluster {top if top is not None else 'none'}"
+                )
+        except Exception as e:
+            logger.debug(f"Off-exchange tape bypassed for {symbol}: {e}")
+        try:
+            context["gex"] = gex_summary_line(f_gx.result(timeout=2))
+        except Exception as e:
+            logger.debug(f"GEX bypassed for {symbol}: {e}")
+        _ex.shutdown(wait=False)
+    except Exception as e:
+        logger.debug(f"Context extras bypassed for {symbol}: {e}")
+
     return context
 
 
@@ -675,6 +705,8 @@ def evaluate_alert_payload(
 - Invalidation (Wrong If): {alert.get('wrong_if') or payload.get('wrong_if') or '--'}{exit_context_str}
 - Live Volatility (Tastytrade): {json.dumps(live_ctx.get('volatility'))}
 - Live Tape (1m order flow): {live_ctx.get('tape', {}).get('verdict', 'unavailable')}
+- Off-exchange tape (context only, no measured edge, never a gate): {live_ctx.get('offexchange', 'unavailable')}
+- Dealer gamma (context only, assumed dealer sign, unmeasured, never a gate): {live_ctx.get('gex', 'unavailable')}
 - Recent Breaking News:
 {chr(10).join(live_ctx.get('news', [])[:2]) or 'None reported'}
 
