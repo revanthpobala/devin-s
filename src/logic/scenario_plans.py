@@ -135,8 +135,10 @@ def normalize(s: Dict[str, Any], spot: float, atr: float, em_pct: float, today: 
     if entry == "LIMIT" and stop < zlo and (tgt - trig) / (trig - stop) < floor:
         # The idea is fine, the price is not: the trade starts where R:R reaches the floor (the same repair the plan gate makes).
         old, t = trig, trig
-        for _ in range(5):
-            t = round((tgt + floor * stop) / (1 + floor), 2)
+        # Lowering the trigger lowers the stop cap, which lowers the stop, which lowers the trigger again: it converges
+        # at a 2/3 rate, so iterate to the fixed point and keep a cent of margin against rounding below the floor.
+        for _ in range(80):
+            t = math.floor(((tgt + (floor + 0.01) * stop) / (1 + floor + 0.01)) * 100) / 100
             zl = round(t - 0.25 * atr, 2)
             if stop <= _stop_cap(zl):
                 break

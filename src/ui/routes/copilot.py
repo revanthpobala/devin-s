@@ -515,6 +515,12 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     turn += 1
                     tool_calls_acc = {}
                     turn_content_chunks = []
+                    turn_reasoning_chunks = []
+                    stream_t0 = time.monotonic()
+                    first_token_t = None
+                    last_token_t = None
+                    busy_notice_sent = False
+                    generating_notice_sent = False
 
                     # Force synthesis on final allowed turn
                     turn_tools_enabled = tools_enabled and (turn < max_turns)
@@ -540,6 +546,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     }
                     if not is_openrouter:
                         create_kwargs["extra_body"] = {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}}
+                    else:
+                        create_kwargs["extra_body"] = {"include_reasoning": False}
 
                     if turn_tools_enabled:
                         create_kwargs["tools"] = TOOLS
@@ -572,7 +580,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             busy_msg = (
                                 "⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees."
                                 if not is_openrouter
-                                else "⏳ Waiting for response from OpenRouter..."
+                                else f"⏳ Waiting for response from OpenRouter ({model_name})..."
                             )
                             yield f"data: {json.dumps({'status': 'slot_notice', 'notice': busy_msg})}\n\n"
                         else:
@@ -608,10 +616,20 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                                 or (not waiting_on_first and idle_for >= CHAT_STALL_BUSY_S)
                             ):
                                 busy_notice_sent = True
-                                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees.'})}\n\n"
+                                busy_msg = (
+                                    "⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees."
+                                    if not is_openrouter
+                                    else f"⏳ Waiting for response from OpenRouter ({model_name})..."
+                                )
+                                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': busy_msg})}\n\n"
                             if not full_answer_chunks and not generating_notice_sent:
                                 generating_notice_sent = True
-                                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⚡ Generating response on GPU Slot 0 (shared compute)...'})}\n\n"
+                                gen_msg = (
+                                    f"⚡ Generating response via OpenRouter ({model_name})..."
+                                    if is_openrouter
+                                    else "⚡ Generating response on GPU Slot 0 (shared compute)..."
+                                )
+                                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': gen_msg})}\n\n"
                             else:
                                 yield ": ping\n\n"
                             continue
@@ -627,17 +645,26 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             break
                         if chunk.choices and len(chunk.choices) > 0:
                             delta = chunk.choices[0].delta
-                            if hasattr(delta, "content") and delta.content:
+                            delta_content = getattr(delta, "content", None)
+                            if delta_content:
                                 now_t = time.monotonic()
                                 if first_token_t is None:
                                     first_token_t = now_t
                                 last_token_t = now_t
                                 busy_notice_sent = False
-                                turn_content_chunks.append(delta.content)
+                                turn_content_chunks.append(delta_content)
                                 # Suppress streaming raw <tool_call> XML markup to client
-                                if "<tool_call>" not in delta.content and "<function=" not in delta.content:
-                                    full_answer_chunks.append(delta.content)
-                                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                                if "<tool_call>" not in delta_content and "<function=" not in delta_content:
+                                    full_answer_chunks.append(delta_content)
+                                    yield f"data: {json.dumps({'token': delta_content})}\n\n"
+                            reasoning_delta = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                            if reasoning_delta:
+                                now_t = time.monotonic()
+                                if first_token_t is None:
+                                    first_token_t = now_t
+                                last_token_t = now_t
+                                busy_notice_sent = False
+                                turn_reasoning_chunks.append(reasoning_delta)
                             if hasattr(delta, "tool_calls") and delta.tool_calls:
                                 for tc in delta.tool_calls:
                                     idx = tc.index
@@ -677,6 +704,11 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
 
                     if not tool_calls_acc:
                         # Generation finished; no further tools needed
+                        if not turn_content_chunks and turn_reasoning_chunks:
+                            reasoning_fallback = "".join(turn_reasoning_chunks).strip()
+                            if reasoning_fallback and "<tool_call>" not in reasoning_fallback:
+                                full_answer_chunks.append(reasoning_fallback)
+                                yield f"data: {json.dumps({'token': reasoning_fallback})}\n\n"
                         break
 
                     # Append assistant message with emitted tool calls

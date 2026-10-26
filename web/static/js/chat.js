@@ -1776,7 +1776,7 @@ window.AppChat = {
 
       const assistantBubble = document.createElement('div');
       assistantBubble.className = 'rc-msg rc-msg-assistant';
-      this._flushRcStreamRender(assistantBubble, 'Connecting to local model stream...', chatHeaderTitle, false);
+      this._flushRcStreamRender(assistantBubble, 'Connecting to AI Copilot...', chatHeaderTitle, false);
       if (thread) {
         thread.appendChild(assistantBubble);
         thread.scrollTop = thread.scrollHeight;
@@ -1850,7 +1850,7 @@ window.AppChat = {
           if (window.AppState.revChatCrossTurns.length > 8) window.AppState.revChatCrossTurns.shift();
         } else {
           // Stream ended with no content - surface the failure visibly
-          const emptyMsg = '⚠️ **No response received from LLM.** The server may have closed the connection early, hit an error, or the model is still loading. Check that the LLM server on port 8000 started correctly and try again.';
+          const emptyMsg = '⚠️ **No response received from LLM.** The server may have closed the connection early or timed out. If using local inference, verify port 8000 is running; if using OpenRouter, verify your API key and connection.';
           this._flushRcStreamRender(assistantBubble, emptyMsg, chatHeaderTitle, true);
           window.AppState.revChatHistory.push({ role: 'assistant', content: emptyMsg });
         }
@@ -2194,7 +2194,7 @@ window.AppChat = {
         abortController: abortController,
         isStreaming: true,
         fullAnswer: '',
-        statusText: `Connecting to local model stream...`,
+        statusText: `Connecting to AI Copilot...`,
         sessionId: this._modalSessionId
       };
       if (!window.AppState.modalStreams) window.AppState.modalStreams = {};

@@ -28,8 +28,10 @@ def test_normalize_widens_tight_stop_and_keeps_rr_floor():
     assert sc["stop"] == 90
     sc, why = sp.normalize({"kind": "PULLBACK", "trigger": 95, "stop": 90, "target": 130}, 100, 2.0, 8.0, TODAY, None)
     assert why is None and sc["target"] == 112 and any("expected move" in n for n in sc["notes"])
-    sc, why = sp.normalize({"kind": "PULLBACK", "trigger": 97, "stop": 92, "target": 104}, 100, 2.0, 8.0, TODAY, None)
-    assert why is None and sc["trigger"] == 96.0 and sc["rr_at_trigger"] >= 2 and any("lowered" in n for n in sc["notes"])
+    sc, why = sp.normalize({"kind": "PULLBACK", "trigger": 97, "stop": 92, "target": 105}, 100, 2.0, 8.0, TODAY, None)
+    assert why is None and sc["trigger"] == 96.31 and sc["rr_at_trigger"] >= 2 and any("lowered" in n for n in sc["notes"])
+    sc, why = sp.normalize({"kind": "PULLBACK", "trigger": 96.5, "stop": 95.5, "target": 100.2}, 100, 2.0, 8.0, TODAY, None)
+    assert why is None and sc["rr_at_trigger"] >= 2 and sc["stop"] <= round(sc["zone_low"] - 1.4, 2)
     _, why = sp.normalize({"kind": "BREAKOUT", "trigger": 104, "stop": 100, "target": 110}, 100, 2.0, 8.0, TODAY, None)
     assert "R:R" in why
     assert sc["rr_at_trigger"] >= 2 and sc["p_touch_pct"] is not None and sc["window_end"] > str(TODAY)
