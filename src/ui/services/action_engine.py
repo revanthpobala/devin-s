@@ -353,21 +353,29 @@ def get_event_radar(movers: Optional[List[Dict[str, Any]]] = None,
 
 
 def _mover_cause(sym: str) -> str:
-    """Best-effort reason for a move: earnings date, or a headline."""
-    try:
-        from src.clients.news_client import get_ticker_news
-        res = get_ticker_news(sym, days=2) or {}
-        head = res.get("catalyst") or res.get("headline") or ""
-        if head and "No recent news" not in str(head):
-            return str(head)[:150]
-    except Exception as e:
-        logger.debug(f"Mover cause news failed for {sym}: {e}")
+    """Best-effort reason for a move: earnings date, or a headline.
+
+    Must remain fast and lightweight (<0.1s) without running synchronous LLM sentiment
+    inference loops across multiple movers.
+    """
     try:
         days = _days_to_earnings(sym)
         if days is not None and days <= 2:
             return f"Earnings within {days} day(s) — event-driven move."
     except Exception:
         pass
+
+    try:
+        from src.clients.finnhub_client import get_company_news
+        arts = get_company_news(sym, days=2)
+        if arts and isinstance(arts, list):
+            for art in arts:
+                head = (art.get("headline") or "").strip()
+                if head and "No recent news" not in head:
+                    return head[:150]
+    except Exception as e:
+        logger.debug(f"Mover cause news failed for {sym}: {e}")
+
     return "No single catalyst captured — treat as flow/liquidity driven."
 
 

@@ -183,6 +183,32 @@ class TestCSVAdapter(unittest.TestCase):
         self.assertEqual(verdict["long_plan"]["stop"], 233.702913)
         self.assertEqual(verdict["long_plan"]["target"], 282.594174)
 
+    def test_young_stock_allowed_with_less_than_260_rows(self):
+        """A verified young stock / IPO with 113 rows should parse successfully without error."""
+        df = _make_dummy_df(nrows=113)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "CBRS_datawindow.csv")
+            json_path = os.path.join(tmpdir, "CBRS_datawindow.json")
+            df.to_csv(csv_path, index=False)
+
+            with patch("src.data.csv_adapter.is_young_stock", return_value=True):
+                snapshot, hist_df, realvol_10d, ret_10d = csv_to_datawindow(csv_path, json_path, ticker="CBRS")
+                self.assertEqual(len(hist_df), 113)
+                self.assertIsNotNone(snapshot)
+
+    def test_mature_stock_rejected_with_less_than_260_rows(self):
+        """A mature stock with 113 rows should raise ValueError: expected at least 260."""
+        df = _make_dummy_df(nrows=113)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = os.path.join(tmpdir, "AAPL_datawindow.csv")
+            json_path = os.path.join(tmpdir, "AAPL_datawindow.json")
+            df.to_csv(csv_path, index=False)
+
+            with patch("src.data.csv_adapter.is_young_stock", return_value=False):
+                with self.assertRaises(ValueError) as ctx:
+                    csv_to_datawindow(csv_path, json_path, ticker="AAPL")
+                self.assertIn("expected at least 260", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

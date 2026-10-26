@@ -156,3 +156,12 @@ def test_daemon_runs_llm_when_gate_passes(alerts_db):
         d._process_batch()
     assert ev.call_count == 3
     assert d.total_skipped == 0
+
+
+def test_deferred_zero_priced_options_plan_does_not_reject_share_plan():
+    from src.logic.level_validation import validate_levels
+
+    plan = {"entry_type": "LIMIT", "entry_zone_low": 71.0, "entry_zone_high": 71.6, "tactical_stop": 69.3, "target_1": 76.2,
+            "options_plan": {"actionable": False, "structure": "BULL_CALL_SPREAD", "max_loss": 0.0, "max_profit": 0.0}}
+    _, reasons = validate_levels(plan, {"close": 72.0}, "LONG", ticker="T", date_str="2026-10-25")
+    assert not any("options geometry" in r for r in reasons)

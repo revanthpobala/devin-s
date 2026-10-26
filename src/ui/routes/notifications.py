@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.tracking import notification_center as nc
-from src.tracking.trust_report import build_trust_report, load_rows
+from src.tracking.trust_report import build_trust_report, component_scorecard, load_component_rows, load_rows
 
 router = APIRouter(tags=["notifications"])
 
@@ -105,6 +105,12 @@ def trust():
 def _build_trust():
     try:
         rep = build_trust_report(load_rows())
+        try:
+            from src.tracking.counterfactual import policy_report
+
+            rep["components"] = {"scorecard": component_scorecard(load_component_rows()), "entry_policy": policy_report()}
+        except Exception as e_comp:
+            rep["components"] = {"error": str(e_comp)}
         try:
             from src.tracking.cc_postmortem import summary as cc_summary
 

@@ -843,6 +843,22 @@ def run_data_window_filter(
     if is_proto2 and f.get("stage") is None:
         f["stage"] = 1.0  # default to Stage 1 basing for Protocol 2 setups without legacy stage
 
+    # Young stock / IPO fallback: if MA200 or Weinstein MA150 don't exist yet because stock has < 200 bars,
+    # proxy with MA50 so young setups are not falsely cut as 'bad_data'.
+    baseline_ma = f.get("ma50") or f.get("ma20")
+    if baseline_ma is not None:
+        if f.get("ma50") is None:
+            f["ma50"] = baseline_ma
+        if f.get("ma200") is None:
+            f["ma200"] = baseline_ma
+        if f.get("weinstein") is None:
+            f["weinstein"] = baseline_ma
+        if f.get("ext_pct") is None and f.get("price"):
+            try:
+                f["ext_pct"] = (float(f["price"]) - float(baseline_ma)) / float(baseline_ma) * 100.0
+            except Exception:
+                pass
+
     core_fields_to_check = [fld for fld in _CORE_FIELDS if not (is_proto2 and fld == "stage")]
     if any(f.get(field) is None for field in core_fields_to_check):
         logger.info(f"[{ticker}] Data Window pre-filter: CUT (bad_data) — missing core field")

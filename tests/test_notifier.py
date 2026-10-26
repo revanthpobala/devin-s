@@ -193,7 +193,7 @@ def test_info_alerts_collapse_into_one_group_but_warns_stay_single():
     from src.tracking.notifier_rules import watch_alert_events
     rows = [{"id": i, "ticker": f"T{i}", "date": "2026-10-14", "trigger_type": "ZONE_APPROACH", "message": f"[T{i}] near", "spot_price": 10}
             for i in range(5)]
-    rows.append({"id": 9, "ticker": "AMZN", "date": "2026-10-14", "trigger_type": "ZONE_TOUCH", "message": "[AMZN] touch", "spot_price": 247})
+    rows.append({"id": 9, "ticker": "AMZN", "date": "2026-10-14", "trigger_type": "ZONE_TOUCH", "message": "[AMZN] touch, R:R at market 3.0", "spot_price": 247})
     ev = watch_alert_events(rows)
     assert len(ev) == 2
     grp = [e for e in ev if e["ticker"] is None][0]
@@ -222,7 +222,7 @@ def test_watch_alerts_carry_a_verdict():
     ev = {e["ticker"]: e for e in watch_alert_events(rows)}
     assert "LLY" not in ev
     assert ev["MMSI"]["title"].startswith("ACT MMSI") and ev["MMSI"]["body"].startswith("ACT:") and "R:R 18.49" in ev["MMSI"]["body"]
-    assert ev["PSX"]["title"].startswith("IGNORE PSX")
+    assert "PSX" not in ev
 
 
 def test_spread_alerts_on_net_loss_not_per_leg():
@@ -304,3 +304,59 @@ def test_notification_delete(tmp_path, monkeypatch):
     nc.add("K", "INFO", "b", dedupe_key="b")
     first = nc.list_recent()[-1]["id"]
     assert nc.delete([first]) == 1 and len(nc.list_recent()) == 1
+
+
+def test_zone_touch_acts_only_in_zone_at_green_rr():
+    from src.tracking.notifier_rules import watch_alert_events
+
+    def row(i, t, msg):
+        return {"id": i, "trigger_type": "ZONE_TOUCH", "ticker": t, "date": "d", "spot_price": 10.0, "message": msg}
+    rows = [row(1, "IN", "[IN] Touch #1 of tracked zone $9.50-$10.50 (named d) at $10.00. R:R at market 3.1 -> IN BUY 100 LIMIT 10.5"),
+            row(2, "NEAR", "[NEAR] Touch #1 of tracked zone $10.50-$11.00 (named d) at $10.00. R:R at market 9.0"),
+            row(3, "YEL", "[YEL] Touch #1 of tracked zone $9.50-$10.50 (named d) at $10.00. R:R at market 1.7")]
+    ev = {e["ticker"]: e for e in watch_alert_events(rows)}
+    assert ev["IN"]["title"].startswith("ACT IN") and ev["IN"]["push"] == "ENTRY" and "IN BUY 100 LIMIT 10.5" in ev["IN"]["body"]
+    assert ev["NEAR"]["title"].startswith("CHECK NEAR") and ev["NEAR"]["severity"] == "INFO" and "push" not in ev["NEAR"]
+    assert ev["YEL"]["title"].startswith("CHECK YEL")
+
+
+def test_noise_is_silent_and_stops_on_unheld_names_become_cancels():
+    from src.tracking.notifier_rules import watch_alert_events
+
+    def row(i, t, kind):
+        return {"id": i, "trigger_type": kind, "ticker": t, "date": "d", "spot_price": 10.0, "message": "m"}
+    rows = [row(1, "A", "LEVEL_HIGH_20D"), row(2, "B", "TARGET_HIT_NO_FILL"), row(3, "C", "ZONE_REBOUND"),
+            row(4, "D", "STOP_BREACHED"), row(5, "E", "STOP_BREACHED"), row(6, "F", "TARGET_1_REACHED"), row(7, "G", "TARGET_1_REACHED")]
+    ev = {e["ticker"]: e for e in watch_alert_events(rows, held={"E", "G"})}
+    assert set(ev) == {"D", "E", "G"}
+    assert ev["D"]["title"].startswith("CANCEL D") and ev["D"]["severity"] == "INFO" and "push" not in ev["D"]
+    assert ev["E"]["title"].startswith("EXIT E") and ev["E"]["push"] == "RISK"
+    assert ev["G"]["push"] == "RISK"
+
+
+def test_rsi2_order_lives_until_the_next_open():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from src.tracking.notifier_rules import rsi2_events
+
+    et = ZoneInfo("America/New_York")
+    rows = [{"ticker": "afrm", "date": "2026-10-23", "entry_high": 65.79, "stop": 62.5, "target_1": 77.0,
+             "lane_prior_win": 64.0, "lane_prior_ev": 0.075}]
+    ev = rsi2_events(rows, datetime(2026, 10, 24, 18, 0, tzinfo=et))
+    assert len(ev) == 1 and ev[0]["kind"] == "ORDER" and ev[0]["push"] == "ENTRY"
+    assert ev[0]["title"] == "BUY AFRM at the 2026-10-26 open, only if it opens at or below $65.79"
+    assert "MARKET-ON-OPEN 2026-10-26" in ev[0]["body"] and "risk at the ceiling $329" in ev[0]["body"]
+    assert rsi2_events(rows, datetime(2026, 10, 26, 9, 30, tzinfo=et)) == []
+
+
+def test_rsi2_order_flags_earnings_inside_hold():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from src.tracking.notifier_rules import rsi2_events
+
+    et = ZoneInfo("America/New_York")
+    row = {"ticker": "AMZN", "date": "2026-10-23", "entry_high": 247.03, "stop": 234.67, "target_1": 274.65}
+    ev = rsi2_events([{**row, "next_earnings": "2026-10-29"}], datetime(2026, 10, 24, 18, 0, tzinfo=et))[0]
+    assert ev["title"].startswith("EARNINGS IN HOLD") and "ends 2026-11-06" in ev["body"]
+    ev = rsi2_events([{**row, "next_earnings": "2026-11-09"}], datetime(2026, 10, 24, 18, 0, tzinfo=et))[0]
+    assert ev["title"].startswith("BUY") and "Earnings" not in ev["body"]

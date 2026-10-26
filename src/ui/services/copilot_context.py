@@ -1401,18 +1401,22 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
         except (ValueError, TypeError):
             return default
 
-    ez_low = _to_float(shares_plan.get("entry_zone_low"))
-    ez_high = _to_float(shares_plan.get("entry_zone_high"))
-    stop_p = _to_float(shares_plan.get("tactical_stop") or invalidation_rule.get("price_level"))
-    t1_p = _to_float(shares_plan.get("target_1"))
-    breakout_p = _to_float(shares_plan.get("breakout_level"))
+    def _to_pos_float(v) -> Optional[float]:
+        val = _to_float(v)
+        return val if (val is not None and val > 0) else None
+
+    ez_low = _to_pos_float(shares_plan.get("entry_zone_low"))
+    ez_high = _to_pos_float(shares_plan.get("entry_zone_high"))
+    stop_p = _to_pos_float(shares_plan.get("tactical_stop") or invalidation_rule.get("price_level"))
+    t1_p = _to_pos_float(shares_plan.get("target_1"))
+    breakout_p = _to_pos_float(shares_plan.get("breakout_level"))
 
     calendar_today = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
     status_badge = "📊 ACTIVE LIVE TAPE"
     status_desc = f"Live spot: {_fmt(live_spot)}" if live_spot is not None else "Awaiting live quote"
     copilot_instruction = ""
 
-    if live_spot is not None:
+    if live_spot is not None and live_spot > 0:
         if stop_p is not None and live_spot <= stop_p:
             status_badge = "🛑 STOP BREACHED / THESIS INVALIDATED"
             status_desc = f"Live spot ({_fmt(live_spot)}) has breached the tactical stop / invalidation floor ({_fmt(stop_p)})."
@@ -1425,13 +1429,13 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
             status_badge = "🎯 IN MANDATED ENTRY ZONE RIGHT NOW"
             status_desc = f"Live spot ({_fmt(live_spot)}) is INSIDE the suggested entry limit zone [{_fmt(ez_low)} – {_fmt(ez_high)}]. Orders are filling live."
             copilot_instruction = f"The stock is ACTIVELY IN THE ENTRY ZONE ({_fmt(ez_low)}–{_fmt(ez_high)}). The pullback to {_fmt(ez_high)} has already occurred. Setup is buyable/executable here with stop at {_fmt(stop_p, default='tactical stop')}."
-        elif ez_low is not None and stop_p is not None and stop_p < live_spot < ez_low:
+        elif ez_low is not None and stop_p is not None and stop_p > 0 and stop_p < live_spot < ez_low:
             dist_to_stop = ((live_spot - stop_p) / stop_p) * 100
             status_badge = "⚡ TESTING POC STRUCTURAL FLOOR (PULLBACK COMPLETE)"
             ceiling_str = _fmt(ez_high, default="entry ceiling")
             status_desc = f"Live spot ({_fmt(live_spot)}) pulled back through the limit ceiling ({ceiling_str}) down to the structural floor (+{dist_to_stop:.1f}% above {_fmt(stop_p)} stop)."
             copilot_instruction = f"The stock HAS ALREADY PULLED BACK from {_fmt(report_spot, default='prior highs')} to {_fmt(live_spot)}. It is testing the POC structural floor above the {_fmt(stop_p)} stop. DO NOT tell the user to wait for a pullback to {ceiling_str}—the pullback has already completed! Evaluate whether support is defending above {_fmt(stop_p)}."
-        elif ez_high is not None and live_spot > ez_high:
+        elif ez_high is not None and ez_high > 0 and live_spot > ez_high:
             dist_above = ((live_spot - ez_high) / ez_high) * 100
             status_badge = f"⏳ WAITING (+{dist_above:.1f}% ABOVE ENTRY ZONE)"
             res_str = _fmt(breakout_p, default="resistance")

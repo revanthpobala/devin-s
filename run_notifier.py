@@ -16,8 +16,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.tracking import notification_center as nc
-from src.tracking.notifier_rules import (closed_positions, digest_event, portfolio_events, position_events, setup_events,
-                                         trust_event, watch_alert_events)
+from src.tracking.notifier_rules import (closed_positions, digest_event, portfolio_events, position_events, rsi2_events,
+                                         setup_events, trust_event, watch_alert_events)
 
 logger = logging.getLogger("notifier")
 NO_PRICE_CYCLES = 3
@@ -31,6 +31,26 @@ def _emit(ev: dict) -> None:
         added = nc.add(ev["kind"], ev["severity"], ev["title"], ev.get("body", ""), ev.get("ticker"), ev["key"])
     if added:
         logger.info("notified: %s", ev["title"])
+    if ev.get("push"):
+        from src.tracking.notify import is_quiet_hours, notify
+
+        if not is_quiet_hours():
+            notify(ev["push"], ev["title"], ev.get("body", ""), dedupe_key=ev["key"])
+
+
+def held_tickers() -> "set | None":
+    """Tickers you hold (tracked positions plus broker holdings); None when the broker returns nothing."""
+    from src.tracking.position_state import list_open
+    from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+
+    try:
+        held = get_portfolio_positions()
+    except Exception as e:
+        logger.debug("holdings read failed: %s", e)
+        held = None
+    if not held:
+        return None
+    return {str(p.get("underlying_symbol") or p.get("symbol") or "").upper() for p in held} | {t.upper() for t in list_open()}
 
 
 def check_positions() -> None:
@@ -227,7 +247,35 @@ def check_watch_alerts() -> None:
             "SELECT id, ticker, date, trigger_type, message, spot_price FROM watch_alerts WHERE id > ? ORDER BY id", (last,))]
     if rows:
         nc.set_meta("watch_alert_id", str(rows[-1]["id"]))
-    for ev in watch_alert_events(rows):
+    for ev in watch_alert_events(rows, held_tickers() if rows else None):
+        _emit(ev)
+
+
+def _db_path():
+    from src import config
+
+    return config.research_watch_db_path()
+
+
+def check_rsi2(date: str) -> None:
+    from src.tracking.watch_manager import _get_connection
+
+    with _get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT ticker, date, entry_high, stop, target_1, lane_prior_win, lane_prior_ev FROM suggestions "
+            "WHERE source = 'rsi2_scan' AND verdict = 'ENTER' AND gate_status = 'PASS' AND date >= date(?, '-5 days')", (date,))]
+    held = (held_tickers() or set()) | {r[0] for r in sqlite3.connect(str(_db_path())).execute(
+        "SELECT ticker FROM watch_targets WHERE status = 'IN_TRADE'")} if rows else set()
+    rows = [r for r in rows if str(r["ticker"]).upper() not in held]
+    for r in rows:
+        try:
+            from src.clients.earnings_client import resolve_next_earnings_date
+
+            r["next_earnings"] = str(resolve_next_earnings_date(r["ticker"])[0] or "")
+        except Exception:
+            r["next_earnings"] = ""
+    for ev in rsi2_events(rows, datetime.now(ZoneInfo("America/New_York"))):
         _emit(ev)
 
 
@@ -287,7 +335,7 @@ def check_portfolio(date: str) -> None:
 def run_cycle() -> None:
     date = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
     for name, fn in (("positions", check_positions), ("portfolio", lambda: check_portfolio(date)),
-                     ("levels", check_watch_alerts), ("setups", lambda: check_setups(date)),
+                     ("levels", check_watch_alerts), ("setups", lambda: check_setups(date)), ("rsi2", lambda: check_rsi2(date)),
                      ("catalysts", lambda: check_catalysts(date)), ("macro", lambda: check_macro(date)), ("spreads", lambda: check_spreads(date)), ("movers", lambda: check_movers(date)), ("agent", lambda: start_agent(date)), ("digest", lambda: check_digest(date)), ("trust", lambda: check_trust(date))):
         t0 = time.time()
         try:

@@ -405,8 +405,12 @@ def _build_today_payload_sync() -> Dict[str, Any]:
         except (TypeError, ValueError):
             target_2 = 0.0
         # The breakout path is judged on the nearest researched target that sits above its trigger.
-        breakout_target = next((x for x in (target, target_2) if x and x > breakout_lvl), 0.0)
-        r["breakout_target_used"] = "T1" if breakout_target and breakout_target == target else ("T2" if breakout_target else None)
+        try:
+            bt1, bt2 = float(r.get("breakout_target_1") or 0.0), float(r.get("breakout_target_2") or 0.0)
+        except (TypeError, ValueError):
+            bt1 = bt2 = 0.0
+        cands = [("T1", bt1), ("T2", bt2)] if bt1 > breakout_lvl else [("T1", target), ("T2", target_2)]
+        breakout_target, r["breakout_target_used"] = next(((x, lab) for lab, x in cands if x and x > breakout_lvl), (0.0, None))
         if breakout_lvl > 0:
             if bstop and breakout_lvl > bstop and breakout_target:
                 rr_breakout_at_trigger = round((breakout_target - breakout_lvl) / (breakout_lvl - bstop), 2)
@@ -932,7 +936,10 @@ def _data_fingerprint() -> Tuple[Any, ...]:
         for path in (config.alerts_db_path(), config.research_watch_db_path()):
             try:
                 st = os.stat(path)
-                parts.append((str(path), st.st_mtime_ns, st.st_size))
+                # Track file identity (device & inode) rather than mtime_ns so live SQLite WAL writes
+                # during market hours do not invalidate in-memory cache on every millisecond.
+                # Time-based freshness is governed by _PAYLOAD_TTL_S.
+                parts.append((str(path), getattr(st, "st_ino", 0), getattr(st, "st_dev", 0)))
             except OSError:
                 parts.append((str(path), None, None))
         return tuple(parts)

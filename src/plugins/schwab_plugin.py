@@ -117,9 +117,16 @@ def format_active_position_block(ticker: str) -> str:
         acct = pos.get("account", "N/A")
         asset_type = pos.get("asset_type", "EQUITY")
 
+        accts = pos.get("accounts") or []
+        split = "; ".join(f"{a['account']}: {a['quantity']:g} @ ${float(a.get('average_price') or 0):,.2f}" for a in accts)
+        opts = "; ".join(f"{o['quantity']:+g} {o['symbol'].strip()} (${float(o.get('market_value') or 0):,.0f})" for o in pos.get("options") or [])
+        cc = (f"{int(qty // 100)} covered-call contract(s) possible" if asset_type == "EQUITY" and qty >= 100 else "under 100 shares: no covered calls")
         return (
             f"--- USER ACTIVE BROKER POSITION ({source}) ---\n"
-            f"• Status: ACTIVE HOLDING ({side} {qty} units / {asset_type})\n"
+            f"• Status: ACTIVE HOLDING ({side} {qty:g} units / {asset_type}), all accounts combined\n"
+            + (f"• By account: {split}\n" if len(accts) > 1 else "")
+            + (f"• Options on this name: {opts}\n" if opts else "")
+            + f"• Covered calls: {cc}\n"
             f"• Cost Basis: ${avg_px:,.2f} | Current Price: ${curr_px:,.2f} | Market Value: ${mv:,.2f}\n"
             f"• Unrealized / Day P/L: ${pnl:+,.2f} ({pnl_pct:+.2f}%)\n"
             f"• Account: {acct}\n"
@@ -127,7 +134,8 @@ def format_active_position_block(ticker: str) -> str:
             f"Provide an explicit 'Active Holding Playbook' covering:\n"
             f"  1. Profit scale-out at Target 1 / Target 2\n"
             f"  2. Stop advance to protect capital / trail to breakeven\n"
-            f"  3. Covered call yield opportunities (if 100+ shares held)"
+            f"  3. Covered call yield opportunities (only if 100+ shares held, per the line above)\n"
+            f"  4. Every option listed above is the user's own hedge/position: state its role and how any new trade interacts with it"
         )
     except Exception as e:
         logger.debug(f"format_active_position_block failed for {ticker}: {e}")

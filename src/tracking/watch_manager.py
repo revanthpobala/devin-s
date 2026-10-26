@@ -9,7 +9,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -135,6 +135,10 @@ def init_watch_db():
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN history_key TEXT")
             if "bars_in_status" not in existing_cols:
                 cursor.execute("ALTER TABLE watch_targets ADD COLUMN bars_in_status INTEGER")
+            if "breakout_target_1" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN breakout_target_1 REAL")
+            if "breakout_target_2" not in existing_cols:
+                cursor.execute("ALTER TABLE watch_targets ADD COLUMN breakout_target_2 REAL")
 
             cursor.execute(
                 """
@@ -224,6 +228,8 @@ def init_watch_db():
                 ("atr_at_signal", "REAL"),
                 ("zone_rr_flags", "INTEGER"),
                 ("rr_at_market_at_signal", "REAL"),
+                ("breakout_target_1", "REAL"),
+                ("breakout_target_2", "REAL"),
             ]:
                 if col_name not in existing_hist_cols:
                     cursor.execute(f"ALTER TABLE watch_targets_history ADD COLUMN {col_name} {col_type}")
@@ -746,6 +752,12 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     rr_mkt_sig,
                 ),
             )
+            _bt = tuple(float(shares_plan.get(k)) if shares_plan.get(k) not in (None, "", 0, 0.0) else None
+                        for k in ("breakout_target_1", "breakout_target_2"))
+            cursor.execute("UPDATE watch_targets SET breakout_target_1 = ?, breakout_target_2 = ? WHERE ticker = ?", (*_bt, ticker))
+            cursor.execute(
+                "UPDATE watch_targets_history SET breakout_target_1 = ?, breakout_target_2 = ? "
+                "WHERE id = (SELECT MAX(id) FROM watch_targets_history WHERE ticker = ?)", (*_bt, ticker))
             conn.commit()
             try:
                 from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE
@@ -938,11 +950,13 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
     with _db_lock:
         with _get_connection() as conn:
             cursor = conn.cursor()
+            _sugg_cols = {c[1] for c in cursor.execute("PRAGMA table_info(suggestions)").fetchall()}
+            bt_cols = ", s.breakout_target_1, s.breakout_target_2" if "breakout_target_1" in _sugg_cols else ""
             cursor.execute(
-                """
+                f"""
                 SELECT s.ticker, s.date, s.side, s.entry_low, s.entry_high, s.stop, s.target_1, s.target_2,
                        s.signal_pack, s.fade, s.action_long, s.ext_z, s.atr_at_signal, s.rr_at_market_at_signal,
-                       s.verdict, s.setup_lane
+                       s.verdict, s.setup_lane, s.source{bt_cols}
                 FROM suggestions s
                 WHERE s.gate_status = 'PASS'
                   AND s.date >= date('now', '-' || ? || ' days')
@@ -968,6 +982,11 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                 stop_val = s.get("stop")
                 t1 = s.get("target_1")
                 t2 = s.get("target_2")
+                rsi2 = s.get("source") == "rsi2_scan"
+                if rsi2:
+                    if verdict != "ENTER" or stop_val is None:
+                        continue
+                    e_low = round(float(stop_val) + 0.01, 4)
 
                 cursor.execute(
                     """
@@ -978,11 +997,11 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'STALKING', ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(ticker) DO UPDATE SET
                         verdict = CASE WHEN watch_targets.verdict IS NULL OR watch_targets.verdict IN ('UNRESEARCHED', 'EXPIRED') THEN excluded.verdict ELSE watch_targets.verdict END,
-                        entry_zone_low = COALESCE(excluded.entry_zone_low, watch_targets.entry_zone_low),
-                        entry_zone_high = COALESCE(excluded.entry_zone_high, watch_targets.entry_zone_high),
-                        tactical_stop = COALESCE(excluded.tactical_stop, watch_targets.tactical_stop),
-                        target_1 = COALESCE(excluded.target_1, watch_targets.target_1),
-                        target_2 = COALESCE(excluded.target_2, watch_targets.target_2),
+                        entry_zone_low = CASE WHEN watch_targets.status = 'IN_TRADE' THEN watch_targets.entry_zone_low ELSE COALESCE(excluded.entry_zone_low, watch_targets.entry_zone_low) END,
+                        entry_zone_high = CASE WHEN watch_targets.status = 'IN_TRADE' THEN watch_targets.entry_zone_high ELSE COALESCE(excluded.entry_zone_high, watch_targets.entry_zone_high) END,
+                        tactical_stop = CASE WHEN watch_targets.status = 'IN_TRADE' THEN watch_targets.tactical_stop ELSE COALESCE(excluded.tactical_stop, watch_targets.tactical_stop) END,
+                        target_1 = CASE WHEN watch_targets.status = 'IN_TRADE' THEN watch_targets.target_1 ELSE COALESCE(excluded.target_1, watch_targets.target_1) END,
+                        target_2 = CASE WHEN watch_targets.status = 'IN_TRADE' THEN watch_targets.target_2 ELSE COALESCE(excluded.target_2, watch_targets.target_2) END,
                         status = CASE 
                             WHEN watch_targets.status = 'EXPIRED' THEN CASE WHEN excluded.date > COALESCE(watch_targets.date, '') THEN 'STALKING' ELSE 'EXPIRED' END
                             WHEN watch_targets.status IN ('UNRESEARCHED', 'WATCH') OR watch_targets.status IS NULL THEN 'STALKING'
@@ -1007,6 +1026,20 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                         s.get("signal_pack"), s.get("fade"), s.get("action_long"), s.get("ext_z"), s.get("atr_at_signal"), s.get("rr_at_market_at_signal")
                     ),
                 )
+                if s.get("breakout_target_1"):
+                    cursor.execute(
+                        "UPDATE watch_targets SET breakout_target_1 = ?, breakout_target_2 = ? "
+                        "WHERE ticker = ? AND date = ? AND status != 'IN_TRADE'",
+                        (s.get("breakout_target_1"), s.get("breakout_target_2"), t, s["date"]),
+                    )
+                if rsi2:
+                    d = date.fromisoformat(str(s["date"])[:10]) + timedelta(days=1)
+                    while d.weekday() >= 5:
+                        d += timedelta(days=1)
+                    cursor.execute(
+                        "UPDATE watch_targets SET expires_on = ? WHERE ticker = ? AND date = ? AND status != 'IN_TRADE'",
+                        (d.isoformat(), t, s["date"]),
+                    )
                 synced_count += 1
             conn.commit()
     return synced_count

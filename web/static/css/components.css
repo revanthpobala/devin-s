@@ -3093,5 +3093,20 @@ table.watchlist-table tbody td {
   white-space: nowrap;
 }
 
-
-
+/* Collapsible Binding Levels Notice Accordion */
+.binding-levels-collapsible {
+  transition: all 0.2s ease-in-out;
+}
+.binding-levels-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+.binding-levels-collapsible summary {
+  list-style: none;
+  transition: background 0.15s ease;
+}
+.binding-levels-collapsible summary:hover {
+  background: rgba(245, 158, 11, 0.18) !important;
+}
+.binding-levels-collapsible[open] summary {
+  border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+}

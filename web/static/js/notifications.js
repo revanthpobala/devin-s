@@ -61,6 +61,22 @@
       <div style="font-size:11px;color:var(--amber)">${esc(s.verdict)}</div></div>`;
   }
 
+  function componentBlock(c) {
+    if (!c || c.error) return c && c.error ? `<div style="font-size:11px;color:#ef4444;margin-top:8px">${esc(c.error)}</div>` : '';
+    const f = (v) => (v === null || v === undefined ? '-' : v);
+    const rows = (c.scorecard || []).filter((r) => r.n >= 3).slice(0, 14).map((r) =>
+      `<tr><td>${esc(r.source)}/${esc(r.lane)}</td><td>${esc(r.gate === 'PASS' ? 'pass' : r.gate === 'REJECTED_BY_GATE' ? 'rej' : r.gate)}</td><td>${r.n}</td><td>${r.scored}</td><td>${f(r.fill_rate_pct)}</td><td>${f(r.miss_rate_pct)}</td><td>${f(r.realized.mean_r)}</td><td>${f(r.realized.sum_r)}</td></tr>`).join('');
+    const pol = Object.keys(c.entry_policy || {}).map((src) => {
+      const p = c.entry_policy[src], m = p.missed_at_next_open || {};
+      const cell = (k) => { const x = p.policies[k] || {}; return `${x.fills || 0}f ${x.summary ? x.summary.sum_r : '-'}R`; };
+      return `<tr><td>${esc(src)}</td><td>${p.mature}/${p.n}</td><td>${cell('r_zone')}</td><td>${cell('r_p25')}</td><td>${cell('r_p50')}</td><td>${cell('r_open')}</td><td>${m.n || 0} / ${f(m.sum_r)}R</td></tr>`;
+    }).join('');
+    return `<div style="margin-top:10px;font-size:11px"><b>Per component</b> <span style="color:var(--text-muted)">(no claim below n=30)</span>
+      <table style="width:100%;font-size:10px;margin-top:4px"><tr style="color:var(--text-muted)"><td>lane</td><td>gate</td><td>n</td><td>scored</td><td>fill%</td><td>miss%</td><td>meanR</td><td>sumR</td></tr>${rows}</table>
+      <div style="margin-top:6px"><b>Entry policy replay</b></div>
+      <table style="width:100%;font-size:10px;margin-top:4px"><tr style="color:var(--text-muted)"><td>source</td><td>mature</td><td>zone</td><td>+.25ATR</td><td>+.5ATR</td><td>next open</td><td>missed: n / R</td></tr>${pol}</table></div>`;
+  }
+
   function agentBlock(a) {
     if (!a || a.error) return '';
     const c = a.closed || {};
@@ -181,7 +197,7 @@
           ${stat('Trades you took', d.taken)}
           <div style="font-size:11px;color:var(--text-muted)">Pending (no outcome yet): ${d.pending_gated} · Taken total: ${d.taken_total}<br>
           Repeated tickers (correlated): ${esc(rep)}<br>${esc(d.note)}</div>
-          ${agentBlock(d.agent)}${decisionBlock(d.decisions)}</div>`;
+          ${componentBlock(d.components)}${agentBlock(d.agent)}${decisionBlock(d.decisions)}</div>`;
       }
     } catch (e) {
       body.innerHTML = '<div style="padding:12px;font-size:12px">Could not load.</div>';

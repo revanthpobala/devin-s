@@ -30,7 +30,13 @@ def _detect_provider(use_remote: bool) -> tuple[bool, str]:
     if meta_key:
         model = os.getenv("META_LLM", "muse-spark-1.2-contributor")
     else:
-        model = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m3")
+        candidate_model = (
+            os.getenv("OPENROUTER_MODEL")
+            or os.getenv("SMART_LLM")
+            or os.getenv("FAST_LLM")
+            or "openrouter/free"
+        )
+        model = candidate_model.lstrip("=").strip() if candidate_model else "openrouter/free"
     return True, f"remote API ({model})"
 
 

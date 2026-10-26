@@ -25,10 +25,13 @@ from pydantic import BaseModel
 from src import config
 from src.data.datawindow_loader import load_datawindow, find_datawindow_paths
 from src.ui.services.research_queue import (
+    CHAT_RESERVE,
+    LLM_SLOTS,
     MAX_CONCURRENT_DEEP,
     MAX_CONCURRENT_FULL,
     MAX_CONCURRENT_MID,
     MAX_CONCURRENT_LOCAL,
+    chat_reserve_count,
     dispatch_next_queued_job,
     find_live_research_pid,
     get_active_deep_research_count,
@@ -911,64 +914,14 @@ def get_darkpool_ai_summary_endpoint(ticker: str, force: bool = False):
 
 @router.post("/api/darkpool/{ticker}/sync-tastytrade-alerts")
 def sync_darkpool_tastytrade_alerts_endpoint(ticker: str):
-    """Sync primary dark pool support absorption floor & resistance ceiling to Tastytrade mobile cloud alerts."""
+    """Disabled: off-exchange volume shelves failed measurement (no edge vs placebo), so they must not arm live alerts."""
     ticker_u = validate_ticker(ticker)
-    try:
-        from src.data.darkpool import fetch_darkpool_data
-        from src.clients.tastytrade_client import get_tastytrade_client
-
-        dp = fetch_darkpool_data(ticker_u)
-        shelves = dp.get("major_shelves") or []
-        if not shelves:
-            return {
-                "status": "error",
-                "ticker": ticker_u,
-                "message": f"No dense dark pool liquidity shelves detected for {ticker_u} to arm as alerts.",
-            }
-
-        p_prices = [s["price"] for s in shelves]
-        min_shelf = min(p_prices)
-        max_shelf = max(p_prices)
-
-        tt = get_tastytrade_client()
-        created_alerts = []
-
-        # 1. Arm support absorption floor alert (< threshold)
-        floor_thresh = round(min_shelf - 0.05, 2)
-        a_floor = tt.create_quote_alert(
-            symbol=ticker_u,
-            threshold=floor_thresh,
-            operator="<",
-            expires_days=30,
-        )
-        if a_floor:
-            created_alerts.append({"type": "support_floor", "threshold": floor_thresh, "operator": "<", "alert": a_floor})
-
-        # 2. Arm overhead resistance ceiling alert (> threshold)
-        ceil_thresh = round(max_shelf + 0.05, 2)
-        if max_shelf > min_shelf:
-            a_ceil = tt.create_quote_alert(
-                symbol=ticker_u,
-                threshold=ceil_thresh,
-                operator=">",
-                expires_days=30,
-            )
-            if a_ceil:
-                created_alerts.append({"type": "overhead_ceiling", "threshold": ceil_thresh, "operator": ">", "alert": a_ceil})
-
-        return {
-            "status": "ok",
-            "ticker": ticker_u,
-            "message": f"Successfully armed Tastytrade Cloud Alerts for {ticker_u} at floor ${floor_thresh:.2f} and ceiling ${ceil_thresh:.2f}.",
-            "alerts": created_alerts,
-        }
-    except Exception as e:
-        logger.error(f"[{ticker_u}] Error syncing Tastytrade dark pool alerts: {e}", exc_info=True)
-        return {
-            "status": "error",
-            "ticker": ticker_u,
-            "message": f"Failed to arm Tastytrade alerts: {e}",
-        }
+    return {
+        "status": "disabled",
+        "ticker": ticker_u,
+        "message": "Alert arming from off-exchange shelves is disabled: shelves have no measured predictive edge (descriptive only).",
+        "alerts": [],
+    }
 
 
 @router.get("/api/report/{ticker}")
@@ -2473,16 +2426,34 @@ def trigger_research(req: ResearchRequest):
     log_file = str(LOGS_DIR / f"{job_id}.log")
 
     is_local_job = (req.mode == "local_only")
+    active_local_count = get_active_local_research_count()
+    active_deep_count = get_active_deep_research_count()
+    total_slots_available = max(0, LLM_SLOTS - chat_reserve_count() - active_deep_count - active_local_count)
+
+    with get_db() as conn:
+        remaining_deep_queued = conn.cursor().execute(
+            "SELECT COUNT(*) FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only'"
+        ).fetchone()[0]
+
     if is_local_job:
-        active_slot_count = get_active_local_research_count()
+        can_run = (
+            active_local_count < MAX_CONCURRENT_LOCAL
+            and total_slots_available > 0
+            and remaining_deep_queued == 0
+        )
         max_slots = MAX_CONCURRENT_LOCAL
         q_label = "Local Queue"
+        active_slot_count = active_local_count
     else:
-        active_slot_count = get_active_deep_research_count()
+        can_run = (
+            active_deep_count < MAX_CONCURRENT_DEEP
+            and total_slots_available > 0
+        )
         max_slots = MAX_CONCURRENT_DEEP
         q_label = f"Deep Slot ({req_tier})"
+        active_slot_count = active_deep_count
 
-    if active_slot_count < max_slots:
+    if can_run:
         try:
             with get_db() as conn:
                 start_stage = "LOCAL_TRIAGE" if is_local_job else "STARTING"

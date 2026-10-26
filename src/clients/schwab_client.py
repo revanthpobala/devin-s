@@ -718,6 +718,46 @@ def get_schwab_positions(force_refresh: bool = False) -> dict:
         }
 
 
+def _aggregate_schwab_holding(sym: str) -> dict:
+    """One holding across all Schwab accounts: shares summed with a weighted cost, per-account split, and option legs
+    on the same underlying. Empty dict when nothing is held."""
+    data = get_schwab_positions()
+    if data.get("status") != "ok":
+        return {}
+    shares, options = [], []
+    for acc in data.get("accounts", []):
+        for p in acc.get("positions", []):
+            raw = (p.get("symbol") or "").upper().strip()
+            qty = p.get("quantity") or 0
+            if not raw or qty == 0:
+                continue
+            if str(p.get("asset_type") or "").upper() == "OPTION":
+                if raw.split()[0] == sym:
+                    options.append({**p, "account": acc.get("account_number")})
+            elif raw == sym:
+                shares.append({**p, "account": acc.get("account_number")})
+    if not shares and not options:
+        return {}
+    qty = sum(x["quantity"] for x in shares)
+    cost = sum(x["quantity"] * (x.get("average_price") or 0.0) for x in shares)
+    return {
+        "has_position": True,
+        "source": "SCHWAB",
+        "ticker": sym,
+        "quantity": qty,
+        "average_price": round(cost / qty, 4) if qty else 0.0,
+        "market_value": sum(x.get("market_value") or 0.0 for x in shares),
+        "day_pnl": sum(x.get("day_pnl") or 0.0 for x in shares),
+        "day_pnl_pct": 0.0,
+        "side": "LONG" if qty >= 0 else "SHORT",
+        "account": ", ".join(str(x["account"]) for x in shares) or "N/A",
+        "asset_type": "EQUITY" if shares else "OPTION",
+        "accounts": [{"account": x["account"], "quantity": x["quantity"], "average_price": x.get("average_price")} for x in shares],
+        "options": [{"symbol": o["symbol"], "quantity": o["quantity"], "average_price": o.get("average_price"),
+                     "market_value": o.get("market_value"), "account": o["account"]} for o in options],
+    }
+
+
 def get_active_position_for_ticker(ticker: str) -> dict:
     """
     Checks if the user has an active position in `ticker` by checking:
@@ -730,32 +770,11 @@ def get_active_position_for_ticker(ticker: str) -> dict:
     if not sym:
         return {"has_position": False, "ticker": ""}
 
-    # 1. Check Schwab live positions
+    # 1. Check Schwab live positions: every account, shares summed, options on the name listed
     try:
-        schwab_data = get_schwab_positions()
-        if schwab_data.get("status") == "ok":
-            for acc in schwab_data.get("accounts", []):
-                for p in acc.get("positions", []):
-                    pos_sym = (p.get("symbol") or "").upper().strip()
-                    if pos_sym == sym and p.get("quantity") != 0:
-                        qty = p.get("quantity", 0)
-                        avg_px = p.get("average_price", 0.0)
-                        mv = p.get("market_value", 0.0)
-                        dp = p.get("day_pnl", 0.0)
-                        dp_pct = p.get("day_pnl_pct", 0.0)
-                        return {
-                            "has_position": True,
-                            "source": "SCHWAB",
-                            "ticker": sym,
-                            "quantity": qty,
-                            "average_price": avg_px,
-                            "market_value": mv,
-                            "day_pnl": dp,
-                            "day_pnl_pct": dp_pct,
-                            "side": "LONG" if qty > 0 else "SHORT",
-                            "account": acc.get("account_number"),
-                            "asset_type": p.get("asset_type", "EQUITY")
-                        }
+        agg = _aggregate_schwab_holding(sym)
+        if agg:
+            return agg
     except Exception as e_schwab:
         logger.debug(f"Schwab position check for {sym}: {e_schwab}")
 
@@ -808,29 +827,17 @@ def get_all_active_positions() -> list[dict]:
     seen = set()
     all_pos = []
 
-    # 1. Schwab
+    # 1. Schwab: one aggregated row per equity symbol across accounts
     try:
         schwab_data = get_schwab_positions()
         if schwab_data.get("status") == "ok":
-            for acc in schwab_data.get("accounts", []):
-                for p in acc.get("positions", []):
-                    pos_sym = (p.get("symbol") or "").upper().strip()
-                    qty = p.get("quantity", 0)
-                    if pos_sym and qty != 0 and pos_sym not in seen:
-                        seen.add(pos_sym)
-                        all_pos.append({
-                            "has_position": True,
-                            "source": "SCHWAB",
-                            "ticker": pos_sym,
-                            "quantity": qty,
-                            "average_price": p.get("average_price", 0.0),
-                            "market_value": p.get("market_value", 0.0),
-                            "day_pnl": p.get("day_pnl", 0.0),
-                            "day_pnl_pct": p.get("day_pnl_pct", 0.0),
-                            "side": "LONG" if qty > 0 else "SHORT",
-                            "account": acc.get("account_number"),
-                            "asset_type": p.get("asset_type", "EQUITY"),
-                        })
+            syms = {(p.get("symbol") or "").upper().strip() for acc in schwab_data.get("accounts", [])
+                    for p in acc.get("positions", []) if str(p.get("asset_type") or "").upper() != "OPTION" and p.get("quantity")}
+            for pos_sym in sorted(x for x in syms if x):
+                row = _aggregate_schwab_holding(pos_sym)
+                if row and pos_sym not in seen:
+                    seen.add(pos_sym)
+                    all_pos.append(row)
     except Exception as e:
         logger.debug(f"Error getting Schwab all positions: {e}")
 
@@ -909,6 +916,15 @@ def reconcile_positions() -> dict:
                     sym = (p.get("symbol") or "").upper().strip()
                     qty = p.get("quantity", 0)
                     if sym and qty != 0:
+                        cur = schwab_tickers.get(sym)
+                        if cur:
+                            tot = cur["quantity"] + qty
+                            cur["average_price"] = (
+                                (cur["average_price"] * cur["quantity"] + p.get("average_price", 0.0) * qty) / tot if tot else cur["average_price"]
+                            )
+                            cur["quantity"], cur["market_value"] = tot, cur["market_value"] + p.get("market_value", 0.0)
+                            cur["side"] = "LONG" if tot > 0 else "SHORT"
+                            continue
                         schwab_tickers[sym] = {
                             "quantity": qty,
                             "average_price": p.get("average_price", 0.0),

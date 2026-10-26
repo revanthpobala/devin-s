@@ -4,6 +4,10 @@ Each rejected rule row is scored two ways, stored in `suggestion_counterfactual`
   plan: its own zone/stop/target replayed by the honest scorer (filled? R?)
   fwd:  close-to-close return from the signal close, minus SPY over the same bars
 Report groups by lane, R:R band and gate reason so a rejection reason that blocks winners shows up.
+
+Gate-passed long rows also get an entry-policy replay in `suggestion_policy`: fill at the zone top, zone top plus
+0.1 / 0.25 / 0.5 ATR, or the next open, then the same stop/target path walk (21 bars, stop first). The next-open
+column is the R a missed (MISSED_RUNAWAY / NOT_FILLED) row would have carried. Measurement only; nothing trades on it.
 Run: python -m src.tracking.counterfactual [--report]
 """
 
@@ -35,6 +39,109 @@ def _init(conn: sqlite3.Connection) -> None:
     for col, typ in (("source", "TEXT"), ("post_change", "INTEGER")):
         if col not in cols:
             conn.execute(f"ALTER TABLE suggestion_counterfactual ADD COLUMN {col} {typ}")
+
+
+POLICIES = (("r_zone", 0.0), ("r_p10", 0.1), ("r_p25", 0.25), ("r_p50", 0.5), ("r_open", None))
+FILL_WINDOW = 5
+MISS_EXITS = ("MISSED_RUNAWAY", "NOT_FILLED")
+
+
+def _init_policy(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS suggestion_policy (suggestion_id INTEGER PRIMARY KEY, source TEXT, lane TEXT, ticker TEXT,"
+        " date TEXT, plan_exit TEXT, r_zone REAL, r_p10 REAL, r_p25 REAL, r_p50 REAL, r_open REAL, mature INTEGER, scored_at TEXT)"
+    )
+
+
+def _walk(bars: List[Dict[str, float]], i0: int, fill: float, stop: float, target: float, n: int = HORIZON) -> Optional[float]:
+    risk = fill - stop
+    if risk <= 0:
+        return None
+    window = bars[i0:i0 + n]
+    for x in window:
+        if x["low"] <= stop:
+            return -1.0
+        if x["high"] >= target:
+            return (target - fill) / risk
+    return (window[-1]["close"] - fill) / risk
+
+
+def policy_replay(row: Dict[str, Any], bars: List[Dict[str, float]]) -> Dict[str, Any]:
+    """R per entry policy for one long plan; `bars` are daily bars strictly after the signal date. None = no fill."""
+    eh, stop, tgt, atr = (float(row[k]) for k in ("entry_high", "stop", "target_1", "atr_at_signal"))
+    out: Dict[str, Optional[float]] = {}
+    for col, k in POLICIES:
+        if k is None:
+            out[col] = _walk(bars, 0, bars[0]["open"], stop, tgt) if bars and bars[0]["open"] > stop else None
+            continue
+        lim, res = eh + k * atr, None
+        for i, x in enumerate(bars[:FILL_WINDOW]):
+            if x["low"] <= lim:
+                fill = min(lim, x["open"])
+                res = _walk(bars, i, fill, stop, tgt) if fill > stop else None
+                break
+        out[col] = res
+    out["mature"] = int(len(bars) >= FILL_WINDOW + HORIZON)
+    return out
+
+
+def run_policies() -> Dict[str, int]:
+    from datetime import datetime, timedelta
+
+    from src.tracking.execution_validator import get_bars_since_date
+
+    with _db_lock, _get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        _init_policy(conn)
+        rows = [dict(r) for r in conn.execute(
+            "SELECT s.* FROM suggestions s LEFT JOIN suggestion_policy p ON p.suggestion_id = s.id "
+            "WHERE s.gate_status = 'PASS' AND s.source IN ('rule', 'judge') AND (s.kind IS NULL OR s.kind = 'NEW') "
+            "AND COALESCE(s.side, 'LONG') = 'LONG' AND (s.verdict IS NULL OR s.verdict IN ('ENTER', 'STALK')) "
+            "AND s.entry_high > 0 AND s.stop > 0 AND s.stop < s.entry_low AND s.target_1 > s.entry_high AND s.atr_at_signal > 0 "
+            "AND (p.suggestion_id IS NULL OR p.mature = 0) ORDER BY s.date")]
+    done = mature = 0
+    for r in rows:
+        d = str(r["date"])[:10]
+        start = (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
+        df = get_bars_since_date(r["ticker"], start)
+        if df is None or df.empty:
+            continue
+        lc = {c.lower(): c for c in df.columns}
+        bars = [{k: float(row[lc[k]]) for k in ("open", "high", "low", "close")}
+                for idx, row in df.iterrows() if str(idx)[:10] > d]
+        if not bars:
+            continue
+        res = policy_replay(r, bars)
+        with _db_lock, _get_connection() as conn:
+            _init_policy(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO suggestion_policy (suggestion_id, source, lane, ticker, date, plan_exit, r_zone, r_p10, r_p25,"
+                " r_p50, r_open, mature, scored_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (r["id"], r["source"], r.get("setup_lane"), r["ticker"], d, r.get("exit_reason"), res["r_zone"], res["r_p10"],
+                 res["r_p25"], res["r_p50"], res["r_open"], res["mature"], _now_iso()))
+            conn.commit()
+        done += 1
+        mature += res["mature"]
+    return {"policy_scored": done, "policy_mature": mature, "policy_candidates": len(rows)}
+
+
+def policy_report() -> Dict[str, Any]:
+    """Per source: fills, win rate and R for each entry policy, and the R that missed rows would have carried."""
+    with _db_lock, _get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        _init_policy(conn)
+        rows = [dict(r) for r in conn.execute("SELECT * FROM suggestion_policy")]
+    out: Dict[str, Any] = {}
+    for src in sorted({r["source"] for r in rows}):
+        g = [r for r in rows if r["source"] == src]
+        pol = {}
+        for col, _ in POLICIES:
+            rs = [r[col] for r in g if r[col] is not None]
+            pol[col] = {"signals": len(g), "fills": len(rs), **({"summary": summarize(rs)} if rs else {})}
+        missed = [r["r_open"] for r in g if r["plan_exit"] in MISS_EXITS and r["r_open"] is not None]
+        out[src] = {"n": len(g), "mature": sum(r["mature"] for r in g), "policies": pol,
+                    "missed_at_next_open": summarize(missed) if missed else {"n": 0}}
+    return out
 
 
 def reason_key(gate_reasons: Optional[str]) -> str:
@@ -116,6 +223,16 @@ def run() -> Dict[str, int]:
     return {"scored": done, "mature": mature, "candidates": len(rows)}
 
 
+def run_all() -> Dict[str, int]:
+    out = run()
+    try:
+        out.update(run_policies())
+    except Exception as e:
+        logger.warning("policy replay failed: %s", e)
+        out["policy_error"] = str(e)
+    return out
+
+
 def _group(rows: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for k in sorted({r[key] or "none" for r in rows}):
@@ -154,5 +271,5 @@ if __name__ == "__main__":
     import sys
 
     if "--report" not in sys.argv:
-        print(json.dumps(run()))
-    print(json.dumps(report(), indent=1, default=str))
+        print(json.dumps(run_all()))
+    print(json.dumps({"gate": report(), "policy": policy_report()}, indent=1, default=str))

@@ -264,3 +264,59 @@ def test_chain_falls_back_to_tastytrade(monkeypatch):
     monkeypatch.setattr("src.clients.tastytrade_client.get_tastytrade_client", lambda: fake)
     out = oc.fetch_targeted_chain("TST", {"direction": "BOTH", "strike_low": 80, "strike_high": 120, "min_dte": 14, "max_dte": 60})
     assert "3.0/3.2" in out and "2.8/3.0" in out and "2026-11-20" in out
+
+
+@pytest.fixture(autouse=True)
+def _no_broker(monkeypatch):
+    monkeypatch.setattr(order_ticket, "held_symbols", lambda: set())
+
+
+def _reports(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_ticket.config, "BASE_DIR", tmp_path)
+    return tmp_path / "reports"
+
+
+def test_no_ticket_for_gate_rejected_held_or_superseded(monkeypatch, tmp_path):
+    root = _reports(tmp_path, monkeypatch)
+    (root / "2026-10-24").mkdir(parents=True)
+    (root / "2026-10-24" / "TST_summary.md").write_text("x")
+    w = _watch(date="2026-10-22")
+    assert order_ticket.build_ticket(w, 100.0, "2026-10-24") is None
+    assert order_ticket.build_ticket(_watch(level_gate_rejected=True), 100.0, "2026-10-16") is None
+    monkeypatch.setattr(order_ticket, "held_symbols", lambda: {"TST"})
+    assert order_ticket.build_ticket(_watch(), 100.0, "2026-10-16") is None
+    assert order_ticket.build_ticket(_watch(verdict="HOLD"), 100.0, "2026-10-16") is None
+
+
+def test_touch_on_superseded_plan_is_no_trade(monkeypatch, tmp_path):
+    root = _reports(tmp_path, monkeypatch)
+    (root / "2026-10-24").mkdir(parents=True)
+    (root / "2026-10-24" / "TST_summary.md").write_text("x")
+    r = order_ticket.act_on_touch("TST", 100.5, "2026-10-24", wd=_wd() | {"date": "2026-10-22"})
+    assert r["action"] == "NO TRADE" and "superseded" in r["text"]
+
+
+def test_open_tickets_drops_stale_voided_and_held(monkeypatch, tmp_path):
+    import json
+    from datetime import datetime
+
+    root = _reports(tmp_path, monkeypatch)
+    today = datetime.now().strftime("%Y-%m-%d")
+    d = root / today
+    d.mkdir(parents=True)
+    base = {"date": today, "plan_date": today, "stop": 95.0, "good_til": "2999-01-01", "verdict": "STALK"}
+    for tk, extra in {"OKK": {}, "VOID": {"void": "x"}, "HELD": {}, "LEG": {"plan_date": ""}}.items():
+        (d / f"{tk}_ticket.json").write_text(json.dumps({**base, "ticker": tk, **extra}))
+    monkeypatch.setattr(order_ticket, "held_symbols", lambda: {"HELD"})
+    assert [t["ticker"] for t in order_ticket.open_tickets()] == ["OKK"]
+
+
+def test_void_ticket_marks_file(monkeypatch, tmp_path):
+    import json
+
+    root = _reports(tmp_path, monkeypatch)
+    (root / "2026-10-24").mkdir(parents=True)
+    f = root / "2026-10-24" / "TST_ticket.json"
+    f.write_text(json.dumps({"ticker": "TST"}))
+    order_ticket.void_ticket("TST", "2026-10-24", "no plan")
+    assert json.loads(f.read_text())["void"] == "no plan"

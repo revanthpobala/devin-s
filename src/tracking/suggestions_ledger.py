@@ -312,6 +312,9 @@ def ensure_suggestions_schema(conn: sqlite3.Connection) -> None:
             ("scored_at", "TEXT"),
             ("live_spot", "REAL"),
             ("move_since_bar_pct", "REAL"),
+            ("breakout_target_1", "REAL"),
+            ("breakout_target_2", "REAL"),
+            ("judge_verdict", "TEXT"),
         ]:
             try:
                 cursor.execute(f"ALTER TABLE suggestions ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -477,6 +480,11 @@ def append_suggestion(data: Dict[str, Any]) -> int:
                         signal_pack, fade, ext_z, stop_width_atr,
                         live_spot, move_since_bar_pct, _now_iso(),
                     ),
+                )
+                cursor.execute(
+                    "UPDATE suggestions SET breakout_target_1 = ?, breakout_target_2 = ?, judge_verdict = ? WHERE ticker = ? AND date = ? AND source = ?",
+                    (_to_num(shares_plan.get("breakout_target_1")), _to_num(shares_plan.get("breakout_target_2")),
+                     data.get("judge_verdict"), ticker, date_str, source),
                 )
                 conn.commit()
 

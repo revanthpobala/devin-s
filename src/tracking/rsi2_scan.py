@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ MIN_CLOSE = 20.0
 RSI_MAX = 10.0
 STOP_ATR, TARGET_ATR = 2.0, 4.0
 MAX_RISK_PCT = 0.05
+MAX_HOLD_BARS = 10
 ENTER_BAND = (3.0, 15.0)
 BAND_PRIORS = {(3.0, 8.0): (64.0, 0.075), (8.0, 15.0): (67.4, 0.232)}
 ALL_PRIOR = (62.3, 0.050)
@@ -98,14 +100,32 @@ def _open_names(since: str, before: str) -> set:
         return set()
 
 
-def run(bars: Dict[str, List[Dict[str, Any]]], write: bool = True) -> Dict[str, Any]:
+def next_open_day(signal_day: str) -> str:
+    d = date.fromisoformat(str(signal_day)[:10]) + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.isoformat()
+
+
+def entry_open_passed(signal_day: str, now_et: Optional[datetime] = None) -> bool:
+    """True once the next weekday's 09:30 ET open after the signal bar has started: the signal can no longer be taken."""
+    now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
+    if now_et.tzinfo is None:
+        now_et = now_et.replace(tzinfo=ZoneInfo("America/New_York"))
+    d = date.fromisoformat(next_open_day(signal_day))
+    return now_et >= datetime.combine(d, dtime(9, 30), tzinfo=ZoneInfo("America/New_York"))
+
+
+def run(bars: Dict[str, List[Dict[str, Any]]], write: bool = True, now_et: Optional[datetime] = None) -> Dict[str, Any]:
     off = qqq_off_high(bars.get("QQQ") or [])
     enter = off is not None and ENTER_BAND[0] < off <= ENTER_BAND[1]
     win, ev = next((p for (lo, hi), p in BAND_PRIORS.items() if off is not None and lo < off <= hi), ALL_PRIOR)
     off_txt = "n/a" if off is None else f"{off:.1f}%"
-    hits = [{"ticker": t, **s} for t, b in sorted(bars.items()) if t not in ETFS and (s := signal(b))]
+    last = (bars.get("QQQ") or [{}])[-1].get("date")
+    hits = [{"ticker": t, **s} for t, b in sorted(bars.items()) if t not in ETFS and (s := signal(b)) and s["date"] == last]
     written: List[str] = []
-    if write and hits:
+    stale = write and bool(hits) and (off is None or entry_open_passed(hits[0]["date"], now_et))
+    if write and hits and not stale:
         from src.tracking.suggestions_ledger import append_suggestion
 
         day = hits[0]["date"]
@@ -124,9 +144,9 @@ def run(bars: Dict[str, List[Dict[str, Any]]], write: bool = True) -> Dict[str, 
                 "kind": "NEW", "lane_prior_win": win, "lane_prior_ev": ev,
                 "notes": (f"RSI2 {s['rsi2']:.1f}; QQQ {off_txt} below 252d high; ATR {s['atr_pct']:.2f}% ({vol} vol); "
                           f"buy next open only at or below {s['ceiling']:.2f}; risk/share {s['close'] - s['stop']:.2f}; "
-                          "exit next open after close > EMA5, or 10 bars"),
+                          f"exit next open after close > EMA5, or {MAX_HOLD_BARS} bars"),
             })
             written.append(s["ticker"])
     return {"qqq_off_high_pct": None if off is None else round(off, 2), "verdict": "ENTER" if enter else "STALK",
             "signals": [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in s.items()} for s in hits],
-            "written": written}
+            "written": written, "stale": stale}

@@ -101,6 +101,125 @@ def _calls(ticker: str, exp: str):
     return yf.Ticker(ticker).option_chain(exp).calls
 
 
+MEASURED_SOURCES = ("pine_alert", "rsi2")
+EARNINGS_BLOCK_DAYS = 7
+
+
+def measured_lane(dw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Measured long lane on this Data Window bar, mirroring the Pine definitions, or None.
+
+    ZONE_RR: in long zone, at-market R:R >= 2, fade off, not Code 18. CODE20: Action Long Code 20 with
+    entry R:R >= 2. OVERSOLD: Ext Z <= -2 (no toxic suppression, measured unconditionally).
+    """
+    from src.logic.actionable_gate import dw_long_levels, dw_rr_at_market, gate_inputs_from_datawindow
+
+    lv, g = dw_long_levels(dw), gate_inputs_from_datawindow(dw)
+    close, stop, t1, entry = lv["price"], lv["stop"], lv["target"], lv["entry"]
+    if not (close and stop and t1 and stop < close < t1):
+        return None
+    rr_mkt = dw_rr_at_market(lv) or 0.0
+    code = int(g["action_long"]) if g.get("action_long") is not None else None
+    lane = None
+    if g.get("long_in_zone") == 1.0 and rr_mkt >= 2.0 and g.get("fade_long") == 0.0 and code != 18:
+        lane = "ZONE_RR"
+    elif code == 20 and entry and stop < entry < t1 and (t1 - entry) / (entry - stop) >= 2.0:
+        lane = "CODE20"
+    elif g.get("ext_z_self") is not None and g["ext_z_self"] <= -2.0:
+        lane = "OVERSOLD"
+    if not lane:
+        return None
+    return {"lane": lane, "close": close, "stop": stop, "target": t1, "rr_at_market": round(rr_mkt, 2)}
+
+
+def _earnings_within(ticker: str, start: date, days: int) -> Optional[str]:
+    try:
+        from src.clients.earnings_client import resolve_next_earnings_date
+
+        d = resolve_next_earnings_date(ticker)[0]
+    except Exception:
+        return None
+    return str(d) if d and start <= d <= start + timedelta(days=days) else None
+
+
+def build_measured_ticket(ticker: str, dw: Dict[str, Any], date_str: str) -> Optional[Dict[str, Any]]:
+    """NEXT_OPEN ticket from the Data Window's own levels when the bar is on a measured lane.
+
+    Blocked only by hard facts: held, earnings within 7 days, an unmatured paper trade in the same lane.
+    """
+    ticker = ticker.upper()
+    m = measured_lane(dw)
+    if not m:
+        return None
+    if ticket_blocker(ticker, {}, date_str, skip_superseded=True):
+        return None
+    d = date.fromisoformat(date_str)
+    if _earnings_within(ticker, d, EARNINGS_BLOCK_DAYS):
+        return None
+    try:
+        from src.tracking.ticket_paper import has_open
+
+        if has_open(ticker, m["lane"]):
+            return None
+    except Exception:
+        pass
+    close, stop, t1, qty = round(m["close"], 2), round(m["stop"], 2), round(m["target"], 2), trade_rules.SHARES_PER_TRADE
+    return {
+        "ticker": ticker,
+        "date": date_str,
+        "plan_date": date_str,
+        "side": "BUY",
+        "entry_method": "NEXT_OPEN",
+        "order_type": f"NEXT OPEN (skip if open <= {stop} or >= {t1})",
+        "limit_price": close,
+        "max_chase_price": t1,
+        "qty": qty,
+        "stop": stop,
+        "target_1": t1,
+        "target_2": None,
+        "signal_close": close,
+        "rr_at_market": m["rr_at_market"],
+        "rr_at_limit": m["rr_at_market"],
+        "risk_usd": round(trade_rules.risk_usd(close, stop, qty), 2),
+        "option_alternative": None,
+        "option_dropped": None,
+        "play": "SHARES",
+        "exit_by": str(_add_sessions(d, 21)),
+        "horizon_bars": 21,
+        "good_til": str(_add_sessions(d, 1)),
+        "cancel_if": f"next open at or below {stop} or at or above {t1}",
+        "earnings_stance": None,
+        "lane": m["lane"],
+        "levels_source": "pine_alert",
+        "verdict": "MEASURED",
+        "paper": True,
+    }
+
+
+def maybe_measured_ticket(ticker: str, date_str: str, dw: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Load the Data Window, build a measured ticket, persist + notify (PAPER) and record it in the paper ledger."""
+    if dw is None:
+        from src.data.datawindow_loader import load_datawindow
+
+        dw = load_datawindow(ticker, date_str)
+    if not dw:
+        return None
+    tk = build_measured_ticket(ticker, dw, date_str)
+    if not tk:
+        return None
+    from src.tracking.ticket_paper import record_ticket
+
+    if record_ticket(tk):
+        persist_ticket(tk)
+        try:
+            from src.tracking.notify import notify
+
+            notify("ENTRY", f"{tk['ticker']} PAPER ticket ({tk['lane']})", ticket_text(tk),
+                   dedupe_key=f"ticket:{tk['ticker']}:{date_str}:{tk['lane']}")
+        except Exception as e:
+            logger.warning(f"[{tk['ticker']}] ticket notify failed: {e}")
+    return tk
+
+
 def bounce_play(ticker: str, entry: float, stop: float, t1: float, atr: float, date_str: str,
                 stance: Optional[str] = None, report_date: Optional[str] = None) -> Dict[str, Any]:
     """Time-boxed bounce to entry + BOUNCE_ATR*ATR (capped at T1): the option expiring just after the exit-by date, or shares only."""
@@ -149,11 +268,72 @@ def bounce_play(ticker: str, entry: float, stop: float, t1: float, atr: float, d
     return out
 
 
-def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str) -> Optional[Dict[str, Any]]:
+def _latest_research_date(ticker: str, today: str) -> Optional[str]:
+    root = config.BASE_DIR / "reports"
+    if not root.exists():
+        return None
+    for d in sorted((p.name for p in root.iterdir() if p.is_dir() and p.name <= today), reverse=True)[:30]:
+        if any((root / d / f"{ticker}_{s}.md").exists() for s in ("arbitration", "summary")):
+            return d
+    return None
+
+
+def held_symbols() -> set:
+    """Underlying symbols held at the broker (all accounts) or tracked open; empty when unreadable."""
+    out: set = set()
+    try:
+        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+
+        out |= {str(p.get("underlying_symbol") or p.get("symbol") or "").upper() for p in (get_portfolio_positions() or [])}
+    except Exception as e:
+        logger.debug(f"holdings read failed: {e}")
+    try:
+        from src.tracking.position_state import list_open
+
+        out |= {t.upper() for t in list_open()}
+    except Exception:
+        pass
+    out.discard("")
+    return out
+
+
+def ticket_blocker(ticker: str, plan: Dict[str, Any], today: str, held: Optional[set] = None, skip_superseded: bool = False) -> Optional[str]:
+    """Why a fresh BUY ticket must not exist for this plan, or None. Single gate for build, touch and pre-open.
+    skip_superseded: measured lanes are not voided by newer research, only by hard facts."""
+    if plan.get("void"):
+        return f"voided: {plan['void']}"
+    if plan.get("level_gate_rejected"):
+        return "levels failed the gate"
+    v = str(plan.get("verdict") or "").upper()
+    if any(w in v for w in ("CASH_SKIP", "HOLD", "MANAGE", "NO_LEVELS")):
+        return f"verdict {v}"
+    if not skip_superseded:
+        pd, latest = str(plan.get("plan_date") or plan.get("date") or "")[:10], _latest_research_date(ticker, today)
+        if pd and latest and latest > pd:
+            return f"plan of {pd} superseded by research of {latest}"
+    if ticker.upper() in (held_symbols() if held is None else held):
+        return "already held; add plans are not auto-ticketed"
+    return None
+
+
+def void_ticket(ticker: str, date_str: str, reason: str) -> None:
+    fp = config.BASE_DIR / "reports" / date_str / f"{ticker}_ticket.json"
+    try:
+        if fp.exists():
+            t = json.loads(fp.read_text(encoding="utf-8"))
+            if not t.get("void"):
+                fp.write_text(json.dumps({**t, "void": reason}, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[{ticker}] ticket void failed: {e}")
+
+
+def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str, skip_superseded: bool = False) -> Optional[Dict[str, Any]]:
     sp = watch_data.get("shares_plan") or {}
     if str(watch_data.get("side") or "LONG").upper() != "LONG":
         return None
-    if "CASH_SKIP" in str(watch_data.get("verdict", "")).upper() or not watch_data.get("actionable"):
+    if not watch_data.get("actionable"):
+        return None
+    if ticket_blocker(str(watch_data.get("ticker") or ""), watch_data, date_str, skip_superseded=skip_superseded):
         return None
     stop, t1, t2 = _f(sp.get("tactical_stop")), _f(sp.get("target_1")), _f(sp.get("target_2"))
     hi, lo = _f(sp.get("entry_zone_high")), _f(sp.get("entry_zone_low"))
@@ -189,6 +369,7 @@ def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str) -> Opti
     return {
         "ticker": watch_data.get("ticker"),
         "date": date_str,
+        "plan_date": str(watch_data.get("date") or date_str)[:10],
         "side": "BUY",
         "order_type": "LIMIT" if limit < spot or not spot else "LIMIT (marketable)",
         "limit_price": round(limit, 2),
@@ -233,7 +414,8 @@ def ticket_text(t: Dict[str, Any]) -> str:
 def persist_ticket(ticket: Dict[str, Any]) -> None:
     tk, d = ticket["ticker"], ticket["date"]
     try:
-        out = config.BASE_DIR / "reports" / d / f"{tk}_ticket.json"
+        kind = "measured_ticket" if ticket.get("levels_source") == "pine_alert" else "ticket"
+        out = config.BASE_DIR / "reports" / d / f"{tk}_{kind}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
     except Exception as e:
@@ -252,14 +434,17 @@ def persist_and_notify(ticket: Dict[str, Any]) -> None:
 
 
 def _latest_watch_levels(ticker: str, today: str) -> Optional[Dict[str, Any]]:
-    root = config.BASE_DIR / "reports"
-    for d in sorted((p for p in root.iterdir() if p.is_dir() and p.name <= today), reverse=True)[:30] if root.exists() else []:
-        fp = d / f"{ticker}_watch_levels.json"
-        if fp.exists():
-            try:
-                return json.loads(fp.read_text(encoding="utf-8"))
-            except Exception:
-                return None
+    """Persisted plans live in data/raw/<date>/<T>/; gate-rejected display copies in reports/<date>/."""
+    reports, raw = config.BASE_DIR / "reports", config.BASE_DIR / "data" / "raw"
+    safe = ticker.replace(":", "_")
+    days = {p.name for root in (reports, raw) if root.exists() for p in root.iterdir() if p.is_dir() and p.name <= today}
+    for d in sorted(days, reverse=True)[:30]:
+        for fp in (raw / d / safe / f"{safe}_watch_levels.json", reports / d / f"{safe}_watch_levels.json"):
+            if fp.exists():
+                try:
+                    return json.loads(fp.read_text(encoding="utf-8"))
+                except Exception:
+                    return None
     return None
 
 
@@ -275,9 +460,14 @@ def act_on_touch(ticker: str, price: float, today: str, mode: str = "touch", wd:
             pass
     if not wd.get("shares_plan"):
         return {"action": "NO TRADE", "text": f"{ticker}: no stored plan"}
+    why_not = ticket_blocker(ticker, wd, today, skip_superseded=wd.get("levels_source") in MEASURED_SOURCES)
+    if why_not:
+        return {"action": "NO TRADE", "text": f"{ticker}: no ticket, {why_not}"}
     from src.tracking.auto_triage_daemon import enqueue_touch_mid, needs_fresh_research
 
     stale, why = needs_fresh_research(ticker, today)
+    if mode == "touch" and not stale and wd.get("scenarios") and (_latest_research_date(ticker, today) or "") < today:
+        stale, why = True, "scenario trigger reached; arrival check"
     if stale:
         if mode == "approach":
             return {"action": "NO TRADE", "text": f"{ticker}: dossier stale ({why})"}
@@ -359,7 +549,17 @@ ET = ZoneInfo("America/New_York")
 
 
 def evaluate_ticket(t: Dict[str, Any], price: float) -> Dict[str, Any]:
-    stop, limit, cap = float(t["stop"]), float(t["limit_price"]), float(t["max_chase_price"])
+    stop, t1 = float(t["stop"]), float(t["target_1"])
+    risk = max(price - stop, 0.01)
+    if t.get("entry_method") == "NEXT_OPEN":
+        if price <= stop:
+            verdict, why = "STAND DOWN", f"open {price:.2f} at or through stop {stop:.2f}; no entry"
+        elif price >= t1:
+            verdict, why = "STAND DOWN", f"open {price:.2f} at or above target {t1:.2f}; no entry"
+        else:
+            verdict, why = "GO", f"buy at the open {price:.2f}, inside stop {stop:.2f} / target {t1:.2f}"
+        return {"verdict": verdict, "why": why, "rr_now": round((t1 - price) / risk, 2)}
+    limit, cap = float(t["limit_price"]), float(t["max_chase_price"])
     if price <= stop:
         verdict, why = "STAND DOWN", f"{price:.2f} at or through stop {stop:.2f}"
     elif price > cap:
@@ -368,8 +568,7 @@ def evaluate_ticket(t: Dict[str, Any], price: float) -> Dict[str, Any]:
         verdict, why = "GO", f"{price:.2f} at or below limit {limit:.2f}, fills"
     else:
         verdict, why = "RESTING", f"{price:.2f} above limit {limit:.2f}, inside chase cap {cap:.2f}; limit rests"
-    risk = max(price - stop, 0.01)
-    return {"verdict": verdict, "why": why, "rr_now": round((float(t["target_1"]) - price) / risk, 2)}
+    return {"verdict": verdict, "why": why, "rr_now": round((t1 - price) / risk, 2)}
 
 
 def _news_delta(ticker: str, since: str) -> List[str]:
@@ -383,21 +582,36 @@ def _news_delta(ticker: str, since: str) -> List[str]:
 
 
 def open_tickets(days: int = 14) -> List[Dict[str, Any]]:
-    """Tickets from the last N calendar days still inside good-til."""
-    root, today, out = config.BASE_DIR / "reports", datetime.now().strftime("%Y-%m-%d"), []
+    """Newest valid ticket per ticker, inside good-til, not voided, superseded, gate-rejected or held."""
+    root, today, latest = config.BASE_DIR / "reports", datetime.now().strftime("%Y-%m-%d"), {}
+    held = held_symbols()
     for i in range(max(1, min(days, 21))):
-        d = root / (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        dname = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        d = root / dname
         for f in sorted(d.glob("*_ticket.json")) if d.exists() else []:
             try:
                 t = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if str(t.get("good_til") or "") >= today:
-                out.append(t)
-    return out
+            tk = str(t.get("ticker") or "")
+            if tk in latest or str(t.get("good_til") or "") < today:
+                continue
+            if not t.get("plan_date"):
+                try:
+                    w = json.loads((d / f"{tk}_watch_levels.json").read_text(encoding="utf-8"))
+                    ok = abs(float(w["shares_plan"]["tactical_stop"]) - float(t["stop"])) < 0.01
+                    t["level_gate_rejected"] = w.get("level_gate_rejected")
+                except Exception:
+                    ok = False
+                if not ok:
+                    continue
+                t["plan_date"] = dname
+            latest[tk] = t if not ticket_blocker(tk, t, today, held, skip_superseded=t.get("levels_source") in MEASURED_SOURCES) else None
+    return [t for t in latest.values() if t]
 
 
-def run_preopen(price_fn=None) -> List[Dict[str, Any]]:
+def run_preopen(price_fn=None, max_measured: int = 3) -> List[Dict[str, Any]]:
+    """GO / STAND DOWN per open ticket. Measured tickets: top `max_measured` by R:R at market, labelled PAPER."""
     from src.tracking.notify import notify
 
     if price_fn is None:
@@ -405,6 +619,9 @@ def run_preopen(price_fn=None) -> List[Dict[str, Any]]:
 
         price_fn = lambda syms: get_current_prices_batch(syms, context="surveillance") or {}
     tickets = open_tickets()
+    measured = sorted((t for t in tickets if t.get("levels_source") == "pine_alert"),
+                      key=lambda t: float(t.get("rr_at_market") or 0), reverse=True)[:max_measured]
+    tickets = measured + [t for t in tickets if t.get("levels_source") != "pine_alert"]
     if not tickets:
         return []
     prices = price_fn([t["ticker"] for t in tickets])
@@ -413,11 +630,12 @@ def run_preopen(price_fn=None) -> List[Dict[str, Any]]:
         px = prices.get(t["ticker"])
         if not px:
             continue
-        res = {"ticker": t["ticker"], **evaluate_ticket(t, float(px))}
+        res = {"ticker": t["ticker"], **evaluate_ticket(t, float(px)), "paper": bool(t.get("paper"))}
         res["news"] = _news_delta(t["ticker"], t["date"])
         out.append(res)
-        body = f"{res['verdict']}: {res['why']} | R:R now {res['rr_now']}" + (f" | news: {res['news'][0]}" if res["news"] else "")
-        notify("ENTRY" if res["verdict"] == "GO" else "RISK", f"{t['ticker']} pre-open {res['verdict']}", body,
+        label = ("PAPER " if res["paper"] else "") + res["verdict"]
+        body = f"{label}: {res['why']} | R:R now {res['rr_now']}" + (f" | news: {res['news'][0]}" if res["news"] else "")
+        notify("ENTRY" if res["verdict"] == "GO" else "RISK", f"{t['ticker']} pre-open {label}", body,
                dedupe_key=f"preopen:{t['ticker']}:{datetime.now(ET):%Y-%m-%d}:{res['verdict']}")
     return out
 

@@ -2789,7 +2789,7 @@ window.AppSwing = {
       const activeChat = window.AppState.activeChats.find(c => c.ticker === window.AppState.activeChatTicker);
       if (activeChat) activeChat.activeTab = tab;
     }
-    ['plan', 'local', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow', 'dp'].forEach(t => {
+    ['plan', 'local', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow', 'dp', 'pnl'].forEach(t => {
       const btn = document.getElementById(`tab-${t}-btn`);
       if (btn) btn.className = `tab-btn ${t === tab ? 'active' : ''}`;
     });
@@ -2844,14 +2844,13 @@ window.AppSwing = {
     } else if (tab === 'arb') {
       const arbContent = (data.arbitration_md && !data.arbitration_md.includes('LOCAL RESEARCH DOSSIER')) ? data.arbitration_md : null;
       if (arbContent) {
-        let graphHtml = '';
-        if (window.TradeLevelGraph && typeof window.TradeLevelGraph.renderLevelGraphHtml === 'function') {
-          graphHtml = window.TradeLevelGraph.renderLevelGraphHtml(data);
-        }
-        bodyEl.innerHTML = graphHtml + window.AppUtils.renderMarkdown(arbContent);
-        if (window.TradeLevelGraph && typeof window.TradeLevelGraph.attachHandlers === 'function') {
-          window.TradeLevelGraph.attachHandlers(bodyEl);
-        }
+        const pnlBannerHtml = `
+          <div style="background:linear-gradient(135deg, rgba(6,182,212,0.08), rgba(16,185,129,0.06)); border:1px solid rgba(6,182,212,0.25); border-radius:8px; padding:8px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <span style="font-size:12px; font-weight:700; color:var(--text-main);">📊 Suggested Trade Levels &amp; P&amp;L Map visualizer is available in its dedicated tab.</span>
+            <button class="btn secondary" onclick="AppSwing.switchDossierTab('pnl')" style="font-size:11px; padding:3px 10px; cursor:pointer;">Open P&amp;L Map ↗</button>
+          </div>
+        `;
+        bodyEl.innerHTML = pnlBannerHtml + window.AppUtils.renderMarkdown(arbContent);
       } else {
         bodyEl.innerHTML = `
           <div style="padding:40px; text-align:center; color:var(--text-muted);">
@@ -3112,6 +3111,30 @@ window.AppSwing = {
       this.renderOptionsFlowTab(data.ticker);
     } else if (tab === 'dp') {
       this.renderDarkPoolTab(data.ticker);
+    } else if (tab === 'pnl') {
+      this.togglePositionsPane(false);
+      let graphHtml = '';
+      if (window.TradeLevelGraph && typeof window.TradeLevelGraph.renderLevelGraphHtml === 'function') {
+        graphHtml = window.TradeLevelGraph.renderLevelGraphHtml(data);
+      }
+      if (!graphHtml) {
+        bodyEl.innerHTML = `
+          <div style="padding:40px; text-align:center; color:var(--text-muted);">
+            <div style="font-size:24px; margin-bottom:10px;">📊</div>
+            <h3 style="color:var(--text-main); margin-bottom:8px;">No P&amp;L Map Available</h3>
+            <p style="font-size:12px;">Structured entry, stop, and target levels have not been generated yet for <strong>${data.ticker}</strong>.</p>
+          </div>
+        `;
+      } else {
+        bodyEl.innerHTML = `
+          <div style="padding:16px 20px; max-width:1050px; margin:0 auto; font-family:'Outfit',sans-serif;">
+            ${graphHtml}
+          </div>
+        `;
+        if (window.TradeLevelGraph && typeof window.TradeLevelGraph.attachHandlers === 'function') {
+          window.TradeLevelGraph.attachHandlers(bodyEl);
+        }
+      }
     }
   },
 
@@ -3570,8 +3593,8 @@ window.AppSwing = {
       const shelves = dp.major_shelves || [];
       const buyPct = Number(dp.dp_buy_pct || 50.0).toFixed(1);
       const sentiment = dp.sentiment || 'BALANCED';
-      const isBullish = sentiment.includes('BULLISH') || sentiment.includes('ACCUMULATION');
-      const isBearish = sentiment.includes('BEARISH') || sentiment.includes('DISTRIBUTION');
+      const isBullish = sentiment.includes('BULLISH');
+      const isBearish = sentiment.includes('BEARISH');
       const sentColor = isBullish ? '#10b981' : (isBearish ? '#f43f5e' : '#38bdf8');
       const sentBadgeStyle = isBullish 
         ? 'background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3);' 
@@ -3592,7 +3615,7 @@ window.AppSwing = {
                 <span class="pill" style="font-size:10px; font-weight:700; font-family:var(--font-mono, monospace);">${dp.trade_date || 'Session'}</span>
               </div>
               <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">
-                Real-time off-exchange block trades aggregated into institutional volume shelves.
+                Off-exchange (FINRA TRF) prints, regular session. Descriptive only; ${dp.window_is_full_session ? 'full session' : 'last ' + Number(dp.window_minutes || 0).toFixed(1) + ' min only'}.
               </div>
             </div>
             <div style="display:flex; gap:8px; align-items:center;">
@@ -3601,9 +3624,6 @@ window.AppSwing = {
               </button>
               <button class="btn secondary" onclick="AppSwing.copyDarkPoolFullSummary()" style="font-size:11px; padding:4px 10px; color:var(--cyan); border-color:rgba(6,182,212,0.4);">
                 📋 Copy Summary
-              </button>
-              <button class="btn secondary" onclick="AppSwing.syncTastytradeDarkPoolAlerts('${sym}')" style="font-size:11px; padding:4px 10px; color:#f87171; border-color:rgba(239,68,68,0.4); background:rgba(239,68,68,0.12);" title="Push primary dark pool support & resistance shelves to Tastytrade Mobile Alerts">
-                🔔 Arm Tastytrade
               </button>
             </div>
           </div>
@@ -3621,7 +3641,7 @@ window.AppSwing = {
             </div>
 
             <div class="dp-card">
-              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⚖️ Institutional Flow Sentiment</span>
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⚖️ Inferred Off-Exchange Lean (${Number(dp.dp_classified_pct || 0).toFixed(0)}% classified)</span>
               <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
                 <span class="pill" style="font-size:10px; font-weight:800; padding:2px 7px; ${sentBadgeStyle}">${sentiment}</span>
                 <span style="font-family:var(--font-mono, monospace); font-weight:800; color:${sentColor}; font-size:13px;">${buyPct}%</span>
@@ -3640,7 +3660,7 @@ window.AppSwing = {
             </div>
 
             <div class="dp-card">
-              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⭐ Primary Defense Shelf</span>
+              <span class="tactical-card-label" style="font-size:10.5px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">⭐ Top Volume Cluster</span>
               <span style="color:#a855f7; font-size:16px; font-weight:800; font-family:var(--font-mono, monospace); margin-top:2px;">
                 ${shelves.length > 0 ? '$' + Number(shelves[0].price).toFixed(2) : '--'}
               </span>
@@ -3661,16 +3681,16 @@ window.AppSwing = {
             </div>
           </div>
 
-          <!-- AI Institutional Order Flow Synthesis Card -->
+          <!-- AI Off-Exchange Tape Summary Card -->
           <div class="dp-ai-card" id="dp-ai-card">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; border-bottom:1px solid rgba(148,163,184,0.12); padding-bottom:8px;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <span style="font-size:16px;">🤖</span>
-                <span style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main);">Institutional AI Order Flow Synthesis</span>
-                <span class="pill" id="dp-ai-badge" style="font-size:9.5px; font-weight:800; font-family:var(--font-mono, monospace); background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-muted);">${dp.ai_provider ? (dp.ai_provider === 'local_llm' ? 'LOCAL LLM' : 'INSTITUTIONAL RULES') : 'AI BRIEFING'}</span>
+                <span style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main);">Off-Exchange Tape Summary</span>
+                <span class="pill" id="dp-ai-badge" style="font-size:9.5px; font-weight:800; font-family:var(--font-mono, monospace); background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-muted);">${dp.ai_provider ? (dp.ai_provider === 'local_llm' ? 'LOCAL LLM' : 'RULES ENGINE') : 'AI BRIEFING'}</span>
               </div>
               <div style="display:flex; gap:6px; align-items:center;">
-                <button class="btn-action btn-secondary" onclick="AppSwing.fetchDarkPoolAiSummary('${sym}', true)" style="font-size:11px; padding:4px 10px; cursor:pointer;" title="Re-run institutional AI analysis">
+                <button class="btn-action btn-secondary" onclick="AppSwing.fetchDarkPoolAiSummary('${sym}', true)" style="font-size:11px; padding:4px 10px; cursor:pointer;" title="Re-run AI analysis">
                   🔄 Re-Analyze
                 </button>
                 <button class="btn-action btn-secondary" onclick="AppSwing.copyDarkPoolAiSummary()" style="font-size:11px; padding:4px 10px; cursor:pointer;" title="Copy AI summary text">
@@ -3681,7 +3701,7 @@ window.AppSwing = {
             <div class="dp-ai-body" id="dp-ai-content">
               ${dp.ai_summary ? (window.AppUtils && window.AppUtils.renderMarkdown ? window.AppUtils.renderMarkdown(dp.ai_summary) : (window.marked ? window.marked.parse(dp.ai_summary) : dp.ai_summary)) : `
                 <div style="padding:14px; text-align:center; color:var(--text-muted); font-size:12px; font-family:var(--font-mono, monospace);">
-                  <span style="display:inline-block; animation:pulseAnim 1.5s infinite; margin-right:6px;">⚡</span> Synthesizing institutional tape with AI...
+                  <span style="display:inline-block; animation:pulseAnim 1.5s infinite; margin-right:6px;">⚡</span> Summarizing off-exchange tape...
                 </div>
               `}
             </div>
@@ -3691,7 +3711,7 @@ window.AppSwing = {
           <div class="dp-ladder-wrapper">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:8px;">
               <div style="font-family:'Outfit',sans-serif; font-size:13px; font-weight:800; color:#f8fafc; display:flex; align-items:center; gap:6px;">
-                <span>📈 INSTITUTIONAL VOLUME PROFILE LADDER</span>
+                <span>📈 OFF-EXCHANGE VOLUME LADDER</span>
                 <span style="font-size:10.5px; color:#94a3b8; font-weight:600;">(${ladder.length} price tiers)</span>
               </div>
               <div style="font-size:11px; color:#94a3b8; font-family:var(--font-mono, monospace);">
@@ -3742,12 +3762,12 @@ window.AppSwing = {
           <!-- Top Signature Block Trades Table -->
           <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:16px 20px;">
             <div style="font-family:'Outfit',sans-serif; font-size:13.5px; font-weight:800; color:var(--text-main); margin-bottom:12px; display:flex; align-items:center; gap:6px;">
-              <span>🐋 Institutional Signature Block Prints</span>
-              <span class="pill" style="font-size:10px; font-weight:700;">Top Transactions &ge; 2.5K shs / $250K</span>
+              <span>🐋 Largest Off-Exchange Prints</span>
+              <span class="pill" style="font-size:10px; font-weight:700;">&ge; 1K shs and &ge; $250K</span>
             </div>
 
             ${sigs.length === 0 ? `
-              <div style="color:var(--text-muted); font-size:12px; padding:12px 0;">No single block prints &ge; 2,500 shares recorded in this sample.</div>
+              <div style="color:var(--text-muted); font-size:12px; padding:12px 0;">No prints &ge; 1,000 shares and &ge; $250K in this window.</div>
             ` : `
               <div style="overflow-x:auto;">
                 <table style="width:100%; border-collapse:collapse; font-size:11.5px; font-family:var(--font-mono, monospace);">
@@ -3806,7 +3826,7 @@ window.AppSwing = {
     if (!contentEl) return;
     contentEl.innerHTML = `
       <div style="padding:14px; text-align:center; color:var(--text-muted); font-size:12px; font-family:var(--font-mono, monospace);">
-        <span style="display:inline-block; animation:pulseAnim 1.5s infinite; margin-right:6px;">⚡</span> Analyzing institutional dark pool blocks with AI...
+        <span style="display:inline-block; animation:pulseAnim 1.5s infinite; margin-right:6px;">⚡</span> Summarizing off-exchange tape...
       </div>
     `;
     try {
@@ -3831,7 +3851,7 @@ window.AppSwing = {
           } else {
             contentEl.innerHTML = `<div style="white-space:pre-wrap;">${fallbackSummary}</div>`;
           }
-          if (badgeEl) badgeEl.textContent = 'INSTITUTIONAL RULES';
+          if (badgeEl) badgeEl.textContent = 'RULES ENGINE';
           return;
         }
         throw fetchErr;
@@ -3847,7 +3867,7 @@ window.AppSwing = {
           contentEl.innerHTML = `<div style="white-space:pre-wrap;">${data.summary}</div>`;
         }
         if (badgeEl) {
-          badgeEl.textContent = data.provider === 'local_llm' ? 'LOCAL LLM' : 'INSTITUTIONAL RULES';
+          badgeEl.textContent = data.provider === 'local_llm' ? 'LOCAL LLM' : 'RULES ENGINE';
         }
       } else {
         contentEl.innerHTML = `<div style="color:var(--rose, #f43f5e); padding:8px 0;">Could not generate AI analysis: ${data?.message || 'Unknown error'}</div>`;
@@ -3864,7 +3884,7 @@ window.AppSwing = {
         } else {
           contentEl.innerHTML = `<div style="white-space:pre-wrap;">${fallbackSummary}</div>`;
         }
-        if (badgeEl) badgeEl.textContent = 'INSTITUTIONAL RULES';
+        if (badgeEl) badgeEl.textContent = 'RULES ENGINE';
         return;
       }
       contentEl.innerHTML = `<div style="color:var(--rose, #f43f5e); padding:8px 0;">Error fetching AI analysis: ${err.message}</div>`;
@@ -3872,78 +3892,13 @@ window.AppSwing = {
   },
 
   generateClientDarkPoolSummary(ticker, dp) {
-    const sym = (ticker || '').toUpperCase();
     const buyPct = Number(dp.dp_buy_pct || 50.0).toFixed(1);
-    const totalVol = Number(dp.dp_total_volume || 0).toLocaleString();
-    const totalNotional = Number(dp.dp_total_notional || 0).toLocaleString(undefined, {maximumFractionDigits:0});
-    const printsCnt = Number(dp.dp_trades_count || 0).toLocaleString();
-    const tapePct = Number(dp.dp_share_of_tape_pct || 0).toFixed(1);
-    const sentiment = dp.sentiment || 'BALANCED / CONTESTED';
+    const cov = dp.window_is_full_session ? 'full session' : `only the last ${Number(dp.window_minutes || 0).toFixed(1)} min`;
     const shelves = dp.major_shelves || [];
     const sigs = dp.signature_prints || [];
-
-    let biasDesc = '';
-    if (Number(buyPct) >= 58.0) {
-      biasDesc = `**Aggressive Institutional Accumulation (${buyPct}% Buy Flow)**. Buyers are actively lifting offers on the off-exchange tape across ${totalVol} shares ($${totalNotional} notional).`;
-    } else if (Number(buyPct) <= 42.0) {
-      biasDesc = `**Institutional Distribution / Net Liquidation (${(100 - Number(buyPct)).toFixed(1)}% Sell Flow)**. Sellers are actively hitting bids on the off-exchange tape across ${totalVol} shares ($${totalNotional} notional).`;
-    } else {
-      biasDesc = `**Balanced / Contested Tape (${buyPct}% Buy / ${(100 - Number(buyPct)).toFixed(1)}% Sell)**. Order flow is two-way and evenly matched across ${totalVol} shares ($${totalNotional} notional). No dominant breakout trend is underway; institutions are trading range-bound inventory.`;
-    }
-
-    const tapeDesc = Number(tapePct) > 0 
-      ? `With **${tapePct}%** of all observed volume executing off-exchange across ${printsCnt} prints, institutions are heavily internalizing order flow.`
-      : `Off-exchange volume accounts for ${printsCnt} TRF prints.`;
-
-    let sigInterp = '';
-    if (sigs && sigs.length > 0) {
-      const topS = sigs[0];
-      const sPx = Number(topS.price || 0).toFixed(2);
-      const sSh = Number(topS.shares || 0).toLocaleString();
-      const sNotional = Number(topS.notional || 0).toLocaleString(undefined, {maximumFractionDigits:0});
-      const sDir = topS.direction || 'NEUTRAL';
-      const sTs = topS.timestamp ? topS.timestamp.split('T')[1].slice(0, 8) : '--';
-      const nearShelf = shelves.some(s => Math.abs(Number(s.price) - Number(topS.price)) <= 0.15);
-
-      if (sDir === 'SELL') {
-        if (nearShelf) {
-          sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC). While tagged as a \`SELL\` (printed on bid/downtick), it executed directly inside a primary volume shelf, indicating **passive limit absorption by buyers** rather than aggressive market dumping.`;
-        } else {
-          sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC), tagged as a \`SELL\` (seller-initiated on bid). Treat this level as potential overhead supply.`;
-        }
-      } else if (sDir === 'BUY') {
-        sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC), tagged as a \`BUY\` (buyer-initiated on ask). Institutions were aggressive at this level, establishing a defense floor.`;
-      } else {
-        sigInterp = `Largest signature print was **${sSh} shares @ $${sPx}** ($${sNotional} | ${sTs} UTC).`;
-      }
-    } else {
-      sigInterp = 'No single block trades \u2265 2,500 shares or $250k notional detected. Order flow is fragmented across retail and algorithmic sizes.';
-    }
-
-    let shelvesDesc = '';
-    let minShelf = null, maxShelf = null;
-    if (shelves && shelves.length > 0) {
-      const shelfItems = shelves.slice(0, 3).map(s => `**$${Number(s.price).toFixed(2)}** (${Number(s.volume).toLocaleString()} shs / $${Number(s.notional).toLocaleString(undefined, {maximumFractionDigits:0})})`);
-      shelvesDesc = `Major institutional liquidity clusters are anchored at: ${shelfItems.join(', ')}. These dense price shelves represent high-volume absorption points where market makers and institutions have accumulated inventory.`;
-      const prices = shelves.map(s => Number(s.price));
-      minShelf = Math.min(...prices);
-      maxShelf = Math.max(...prices);
-    } else {
-      shelvesDesc = 'Flow is broadly dispersed across price tiers with no single high-density liquidity shelf.';
-    }
-
-    let gameplan = '';
-    if (minShelf !== null && maxShelf !== null) {
-      if (Math.abs(maxShelf - minShelf) < 0.80) {
-        gameplan = `Price is coiling tightly within a $${minShelf.toFixed(2)} \u2013 $${maxShelf.toFixed(2)} pocket. Treat **$${(minShelf - 0.05).toFixed(2)}** as the primary absorption floor and **$${(maxShelf + 0.05).toFixed(2)}** as the immediate ceiling. Expect rotation between these bounds until volume expands significantly.`;
-      } else {
-        gameplan = `Key institutional support floor is **$${minShelf.toFixed(2)}** (absorption floor). Key overhead resistance is **$${maxShelf.toFixed(2)}**. A confirmed break below $${minShelf.toFixed(2)} invalidates institutional defense, while clearing $${maxShelf.toFixed(2)} on volume opens runway.`;
-      }
-    } else {
-      gameplan = `Flow sentiment is ${sentiment}. Anchor tactical stops around the primary defense shelf where institutional liquidity was absorbed.`;
-    }
-
-    return `* **Net Institutional Bias**: ${biasDesc} ${tapeDesc}\n\n* **Signature Block Trades**: ${sigInterp}\n\n* **Key Defense / Resistance Shelves**: ${shelvesDesc}\n\n* **Tactical Gameplan**: ${gameplan}`;
+    const lv = shelves.slice(0, 3).map(s => `$${Number(s.price).toFixed(2)} (${Number(s.volume).toLocaleString()} sh)`).join(', ');
+    const big = sigs.length ? `${Number(sigs[0].shares).toLocaleString()} sh @ $${Number(sigs[0].price).toFixed(2)}, inferred ${sigs[0].direction}` : 'none >= 1,000 sh and >= $250k';
+    return `* **Inferred Flow**: ${buyPct}% buy over ${Number(dp.dp_classified_pct || 0).toFixed(0)}% classified volume (${dp.direction_method || 'tick'} rule): ${dp.sentiment || 'BALANCED'}. ${Number(dp.dp_trades_count || 0).toLocaleString()} prints, ${Number(dp.dp_total_volume || 0).toLocaleString()} shares; window covers ${cov}.\n\n* **Largest Prints**: ${big}.\n\n* **Volume Clusters**: ${lv || 'dispersed, none dominant'}. Volume clusters only; no support or resistance edge has been measured.\n\n* **Caveat**: Descriptive only. Off-exchange flow is mostly retail-wholesaler/internalized; direction is inferred and unmeasured.`;
   },
 
   copyDarkPoolAiSummary() {
@@ -3951,7 +3906,7 @@ window.AppSwing = {
     if (text) {
       navigator.clipboard.writeText(text);
       if (window.AppUtils && window.AppUtils.showToast) {
-        window.AppUtils.showToast('Institutional AI analysis copied!');
+        window.AppUtils.showToast('AI analysis copied!');
       } else {
         alert('Copied AI analysis!');
       }
@@ -3969,30 +3924,6 @@ window.AppSwing = {
       } else {
         alert('Copied!');
       }
-    }
-  },
-
-  async syncTastytradeDarkPoolAlerts(sym) {
-    if (!sym) return;
-    const btn = event?.currentTarget;
-    const origText = btn ? btn.innerText : '';
-    if (btn) btn.innerText = '⏳ Arming...';
-    try {
-      const resp = await fetch(`/api/darkpool/${encodeURIComponent(sym)}/sync-tastytrade-alerts`, { method: 'POST' });
-      const res = await resp.json();
-      if (btn) btn.innerText = origText;
-      if (res.status === 'ok') {
-        if (window.AppUtils && window.AppUtils.showToast) {
-          window.AppUtils.showToast(res.message, 'success');
-        } else {
-          alert(`✅ ${res.message}`);
-        }
-      } else {
-        alert(`⚠️ ${res.message || 'Could not arm Tastytrade alerts.'}`);
-      }
-    } catch (e) {
-      if (btn) btn.innerText = origText;
-      alert(`⚠️ Failed to arm Tastytrade alerts: ${e.message}`);
     }
   },
 

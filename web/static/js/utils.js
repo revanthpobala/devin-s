@@ -34,12 +34,57 @@ window.AppUtils = {
       let cleanText = String(text);
       let rawLevelsJson = null;
 
-      // Extract machine-readable watch_levels block so narrative markdown format is strictly respected
+      // 1. Extract binding levels block if present and convert to collapsible drawer
+      let bindingLevelsHtml = '';
+      const blMatch = cleanText.match(/<!--\s*binding-levels\s*-->([\s\S]*?)<!--\s*binding-levels\s*-->/i);
+      let bindingBlockContent = '';
+      if (blMatch) {
+        bindingBlockContent = blMatch[1].trim();
+        cleanText = cleanText.replace(blMatch[0], '').trim();
+      } else {
+        const bqMatch = cleanText.match(/(?:^|\n)(>\s*\*\*Binding levels\*\*[\s\S]*?)(?=\n\n[^\n>]|\n```|\n#|$)/i);
+        if (bqMatch) {
+          bindingBlockContent = bqMatch[1].trim();
+          cleanText = cleanText.replace(bqMatch[1], '').trim();
+        }
+      }
+
+      if (bindingBlockContent) {
+        const hasDisagreements = /disagrees/i.test(bindingBlockContent);
+        const innerMd = bindingBlockContent.replace(/^>\s?/gm, '');
+        let renderedInner = '';
+        try {
+          renderedInner = (window.marked && typeof window.marked.parse === 'function')
+            ? window.marked.parse(innerMd, { breaks: true, gfm: true })
+            : innerMd.replace(/\n/g, '<br/>');
+        } catch (e) {
+          renderedInner = innerMd.replace(/\n/g, '<br/>');
+        }
+
+        bindingLevelsHtml = `
+          <details class="binding-levels-collapsible" style="margin: 12px 0 16px 0; border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; background: linear-gradient(135deg, rgba(245, 158, 11, 0.06), rgba(15, 23, 42, 0.65)); overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
+            <summary style="cursor: pointer; padding: 9px 14px; font-weight: 800; font-size: 12px; color: var(--amber, #f59e0b); display: flex; align-items: center; justify-content: space-between; user-select: none; background: rgba(245, 158, 11, 0.10);">
+              <span style="display: inline-flex; align-items: center; gap: 8px;">
+                <span>⚡</span>
+                <span style="letter-spacing: 0.3px;">BINDING LEVELS &amp; DIRECTIVES (Pine vs Report)</span>
+                ${hasDisagreements ? `<span class="pill" style="font-size: 9.5px; padding: 1px 7px; background: rgba(244, 63, 94, 0.18); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.35); font-weight: 700;">⚠️ Disagreements Noted</span>` : `<span class="pill" style="font-size: 9.5px; padding: 1px 7px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); font-weight: 700;">✅ Verified</span>`}
+              </span>
+              <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); opacity: 0.85;">Details ▾</span>
+            </summary>
+            <div style="padding: 12px 16px; font-size: 12px; line-height: 1.6; border-top: 1px solid rgba(245, 158, 11, 0.2); background: rgba(10, 15, 26, 0.65);">
+              ${renderedInner}
+            </div>
+          </details>
+        `;
+      }
+
+      // 2. Extract machine-readable watch_levels block so narrative markdown format is strictly respected
       const wlMatch = cleanText.match(/```(?:json)?(?::watch_levels|\s+watch_levels)?\s*(\{[\s\S]*?\})\s*```/i);
       if (wlMatch) {
         rawLevelsJson = wlMatch[1];
         cleanText = cleanText.replace(wlMatch[0], '').trim();
       }
+
 
       if (window.marked) {
         if (typeof window.marked.setOptions === 'function' && !window.marked._breaksConfigured) {
@@ -79,6 +124,10 @@ window.AppUtils = {
               <pre style="margin-top:8px; padding:10px; background:rgba(0,0,0,0.4); border-radius:4px; overflow-x:auto;"><code class="language-json">${this.escapeHtml(rawLevelsJson)}</code></pre>
             </details>
           `;
+        }
+
+        if (bindingLevelsHtml) {
+          html = bindingLevelsHtml + html;
         }
 
         // DOMPurify sanitization

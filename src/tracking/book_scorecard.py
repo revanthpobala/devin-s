@@ -33,8 +33,14 @@ def _cache_path():
     return config.BASE_DIR / "data" / "cache" / "vetoed_scores.json"
 
 
+def _judge_verdict_col(conn) -> str:
+    """judge_verdict is added on the first ledger write after upgrade; until then read it as NULL."""
+    return "judge_verdict" if any(r[1] == "judge_verdict" for r in conn.execute("PRAGMA table_info(suggestions)")) else "NULL"
+
+
 def _vetoed_scores() -> List[float]:
-    """Score CASH_SKIP plans that carried a complete, gate-passing plan. Closed results are cached, open ones rescored."""
+    """Score plans the judge vetoed (its own word CASH_SKIP, even when code re-armed a scenario) that carried a complete,
+    gate-passing plan. Closed results are cached, open ones rescored."""
     cp = _cache_path()
     try:
         cache = json.loads(cp.read_text(encoding="utf-8"))
@@ -43,8 +49,9 @@ def _vetoed_scores() -> List[float]:
     with _db_lock:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
+            jv = _judge_verdict_col(conn)
             rows = [dict(r) for r in conn.execute(
-                """SELECT * FROM suggestions WHERE source = 'judge' AND verdict = 'CASH_SKIP' AND gate_status = 'PASS'
+                f"""SELECT * FROM suggestions WHERE source = 'judge' AND COALESCE({jv}, verdict) = 'CASH_SKIP' AND gate_status = 'PASS'
                    AND (kind IS NULL OR kind = 'NEW') AND entry_low IS NOT NULL AND stop IS NOT NULL AND target_1 IS NOT NULL
                    ORDER BY date DESC"""
             )]
@@ -90,13 +97,26 @@ def book_stats() -> Dict[str, Dict[str, Any]]:
     with _db_lock:
         with _get_connection() as conn:
             conn.row_factory = sqlite3.Row
+            jv = _judge_verdict_col(conn)
             rows = [dict(r) for r in conn.execute(
-                """SELECT setup_lane, r_net FROM suggestions WHERE source = 'judge' AND gate_status = 'PASS' AND kind = 'NEW'
-                   AND scorer_version = 2 AND verdict IN ('ENTER', 'STALK') AND r_net IS NOT NULL"""
+                f"""SELECT setup_lane, r_net FROM suggestions WHERE source = 'judge' AND gate_status = 'PASS' AND kind = 'NEW'
+                   AND scorer_version = 2 AND verdict IN ('ENTER', 'STALK') AND r_net IS NOT NULL
+                   AND COALESCE({jv}, '') != 'CASH_SKIP'"""
             )]
     pine = [float(r["r_net"]) for r in rows if r["setup_lane"] in PINE_LANES]
     disc = [float(r["r_net"]) for r in rows if r["setup_lane"] == "LLM_DISCRETIONARY"]
-    return {"USER": _stats(_user_scores()), "PINE_LANE": _stats(pine), "LLM_DISCRETIONARY": _stats(disc), "LLM_VETOED": _stats(_vetoed_scores())}
+    return {"USER": _stats(_user_scores()), "PINE_LANE": _stats(pine), "LLM_DISCRETIONARY": _stats(disc),
+            "LLM_VETOED": _stats(_vetoed_scores()), "SCENARIOS": _scenario_stats()}
+
+
+def _scenario_stats() -> Dict[str, Dict[str, Any]]:
+    try:
+        from src.tracking.ticket_paper import lane_summary
+
+        return {k[len("SCENARIO_"):]: v for k, v in lane_summary().items() if k.startswith("SCENARIO_")}
+    except Exception as e:
+        logger.debug(f"scenario stats unavailable: {e}")
+        return {}
 
 
 def scorecard_text() -> str:
@@ -118,9 +138,15 @@ def scorecard_text() -> str:
         line("Your discretionary plans", b["LLM_DISCRETIONARY"]),
         line("Plans you vetoed (CASH_SKIP, scored as if taken)", b["LLM_VETOED"]),
     ]
+    for kind, s in (b.get("SCENARIOS") or {}).items():
+        done = sum(n for o, n in s["outcomes"].items() if o not in ("PENDING", "OPEN"))
+        fills = f"{s['filled']}/{s['signals']} filled"
+        res = (f", closed n={s['n_scored']}, win {s['win_pct']}%, mean {s['mean_r']:+.3f}R, median {s['median_r']:+.3f}R"
+               if s.get("n_scored") else ", no closed trades yet")
+        out.append(f"- Your {kind} scenarios (paper): {fills}, {done} resolved{res}")
     v, p, d = b["LLM_VETOED"], b["PINE_LANE"], b["LLM_DISCRETIONARY"]
     if v.get("n", 0) >= MIN_N and v["mean_r"] > 0:
         out.append("RULE: your vetoes lost money as a group. Veto only on a concrete fact, otherwise take the plan.")
     if d.get("n", 0) >= MIN_N and p.get("n", 0) >= MIN_N and d["mean_r"] < p["mean_r"]:
-        out.append("RULE: your discretionary plans trail the Pine lanes. Prefer CASH_SKIP over a weak discretionary plan.")
+        out.append("RULE: your discretionary plans trail the Pine lanes. Prefer a conditional scenario over a weak discretionary entry today.")
     return "\n".join(out)

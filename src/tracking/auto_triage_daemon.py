@@ -432,6 +432,22 @@ class AutoTriageDaemon(threading.Thread):
                         logger.warning(f"[AutoTriageDaemon] Failed marking {msg_id} as FAILED: {e_up}")
                     continue
 
+                if str(alert_dict.get("strategy") or "").strip() == "Daily":
+                    try:
+                        from src.logic.order_ticket import maybe_measured_ticket
+
+                        mt = maybe_measured_ticket((alert_dict.get("symbol") or "").strip().upper(), alert_dict.get("date"))
+                    except Exception as e_mt:
+                        mt = None
+                        logger.warning(f"[AutoTriageDaemon] measured ticket failed for {alert_dict.get('symbol')}: {e_mt}")
+                    if "Measured Lane Check" in str(alert_dict.get("setup") or alert_dict.get("raw_payload") or ""):
+                        decision = f"MEASURED: PAPER ticket {mt['lane']}" if mt else "MEASURED: no lane on Data Window"
+                        with sqlite3.connect(str(_alerts_db()), timeout=10.0) as conn:
+                            conn.execute("UPDATE alerts SET llm_decision = ? WHERE message_id = ?", (decision, msg_id))
+                            conn.commit()
+                        self.total_skipped += 1
+                        continue
+
                 if not _gate_exempt(alert_dict):
                     gate_ok, gate_fails = _data_window_gate(alert_dict)
                     if not gate_ok:

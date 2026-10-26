@@ -34,6 +34,7 @@ from src.tracking.level_engine import (
 )
 from src.tracking.sheets_tracker import SheetsTracker
 from src.tracking.alert_db import get_eastern_now
+from src.tracking.rsi2_scan import entry_open_passed
 from src.tracking.watch_manager import (
     get_active_watch_targets,
     get_all_watch_targets,
@@ -207,6 +208,9 @@ def sync_reports_to_watchlist(
                 _sp["breakout_stop"] = plan.get("breakout_stop") or _sp.get("breakout_stop") or 0.0
                 _sp["target_1"] = plan.get("target_1", _sp.get("target_1"))
                 _sp["target_2"] = plan.get("target_2", _sp.get("target_2"))
+                if plan.get("breakout_target_1"):
+                    _sp["breakout_target_1"] = plan["breakout_target_1"]
+                    _sp["breakout_target_2"] = plan.get("breakout_target_2") or 0.0
                 _sp["targets_rebuilt"] = bool(plan.get("targets_rebuilt"))
                 _sp["targets_rebuilt_basis"] = plan.get("targets_rebuilt_basis")
                 _sp["breakout_demoted_reason"] = plan["breakout_demoted_reason"]
@@ -360,6 +364,26 @@ def sync_reports_to_watchlist(
 # A. Universal level engine + B. At-market re-score (plan/no-lost-movers)
 # ---------------------------------------------------------------------------
 
+def _has_scenarios(t: Dict[str, Any]) -> bool:
+    raw = t.get("raw_json")
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else (raw or t)
+    except Exception:
+        return False
+    return bool(data.get("scenarios"))
+
+
+def _scenario_arrival(ticker: str, t: Dict[str, Any], live_price: float, how: str) -> None:
+    """A scenario trigger reached: act_on_touch queues the arrival re-research, or tickets after it ran today."""
+    try:
+        from src.logic.order_ticket import act_on_touch
+
+        act = act_on_touch(ticker, live_price, get_eastern_now().strftime("%Y-%m-%d"), "touch", wd=t)
+        log_trigger_alert(ticker, "SCENARIO_ARRIVAL", f"{act['text']} | scenario {how} [UNMEASURED]", live_price)
+    except Exception as e:
+        logger.warning(f"[{ticker}] scenario arrival failed: {e}")
+
+
 def _f(val) -> float:
     try:
         f = float(val)
@@ -398,12 +422,22 @@ def _plan_view_from_row(t: Dict[str, Any]) -> Dict[str, Any]:
         "tactical_stop": t.get("tactical_stop") or sp.get("tactical_stop"),
         "target_1": t.get("target_1") or sp.get("target_1"),
         "target_2": t.get("target_2") or sp.get("target_2"),
+        "breakout_target_1": t.get("breakout_target_1") or sp.get("breakout_target_1"),
+        "breakout_target_2": t.get("breakout_target_2") or sp.get("breakout_target_2"),
         "invalidation_price": t.get("invalidation_price") or sp.get("invalidation_price"),
         "breakout_demoted_reason": t.get("breakout_demoted_reason") or sp.get("breakout_demoted_reason"),
         "targets_rebuilt": t.get("targets_rebuilt") or sp.get("targets_rebuilt"),
         "targets_rebuilt_basis": t.get("targets_rebuilt_basis") or sp.get("targets_rebuilt_basis"),
         "setup_lane": t.get("setup_lane") or t.get("lane") or sp.get("setup_lane"),
     }
+
+
+def _leg_targets(pv: Dict[str, Any], price: float, breakout_cross: bool = False) -> Tuple[float, float]:
+    """T1/T2 for the leg price is on: the breakout targets once price is at or through the trigger, else the zone targets."""
+    bl, bt1, bt2 = _f(pv.get("breakout_level")), _f(pv.get("breakout_target_1")), _f(pv.get("breakout_target_2"))
+    if bl > 0 and bt1 > 0 and (breakout_cross or price >= bl):
+        return bt1, bt2
+    return _f(pv.get("target_1")), _f(pv.get("target_2"))
 
 
 _BARS_STATS_CACHE: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
@@ -501,9 +535,8 @@ def _level_cross_message(ticker: str, cross, t: Dict[str, Any], rvol: Optional[f
 
     pv = _plan_view_from_row(t)
     stop = _f(pv.get("tactical_stop")) or _f(pv.get("invalidation_price"))
-    t1 = _f(pv.get("target_1"))
-    t2 = _f(pv.get("target_2"))
     px = _f(cross.curr_price)
+    t1, t2 = _leg_targets(pv, px, breakout_cross=cross.kind == "BREAKOUT")
     rr_bits = []
     if stop > 0 and px > stop:
         if t1 > px:
@@ -614,8 +647,7 @@ def _rescore_at_market(
 
     pv = _plan_view_from_row(t)
     stop = _f(pv.get("tactical_stop")) or _f(pv.get("invalidation_price"))
-    t1 = _f(pv.get("target_1"))
-    t2 = _f(pv.get("target_2"))
+    t1, t2 = _leg_targets(pv, live_price, breakout_cross="BREAKOUT" in cross_kinds)
     entry_high = _f(pv.get("entry_zone_high"))
     entry_low = _f(pv.get("entry_zone_low"))
 
@@ -1168,6 +1200,8 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             )
             state.mark_fired(_c.kind, when=now_et)
             cross_kinds.append(_c.kind)
+            if _c.kind == "BREAKOUT" and side == "LONG" and _has_scenarios(t):
+                _scenario_arrival(ticker, t, live_price, "breakout")
         state.last_price = live_price
 
         # A4: the poll price is the close proxy — a level whose price closed back through
@@ -1233,6 +1267,10 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         if entry_low and entry_high and entry_low > 0 and entry_high > 0:
             if entry_low <= live_price <= entry_high:
                 hit_in_zone = True
+        # A setup bar's close is not fillable: the zone opens at the next session's open.
+        sig_day = str(t.get("date") or "")[:10]
+        if hit_in_zone and len(sig_day) == 10 and not entry_open_passed(sig_day, now_et):
+            hit_in_zone = False
 
         # A. Invalidation / Hard Stop Breach Check
         if is_stop_breached:
@@ -1376,6 +1414,8 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
                             msg = f"{act['text']} | lane {lane_val} [{lane_lbl}]"
 
                             log_trigger_alert(ticker, alert_fired, msg, live_price)
+                    elif side == "LONG" and _has_scenarios(t):
+                        _scenario_arrival(ticker, t, live_price, "zone")
                     else:
                         # Non-passing arrivals write a log row, no push, no ENTRY_TRIGGERED to the user
                         logger.info(

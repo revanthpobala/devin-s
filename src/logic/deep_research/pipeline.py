@@ -685,7 +685,6 @@ def run_deep_research(
                 gex_block=ctx.gex_block, flags_block=flags_block, engine_math_block=engine_math_block,
                 earnings_fact_block=ctx.earnings_fact_block, preloaded_block=preloaded_block,
                 active_pos_block=active_pos_block,
-                darkpool_block=ctx.darkpool_block,
             )
             debate_result = run_debate(ticker, date_str, debate_payload, tdir, dw_str=data_window_str)
             debate_block = format_debate_block(debate_result)
@@ -728,9 +727,7 @@ def run_deep_research(
             csv_path=paths["dw_csv"], dw_path=paths["dw_json"],
             options_block=options_block, active_pos_block=active_pos_block, stale=stale,
             prior_plan_outcome_block=prior_plan_outcome_block,
-            darkpool_block=ctx.darkpool_block,
         )
-
 
         independent_dw_str = sanitize_dw_for_independent(dw_dict)
 

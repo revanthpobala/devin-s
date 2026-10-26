@@ -76,7 +76,11 @@ def repair_shares_plan(
 
     t1 = _num(sp.get("target_1"))
     t2 = _num(sp.get("target_2"))
+    zone_lo, zone_hi = _num(sp.get("entry_zone_low")), _num(sp.get("entry_zone_high"))
+    dual = zone_lo > 0 and zone_hi > 0 and str(sp.get("entry_type") or "").upper() != "BREAKOUT"
     needs_targets = (t1 > 0 and t1 <= trigger) or (t2 > 0 and t2 <= trigger)
+    if dual and _num(sp.get("breakout_target_1")) > trigger:
+        needs_targets = False
     if not restored_from_reason and not needs_targets:
         return None
 
@@ -109,8 +113,12 @@ def repair_shares_plan(
             date_str=date_str or "",
         )
         if new_t1 > trigger and new_t2 > new_t1:
-            sp["target_1"] = new_t1
-            sp["target_2"] = new_t2
+            if dual:
+                sp["breakout_target_1"] = new_t1
+                sp["breakout_target_2"] = new_t2
+            else:
+                sp["target_1"] = new_t1
+                sp["target_2"] = new_t2
             sp["targets_rebuilt"] = True
             sp["targets_rebuilt_basis"] = basis
             reason = sp.get("breakout_demoted_reason")
@@ -426,6 +434,7 @@ def repair_watch_targets(write: bool = True, reconcile_rows: bool = False) -> Di
             merged = dict(sp)
             for key in (
                 "breakout_level", "breakout_stop", "tactical_stop", "target_1", "target_2",
+                "breakout_target_1", "breakout_target_2",
                 "entry_zone_low", "entry_zone_high", "breakout_demoted_reason",
                 "targets_rebuilt", "targets_rebuilt_basis",
             ):
@@ -457,6 +466,8 @@ def repair_watch_targets(write: bool = True, reconcile_rows: bool = False) -> Di
                 data["breakout_stop"] = merged.get("breakout_stop") or 0.0
                 data["target_1"] = merged.get("target_1")
                 data["target_2"] = merged.get("target_2")
+                data["breakout_target_1"] = merged.get("breakout_target_1")
+                data["breakout_target_2"] = merged.get("breakout_target_2")
                 before_t1 = row.get("target_1")
                 watch_manager.upsert_watch_target(data)
                 # upsert_watch_target returns None either way, so confirm the repair

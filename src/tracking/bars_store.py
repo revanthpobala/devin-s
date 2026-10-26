@@ -35,6 +35,17 @@ def fetch_daily(tickers: Iterable[str], days: int = 60) -> Dict[str, List[Dict[s
     key, secret, url = _creds()
     if not todo or not key or not secret:
         return out
+    for attempt in range(3):
+        todo = [t for t in todo if t not in out]
+        if not todo:
+            break
+        if attempt:
+            time.sleep(3 * attempt)
+        _pull(todo, start, key, secret, url, out, now)
+    return out
+
+
+def _pull(todo, start, key, secret, url, out, now) -> None:
     for i in range(0, len(todo), CHUNK):
         params = {"symbols": ",".join(todo[i:i + CHUNK]), "timeframe": "1Day", "start": start, "limit": 10000,
                   "adjustment": "raw", "feed": os.getenv("ALPACA_BARS_FEED", "sip")}
@@ -45,6 +56,7 @@ def fetch_daily(tickers: Iterable[str], days: int = 60) -> Dict[str, List[Dict[s
                                  headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret})
                 if r.status_code != 200:
                     logger.warning(f"[bars_store] Alpaca {r.status_code}: {r.text[:120]}")
+                    got = {}
                     break
                 body = r.json()
                 for sym, bars in (body.get("bars") or {}).items():
@@ -56,7 +68,7 @@ def fetch_daily(tickers: Iterable[str], days: int = 60) -> Dict[str, List[Dict[s
                 params["page_token"] = body["next_page_token"]
         except Exception as e:
             logger.warning(f"[bars_store] Alpaca batch failed: {type(e).__name__} {e}")
+            got = {}
         for sym, bars in got.items():
             _CACHE[sym] = (now, bars, start)
             out[sym] = bars
-    return out

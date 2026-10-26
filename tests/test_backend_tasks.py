@@ -38,22 +38,37 @@ def test_store_is_idempotent(tmp_path, monkeypatch):
         assert conn.execute("select count(*) from chain").fetchone()[0] == 2
 
 
+def test_last_session_rolls_back_to_last_completed_day():
+    assert bt.last_session(datetime(2026, 10, 12, 16, 30, tzinfo=ET)) == "2026-10-12"
+    assert bt.last_session(datetime(2026, 10, 12, 15, 0, tzinfo=ET)) == "2026-10-09"
+    assert bt.last_session(datetime(2026, 10, 17, 17, 0, tzinfo=ET)) == "2026-10-16"
+    assert bt.last_session(datetime(2026, 10, 19, 9, 0, tzinfo=ET)) == "2026-10-16"
+    assert bt.last_session(datetime(2026, 10, 13, 10, 0, tzinfo=ET), ["2026-10-09", "2026-10-12"]) == "2026-10-12"
+    assert bt.last_session(datetime(2026, 11, 27, 18, 0, tzinfo=ET), ["2026-11-25", "2026-11-26"]) == "2026-11-26"
+
+
 def test_due_jobs_schedule(monkeypatch):
     from src.tracking import thesis_ledger
     monkeypatch.setattr(thesis_ledger, "has_active", lambda: False)
     mon_after = datetime(2026, 10, 12, 16, 30, tzinfo=ET)
-    mon_before = datetime(2026, 10, 12, 15, 0, tzinfo=ET)
+    mon_before = datetime(2026, 10, 12, 9, 0, tzinfo=ET)
     sat = datetime(2026, 10, 17, 17, 0, tzinfo=ET)
-    assert bt.due_jobs(mon_before, {}) == ["backup"]
+    tue_mid = datetime(2026, 10, 13, 11, 0, tzinfo=ET)
+    done = {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12"}
     assert bt.due_jobs(mon_after, {}) == ["backup", "chain", "sweep"]
-    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12"}) == ["sweep"]
-    swept = {"last_backup_date": "2026-10-12", "last_chain_date": "2026-10-12", "last_sweep_date": "2026-10-12"}
+    assert bt.due_jobs(mon_after, done) == ["sweep"]
+    swept = {**done, "last_sweep_date": "2026-10-12"}
     assert bt.due_jobs(mon_after, swept) == ["score"]
-    assert bt.due_jobs(mon_after, {**swept, "last_score_date": "2026-10-12"}) == []
-    assert bt.due_jobs(mon_after, {**swept, "last_score_attempt_ts": mon_after.timestamp() - 60}) == []
-    assert bt.due_jobs(sat, {"last_backup_date": "2026-10-17"}) == []
-    assert bt.due_jobs(mon_after, {"last_backup_date": "2026-10-12", "last_chain_attempt_ts": mon_after.timestamp() - 60,
-                                   "last_sweep_date": "2026-10-12", "last_score_date": "2026-10-12"}) == []
+    scored = {**swept, "last_score_date": "2026-10-12"}
+    assert bt.due_jobs(mon_after, scored) == ["counterfactual"]
+    assert bt.due_jobs(mon_after, {**scored, "last_counterfactual_date": "2026-10-12"}) == []
+    assert bt.due_jobs(mon_after, {**swept, "last_score_attempt_ts": mon_after.timestamp() - 60}) == ["counterfactual"]
+    # Missed close: Saturday and Tuesday morning catch up on the last completed session.
+    assert bt.due_jobs(sat, {"last_backup_date": "2026-10-17"}) == ["chain", "sweep"]
+    assert bt.due_jobs(sat, {"last_backup_date": "2026-10-17", "last_chain_date": "2026-10-16", "last_sweep_date": "2026-10-16"}) == ["score"]
+    assert bt.due_jobs(mon_before, {"last_backup_date": "2026-10-12"}) == ["chain", "sweep"]
+    # Mid-session chain quotes belong to the live day, so the chain waits; sweep and score still catch up.
+    assert bt.due_jobs(tue_mid, {"last_backup_date": "2026-10-13", "last_chain_date": "2026-10-09"}, session="2026-10-12") == ["sweep"]
 
 
 def test_backup_copies_and_prunes(tmp_path, monkeypatch):

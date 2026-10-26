@@ -619,11 +619,11 @@ TOOLS = [
         "function": {
             "name": "fetch_darkpool_levels",
             "description": (
-                "Fetches on-demand off-exchange / Dark Pool order flow (FINRA TRF tape) for a ticker:\n"
-                "1. Price Ladder: Volume clusters and print counts at each price level.\n"
-                "2. Major Institutional Shelves: Key price levels where institutional volume concentrated (support/defense and overhead walls).\n"
-                "3. Signature Block Prints: The largest individual institutional block transactions of the session (>25k shares or >$1M).\n"
-                "4. Net Flow Sentiment: Accumulation vs. Distribution classification via tick-rule analysis."
+                "Fetches the off-exchange (FINRA TRF) tape for a ticker. DESCRIPTIVE ONLY, no measured edge:\n"
+                "1. Window: latest <=10k regular-session trades (a tail of the session, minutes reported).\n"
+                "2. Volume clusters: price levels with the most off-exchange volume (not validated support/resistance).\n"
+                "3. Largest prints: >=1,000 shares and >=$250k.\n"
+                "4. Inferred buy/sell lean (NBBO quote rule, tick-rule fallback; midpoint prints unclassified)."
             ),
             "parameters": {
                 "type": "object",
@@ -1450,6 +1450,7 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         t = (args.get("ticker") or ticker or "").upper()
         logger.info(f"Chat executed tool: execute_python_code(ticker='{t}', code_len={len(code)})")
         res_str = execute_python_code_tool(code=code, ticker=t, date_str=date_str, is_independent=is_independent)
+        artifact_cache.save(date_str, t, f"{cache_key}_src", {"code": code, "output": res_str, "independent": is_independent})
         return res_str
     elif function_name == "run_quantitative_plugin":
         plugin_name = args.get("plugin_name", "all")
@@ -1542,11 +1543,9 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         try:
             import psutil
 
-            from src.data.tv_scraper import rank_profiles_signed_in_first
+            from src.data.tv_scraper import signed_in_profiles
 
-            profiles = rank_profiles_signed_in_first(
-                sorted(p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir())
-            ) or ["tv_chrome_profile_1"]
+            profiles = signed_in_profiles() or ["tv_chrome_profile_1"]
 
             def _locked(p_name: str) -> bool:
                 for proc in psutil.process_iter(["name", "cmdline"]):
@@ -1745,7 +1744,12 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     Returns (client, model, provider_tag). provider_tag is "meta" | "openrouter" | "nvidia" | "local".
     """
     meta_key = os.getenv("META_AI_API_KEY")
-    openrouter_key = os.getenv("OPENROUTER_KEY") or os.getenv("OPENROUTER_API_KEY")
+    openrouter_key = (
+        os.getenv("CHAT_OPEN_ROUTER_API_KEY")
+        or os.getenv("CHAT_OPENROUTER_API_KEY")
+        or os.getenv("OPENROUTER_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
+    )
 
     # LOCAL-FIRST: any use_openrouter=False call uses the local 9B. No remote
     # key can hijack the free local-research path. The local 9B can be
@@ -1793,7 +1797,15 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
     # NVIDIA NIM is kept as the fallback (its VL model, e.g. nemotron-nano-12b-v2-vl,
     # is a different model than the intended Minimax). Local 9B is last resort.
     if openrouter_key:
-        resolved_model = model or os.getenv("OPENROUTER_MODEL", "openrouter/free")
+        candidate_model = (
+            model
+            or os.getenv("CHAT_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or os.getenv("SMART_LLM")
+            or os.getenv("FAST_LLM")
+            or "openrouter/free"
+        )
+        resolved_model = candidate_model.lstrip("=").strip() if candidate_model else "openrouter/free"
         logger.info(
             f"Routing request to OpenRouter (Model: {resolved_model})"
         )

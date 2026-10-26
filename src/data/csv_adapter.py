@@ -18,16 +18,48 @@ logger = logging.getLogger(__name__)
 
 MIN_COLS = 60
 MIN_ROWS = 260
+MIN_ROWS_YOUNG = 40
 MAX_BAR_GAP_DAYS = 4.0
 
 
-def verify_csv_integrity(df: pd.DataFrame) -> Tuple[pd.Series, Optional[str]]:
+def is_young_stock(ticker: Optional[str], nrows: int) -> bool:
+    """Check if ticker has fewer than MIN_ROWS (260) total historical bars in market existence (recent IPO / listing)."""
+    if not ticker:
+        return False
+    t_clean = str(ticker).upper().strip()
+    if ":" in t_clean:
+        t_clean = t_clean.split(":")[-1].strip()
+    yf_sym = t_clean.replace(".", "-")
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(yf_sym).history(period="max")
+        if 0 < len(hist) < MIN_ROWS:
+            return True
+    except Exception:
+        pass
+    try:
+        from src.data.alpaca_client import get_daily_bars
+        bars = get_daily_bars(t_clean, limit=MIN_ROWS)
+        if bars is not None and 0 < len(bars) < MIN_ROWS:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def verify_csv_integrity(df: pd.DataFrame, ticker: Optional[str] = None) -> Tuple[pd.Series, Optional[str]]:
     """Assert minimum column/row depth and verify daily bar interval (median gap <= 4 days)."""
     nrows, ncols = df.shape
     if ncols < MIN_COLS:
         raise ValueError(f"CSV has {ncols} columns, expected at least {MIN_COLS}")
     if nrows < MIN_ROWS:
-        raise ValueError(f"CSV has {nrows} rows, expected at least {MIN_ROWS}")
+        if nrows >= MIN_ROWS_YOUNG and is_young_stock(ticker, nrows):
+            logger.info(
+                f"[{ticker or 'UNKNOWN'}] Young stock / recent IPO verified: CSV has {nrows} rows "
+                f"(total market history < {MIN_ROWS} bars). Proceeding with available bars."
+            )
+        else:
+            raise ValueError(f"CSV has {nrows} rows, expected at least {MIN_ROWS}")
 
     # Locate time/date column
     time_col = None
@@ -555,15 +587,15 @@ def csv_to_datawindow(
     # Clean column names (strip whitespace)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Verify column depth, row depth, and bar interval (daily)
-    verify_csv_integrity(df)
-
     # Resolve ticker if not provided
     resolved_ticker = (
         ticker
         or _extract_ticker_from_path(json_out_path)
         or _extract_ticker_from_path(csv_path)
     )
+
+    # Verify column depth, row depth, and bar interval (daily)
+    verify_csv_integrity(df, ticker=resolved_ticker)
 
     # Extract last row as snapshot dict (keyed by CSV header names)
     last_row = df.iloc[-1]

@@ -90,10 +90,13 @@ def _run_meta_arbitration(tmp_path: Path) -> dict:
         assert wf.exists(), f"{wf} not written"
         data = json.loads(wf.read_text(encoding="utf-8"))
         sp = data.get("shares_plan", {})
-        # A broken trigger is never zeroed: it stays armed with targets rebuilt above it.
+        # A broken trigger is never zeroed: it stays armed. The zone keeps its own targets and the trigger
+        # gets rebuilt ones above it.
         assert sp.get("breakout_level", 0) == 747.6, f"{wf} lost the trigger"
         assert sp.get("targets_rebuilt") is True
-        assert sp.get("target_1", 0) > 747.6
+        assert sp.get("target_1") == 742.09
+        assert sp.get("breakout_target_1", 0) > 747.6
+        assert sp.get("breakout_target_2", 0) > sp["breakout_target_1"]
         # The limit-zone path is untouched.
         assert sp.get("entry_zone_low") == 710.43
         assert sp.get("entry_zone_high") == 713.03
@@ -117,3 +120,26 @@ def test_judge_prompt_states_targets_above_trigger():
     # a broken trigger stays armed and only its targets move above it.
     assert "never zeroed" in prompt
     assert "stripped" not in prompt
+
+
+def _gate(plan):
+    from src.logic.level_validation import validate_levels
+
+    dw = {"Close": 100.0, "rsi2_atr14": 2.0}
+    validate_levels(plan, dw, "LONG", ticker="TST", date_str="2026-10-09")
+    return plan
+
+
+def test_dual_plan_keeps_zone_targets_and_rebuilds_breakout_targets():
+    plan = _gate({"entry_type": "LIMIT", "entry_zone_low": 96.0, "entry_zone_high": 98.0, "tactical_stop": 93.0,
+                  "target_1": 104.0, "target_2": 108.0, "breakout_level": 110.0, "breakout_stop": 106.0})
+    assert (plan["target_1"], plan["target_2"]) == (104.0, 108.0)
+    assert plan["breakout_target_1"] > 110.0 and plan["breakout_target_2"] > plan["breakout_target_1"]
+    assert plan["targets_rebuilt"] is True and "zone targets unchanged" in plan["breakout_demoted_reason"]
+    assert plan["rr_at_trigger"] > 0
+
+
+def test_pure_breakout_plan_still_rebuilds_its_own_targets():
+    plan = _gate({"entry_type": "BREAKOUT", "tactical_stop": 93.0, "target_1": 104.0, "target_2": 108.0,
+                  "breakout_level": 110.0, "breakout_stop": 106.0})
+    assert plan["target_1"] > 110.0 and "breakout_target_1" not in plan

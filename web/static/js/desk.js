@@ -1240,11 +1240,38 @@ window.AppDesk = {
         briefingPromise = window.AppApi.request('/api/desk/morning-briefing', { timeoutMs: 8000 }).catch(() => null);
       }
 
-      const [todayData, coverageData, missedMovesData] = await Promise.all(requests);
+      let [todayData, coverageData, missedMovesData] = await Promise.all(requests);
       const ticketsData = await Promise.resolve(window.AppApi.request('/api/desk/tickets', { timeoutMs: 6000 })).catch(() => null);
       const ticketList = (ticketsData && ticketsData.tickets) || [];
       const feedbackData = await feedbackPromise;
       const briefingData = await briefingPromise;
+
+      // If Today payload is building in flight, recover gracefully:
+      if (todayData && todayData.error && String(todayData.error).includes('in flight')) {
+        if (this._lastTodayData && !this._lastTodayData.error) {
+          todayData = this._lastTodayData;
+        } else if (!silent) {
+          const cont = document.getElementById('today-content-container');
+          if (cont) {
+            cont.innerHTML = `
+              <div class="station-card" style="padding:32px; text-align:center; max-width:600px; margin:40px auto;">
+                <div style="font-size:24px; margin-bottom:12px;">⚡</div>
+                <div style="font-size:14px; font-weight:800; color:var(--text-main); margin-bottom:8px;">
+                  Today Desk Synthesis In Progress
+                </div>
+                <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
+                  The market background engine is assembling fresh opportunities and regime metrics. Refreshing in a moment...
+                </div>
+                <div class="loading-spinner" style="margin:0 auto;"></div>
+              </div>
+            `;
+          }
+          setTimeout(() => {
+            if (!this._isPollingToday) this.loadToday(false);
+          }, 1500);
+          return;
+        }
+      }
 
       if (feedbackData) this._lastFeedbackData = feedbackData;
       if (briefingData) this._lastBriefingData = briefingData;
@@ -2217,7 +2244,24 @@ window.AppDesk = {
         console.error('Failed loading Today desk:', err);
         const cont = document.getElementById('today-content-container');
         if (cont && !silent) {
-          cont.innerHTML = `<div style="color:var(--rose-light); padding:20px; text-align:center;">Failed to load Today desk: ${err}</div>`;
+          if (this._lastTodayData && !this._lastTodayData.error) {
+            console.warn('Today desk refresh failed, retaining current data:', err);
+          } else {
+            cont.innerHTML = `
+              <div class="station-card" style="padding:28px; text-align:center; max-width:640px; margin:40px auto; border:1px solid rgba(239,68,68,0.3);">
+                <div style="font-size:24px; margin-bottom:10px;">⚠️</div>
+                <div style="font-size:14px; font-weight:800; color:var(--rose-light); margin-bottom:6px;">
+                  Failed to load Today desk
+                </div>
+                <div style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono); margin-bottom:16px; word-break:break-all;">
+                  ${err.message || err}
+                </div>
+                <button class="btn primary" onclick="AppDesk.loadToday(false)" style="padding:6px 16px; font-size:12px; font-weight:700;">
+                  🔄 Retry Connection
+                </button>
+              </div>
+            `;
+          }
         }
       } finally {
         this._isPollingToday = false;

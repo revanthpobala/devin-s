@@ -227,3 +227,80 @@ def test_user_turn_is_saved_before_slow_context_build(monkeypatch):
     early = asyncio.run(_drive())
     assert early == [("sess_early", "user", "Q?")]
     assert any(role == "assistant" and "Context compilation error" in c for (_, role, c) in saved)
+
+
+def test_get_chat_llm_config_defaults_to_local(monkeypatch):
+    """When no OpenRouter keys are set, config defaults to local port 8000."""
+    monkeypatch.delenv("CHAT_OPEN_ROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CHAT_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_KEY", raising=False)
+
+    cfg = cop.get_chat_llm_config()
+    assert cfg["provider"] == "local"
+    assert "127.0.0.1:8000" in cfg["base_url"]
+    assert cfg["model"] is None
+
+
+def test_get_chat_llm_config_uses_chat_openrouter_api_key(monkeypatch):
+    """When CHAT_OPEN_ROUTER_API_KEY and CHAT_MODEL are set, config routes to OpenRouter."""
+    monkeypatch.setenv("CHAT_OPEN_ROUTER_API_KEY", "sk-or-test-key")
+    monkeypatch.setenv("CHAT_MODEL", "minimax/minimax-m3")
+
+    cfg = cop.get_chat_llm_config()
+    assert cfg["provider"] == "openrouter"
+    assert cfg["base_url"] == "https://openrouter.ai/api/v1"
+    assert cfg["api_key"] == "sk-or-test-key"
+    assert cfg["model"] == "minimax/minimax-m3"
+    assert cfg["default_headers"]["X-Title"] == "Stock Cockpit Copilot"
+
+
+def test_chat_reserve_count_zero_when_cloud_chat_enabled(monkeypatch):
+    """When cloud chat is enabled, research_queue CHAT_RESERVE becomes 0, freeing all 3 slots."""
+    from src.ui.services import research_queue as rq
+
+    monkeypatch.setenv("CHAT_OPEN_ROUTER_API_KEY", "sk-or-test-key")
+    assert rq.is_cloud_chat_enabled() is True
+    assert rq.chat_reserve_count() == 0
+
+    monkeypatch.delenv("CHAT_OPEN_ROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CHAT_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_KEY", raising=False)
+    assert rq.is_cloud_chat_enabled() is False
+    assert rq.chat_reserve_count() == 1
+
+
+def test_openrouter_stream_bypasses_socket_check(monkeypatch):
+    """With OpenRouter credentials, copilot streaming does NOT probe or require port 8000."""
+    monkeypatch.setenv("CHAT_OPEN_ROUTER_API_KEY", "sk-or-test-key")
+    monkeypatch.setenv("CHAT_MODEL", "openrouter/free")
+
+    import socket as _socket
+    orig_create_connection = _socket.create_connection
+
+    socket_called = []
+    def _mock_socket(address, *args, **kwargs):
+        if len(address) >= 2 and address[1] == 8000:
+            socket_called.append(address)
+            raise ConnectionRefusedError("Port 8000 is closed")
+        return orig_create_connection(address, *args, **kwargs)
+
+    async def _drive():
+        with patch("openai.AsyncOpenAI", lambda *a, **k: _FakeOpenAI(0.0)), \
+             patch("socket.create_connection", _mock_socket):
+            response = await cop.copilot_chat_stream_endpoint(
+                CopilotChatRequest(
+                    prompt="Test OpenRouter stream",
+                    ticker="NVDA",
+                    date="2026-10-13",
+                    session_id="sess_openrouter_test",
+                ),
+                request=_fake_request(),
+            )
+            return await _drain(response.body_iterator, limit=5)
+
+    body = asyncio.run(_drive())
+    # Socket check was bypassed completely
+    assert len(socket_called) == 0
+    assert "The late answer." in body

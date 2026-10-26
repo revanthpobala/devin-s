@@ -73,3 +73,29 @@ def apply_pine_levels(watch_data: Dict[str, Any], dw: Dict[str, Any]) -> str:
         inv["price_level"] = sp["tactical_stop"]
     watch_data["levels_source"] = "pine"
     return "pine"
+
+
+def apply_rsi2_order(watch_data: Dict[str, Any], dw: Dict[str, Any]) -> bool:
+    """RSI2 lane: Pine's pending open-only order is the plan. The judge may veto it (CASH_SKIP) but not re-level it."""
+    try:
+        state = int(float(dw.get("_rsi2_state_code") or 0))
+    except (TypeError, ValueError):
+        state = 0
+    stop, t1 = _f(dw, "RSI2 Fixed Stop", "rsi2_fixed_stop"), _f(dw, "RSI2 Fixed Target", "rsi2_fixed_target")
+    ceil = _f(dw, "RSI2 Entry Or Opening Ceiling", "rsi2_entry_ceiling")
+    if state != 2 or not (stop and t1 and ceil) or not stop < ceil < t1:
+        return False
+    sp = watch_data.get("shares_plan") or {}
+    watch_data["llm_levels"] = {k: sp.get(k) for k in ("entry_zone_low", "entry_zone_high", "tactical_stop", "target_1", "target_2")}
+    watch_data["shares_plan"] = {
+        "side": "LONG", "entry_type": "NEXT_OPEN",
+        "entry_zone_low": round(stop + 0.01, 2), "entry_zone_high": round(ceil, 2), "entry_max": round(ceil, 2),
+        "tactical_stop": round(stop, 2), "target_1": round(t1, 2), "target_2": 0.0,
+        "breakout_level": 0.0, "breakout_stop": 0.0,
+        "exit_rule": "sell next open after a close above EMA5, or after 10 bars",
+    }
+    inv = watch_data.get("invalidation")
+    if isinstance(inv, dict):
+        inv["price_level"] = round(stop, 2)
+    watch_data["levels_source"] = "rsi2"
+    return True

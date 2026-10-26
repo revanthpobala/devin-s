@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 from src.clients.llm_client import query_local_llm
@@ -92,8 +93,14 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "measured reason most of these trades stop out. When there is no valid Pine plan, draw the levels yourself from the "
         "reports' structure (setup_lane LLM_DISCRETIONARY): stop beyond structure and at least 0.7 ATR from entry, target_1 "
         "at a real level within 1.5x the 21-bar expected move, R:R at the entry at or above the floor. These plans are "
-        "scored separately and carry no measured edge; say so in the summary. CASH_SKIP only for a concrete veto or when "
-        "no level pair clears the floor.\n\n"
+        "scored separately and carry no measured edge; say so in the summary.\n\n"
+        "SCENARIOS (mandatory unless veto is HARD_FUNDAMENTAL). Price is at A today. Where it is not a trade today, "
+        "say where it becomes one: 2-3 conditional plans in `scenarios`. PULLBACK: a technical pullback into real "
+        "support (Pine zone, MA50/MA200, VAL/POC, AVWAP support) with the trend and fundamentals intact. BREAKOUT: a "
+        "close over real resistance. POST_EARNINGS: re-entry after the print when earnings fall inside the window. "
+        "Each needs a trigger, a stop beyond structure at least 0.7 ATR below the trigger, a target at a real level with "
+        "R:R at the trigger >= 2, a window_end date, and 2-4 confirm checks the arrival re-research must pass. The code "
+        "computes touch odds, prices the options tiers at the trigger, arms the trigger and re-researches on arrival.\n\n"
         "EARNINGS IS NOT A BLACKOUT. When earnings fall inside 21 trading days you MUST set earnings_stance to one of "
         "HOLD_THROUGH, EXIT_BEFORE, EARNINGS_PLAY and justify it from the EARNINGS PACKET (date, historical reaction, "
         "options implied move, Kalshi). Option expirations that span the report are allowed only for HOLD_THROUGH or "
@@ -104,7 +111,10 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "VERDICTS (the ground truth's DETERMINISTIC STATE line already applies the measured gate):\n"
         "- ENTER (Limit @ Floor): state is ACTIONABLE and you have no concrete veto.\n"
         "- ARMED: state is ARMED (a resting limit within reach) and you have no concrete veto. Say which price fills it.\n"
-        "- CASH_SKIP: state is NO TRADE, or you have a concrete veto. Say which.\n"
+        "- ARMED also when state is NO TRADE today but a scenario is live: the scenarios are the plan.\n"
+        "- CASH_SKIP: only with veto HARD_FUNDAMENTAL (the business story is broken: guidance cut, fraud, accounting, "
+        "pending deal, delisting). Name the fact. A missing setup, a stretched chart or earnings in the window is not a "
+        "hard veto; it is a scenario.\n"
         "- WATCH (UNMEASURED MOMENTUM): a level break on RVOL >= 1.0 that fails the gate. Start the summary with "
         "'UNMEASURED MOMENTUM:'. No measured edge.\n"
         "Do not write a conviction score; it carries no information.\n"
@@ -114,7 +124,12 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "{\n"
         f'  "ticker": "{ticker}",\n'
         '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|ARMED|WATCH|CASH_SKIP",\n'
+        '  "veto": "NONE|HARD_FUNDAMENTAL",\n'
         '  "side": "LONG|SHORT",\n'
+        '  "scenarios": [\n'
+        '    {"kind": "PULLBACK|BREAKOUT|POST_EARNINGS", "trigger": 0.0, "zone_low": 0.0, "stop": 0.0, "target": 0.0,\n'
+        '     "window_end": "YYYY-MM-DD", "confirm": ["check 1", "check 2"], "thesis": "one line"}\n'
+        '  ],\n'
         '  "shares_plan": {\n'
         '    "side": "LONG|SHORT",\n'
         '    "entry_type": "LIMIT|MARKET|NO_ENTRY",\n'
@@ -189,7 +204,7 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "## ⚖️ THE JUDGE'S FINAL RULING\n"
         "* **Concurrence:** [Where Model A and Model B 100% agree]\n"
         "* **Conflict Resolution:** [Where they disagreed, which model is correct, and why]\n"
-        "* **Tiered Options Directives & Strict Soundness Rules:** Evaluate a 3-tiered options menu; fill a tier only when it passes these rules, otherwise set it to NONE:\n"
+        "* **Tiered Options Directives:** The system builds the 3-tier menu (30-45 DTE call spread, ~0.80 delta LEAPS, cash-secured put) from the live chain after your ruling and overwrites these fields, so never set a tier NONE for lack of a measured edge; give one line per tier on whether it fits this setup and its earnings exposure. Rules for your own strikes:\n"
         "  1. Tactical 30-45 DTE Directional Spread (primary options vehicle):\n"
         "     - FOR LONG / BULLISH SETUPS: Strongly favor BULL CALL DEBIT SPREADS (e.g. 30-45 DTE, ATM Long Call / OTM Short Call at Target 1, targeting >= 1.5:1 to 3:1 R:R in trader's favor) or Deep ITM LEAPS (0.75-0.85 delta).\n"
         "     - FORBIDDEN NEAR-THE-MONEY CREDIT SPREADS: NEVER sell a Bull Put Spread whose short strike is within 5% of spot or above the tactical stop loss! If price hitting your stop loss would put the short put in the money, the trade is structurally invalid.\n"
@@ -312,13 +327,24 @@ def run_arbitration(
     else:
         state_line = "- DETERMINISTIC STATE: NO TRADE — Pine has no valid long plan (stop below close below target). Do not invent levels.\n"
 
+    try:
+        from src.logic.scenario_plans import prior_scenarios_block
+
+        state_line += prior_scenarios_block(ticker, date_str)
+    except Exception as e_ps:
+        logger.debug(f"[{ticker}] prior scenarios skipped: {e_ps}")
+
     ground_truth = (
         f"--- GROUND TRUTH MARKET FACTS (VERIFIED AT RUN TIME) ---\n"
         f"{state_line}"
         f"- Ticker: {ticker} | Date: {date_str} | DW Bar Date: {dw_bar_date} | DW Close: {dw_close}\n"
         f"- Position Mode: {kind} (MANAGE = already owned in portfolio; NEW = prospective entry)\n"
         f"- Triage Lane & Setup: {setup_lane or 'STANDARD'}\n"
-        f"- Triage Reason: {triage_reason or 'None'}\n"
+        + (f"- RSI2 ORDER (binding, from Pine): buy at the next open only at or below {dw_dict.get('RSI2 Entry Or Opening Ceiling')}; "
+           f"stop {dw_dict.get('RSI2 Fixed Stop')}; target {dw_dict.get('RSI2 Fixed Target')}; sell next open after a close above EMA5, or after 10 bars. "
+           f"Do not re-level it. You may only veto it (CASH_SKIP) with a reason, e.g. earnings inside the 10-bar hold.\n"
+           if setup_lane == "RSI2" and dw_dict.get("RSI2 Fixed Stop") else "")
+        + f"- Triage Reason: {triage_reason or 'None'}\n"
         f"- Lane Prior: {lane_prior_str}\n"
         f"{active_pos_block}\n"
         f"- Live Quote: {live_quote_block.strip() if live_quote_block else 'N/A'}\n"
@@ -396,6 +422,9 @@ def run_arbitration(
     if not watch_json_match:
         logger.warning(f"[{ticker}] Senior PM Arbitration missing watch_levels JSON block! Marking verdict = NO_LEVELS.")
         clean_judge += "\n\n> ⚠️ **VERDICT: NO_LEVELS** — Arbitration failed to emit structured watch_levels JSON block. Not persisted to watchlist."
+        from src.logic.order_ticket import void_ticket
+
+        void_ticket(ticker, date_str, "arbitration emitted no levels")
         arbitration_path.write_text(clean_judge, encoding="utf-8")
         return clean_judge
 
@@ -403,6 +432,7 @@ def run_arbitration(
         watch_data = json.loads(watch_json_match.group(1))
         watch_data.setdefault("ticker", ticker)
         watch_data.setdefault("date", date_str)
+        watch_data["judge_verdict"] = str(watch_data.get("verdict") or "").strip().upper() or None
         triage_lane = setup_lane
         if not triage_lane or triage_lane in ("WATCH_SHADOW", "UNKNOWN", "DEFAULT", "STANDARD"):
             triage_lane = "JUDGE"
@@ -426,6 +456,41 @@ def run_arbitration(
         except (ValueError, TypeError):
             spot_num = 0.0
         _apply_options_cleanup(watch_data, dw_dict, spot_num, safe)
+        try:
+            from src.clients.earnings_client import resolve_next_earnings_date
+            from src.logic.options_menu import attach_options_menu
+            from src.logic.report_level_extractor import _dw_lookup
+
+            _em = _dw_lookup(dw_dict, "Exp Move % (21b)", "exp_move_pct", "Exp Move Pct 21b")
+            try:
+                _earn = str(resolve_next_earnings_date(ticker)[0] or "") or None
+            except Exception:
+                _earn = None
+            attach_options_menu(watch_data, ticker, spot_num, float(_em or 0), _earn)
+        except Exception as e_menu:
+            _em, _earn = None, None
+            logger.warning(f"[{ticker}] options menu skipped: {e_menu}")
+        try:
+            from src.logic.level_validation import _compute_atr14_from_bars
+            from src.logic.report_level_extractor import _dw_lookup
+            from src.logic.scenario_plans import attach_scenarios, scenario_markdown
+
+            try:
+                _sc_atr = float(atr14_val)
+            except (TypeError, ValueError):
+                _sc_atr = _compute_atr14_from_bars(ticker, date_str) or 0.0
+            _was_skip = "CASH_SKIP" in str(watch_data.get("verdict", "")).upper()
+            _scen = attach_scenarios(watch_data, ticker, spot_num, _sc_atr, float(_em or 0), _earn,
+                                     today=date.fromisoformat(date_str[:10]),
+                                     allow_unskip=triage_lane != "RSI2",
+                                     pine_stop=float(_dw_lookup(dw_dict, "Long Stop Loss", "long_stop_loss") or 0))
+            if _scen:
+                clean_judge += "\n\n" + scenario_markdown(_scen, spot_num)
+            if _was_skip and discretionary and "CASH_SKIP" not in str(watch_data.get("verdict", "")).upper():
+                triage_lane = "LLM_DISCRETIONARY"
+                watch_data["setup_lane"] = triage_lane
+        except Exception as e_sc:
+            logger.warning(f"[{ticker}] scenarios skipped: {e_sc}")
 
         if str(watch_data.get("side") or "LONG").upper() == "LONG" and "CASH_SKIP" not in str(watch_data.get("verdict", "")).upper():
             try:
@@ -453,6 +518,10 @@ def run_arbitration(
             except Exception as e_rep:
                 logger.warning(f"[{ticker}] ticket repair skipped: {e_rep}")
 
+        from src.logic.pine_levels import apply_rsi2_order
+
+        rsi2_order = (triage_lane == "RSI2" and "CASH_SKIP" not in str(watch_data.get("verdict", "")).upper()
+                      and apply_rsi2_order(watch_data, dw_dict))
         plan = {
             **watch_data.get("shares_plan", {}),
             "options_plan": watch_data.get("options_plan", {}),
@@ -462,8 +531,8 @@ def run_arbitration(
             "kind": kind,
             "setup_lane": triage_lane,
             "earnings_stance": watch_data.get("earnings_stance"),
-            "source": "judge",
-            "is_judge": True,
+            "source": "rsi2" if rsi2_order else "judge",
+            "is_judge": not rsi2_order,
             "spot": spot_num or watch_data.get("spot"),
         }
 
@@ -480,7 +549,7 @@ def run_arbitration(
             watch_data["verdict"] = verdict
         if "ENTER" in verdict.upper():
             if is_no_setup or not gate_ok:
-                capped_verdict = "CASH_SKIP" if is_no_setup else "STALK"
+                capped_verdict = "CASH_SKIP" if is_no_setup and not watch_data.get("scenarios") else "STALK"
                 logger.warning(
                     f"[{ticker}] Capping judge verdict '{verdict}' to '{capped_verdict}' "
                     f"(no_setup={is_no_setup}, gate_ok={gate_ok}, reasons={gate_reasons})"
@@ -502,6 +571,9 @@ def run_arbitration(
         )
 
         _ok, _reasons = validate_levels(plan, dw_dict, watch_data.get("side", "LONG"), ticker=ticker, date_str=date_str)
+        if not _ok and "CASH_SKIP" in str(verdict).upper():
+            logger.info(f"[{ticker}] CASH_SKIP: level gate not enforced ({'; '.join(_reasons)})")
+            _ok, _reasons = True, []
         if plan.get("repair_rejected"):
             _ok = False
             _reasons.append(f"repair: {plan['repair_rejected']}")
@@ -517,6 +589,9 @@ def run_arbitration(
             _sp["breakout_stop"] = plan.get("breakout_stop") or _sp.get("breakout_stop") or 0.0
             _sp["target_1"] = plan.get("target_1", _sp.get("target_1"))
             _sp["target_2"] = plan.get("target_2", _sp.get("target_2"))
+            if plan.get("breakout_target_1"):
+                _sp["breakout_target_1"] = plan["breakout_target_1"]
+                _sp["breakout_target_2"] = plan.get("breakout_target_2") or 0.0
             _sp["targets_rebuilt"] = bool(plan.get("targets_rebuilt"))
             _sp["targets_rebuilt_basis"] = plan.get("targets_rebuilt_basis")
             _sp["breakout_demoted_reason"] = plan["breakout_demoted_reason"]
@@ -557,7 +632,8 @@ def run_arbitration(
                     "entry_low": _rsp.get("entry_zone_low"), "entry_high": _rsp.get("entry_zone_high"),
                     "breakout_level": _rsp.get("breakout_level"), "stop": _rsp.get("tactical_stop"),
                     "target_1": _rsp.get("target_1"), "target_2": _rsp.get("target_2"),
-                    "verdict": watch_data.get("verdict"), "gate_status": "REJECTED_BY_GATE",
+                    "verdict": watch_data.get("verdict"), "judge_verdict": watch_data.get("judge_verdict"),
+                    "shares_plan": _rsp, "gate_status": "REJECTED_BY_GATE",
                     "gate_reasons": "; ".join(_reasons), "setup_lane": triage_lane, "kind": kind,
                     "atr_at_signal": atr14_val if atr14_val != "N/A" else None,
                     "spot_at_signal": spot_num or None,
@@ -684,6 +760,8 @@ def run_arbitration(
             "target_2": sp.get("target_2"),
             "planned_rr": planned_rr,
             "verdict": watch_data.get("verdict"),
+            "judge_verdict": watch_data.get("judge_verdict"),
+            "shares_plan": sp,
             "gate_status": real_gate_status,
             "setup_lane": triage_lane,
             "kind": kind,
@@ -710,12 +788,17 @@ def run_arbitration(
         watch_data["actionable"] = 1 if (gate_ok and _ok) else 0
 
         try:
-            from src.logic.order_ticket import build_ticket, persist_and_notify
+            from src.logic.order_ticket import MEASURED_SOURCES, build_ticket, persist_and_notify
 
-            _tk = build_ticket(watch_data, spot_num, date_str)
+            _tk = build_ticket(watch_data, spot_num, date_str,
+                               skip_superseded=watch_data.get("levels_source") in MEASURED_SOURCES)
             if _tk:
                 watch_data["ticket"] = _tk
                 persist_and_notify(_tk)
+            else:
+                from src.logic.order_ticket import void_ticket
+
+                void_ticket(ticker, date_str, "latest research has no valid entry plan")
         except Exception as e_tk:
             logger.warning(f"[{ticker}] ticket build skipped: {e_tk}")
 
@@ -740,7 +823,27 @@ def run_arbitration(
         except Exception:
             pass
         clean_judge += f"\n\n> ⚠️ **VERDICT: NO_LEVELS** — Failed to process watch levels JSON: {e}"
+        try:
+            from src.logic.order_ticket import void_ticket
+
+            void_ticket(ticker, date_str, "watch levels processing failed")
+        except Exception:
+            pass
 
     arbitration_path.write_text(clean_judge, encoding="utf-8")
+    try:
+        if isinstance(locals().get("watch_data"), dict) and watch_data.get("shares_plan"):
+            from src.logic import report_consistency as rc
+
+            summary_path = arbitration_path.parent / f"{ticker}_summary.md"
+            body = (summary_path.read_text(encoding="utf-8") if summary_path.exists() else "") + "\n" + clean_judge
+            issues = rc.check(body, watch_data, dw_dict, spot_num, active_pos_block)
+            if issues:
+                logger.warning(f"[{ticker}] report consistency: {'; '.join(issues)}")
+            block = rc.binding_block(watch_data, issues, dw_dict)
+            rc.stamp(summary_path, block)
+            rc.stamp(arbitration_path, block)
+    except Exception as e_rc:
+        logger.warning(f"[{ticker}] report consistency check skipped: {e_rc}")
     logger.info(f"[{ticker}] Senior PM Arbitration generated at {arbitration_path}!")
     return clean_judge

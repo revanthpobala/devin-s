@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 
 from src.tracking import rr_config
 from typing import Any, Dict, Iterable, List, Optional
@@ -75,8 +76,8 @@ def setup_events(opps: Iterable[Dict[str, Any]], date: str,
                         "body": "Wait for the report. Event risk dominates a 21-day window."})
             continue
         note = "" if d is not None else " Earnings date unknown: check before entering."
-        out.append({"kind": "TAKE_NOW", "severity": "WARN", "ticker": t, "key": f"TAKE_NOW:{t}:{date}",
-                    "title": f"{t}: in zone and gate passed",
+        out.append({"kind": "TAKE_NOW", "severity": "WARN", "ticker": t, "key": f"TAKE_NOW:{t}:{date}", "push": "ENTRY",
+                    "title": f"BUY {t}: in zone and gate passed",
                     "body": f"Entry {o.get('entry_low')}-{o.get('entry_high')}, stop {o.get('tactical_stop')}, "
                             f"T1 {o.get('target_1')}, R:R at market {o.get('live_rr')}.{note}"})
     return out
@@ -127,6 +128,7 @@ WATCH_TYPES = {
     "ZONE_TOUCH": ("WARN", "touching a tracked entry zone"),
     "ZONE_APPROACH": ("INFO", "approaching a tracked entry zone"),
     "ZONE_REBOUND": ("INFO", "rebounded off a tracked zone"),
+    "SCENARIO_ARRIVAL": ("WARN", "reached a scenario trigger"),
 }
 
 
@@ -151,7 +153,24 @@ VERDICT = {
     "TARGET_2_REACHED": ("TAKE PROFIT", "if you hold it: close it"),
     "LEVEL_T2": ("TAKE PROFIT", "if you hold it: close it"),
     "TARGET_HIT_NO_FILL": ("SKIP", "target hit with no fill: plan is over"),
+    "SCENARIO_ARRIVAL": ("CHECK", "scenario trigger reached: the arrival re-research decides; unmeasured"),
 }
+
+
+# No action follows from these, so they never notify.
+SILENT = {"LEVEL_HIGH_20D", "ZONE_REBOUND", "TARGET_HIT_NO_FILL"}
+# Only actionable for a holder. A stop on a name you do not hold means: cancel any resting buy.
+HOLDER_ONLY = {"TESTING_SUPPORT", "LEVEL_STOP", "STOP_BREACHED", "TARGET_1_REACHED", "TARGET_2_REACHED", "LEVEL_T2"}
+TOUCH_CHECK = "near the zone, not in it, or R:R at market under 2.0: unmeasured, buy only if you planned it"
+
+
+def _touch_is_measured(message: str) -> bool:
+    """In-zone and R:R at market >= 2.0 is the measured lane; a near-zone touch or a yellow R:R is not."""
+    num = r"(\d+(?:\.\d+)?)"
+    rr = re.search(r"R:R at market " + num, message or "")
+    z = re.search(rf"zone \${num}-\${num}.*? at \${num}", message or "")
+    in_zone = not z or float(z.group(1)) <= float(z.group(3)) <= float(z.group(2))
+    return bool(rr) and float(rr.group(1)) >= rr_config.GREEN_RR and in_zone
 
 
 def verdict_line(kind: str, message: str = "") -> str:
@@ -159,16 +178,22 @@ def verdict_line(kind: str, message: str = "") -> str:
     if not v:
         return ""
     label, do = v
+    if kind == "ZONE_TOUCH" and not _touch_is_measured(message):
+        label, do = "CHECK", TOUCH_CHECK
     m = re.search(r"R:R at market ([\d.]+)", message or "")
     t = rr_config.tier(float(m.group(1))) if m else None
     return f"{label}: {do}" + (f" (R:R {m.group(1)}{', ' + t if t else ''})" if m and kind.startswith("ZONE") else "")
 
 
-def watch_alert_events(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def watch_alert_events(rows: Iterable[Dict[str, Any]], held: Optional[set] = None) -> List[Dict[str, Any]]:
     """Level and plan events from the watch loop. MOVING, THESIS_EXPIRED, MISSED_* and RUNNING_NO_ROOM are
     too repetitive to notify on; ZONE_TOUCH_LOW_RR stays in the watch log only. One notification per ticker, type and day,
-    and one per ticker and day across the stop family (the most severe wins)."""
-    rows = list(rows)
+    and one per ticker and day across the stop family (the most severe wins). With `held` known, stop and target
+    events on names you do not hold are dropped, except a breached stop, which becomes a cancel notice."""
+    rows = [r for r in rows if r.get("trigger_type") not in SILENT]
+    if held is not None:
+        rows = [r for r in rows if r.get("trigger_type") not in HOLDER_ONLY or r.get("trigger_type") == "STOP_BREACHED"
+                or str(r.get("ticker") or "").upper() in held]
     worst = {}
     for r in rows:
         sev = STOP_SEVERITY.get(r.get("trigger_type"))
@@ -184,10 +209,22 @@ def watch_alert_events(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if r.get("trigger_type") in STOP_SEVERITY and worst[(t, r.get("date"))] is not r:
             continue
         spot = r.get("spot_price")
-        ev = {"kind": r["trigger_type"], "severity": meta[0], "ticker": t,
+        msg = str(r.get("message") or "")
+        line = verdict_line(r["trigger_type"], msg)
+        label, sev = line.partition(":")[0], meta[0]
+        ticket = msg.partition(" -> ")[2].strip()
+        if r["trigger_type"] == "STOP_BREACHED" and held is not None and t not in held:
+            label, sev, line = "CANCEL", "INFO", "CANCEL: plan is dead, cancel any resting buy order"
+        elif label == "CHECK":
+            sev = "INFO"
+        ev = {"kind": r["trigger_type"], "severity": sev, "ticker": t,
               "key": f"WA:{r['trigger_type']}:{t}:{r.get('date')}",
-              "title": f"{VERDICT.get(r['trigger_type'], ('',))[0]} {t}: {meta[1]}".strip() + (f" @ ${float(spot):.2f}" if spot else ""),
-              "body": "\n".join(x for x in (verdict_line(r["trigger_type"], str(r.get("message") or "")), str(r.get("message") or "")) if x)}
+              "title": f"{label} {t}: {meta[1]}".strip() + (f" @ ${float(spot):.2f}" if spot else ""),
+              "body": "\n".join(x for x in (line, ticket if label == "ACT" else "", msg) if x)}
+        if label == "ACT":
+            ev["push"] = "ENTRY"
+        elif label in ("EXIT", "TAKE PROFIT"):
+            ev["push"] = "RISK"
         if r["trigger_type"] in STOP_SEVERITY:
             ev["group"], ev["rank"] = f"WA:STOP:{t}:{r.get('date')}", STOP_SEVERITY[r["trigger_type"]]
         out.append(ev)
@@ -237,4 +274,36 @@ def portfolio_events(positions: Iterable[Dict[str, Any]], total_day_pct: Optiona
             sev = "CRITICAL" if pct <= -8.0 else "WARN"
             out.append({"kind": "HOLDING_DROP", "severity": sev, "ticker": sym, "key": f"HD:{sym}:{date}:{sev}",
                         "title": f"{sym}: {pct:+.1f}% today", "body": f"Position worth ${mv:,.0f}. Decide: hold, trim or exit."})
+    return out
+
+
+def rsi2_events(rows: Iterable[Dict[str, Any]], now_et: Any) -> List[Dict[str, Any]]:
+    """One order per RSI2 ENTER signal, live until the next session's open, the only time it can be taken."""
+    from src.tracking.rsi2_scan import entry_open_passed, MAX_HOLD_BARS, next_open_day
+
+    out = []
+    for r in rows:
+        t, day = str(r.get("ticker") or "").upper(), str(r.get("date") or "")[:10]
+        ceil, stop, target = _num(r.get("entry_high")), _num(r.get("stop")), _num(r.get("target_1"))
+        if not (t and day and ceil and stop and target and ceil > stop) or entry_open_passed(day, now_et):
+            continue
+        opens = next_open_day(day)
+        win, ev_r = r.get("lane_prior_win"), r.get("lane_prior_ev")
+        last, n = date.fromisoformat(str(opens)), MAX_HOLD_BARS
+        while n > 1:
+            last += timedelta(days=1)
+            n -= last.weekday() < 5
+        er = str(r.get("next_earnings") or "")[:10]
+        er_in = bool(er) and str(opens) <= er <= str(last)
+        out.append({
+            "kind": "ORDER", "severity": "WARN", "ticker": t, "key": f"RSI2:{t}:{day}", "push": "ENTRY",
+            "title": ("EARNINGS IN HOLD · " if er_in else "") + f"BUY {t} at the {opens} open, only if it opens at or below ${ceil:.2f}",
+            "body": "\n".join(x for x in (
+                f"{t} BUY 100 MARKET-ON-OPEN {opens}. Skip if the open is above {ceil:.2f} or at/below the stop.",
+                f"Stop {stop:.2f} · target {target:.2f} · risk at the ceiling ${100 * (ceil - stop):,.0f}",
+                f"Exit at the next open after a daily close above EMA5, or at the open after {MAX_HOLD_BARS} bars.",
+                f"Earnings {er} falls inside the {MAX_HOLD_BARS}-bar hold (ends {last}): a gap can jump the stop. Skip or size down." if er_in else "",
+                f"RSI2 lane [MEASURED]: {win:.0f}% win, {ev_r:+.3f}R per trade in this QQQ band. A base rate, not a forecast."
+                if win is not None and ev_r is not None else "",
+            ) if x)})
     return out

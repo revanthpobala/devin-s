@@ -62,6 +62,49 @@ CHAT_STALL_BUSY_S = 60.0
 CHAT_WAIT_TICK_S = 3.0
 
 
+def get_chat_llm_config() -> dict:
+    """
+    Resolves the LLM configuration for Copilot Chat.
+    Priority:
+      1. Dedicated chat key: CHAT_OPEN_ROUTER_API_KEY or CHAT_OPENROUTER_API_KEY
+      2. General OpenRouter key: OPENROUTER_API_KEY or OPENROUTER_KEY
+      3. Fallback: Local llama.cpp / Qwen server on port 8000
+    """
+    chat_key = (
+        os.getenv("CHAT_OPEN_ROUTER_API_KEY")
+        or os.getenv("CHAT_OPENROUTER_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENROUTER_KEY")
+    )
+    is_openrouter = bool(chat_key and chat_key.strip().lower() not in ("none", "false", "0"))
+
+    if is_openrouter:
+        raw_model = (
+            os.getenv("CHAT_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or "openrouter/free"
+        )
+        model = raw_model.lstrip("=").strip() if raw_model else "openrouter/free"
+        return {
+            "provider": "openrouter",
+            "api_key": chat_key.strip(),
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": model,
+            "default_headers": {
+                "HTTP-Referer": "http://localhost:8050",
+                "X-Title": "Stock Cockpit Copilot",
+            },
+        }
+
+    return {
+        "provider": "local",
+        "api_key": "sk-no-key-required",
+        "base_url": os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1"),
+        "model": None,
+        "default_headers": None,
+    }
+
+
 def _save_chat_turn(session_id: str, ticker: str, date_str: str, role: str, content: str):
     """Saves a chat message turn directly to SQLite database."""
     try:
@@ -222,29 +265,44 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
         session_id = req.session_id or f"sess_{ticker_u}_{date_str}_{uuid.uuid4().hex[:8]}"
         _save_chat_turn(session_id, ticker_u, date_str, "user", req.question)
 
-        # Fast check if local LLM port 8000 is listening
-        llm_alive = False
-        import socket
-        try:
-            with socket.create_connection(("127.0.0.1", 8000), timeout=0.6):
-                llm_alive = True
-        except Exception:
-            llm_alive = False
-
-        if not llm_alive:
-            response_text = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server.bat` (or `start_market.bat`) to ask follow-up questions."
-        else:
+        chat_cfg = get_chat_llm_config()
+        if chat_cfg["provider"] == "openrouter":
             try:
                 response_text = query_local_llm(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     messages=messages,
                     use_tools=True,
-                    use_openrouter=False,
+                    use_openrouter=True,
+                    model=chat_cfg["model"],
                     max_tokens=4096,
                 )
             except Exception as llm_err:
-                response_text = f"⚠️ **LLM Inference Error:** {llm_err}"
+                response_text = f"⚠️ **OpenRouter Chat Error:** {llm_err}"
+        else:
+            # Fast check if local LLM port 8000 is listening
+            llm_alive = False
+            import socket
+            try:
+                with socket.create_connection(("127.0.0.1", 8000), timeout=0.6):
+                    llm_alive = True
+            except Exception:
+                llm_alive = False
+
+            if not llm_alive:
+                response_text = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server.bat` (or `start_market.bat`) to ask follow-up questions."
+            else:
+                try:
+                    response_text = query_local_llm(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        messages=messages,
+                        use_tools=True,
+                        use_openrouter=False,
+                        max_tokens=4096,
+                    )
+                except Exception as llm_err:
+                    response_text = f"⚠️ **LLM Inference Error:** {llm_err}"
 
         _save_chat_turn(session_id, ticker_u, date_str, "assistant", response_text)
 
@@ -348,62 +406,74 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                 yield "data: [DONE]\n\n"
                 return
 
-            # Fast socket check
-            import socket
-            llm_alive = False
-            try:
-                with socket.create_connection(("127.0.0.1", 8000), timeout=0.6):
-                    llm_alive = True
-            except Exception:
-                llm_alive = False
+            chat_cfg = get_chat_llm_config()
+            is_openrouter = (chat_cfg["provider"] == "openrouter")
 
-            if not llm_alive:
-                offline_msg = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server.bat` to stream responses in real time."
-                yield f"data: {json.dumps({'token': offline_msg})}\n\n"
-                yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
-                yield "data: [DONE]\n\n"
-                _save_chat_turn(session_id, ticker_u, date_str, "assistant", offline_msg)
-                return
+            if not is_openrouter:
+                # Fast socket check for local port 8000
+                import socket
+                llm_alive = False
+                try:
+                    with socket.create_connection(("127.0.0.1", 8000), timeout=0.6):
+                        llm_alive = True
+                except Exception:
+                    llm_alive = False
+
+                if not llm_alive:
+                    offline_msg = "⚠️ **Local LLM Server on Port 8000 is currently offline.**\n\nPlease start the local Qwen server via `scripts\\launchers\\start_llm_server.bat` to stream responses in real time."
+                    yield f"data: {json.dumps({'token': offline_msg})}\n\n"
+                    yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    _save_chat_turn(session_id, ticker_u, date_str, "assistant", offline_msg)
+                    return
 
             if await request.is_disconnected():
                 return
 
             from openai import AsyncOpenAI
-            client = AsyncOpenAI(
-                base_url=os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1"),
-                api_key="sk-no-key-required",
-                timeout=180,
-            )
-            try:
-                models = await client.models.list()
-                model_name = models.data[0].id
-            except Exception:
-                model_name = "gpt-4"
+            client_kwargs = {
+                "base_url": chat_cfg["base_url"],
+                "api_key": chat_cfg["api_key"],
+                "timeout": 180,
+            }
+            if chat_cfg.get("default_headers"):
+                client_kwargs["default_headers"] = chat_cfg["default_headers"]
 
-            # Fast check if local LLM port 8000 slots are under heavy prompt prefill or dual occupancy
-            slot_notice = None
-            try:
-                base_host = os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1").split("/v1")[0]
-                import urllib.request
-                with urllib.request.urlopen(f"{base_host}/slots", timeout=0.3) as s_resp:
-                    s_data = json.loads(s_resp.read().decode("utf-8"))
-                    heavy_prefill = any(
-                        s.get("is_processing") and s.get("n_prompt_tokens", 0) > 8000
-                        and s.get("n_prompt_tokens_processed", 0) < s.get("n_prompt_tokens", 0)
-                        for s in s_data
-                    )
-                    all_busy = all(s.get("is_processing") for s in s_data) if s_data else False
-                    if heavy_prefill:
-                        slot_notice = "⚡ Deep Research context ingestion active on GPU Slot 1. Your chat is assigned to Slot 0 with shared GPU compute."
-                    elif all_busy:
-                        slot_notice = "⏳ Both GPU slots active. Request queued in Slot 0 — streaming will begin shortly."
-            except Exception:
-                pass
+            client = AsyncOpenAI(**client_kwargs)
 
-            if slot_notice:
-                yield f"data: {json.dumps({'status': 'slot_notice', 'notice': slot_notice})}\n\n"
+            if is_openrouter:
+                model_name = chat_cfg["model"]
+            else:
+                try:
+                    models = await client.models.list()
+                    model_name = models.data[0].id
+                except Exception:
+                    model_name = "gpt-4"
 
-            # Multimodal Vision Payload (Qwen 27B Vision Projector)
+                # Fast check if local LLM port 8000 slots are under heavy prompt prefill or dual occupancy
+                slot_notice = None
+                try:
+                    base_host = os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1").split("/v1")[0]
+                    import urllib.request
+                    with urllib.request.urlopen(f"{base_host}/slots", timeout=0.3) as s_resp:
+                        s_data = json.loads(s_resp.read().decode("utf-8"))
+                        heavy_prefill = any(
+                            s.get("is_processing") and s.get("n_prompt_tokens", 0) > 8000
+                            and s.get("n_prompt_tokens_processed", 0) < s.get("n_prompt_tokens", 0)
+                            for s in s_data
+                        )
+                        all_busy = all(s.get("is_processing") for s in s_data) if s_data else False
+                        if heavy_prefill:
+                            slot_notice = "⚡ Deep Research context ingestion active on GPU Slot 1. Your chat is assigned to Slot 0 with shared GPU compute."
+                        elif all_busy:
+                            slot_notice = "⏳ Both GPU slots active. Request queued in Slot 0 — streaming will begin shortly."
+                except Exception:
+                    pass
+
+                if slot_notice:
+                    yield f"data: {json.dumps({'status': 'slot_notice', 'notice': slot_notice})}\n\n"
+
+            # Multimodal Vision Payload (Qwen 27B Vision Projector or multimodal cloud)
             if req.image_data and messages:
                 if messages[-1].get("role") == "user":
                     raw_user_content = messages[-1].get("content", "")
@@ -467,8 +537,10 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         "max_tokens": 4096,
                         "temperature": 0.2,
                         "stream": True,
-                        "extra_body": {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}},
                     }
+                    if not is_openrouter:
+                        create_kwargs["extra_body"] = {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}}
+
                     if turn_tools_enabled:
                         create_kwargs["tools"] = TOOLS
                         create_kwargs["tool_choice"] = "auto"
@@ -477,23 +549,32 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     # exists, so poll it and keep the user informed instead of a silent stream.
                     from src.utils import chat_priority
 
-                    chat_priority.mark_waiting()
+                    if not is_openrouter:
+                        chat_priority.mark_waiting()
                     open_task = asyncio.create_task(client.chat.completions.create(**create_kwargs))
                     client_gone = False
                     while True:
                         opened, _ = await asyncio.wait([open_task], timeout=CHAT_WAIT_TICK_S)
                         if opened:
-                            chat_priority.clear()
+                            if not is_openrouter:
+                                chat_priority.clear()
                             break
-                        chat_priority.mark_waiting()
+                        if not is_openrouter:
+                            chat_priority.mark_waiting()
                         if await request.is_disconnected():
                             open_task.cancel()
-                            chat_priority.clear()
+                            if not is_openrouter:
+                                chat_priority.clear()
                             client_gone = True
                             break
                         if not busy_notice_sent and time.monotonic() - stream_t0 >= CHAT_FIRST_TOKEN_BUSY_S:
                             busy_notice_sent = True
-                            yield f"data: {json.dumps({'status': 'slot_notice', 'notice': '⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees.'})}\n\n"
+                            busy_msg = (
+                                "⏳ GPU busy, queued — deep research holds the GPU; your chat is queued and will stream as soon as a slot frees."
+                                if not is_openrouter
+                                else "⏳ Waiting for response from OpenRouter..."
+                            )
+                            yield f"data: {json.dumps({'status': 'slot_notice', 'notice': busy_msg})}\n\n"
                         else:
                             yield ": ping\n\n"
                     if client_gone:

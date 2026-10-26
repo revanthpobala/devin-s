@@ -5,13 +5,20 @@ window.AppApi = {
   async request(url, options = {}) {
     const timeoutMs = options.timeoutMs || 10000;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutErr = new Error(`API request timed out after ${timeoutMs}ms for ${url}`);
+    timeoutErr.name = 'TimeoutError';
+    const timer = setTimeout(() => controller.abort(timeoutErr), timeoutMs);
     try {
       const fetchOpts = { ...options, signal: options.signal || controller.signal };
       delete fetchOpts.timeoutMs;
       const res = await fetch(url, fetchOpts);
       if (!res.ok) throw new Error(`API request failed: ${res.status} ${res.statusText}`);
       return await res.json();
+    } catch (err) {
+      if (controller.signal.aborted && controller.signal.reason) {
+        throw controller.signal.reason;
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }

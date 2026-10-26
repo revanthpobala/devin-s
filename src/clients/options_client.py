@@ -17,6 +17,7 @@ interest inline. IV/OI are intentionally omitted from the Alpaca table; greeks
 (delta/gamma/theta/vega) are included when the feed provides them.
 """
 
+import contextvars
 import logging
 import os
 import time
@@ -124,8 +125,30 @@ def _alpaca_underlying_last(ticker: str) -> Optional[float]:
         return None
 
 
+_GRID_SINK: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar("options_grid_sink", default=None)
+
+
+def fetch_chain_grid(ticker: str, min_dte: int = 20, max_dte: int = 800) -> Optional[dict]:
+    """Structured chain via the normal routing (Schwab, Tastytrade, Alpaca): {'grid': {(exp, strike): row}, 'spot', 'source'}.
+    None when no broker source answers (yfinance has no grid; callers fall back to it themselves)."""
+    sink: dict = {}
+    tok = _GRID_SINK.set(sink)
+    try:
+        intent = {"direction": "BOTH", "strike_low": 0.0, "strike_high": 1e9, "min_dte": min_dte, "max_dte": max_dte}
+        for fetch in (_fetch_schwab_chain, _fetch_tastytrade_chain, _fetch_alpaca_chain):
+            if fetch(ticker, intent) and sink.get("grid"):
+                return sink
+            sink.clear()
+    finally:
+        _GRID_SINK.reset(tok)
+    return None
+
+
 def _render_chain(ticker, grid, all_expiries, direction, explicit_exp, spot, source):
     """Compact markdown chain table (front 2 expiries, 12 strikes nearest spot) from a {(exp, strike): row} grid."""
+    sink = _GRID_SINK.get()
+    if sink is not None and grid:
+        sink.update(grid=grid, spot=spot, source=source)
     if not grid:
         logger.warning(f"[{ticker}] {source} chain came back empty after parsing.")
         return None

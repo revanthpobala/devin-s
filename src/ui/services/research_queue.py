@@ -169,14 +169,41 @@ MAX_CONCURRENT_FULL = 1
 MAX_CONCURRENT_MID = 1
 MAX_CONCURRENT_LOCAL = 1
 LLM_SLOTS = 3
-CHAT_RESERVE = 1
 
 
-def local_slot_cap() -> int:
-    """Local triage may use llama slots deep research is not using, one per signed-in TV profile. One slot stays free for chat."""
+def is_cloud_chat_enabled() -> bool:
+    """Checks whether Copilot Chat is routed to OpenRouter in the cloud."""
+    chat_key = (
+        os.getenv("CHAT_OPEN_ROUTER_API_KEY")
+        or os.getenv("CHAT_OPENROUTER_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENROUTER_KEY")
+    )
+    return bool(chat_key and chat_key.strip().lower() not in ("none", "false", "0"))
+
+
+def chat_reserve_count() -> int:
+    """If chat uses OpenRouter in the cloud, 0 local GPU slots need to be reserved for chat.
+    If chat relies on the local llama.cpp server, reserve 1 slot so chat is never starved.
+    """
+    return 0 if is_cloud_chat_enabled() else 1
+
+
+# Kept for backward compatibility
+CHAT_RESERVE = 0 if is_cloud_chat_enabled() else 1
+
+
+def local_slot_cap(has_queued_deep: bool = False) -> int:
+    """Local triage may use llama slots deep research is not using, capped at MAX_CONCURRENT_LOCAL (1).
+    Deep research always has strict priority: if any deep research jobs are queued,
+    local triage yields completely to avoid hardware starvation and preserve chat/deep capacity.
+    """
+    if has_queued_deep:
+        return 0
     from src.data.tv_scraper import signed_in_profiles
-    idle = LLM_SLOTS - CHAT_RESERVE - get_active_deep_research_count()
-    return max(0, min(idle, len(signed_in_profiles())))
+    idle = LLM_SLOTS - chat_reserve_count() - get_active_deep_research_count()
+    profiles_count = len(signed_in_profiles()) if signed_in_profiles() else 1
+    return max(0, min(MAX_CONCURRENT_LOCAL, idle, profiles_count))
 MAX_CONCURRENT_DEEP = MAX_CONCURRENT_FULL + MAX_CONCURRENT_MID
 
 
@@ -333,8 +360,37 @@ def _score_and_sort_queued_jobs(queued_rows: list) -> list:
     return [job for _, job in scored_jobs]
 
 
+_WATCHDOG_THREAD: Optional[threading.Thread] = None
+_WATCHDOG_STOP = threading.Event()
+
+
+def ensure_queue_watchdog():
+    """Ensure a background watchdog thread is running to periodically drain the queue."""
+    global _WATCHDOG_THREAD
+    if _WATCHDOG_THREAD is not None and _WATCHDOG_THREAD.is_alive():
+        return
+
+    def _watchdog_loop():
+        logger.info("🛡️ [Queue Watchdog] Background research queue monitor active.")
+        while not _WATCHDOG_STOP.is_set():
+            try:
+                with get_db() as conn:
+                    queued_count = conn.cursor().execute(
+                        "SELECT COUNT(*) FROM active_research_jobs WHERE status = 'QUEUED'"
+                    ).fetchone()[0]
+                if queued_count > 0:
+                    dispatch_next_queued_job()
+            except Exception as e:
+                logger.debug(f"Queue watchdog error: {e}")
+            _WATCHDOG_STOP.wait(timeout=10.0)
+
+    _WATCHDOG_THREAD = threading.Thread(target=_watchdog_loop, daemon=True, name="ResearchQueueWatchdog")
+    _WATCHDOG_THREAD.start()
+
+
 def dispatch_next_queued_job():
-    """Pick next QUEUED jobs for Local Triage, FULL Deep Research, and MID Deep Research."""
+    """Pick next QUEUED jobs with strict priority: Deep Research FIRST, then Local Triage if slots idle and no deep jobs queued."""
+    ensure_queue_watchdog()
     with _QUEUE_DISPATCH_LOCK:
         with get_db() as conn:
             c = conn.cursor()
@@ -343,37 +399,13 @@ def dispatch_next_queued_job():
             except Exception:
                 pass
 
-            # 1. Dispatch Local Research queue (uses idle llama slots)
-            active_local = get_active_local_research_count()
-            local_slots_available = local_slot_cap() - active_local
-            if local_slots_available > 0:
-                queued_local = c.execute(
-                    "SELECT job_id, ticker, mode, target_date, stage_detail, tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode = 'local_only'"
-                ).fetchall()
-                sorted_local = _score_and_sort_queued_jobs(queued_local)
-                for job in sorted_local[:local_slots_available]:
-                    jid = job["job_id"]
-                    tkr = job["ticker"]
-                    m = job["mode"]
-                    dt = job["target_date"]
-                    c.execute(
-                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'LOCAL_TRIAGE', stage_detail = 'Starting Local Triage', started_at = ? WHERE job_id = ?",
-                        (datetime.now(timezone.utc).isoformat(), jid)
-                    )
-                    conn.commit()
-
-                    worker_thread = threading.Thread(
-                        target=run_research_worker,
-                        args=(jid, tkr, m, dt, False),
-                        daemon=True
-                    )
-                    ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
-                    worker_thread.start()
-                    append_log(f"⚖️ [Local Queue] Dispatched local triage for {tkr} (Job ID: {jid}).")
-
-            # 2. Dispatch Deep Research queue across open slots (MAX_CONCURRENT_DEEP = 2)
+            # 1. Dispatch Deep Research queue FIRST across open slots (MAX_CONCURRENT_DEEP = 2)
             active_deep = get_active_deep_research_count()
-            deep_slots_available = min(MAX_CONCURRENT_DEEP - active_deep, LLM_SLOTS - CHAT_RESERVE - active_deep - get_active_local_research_count())
+            active_local = get_active_local_research_count()
+            deep_slots_available = min(
+                MAX_CONCURRENT_DEEP - active_deep,
+                max(0, LLM_SLOTS - chat_reserve_count() - active_deep - active_local)
+            )
             if deep_slots_available > 0:
                 queued_deep = c.execute(
                     "SELECT job_id, ticker, mode, target_date, stage_detail, COALESCE(tier, 'MID') AS tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only'"
@@ -399,6 +431,44 @@ def dispatch_next_queued_job():
                     ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
                     worker_thread.start()
                     append_log(f"🔬 [Deep Slot] Dispatched {tkr} [{t_tier}] (Job ID: {jid}).")
+
+            # Check if there are still queued deep research jobs waiting for slots
+            remaining_deep_queued = c.execute(
+                "SELECT COUNT(*) FROM active_research_jobs WHERE status = 'QUEUED' AND mode != 'local_only'"
+            ).fetchone()[0]
+
+            # 2. Dispatch Local Research queue SECOND: ONLY if no deep research jobs are queued and slots are available
+            active_deep = get_active_deep_research_count()
+            active_local = get_active_local_research_count()
+            cap = local_slot_cap(has_queued_deep=(remaining_deep_queued > 0))
+            local_slots_available = min(
+                cap - active_local,
+                max(0, LLM_SLOTS - chat_reserve_count() - active_deep - active_local)
+            )
+            if local_slots_available > 0:
+                queued_local = c.execute(
+                    "SELECT job_id, ticker, mode, target_date, stage_detail, tier FROM active_research_jobs WHERE status = 'QUEUED' AND mode = 'local_only'"
+                ).fetchall()
+                sorted_local = _score_and_sort_queued_jobs(queued_local)
+                for job in sorted_local[:local_slots_available]:
+                    jid = job["job_id"]
+                    tkr = job["ticker"]
+                    m = job["mode"]
+                    dt = job["target_date"]
+                    c.execute(
+                        "UPDATE active_research_jobs SET status = 'RUNNING', stage = 'LOCAL_TRIAGE', stage_detail = 'Starting Local Triage', started_at = ? WHERE job_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), jid)
+                    )
+                    conn.commit()
+
+                    worker_thread = threading.Thread(
+                        target=run_research_worker,
+                        args=(jid, tkr, m, dt, False),
+                        daemon=True
+                    )
+                    ACTIVE_RESEARCH_WORKERS[jid] = worker_thread
+                    worker_thread.start()
+                    append_log(f"⚖️ [Local Queue] Dispatched local triage for {tkr} (Job ID: {jid}).")
 
 
 _STAGE_MARKERS = [

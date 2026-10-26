@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -374,15 +375,36 @@ def scrape_survivor_task(survivor, out_dir, today_str, worker_id, lookback_days:
         return
 
     logger.info(f"[Scraper-{worker_id}] Scraping TradingView for {ticker} (lookback_days={lookback_days}, headless={headless})...")
+    from src.data.tv_scraper import signed_in_profiles, is_profile_locked
+
+    primary_profile = chrome_profile or f"tv_chrome_profile_{worker_id}"
+    all_signed = signed_in_profiles()
+    alt_candidates = [p for p in all_signed if p != primary_profile and not is_profile_locked(p)]
+    if not alt_candidates:
+        alt_candidates = [p for p in all_signed if p != primary_profile]
+
     try:
-        if chrome_profile:
-            scraper = TVScraper(chrome_profile=chrome_profile, target_date=today_str, headless=headless)
-        else:
-            scraper = TVScraper(worker_id=worker_id, target_date=today_str, headless=headless)
+        scraper = TVScraper(chrome_profile=primary_profile, target_date=today_str, headless=headless)
         scraper.capture_ticker(ticker, lookback_days=lookback_days)
-    except Exception as e:
-        logger.error(f"[Scraper-{worker_id}] Scraper failed for {ticker}: {e}")
-        raise e
+    except Exception as first_err:
+        if alt_candidates:
+            alt_prof = alt_candidates[0]
+            logger.warning(
+                f"[Scraper-{worker_id}] Scrape for {ticker} failed on '{primary_profile}' ({first_err}). "
+                f"Retrying scrape on alternate signed-in profile '{alt_prof}'..."
+            )
+            time.sleep(3.0)
+            try:
+                alt_scraper = TVScraper(chrome_profile=alt_prof, target_date=today_str, headless=headless)
+                alt_scraper.capture_ticker(ticker, lookback_days=lookback_days)
+                logger.info(f"[Scraper-{worker_id}] Alternate profile '{alt_prof}' successfully scraped {ticker}!")
+                return
+            except Exception as second_err:
+                logger.error(f"[Scraper-{worker_id}] Alternate scraper on '{alt_prof}' also failed for {ticker}: {second_err}")
+                raise second_err from first_err
+        else:
+            logger.error(f"[Scraper-{worker_id}] Scraper failed for {ticker}: {first_err}")
+            raise first_err
 
 
 def _deep_research_gate(triage, earnings_gate, news_contradiction=False, news_negative=False):
@@ -666,6 +688,14 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
             triage["reason"] = "stale_data"
             triage["conviction"] = None
 
+    # Chart data far from the market quote is a different instrument or a bad feed, never a setup.
+    if live_spot and bar_spot and bar_spot > 0 and not 0.6 < live_spot / bar_spot < 1.0 / 0.6:
+        logger.warning(f"[Prefilter-{worker_id}] {ticker}: chart close ${bar_spot:.2f} vs market ${live_spot:.2f}, cut as price_mismatch")
+        triage["triage"] = "CUT"
+        triage["reason"] = "price_mismatch"
+        triage["conviction"] = None
+        triage["flags"] = list(triage.get("flags") or []) + ["price_mismatch"]
+
     sentiment = triage.get("sentiment", {})
     # News at prefilter time: we first check the gate using cheap headline sentiment.
     news_negative = bool(triage.get("news_negative"))
@@ -775,7 +805,9 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
     _update_research_ledger(out_dir, result_dict)
 
     # Phase 4: Log rule baseline (source="rule") to suggestions ledger (LONG only — shorts measured no edge)
-    if triage.get("triage") in ("PASS", "WATCH") and str(triage.get("chosen_side") or "LONG").upper() == "LONG":
+    # RSI2 has one writer: tracking.rsi2_scan (fixed Pine geometry, next-open entry), so no rule row is logged for it here.
+    _rsi2_owned = triage.get("triage") == "PASS" and triage.get("setup_lane") == "RSI2"
+    if triage.get("triage") in ("PASS", "WATCH") and str(triage.get("chosen_side") or "LONG").upper() == "LONG" and not _rsi2_owned:
         try:
             from src.tracking.suggestions_ledger import append_suggestion
             from src.logic.level_validation import validate_levels
@@ -851,8 +883,7 @@ def prefilter_ticker(survivor, out_dir, today_str, worker_id, regenerate: bool =
                 "target_1": t1_lvl,
                 "target_2": t2_lvl,
                 "planned_rr": float(triage.get("rr")) if triage.get("rr") else None,
-                # RSI2 is research-only (next-open entry, no LIMIT zone), never an ENTER plan.
-                "verdict": "ENTER" if (triage.get("triage") == "PASS" and s_lane != "RSI2") else "STALK",
+                "verdict": "ENTER" if triage.get("triage") == "PASS" else "STALK",
                 "gate_status": rule_gate_status,
                 "gate_reasons": "; ".join(gate_reasons) if gate_reasons else None,
                 "setup_lane": s_lane,
@@ -1756,11 +1787,18 @@ Output:
     
     bull_case = ""
     bear_case = ""
+    _debate_timeout = int(os.getenv("LOCAL_DEBATE_TIMEOUT", "90"))
     with _cf.ThreadPoolExecutor(max_workers=2) as dpool:
         bf1 = dpool.submit(_run_debate, _BULL_R1_SYS, _debate_data)
         br1 = dpool.submit(_run_debate, _BEAR_R1_SYS, _debate_data)
-        bull_case = bf1.result(timeout=30)
-        bear_case = br1.result(timeout=30)
+        try:
+            bull_case = bf1.result(timeout=_debate_timeout)
+        except Exception as e_b1:
+            logger.warning(f"[Debate-{worker_id}] {ticker} Bull R1 timed out/failed: {e_b1}")
+        try:
+            bear_case = br1.result(timeout=_debate_timeout)
+        except Exception as e_br1:
+            logger.warning(f"[Debate-{worker_id}] {ticker} Bear R1 timed out/failed: {e_br1}")
 
     # ROUND 2
     _BULL_R2_SYS = "You are a BULLISH equity researcher. Read the Bear's argument and the original data. Rebut their specific claims in exactly 2 sentences and re-assert the long edge."
@@ -1771,8 +1809,14 @@ Output:
     with _cf.ThreadPoolExecutor(max_workers=2) as dpool:
         bf2 = dpool.submit(_run_debate, _BULL_R2_SYS, f"DATA:\n{_debate_data}\n\nBEAR'S ARGUMENT:\n{bear_case}")
         br2 = dpool.submit(_run_debate, _BEAR_R2_SYS, f"DATA:\n{_debate_data}\n\nBULL'S ARGUMENT:\n{bull_case}")
-        bull_rebuttal = bf2.result(timeout=30)
-        bear_rebuttal = br2.result(timeout=30)
+        try:
+            bull_rebuttal = bf2.result(timeout=_debate_timeout)
+        except Exception as e_b2:
+            logger.warning(f"[Debate-{worker_id}] {ticker} Bull R2 timed out/failed: {e_b2}")
+        try:
+            bear_rebuttal = br2.result(timeout=_debate_timeout)
+        except Exception as e_br2:
+            logger.warning(f"[Debate-{worker_id}] {ticker} Bear R2 timed out/failed: {e_br2}")
 
     # ROUND 3
     _MOD_SYS = "You are an impartial moderator synthesizing a stock debate between a Bull and a Bear. Based on their openings and rebuttals, output EXACTLY 3 points they agree on, and EXACTLY 3 points of fierce disagreement."

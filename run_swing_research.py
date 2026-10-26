@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 
 import concurrent.futures
@@ -204,15 +205,27 @@ def run_swing_pipeline(
                 pass
             self._fh = None
 
-    def _acquire_free_profile(offset: int):
-        """Walk profiles from a per-job offset; return (profile_name, lock) of the first free one."""
-        for k in range(len(CHROME_PROFILES)):
-            p = CHROME_PROFILES[(offset + k) % len(CHROME_PROFILES)]
-            if _is_profile_locked(p):
-                continue  # another live Chrome already owns it
-            lock = _ProfileLock(p)
-            if lock.acquire():
-                return p, lock
+    def _acquire_free_profile(offset: int, max_wait_s: float = 180.0):
+        """Walk profiles from a per-job offset; wait if all profiles are busy, returning (profile_name, lock)."""
+        deadline = time.time() + max_wait_s
+        first_wait = True
+        while True:
+            for k in range(len(CHROME_PROFILES)):
+                p = CHROME_PROFILES[(offset + k) % len(CHROME_PROFILES)]
+                if _is_profile_locked(p):
+                    continue  # another live Chrome already owns it
+                lock = _ProfileLock(p)
+                if lock.acquire():
+                    return p, lock
+            if time.time() >= deadline:
+                break
+            if first_wait:
+                logger.info(
+                    f"All {len(CHROME_PROFILES)} assignable Chrome profile(s) are busy with concurrent scrape jobs. "
+                    f"Waiting up to {int(max_wait_s)}s for an idle profile..."
+                )
+                first_wait = False
+            time.sleep(3.0)
         return None, None
 
     job_seed = os.environ.get("RESEARCH_JOB_ID") or f"{os.getpid()}-{threading.get_ident()}"
@@ -226,15 +239,13 @@ def run_swing_pipeline(
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         for index, survivor in enumerate(survivors):
             worker_id = (index % num_workers) + 1
-            if target_ticker:
-                profile, lock = _acquire_free_profile(job_offset)
-                if profile is None:
-                    # No free profile at all — serialize: reuse the first one by brute force.
-                    profile = CHROME_PROFILES[index % len(CHROME_PROFILES)]
-                else:
-                    held_locks.append(lock)  # keep locked for the whole scrape phase
-            else:
-                profile = CHROME_PROFILES[index % len(CHROME_PROFILES)]
+            profile, lock = _acquire_free_profile(job_offset + index)
+            if profile is None:
+                raise RuntimeError(
+                    f"All {len(CHROME_PROFILES)} Chrome profiles remained busy after 180s. "
+                    f"Timed out waiting for an idle profile for {survivor.get('Ticker', 'UNKNOWN')}."
+                )
+            held_locks.append(lock)  # keep locked for the whole scrape phase
             logger.info(f"Assigning {profile} to worker {worker_id} for survivor {survivor.get('Ticker', 'UNKNOWN')}...")
             scrape_futures.append(
                 executor.submit(

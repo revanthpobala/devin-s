@@ -128,6 +128,47 @@ def build_trust_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+MISS_EXITS = ("MISSED_RUNAWAY", "NOT_FILLED")
+
+
+def component_scorecard(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Per (source, lane, gate, verdict): how many rows, how many scored, fill and miss rates, realized R.
+    `rows` are suggestions rows for every source. Fill rate is over scored rows; pending rows are counted apart."""
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for r in rows:
+        if (r.get("kind") or "NEW") != "NEW":
+            continue
+        v, jv = r.get("verdict") or "-", r.get("judge_verdict")
+        key = (r.get("source") or "?", r.get("setup_lane") or "-", r.get("gate_status") or "-",
+               f"{v} (judge {jv})" if jv and jv not in (v, "ARMED") else v)
+        groups.setdefault(key, []).append(r)
+    out = []
+    for (src, lane, gate, verdict), g in groups.items():
+        scored = [r for r in g if r.get("scored_at")]
+        filled = [r for r in scored if r.get("fill_price") and r.get("r_net") is not None]
+        missed = [r for r in scored if r.get("exit_reason") in MISS_EXITS]
+        out.append({
+            "source": src, "lane": lane, "gate": gate, "verdict": verdict, "n": len(g), "scored": len(scored),
+            "filled": len(filled), "missed": len(missed),
+            "fill_rate_pct": round(100 * len(filled) / len(scored), 1) if scored else None,
+            "miss_rate_pct": round(100 * len(missed) / len(scored), 1) if scored else None,
+            "realized": summarize(r["r_net"] for r in filled),
+        })
+    return sorted(out, key=lambda x: (-x["n"], x["source"], x["lane"]))
+
+
+def load_component_rows() -> List[Dict[str, Any]]:
+    from src import config
+    from src.tracking.db_locks import no_lock, readonly_connection
+
+    with no_lock:
+        with readonly_connection(config.research_watch_db_path(), timeout=2.0) as conn:
+            jv = "judge_verdict" if any(r[1] == "judge_verdict" for r in conn.execute("PRAGMA table_info(suggestions)")) else "NULL AS judge_verdict"
+            return [dict(r) for r in conn.execute(
+                f"SELECT source, setup_lane, gate_status, verdict, {jv}, kind, fill_price, r_net, exit_reason, scored_at FROM suggestions"
+            ).fetchall()]
+
+
 def load_rows() -> List[Dict[str, Any]]:
     from src import config
     from src.tracking.db_locks import no_lock, readonly_connection

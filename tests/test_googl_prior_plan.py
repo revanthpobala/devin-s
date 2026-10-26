@@ -179,8 +179,8 @@ def test_broken_trigger_is_kept_and_its_targets_rebuilt():
     # The trigger survived, and the targets were rebuilt strictly above it.
     assert plan["breakout_level"] == 355.0
     assert plan["targets_rebuilt"] is True
-    assert plan["target_1"] > 355.0
-    assert plan["target_2"] > plan["target_1"]
+    assert plan["breakout_target_1"] > 355.0
+    assert plan["breakout_target_2"] > plan["breakout_target_1"]
     assert plan["targets_rebuilt_basis"] in ("next_resistance", "atr_multiple", "stop_distance_multiple")
     assert "targets rebuilt above it" in plan["breakout_demoted_reason"]
 

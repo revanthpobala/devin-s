@@ -13,6 +13,7 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 from src import config
@@ -53,6 +54,15 @@ def metrics(bars: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             and last <= high20 * (1 - PULLBACK_OFF_HIGH) and rr >= MIN_PROXY_RR}
 
 
+def completed(bars: Dict[str, List[Dict[str, Any]]], now_et: Optional[datetime] = None) -> Dict[str, List[Dict[str, Any]]]:
+    """Drops today's still-forming bar when the sweep runs during the session (catch-up after the machine was off)."""
+    now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() >= 5 or (now_et.hour, now_et.minute) >= (16, 10):
+        return bars
+    today = now_et.strftime("%Y-%m-%d")
+    return {t: [b for b in v if str(b["date"])[:10] != today] for t, v in bars.items()}
+
+
 def _sectors(tickers: List[str]) -> Dict[str, str]:
     try:
         from src.screener.universe import _profiles, _yf
@@ -91,7 +101,7 @@ def run(queue: bool = True, bars_fetch=None, tickers: Optional[List[str]] = None
         tickers = [t.replace("/", ".") for t in load_constituents()]
     started = time.time()
     names = sorted(set(tickers) | {"SPY", "QQQ", "IWM"})
-    bars = bars_fetch(names, 760)
+    bars = completed(bars_fetch(names, 760))
     try:
         from src.tracking import rsi2_scan
 
@@ -99,6 +109,14 @@ def run(queue: bool = True, bars_fetch=None, tickers: Optional[List[str]] = None
     except Exception as e:
         logger.warning("rsi2 scan failed: %s", e)
         rsi2 = {"error": str(e)}
+    try:
+        from src.tracking import ticket_paper
+
+        extra = sorted(set(ticket_paper.pending_tickers()) - set(bars))
+        paper = ticket_paper.score_pending({**bars, **(completed(bars_fetch(extra, 250)) if extra else {})})
+    except Exception as e:
+        logger.warning("paper scoring failed: %s", e)
+        paper = {"error": str(e)}
     rows = {t: m for t in names if t in bars and (m := metrics(bars[t])) is not None}
     etfs = {t: rows.pop(t) for t in ("SPY", "QQQ", "IWM") if t in rows}
     if held is None:
@@ -130,6 +148,7 @@ def run(queue: bool = True, bars_fetch=None, tickers: Optional[List[str]] = None
                            "off_high_pct": round(100 * rows[t]["off_high20"], 1), "held": t in held} for t in cands],
            "queued": queued,
            "rsi2": rsi2,
+           "paper": paper,
            "note": "Screen only picks scrape order; no measured edge. The engine zone and at-market R:R decide."}
     out_path().write_text(json.dumps(res, indent=1), encoding="utf-8")
     return res

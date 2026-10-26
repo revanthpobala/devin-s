@@ -493,21 +493,29 @@ def validate_levels(
                 ticker=ticker,
                 date_str=date_str,
             )
-            plan["target_1"] = rebuilt_t1
-            plan["target_2"] = rebuilt_t2
+            # Dual plan (zone and trigger): the zone keeps its own targets, the trigger gets the rebuilt ones.
+            dual = entry_low > 0 and entry_high > 0 and entry_type != "BREAKOUT"
+            if dual:
+                plan["breakout_target_1"] = rebuilt_t1
+                plan["breakout_target_2"] = rebuilt_t2
+            else:
+                plan["target_1"] = rebuilt_t1
+                plan["target_2"] = rebuilt_t2
+                target_1, target_2 = rebuilt_t1, rebuilt_t2
             plan["targets_rebuilt"] = True
             plan["targets_rebuilt_basis"] = basis
             plan["breakout_demoted_reason"] = (
-                f"{'; '.join(bo_reasons)}; trigger kept, targets rebuilt above it via {basis}"
+                f"{'; '.join(bo_reasons)}; trigger kept, "
+                + (f"breakout targets rebuilt above it via {basis}; zone targets unchanged" if dual else f"targets rebuilt above it via {basis}")
             )
-            target_1, target_2 = rebuilt_t1, rebuilt_t2
             logger.info(
-                f"[LEVEL_GATE] {ticker or 'plan'}: trigger ${breakout_level:.4f} kept, targets rebuilt "
-                f"to T1 ${rebuilt_t1:.2f} / T2 ${rebuilt_t2:.2f} via {basis}."
+                f"[LEVEL_GATE] {ticker or 'plan'}: trigger ${breakout_level:.4f} kept, "
+                f"{'breakout ' if dual else ''}targets rebuilt to T1 ${rebuilt_t1:.2f} / T2 ${rebuilt_t2:.2f} via {basis}."
             )
         bs_val = float(plan.get("breakout_stop") or 0.0)
-        if bs_val > 0 and target_1 > breakout_level and breakout_level > bs_val:
-            rr_at_trigger = round((target_1 - breakout_level) / (breakout_level - bs_val), 4)
+        bt1 = float(plan.get("breakout_target_1") or 0.0) or target_1
+        if bs_val > 0 and bt1 > breakout_level and breakout_level > bs_val:
+            rr_at_trigger = round((bt1 - breakout_level) / (breakout_level - bs_val), 4)
     plan["rr_at_trigger"] = rr_at_trigger
 
     has_shares_entry = entry_type not in ("NO_ENTRY", "NONE", "")
@@ -596,7 +604,8 @@ def validate_levels(
         and entry_high > 0 and spot > entry_high and stop < entry_high < target_1
         # Structural limit on "wait for a pullback": once price has covered half the zone-to-target move the
         # plan is a chase, not a wait (LLY, META). The half is a structural cut, not a measured number.
-        and (spot - entry_high) <= 0.5 * (target_1 - entry_high)
+        # A scenario zone is a wait by construction: price has to come back to it before anything fills.
+        and ((spot - entry_high) <= 0.5 * (target_1 - entry_high) or bool(plan.get("from_scenario")))
     )
     deferred_breakout = (
         has_shares_entry and entry_type == "BREAKOUT" and breakout_level > 0 and spot > 0 and spot < breakout_level
@@ -657,8 +666,8 @@ def validate_levels(
         except Exception as e:
             logger.debug(f"Earnings lookup failed in validate_levels: {e}")
 
-    # ── 7. Pine drift (skip for RSI2) ──────────────────────────
-    if not is_rsi2:
+    # ── 7. Pine drift (skip for RSI2 and for scenario zones, which sit where Pine has no plan by design) ──
+    if not is_rsi2 and not plan.get("from_scenario"):
         drifts = _pine_drift(plan, dw, side)
         for d in drifts:
             reasons.append(
@@ -670,7 +679,8 @@ def validate_levels(
     # ── 8. Options geometry ────────────────────────────────────
     options_plan = plan.get("options_plan", {}) or {}
     structure = str(options_plan.get("structure", "") or "").upper().replace(" ", "_")
-    if structure and structure != "NONE":
+    # A deferred options plan (actionable false, no priced legs) is a note, not a structure; it must not sink the share plan.
+    if structure and structure != "NONE" and options_plan.get("actionable") is not False:
         opt_spot = _dw_num(dw, "close", "Close", "spot", "last", "price")
         if opt_spot <= 0:
             opt_spot = _f(plan.get("spot")) or _f(plan.get("price")) or _f(plan.get("current_price")) or entry_high or 0.0

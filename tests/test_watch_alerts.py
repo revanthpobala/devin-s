@@ -92,7 +92,7 @@ def test_evaluate_watch_cycle_state_transitions(tmp_path):
 
         target_payload = {
             "ticker": "MOCK_TEST_TICKER",
-            "date": "2026-08-29",
+            "date": "2026-08-27",
             "verdict": "STALK",
             "conviction": 5,
             "actionable": True,
@@ -294,7 +294,7 @@ def test_floor_proximity_buffer(tmp_path):
         # Target with zone $300.00 - $301.50 (AAPL Put Wall simulation)
         aapl_payload = {
             "ticker": "AAPL_PROX",
-            "date": "2026-08-14",
+            "date": "2026-08-13",
             "verdict": "STALK",
             "conviction": 5,
             "actionable": True,
@@ -798,7 +798,7 @@ def test_sync_does_not_rearm_expired_target_without_newer_suggestion(tmp_path):
             conn.execute(
                 "CREATE TABLE suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, date TEXT, side TEXT, entry_low REAL,"
                 " entry_high REAL, stop REAL, target_1 REAL, target_2 REAL, signal_pack REAL, fade REAL, action_long REAL, ext_z REAL,"
-                " atr_at_signal REAL, rr_at_market_at_signal REAL, verdict TEXT, setup_lane TEXT, gate_status TEXT)"
+                " atr_at_signal REAL, rr_at_market_at_signal REAL, verdict TEXT, setup_lane TEXT, gate_status TEXT, source TEXT)"
             )
             conn.execute(
                 "INSERT INTO suggestions (ticker, date, side, entry_low, entry_high, stop, target_1, target_2, verdict, gate_status)"
@@ -942,3 +942,66 @@ def test_non_terminal_evaluation_does_not_revive_expired_row(tmp_path):
         assert status() == "EXPIRED"
         watch_manager.update_target_live_state("EXP", 12.0, "TARGET_HIT")
         assert status() == "TARGET_HIT"
+
+
+def _sync_db(tmp_path):
+    watch_manager.init_watch_db()
+    with watch_manager._get_connection() as conn:
+        conn.execute(
+            "CREATE TABLE suggestions (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, date TEXT, side TEXT, entry_low REAL,"
+            " entry_high REAL, stop REAL, target_1 REAL, target_2 REAL, signal_pack REAL, fade REAL, action_long REAL, ext_z REAL,"
+            " atr_at_signal REAL, rr_at_market_at_signal REAL, verdict TEXT, setup_lane TEXT, gate_status TEXT, source TEXT)"
+        )
+        conn.commit()
+
+
+def test_sync_gives_rsi2_a_stop_to_ceiling_zone_for_one_session(tmp_path):
+    from datetime import date
+
+    day = date.today().isoformat()
+    with patch.object(watch_manager, "DB_PATH", tmp_path / "t.db"):
+        _sync_db(tmp_path)
+        with watch_manager._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO suggestions (ticker, date, side, entry_low, entry_high, stop, target_1, verdict, setup_lane, gate_status, source)"
+                " VALUES ('AAA', ?, 'LONG', 50, 50, 46, 58, 'ENTER', 'RSI2', 'PASS', 'rsi2_scan'),"
+                " ('BBB', ?, 'LONG', 50, 50, 46, 58, 'STALK', 'RSI2', 'PASS', 'rsi2_scan')", (day, day))
+            conn.commit()
+        assert watch_manager.sync_active_suggestions_to_watch_targets() == 1
+        row = {t["ticker"]: t for t in watch_manager.get_all_watch_targets()}["AAA"]
+        assert row["entry_zone_low"] == 46.01 and row["entry_zone_high"] == 50 and row["expires_on"] > day
+
+
+def test_sync_never_moves_levels_of_an_open_trade(tmp_path):
+    from datetime import date
+
+    day = date.today().isoformat()
+    with patch.object(watch_manager, "DB_PATH", tmp_path / "t.db"):
+        _sync_db(tmp_path)
+        with watch_manager._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO watch_targets (ticker, date, verdict, status, entry_zone_low, entry_zone_high, tactical_stop, target_1, expires_on, updated_at)"
+                " VALUES ('AAA', '2026-01-02', 'ENTER', 'IN_TRADE', 40, 41, 38, 45, '2026-01-09', 'x')")
+            conn.execute(
+                "INSERT INTO suggestions (ticker, date, side, entry_low, entry_high, stop, target_1, verdict, setup_lane, gate_status, source)"
+                " VALUES ('AAA', ?, 'LONG', 50, 50, 46, 58, 'ENTER', 'RSI2', 'PASS', 'rsi2_scan')", (day,))
+            conn.commit()
+        watch_manager.sync_active_suggestions_to_watch_targets()
+        row = {t["ticker"]: t for t in watch_manager.get_all_watch_targets()}["AAA"]
+        assert (row["status"], row["entry_zone_low"], row["tactical_stop"], row["target_1"], row["expires_on"]) == \
+            ("IN_TRADE", 40, 38, 45, "2026-01-09")
+
+
+def test_zone_is_not_entered_before_the_next_open(tmp_path):
+    from datetime import datetime
+    with patch.object(watch_manager, "DB_PATH", tmp_path / "t.db"), \
+            patch("run_watch_alerts.get_eastern_now", return_value=datetime(2026, 8, 28, 17, 0)):
+        watch_manager.init_watch_db()
+        watch_manager.upsert_watch_target({
+            "ticker": "AAA", "date": "2026-08-28", "verdict": "STALK", "status": "STALKING",
+            "shares_plan": {"entry_type": "LIMIT", "entry_zone_low": 46.01, "entry_zone_high": 50.0,
+                            "tactical_stop": 46.0, "target_1": 58.0, "target_2": 58.0},
+            "invalidation": {"condition": "DAILY_CLOSE_BELOW", "price_level": 46.0},
+        })
+        with patch("run_watch_alerts.get_current_price", return_value=50.0):
+            assert evaluate_watch_cycle(sync_sheets=False)[0]["status"] == "STALKING"

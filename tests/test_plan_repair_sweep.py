@@ -96,8 +96,8 @@ def test_sweep_restores_dropped_trigger_and_rebuilds_targets(tmp_path):
 
     # The trigger came back from the recorded reason — never zeroed.
     assert sp["breakout_level"] == 356.83
-    assert sp["target_1"] > 356.83
-    assert sp["target_2"] > sp["target_1"]
+    assert sp["breakout_target_1"] > 356.83
+    assert sp["breakout_target_2"] > sp["breakout_target_1"]
     assert sp["targets_rebuilt"] is True
     assert "targets rebuilt above it" in sp["breakout_demoted_reason"]
     # The re-arm is real: the plan's own levels include the BREAKOUT at 356.83.
@@ -186,8 +186,9 @@ def test_watch_targets_row_with_broken_trigger_is_repaired():
     rows = watch_manager.get_all_watch_targets()
     row = next(r for r in rows if r["ticker"] == "GOOGL")
     assert row["breakout_level"] == 364.17
-    assert row["target_1"] > 364.17
-    assert row["target_2"] > row["target_1"]
+    assert row["target_1"] == 360.0
+    assert row["breakout_target_1"] > 364.17
+    assert row["breakout_target_2"] > row["breakout_target_1"]
 
 
 def test_repair_shares_plan_is_a_noop_on_a_sound_plan():

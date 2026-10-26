@@ -1,6 +1,6 @@
 """The watch_targets schema contract (§3.1 of the plan).
 
-`init_watch_db()` owns a 26-branch migration ladder at `src/tracking/watch_manager.py:80-136`.
+`init_watch_db()` owns a 28-branch migration ladder at `src/tracking/watch_manager.py:80-136`.
 Nothing tested it, which is exactly what makes a schema change safe to attempt and easy to get
 wrong: `CREATE TABLE IF NOT EXISTS` means a table that already exists is never re-created, so the
 only thing standing between a legacy database and a broken column is one of those branches, and a
@@ -10,7 +10,7 @@ site nobody is looking at -- which is how `close_position()` came to update `wat
 closed trades recorded an exit price".
 
 This file pins three things:
-  * the exact 49-column set, in order, that a fresh database must end up with
+  * the exact 51-column set, in order, that a fresh database must end up with
   * that every ladder column comes BACK after an `ALTER TABLE ... DROP COLUMN`
   * that a legacy table missing all of them ends up with the same schema as a fresh create
 
@@ -39,7 +39,7 @@ EXPECTED_COLUMNS = [
     "zone_rr_flags", "rr_at_market_at_signal", "is_active", "user_taken", "suggestion_id",
     "fill_price", "quantity", "evaluation_verdict", "evaluation_playbook",
     "evaluation_time", "is_actionable_now", "thesis_id", "created_date", "expires_on",
-    "history_key", "bars_in_status",
+    "history_key", "bars_in_status", "breakout_target_1", "breakout_target_2",
 ]
 
 # Every column a migration-ladder branch adds. The first five overlap the CREATE -- that is how
@@ -52,7 +52,7 @@ MIGRATED_COLUMNS = [
     "evaluation_verdict", "evaluation_playbook", "evaluation_time", "is_actionable_now",
     "thesis_id", "created_date", "expires_on", "signal_pack", "fade", "action_long",
     "ext_z", "atr_at_signal", "zone_rr_flags", "rr_at_market_at_signal",
-    "history_key", "bars_in_status",
+    "history_key", "bars_in_status", "breakout_target_1", "breakout_target_2",
 ]
 
 # The columns a table created by the very first version of the CREATE had, before it grew.
@@ -89,7 +89,7 @@ def test_the_pin_covers_every_branch_in_the_source():
     src = Path(wm.__file__).read_text(encoding="utf-8")
     block = src[src.index("CREATE TABLE IF NOT EXISTS watch_targets ("):src.index("CREATE TABLE IF NOT EXISTS last_researched")]
     branches = re.findall(
-        r'if "([a-z_]+)" not in existing_cols:\s*\n\s*cursor\.execute\(\s*"ALTER TABLE watch_targets ADD COLUMN',
+        r'if "([a-z_0-9]+)" not in existing_cols:\s*\n\s*cursor\.execute\(\s*"ALTER TABLE watch_targets ADD COLUMN',
         block,
     )
 
@@ -97,7 +97,7 @@ def test_the_pin_covers_every_branch_in_the_source():
         "the ladder branches in init_watch_db() changed; update MIGRATED_COLUMNS and "
         f"EXPECTED_COLUMNS. in source: {sorted(branches)}\n pinned:  {sorted(MIGRATED_COLUMNS)}"
     )
-    assert len(MIGRATED_COLUMNS) == 26, (
+    assert len(MIGRATED_COLUMNS) == 28, (
         "the ladder grew or shrank; this number is the reason the schema test exists"
     )
 
@@ -197,7 +197,7 @@ def test_a_legacy_table_migrates_up_to_the_same_schema():
 
     assert _columns() == LEGACY_CREATE_COLUMNS
     init_watch_db()
-    # Identical as a schema: the same 49 columns, same types, same primary key. The physical order
+    # Identical as a schema: the same 51 columns, same types, same primary key. The physical order
     # differs (a legacy table has 28 CREATE columns then the ladder; a fresh one has 35 CREATE
     # columns then the ladder) and that is inherent to ALTER, not a divergence in the contract.
     assert sorted(_columns()) == sorted(EXPECTED_COLUMNS), (

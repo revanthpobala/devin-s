@@ -87,9 +87,9 @@ def test_validate_levels_keeps_the_meta_trigger_and_rebuilds_targets():
     # The trigger is kept, and the demotion reason now records what was rebuilt.
     assert plan["breakout_level"] == 747.60
     assert plan["targets_rebuilt"] is True
-    assert plan["target_1"] > 747.60
-    assert plan["target_2"] > plan["target_1"]
-    assert "targets rebuilt above it" in plan["breakout_demoted_reason"]
+    assert plan["breakout_target_1"] > 747.60
+    assert plan["breakout_target_2"] > plan["breakout_target_1"]
+    assert "breakout targets rebuilt above it" in plan["breakout_demoted_reason"]
     # ... and the zone itself is untouched.
     assert plan["entry_zone_low"] == 710.43
     assert plan["entry_zone_high"] == 715.95

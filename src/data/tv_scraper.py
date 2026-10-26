@@ -137,6 +137,34 @@ def rank_profiles_signed_in_first(names: List[str]) -> List[str]:
     return keep_in + unknown + out
 
 
+def is_profile_locked(profile_name_or_dir: Any) -> bool:
+    """Check if any active OS process has this Chrome profile open."""
+    import psutil
+    p_name = Path(profile_name_or_dir).name
+    for proc in psutil.process_iter(['name', 'cmdline']):
+        try:
+            if 'chrome' in (proc.name() or '').lower():
+                cmd = ' '.join(proc.cmdline() or [])
+                if p_name in cmd:
+                    return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return False
+
+
+def clean_stale_singleton_locks(profile_dir: Any) -> None:
+    """Safely unlink singleton lock files ONLY if no active browser process is using the profile."""
+    p_dir = Path(profile_dir)
+    if not p_dir.exists() or is_profile_locked(p_dir.name):
+        return
+    for item in p_dir.rglob("*"):
+        if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
+            try:
+                item.unlink()
+            except Exception:
+                pass
+
+
 class TVScraper:
     def __init__(self, worker_id: int = None, target_date: str = None, chrome_profile: str = None, headless: bool = True):
         env_chart = (os.getenv("TV_CHART_URL") or "").strip()
@@ -158,28 +186,25 @@ class TVScraper:
         elif chrome_profile:
             self.user_data_dir = str(config.BASE_DIR / chrome_profile)
         elif worker_id is not None:
-            self.user_data_dir = str(config.BASE_DIR / f"tv_chrome_profile_{worker_id}")
+            signed = signed_in_profiles()
+            if signed:
+                chosen = signed[(worker_id - 1) % len(signed)]
+                self.user_data_dir = str(config.BASE_DIR / chosen)
+            else:
+                self.user_data_dir = str(config.BASE_DIR / f"tv_chrome_profile_{worker_id}")
         else:
             # No profile assigned: use an existing one that is actually signed
             # into TradingView, because the saved layout needs a session.
-            existing = [p.name for p in config.BASE_DIR.glob("tv_chrome_profile_*") if p.is_dir()]
-            ranked = rank_profiles_signed_in_first(existing)
-            self.user_data_dir = str(config.BASE_DIR / (ranked[0] if ranked else "tv_chrome_profile"))
+            signed = signed_in_profiles()
+            self.user_data_dir = str(config.BASE_DIR / (signed[0] if signed else "tv_chrome_profile_1"))
 
         # Create a date-specific subfolder for today's screenshots
         today_str = target_date or datetime.now().strftime("%Y-%m-%d")
         self.screenshots_dir = config.BASE_DIR / "data" / "raw" / today_str
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-        # Clean stale Singleton lock files recursively from Chrome profile directory
-        profile_path = Path(self.user_data_dir)
-        if profile_path.exists():
-            for item in profile_path.rglob("*"):
-                if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
-                    try:
-                        item.unlink()
-                    except Exception:
-                        pass
+        # Clean stale Singleton lock files safely ONLY if no live browser owns the profile
+        clean_stale_singleton_locks(self.user_data_dir)
 
     def _pan_zoom_chart(self, page, move_right: int = MOVE_RIGHT_TIMES,
                         zoom_out: int = ZOOM_OUT_TIMES):
@@ -240,13 +265,19 @@ class TVScraper:
         and its sign-in state, and point at the screenshot that proves it.
         """
         profile = Path(self.user_data_dir).name
-        signed = profile_has_tv_session(self.user_data_dir)
-        reason = (
-            f"profile '{profile}' is NOT signed into TradingView, so the private "
-            f"saved layout cannot open"
-            if not signed
-            else f"layout {self.chart_url} did not render for profile '{profile}'"
-        )
+        state = profile_tv_session_state(self.user_data_dir)
+        if state == "out":
+            reason = (
+                f"profile '{profile}' is NOT signed into TradingView, so the private "
+                f"saved layout cannot open"
+            )
+        elif state == "unknown" or is_profile_locked(profile):
+            reason = (
+                f"profile '{profile}' was locked by another running browser process "
+                f"(concurrent scrape collision) or Cookies DB was unreadable"
+            )
+        else:
+            reason = f"layout {self.chart_url} did not render for profile '{profile}'"
         raise RuntimeError(
             f"{symbol}: no chart canvas — {reason}. Screenshot: {error_screenshot}"
         ) from err
@@ -264,14 +295,7 @@ class TVScraper:
         chart_path = ticker_dir / f"{safe_symbol}_chart.png"
 
         logger.info(f"Scraping normal TradingView chart for {safe_symbol}...")
-        profile_path = Path(self.user_data_dir)
-        if profile_path.exists():
-            for item in profile_path.rglob("*"):
-                if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
-                    try:
-                        item.unlink()
-                    except Exception:
-                        pass
+        clean_stale_singleton_locks(self.user_data_dir)
 
         with sync_playwright() as p:
             context = None
@@ -284,10 +308,9 @@ class TVScraper:
                 )
             except Exception as launch_err:
                 avail_profs = [
-                    pr.name for pr in config.BASE_DIR.glob("tv_chrome_profile_*")
-                    if pr.is_dir() and pr.name != Path(self.user_data_dir).name
+                    pr for pr in signed_in_profiles()
+                    if pr != Path(self.user_data_dir).name
                 ]
-                avail_profs = rank_profiles_signed_in_first(avail_profs)
                 for alt in avail_profs:
                     try:
                         context = p.chromium.launch_persistent_context(
@@ -307,7 +330,10 @@ class TVScraper:
             sep = "&" if "?" in self.chart_url else "?"
             url = f"{self.chart_url}{sep}symbol={safe_symbol}&interval=D"
             logger.info(f"Navigating to normal chart: {url}")
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.goto(url, wait_until="commit", timeout=30000)
+            except Exception as e_goto:
+                logger.warning(f"Normal chart navigation notice: {e_goto}")
             try:
                 page.wait_for_selector("canvas", timeout=25000)
             except Exception as e_canvas:
@@ -345,14 +371,7 @@ class TVScraper:
         """
         logger.info(f"Starting Playwright to capture screenshots for {symbol}...")
 
-        profile_path = Path(self.user_data_dir)
-        if profile_path.exists():
-            for item in profile_path.rglob("*"):
-                if item.is_file() and item.name.upper() in ("SINGLETONLOCK", "SINGLETONCOOKIE", "SINGLETONSOCKET", "LOCKFILE", "LOCK"):
-                    try:
-                        item.unlink()
-                    except Exception:
-                        pass
+        clean_stale_singleton_locks(self.user_data_dir)
 
         with sync_playwright() as p:
             context = None
@@ -370,16 +389,13 @@ class TVScraper:
             except Exception as launch_err:
                 err_msg = str(launch_err).lower()
                 if "already in use" in err_msg or "existing browser session" in err_msg:
-                    import random
                     avail_profs = [
-                        pr.name for pr in config.BASE_DIR.glob("tv_chrome_profile_*")
-                        if pr.is_dir() and pr.name != Path(self.user_data_dir).name
+                        pr for pr in signed_in_profiles()
+                        if pr != Path(self.user_data_dir).name
                     ]
-                    avail_profs = rank_profiles_signed_in_first(avail_profs)
-                    random.shuffle(avail_profs)
                     for alt in avail_profs:
                         try:
-                            logger.warning(f"Profile {self.user_data_dir} was busy; retrying with alternate profile {alt}...")
+                            logger.warning(f"Profile {self.user_data_dir} was busy; retrying with alternate signed-in profile {alt}...")
                             self.user_data_dir = str(config.BASE_DIR / alt)
                             context = p.chromium.launch_persistent_context(
                                 user_data_dir=self.user_data_dir,
@@ -399,7 +415,10 @@ class TVScraper:
             sep = "&" if "?" in self.chart_url else "?"
             url = f"{self.chart_url}{sep}symbol={symbol}&interval=D"
             logger.info(f"Navigating to {url}")
-            page.goto(url, wait_until="domcontentloaded")
+            try:
+                page.goto(url, wait_until="commit", timeout=30000)
+            except Exception as e_goto:
+                logger.warning(f"Chart navigation notice: {e_goto}")
 
             logger.info("Waiting for chart canvas to render...")
             try:
@@ -407,7 +426,10 @@ class TVScraper:
                     page.wait_for_selector("canvas", timeout=30000)
                 except Exception:
                     logger.warning(f"[{symbol}] canvas not rendered in 30s; reloading the chart once.")
-                    page.reload(wait_until="domcontentloaded")
+                    try:
+                        page.reload(wait_until="commit", timeout=30000)
+                    except Exception:
+                        pass
                     page.wait_for_selector("canvas", timeout=30000)
             except Exception as e:
                 error_screenshot = self.screenshots_dir / f"{symbol}_error.png"
@@ -541,21 +563,28 @@ class TVScraper:
                 # already-open pane would toggle it shut. Then ensure the
                 # "Data window" tab (not "Object tree") is the active one.
                 opened = False
-                for attempt in range(8):
+                for attempt in range(12):
                     if _dw_visible(page):
                         opened = True
                         break
                     if not _pane_open(page):
                         _ensure_pane_open(page)
                     else:
-                        # Pane claims open but Data Window not visible yet
-                        # (e.g. wrong tab) — bump the tab selection.
                         _ensure_data_window_tab(page)
                     _ensure_data_window_tab(page)
                     time.sleep(2.5)
                 if not opened:
                     logger.warning(
-                        "Data Window still not visible after retries — extraction may fail."
+                        "Data Window panel not open yet; re-triggering pane toggle and tab selection..."
+                    )
+                    _ensure_pane_open(page)
+                    _ensure_data_window_tab(page)
+                    time.sleep(4.0)
+                    if _dw_visible(page):
+                        opened = True
+                if not opened:
+                    logger.warning(
+                        "Data Window UI panel still not visible after retries — proceeding with CSV export (CSV contains full indicator data)."
                     )
                 else:
                     logger.info("Data Window is open and visible.")
@@ -673,24 +702,26 @@ class TVScraper:
             from src.data.csv_adapter import csv_to_datawindow, MIN_COLS
             import pandas as pd
 
-            # Validate column count; if indicators didn't finish compiling, wait and retry download
-            try:
-                check_df = pd.read_csv(str(csv_path), nrows=2)
-                if len(check_df.columns) < MIN_COLS:
+            # Validate column count; if indicators didn't finish compiling, wait up to 3 times for Pine Script
+            for compile_attempt in range(1, 4):
+                try:
+                    check_df = pd.read_csv(str(csv_path), nrows=2)
+                    if len(check_df.columns) >= MIN_COLS:
+                        break
                     logger.warning(
-                        f"CSV only has {len(check_df.columns)} columns (expected >={MIN_COLS}). "
-                        f"Indicators may still be compiling. Waiting 15s and re-downloading..."
+                        f"CSV only has {len(check_df.columns)} columns (expected >={MIN_COLS}) on attempt {compile_attempt}/3. "
+                        f"Indicators still compiling in TradingView. Waiting 20s for Pine Script to finish and re-downloading..."
                     )
-                    time.sleep(15)
+                    time.sleep(20)
                     page.click(MENU_BTN, timeout=15000)
                     page.click(DL_ITEM, timeout=15000)
                     with page.expect_download(timeout=90000) as retry_info:
                         page.click(DL_BTN, timeout=15000)
                     retry_dl = retry_info.value
                     retry_dl.save_as(str(csv_path))
-                    logger.info(f"Re-saved chart CSV to {csv_path}")
-            except Exception as check_err:
-                logger.debug(f"Pre-check on CSV columns encountered: {check_err}")
+                    logger.info(f"Re-saved chart CSV to {csv_path} (attempt {compile_attempt})")
+                except Exception as check_err:
+                    logger.debug(f"Pre-check on CSV columns encountered: {check_err}")
 
             data_dict, hist_df, realvol_10d, ret_10d = csv_to_datawindow(
                 str(csv_path), str(data_window_path), ticker=safe_symbol
@@ -706,7 +737,10 @@ class TVScraper:
             plain_url = f"{self.plain_chart_url}{sep_plain}symbol={symbol}&interval=D"
             logger.info(f"Navigating to Plain Chart layout: {plain_url}")
             try:
-                page.goto(plain_url, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.goto(plain_url, wait_until="commit", timeout=30000)
+                except Exception as e_plain_goto:
+                    logger.warning(f"Plain chart navigation notice: {e_plain_goto}")
                 page.wait_for_selector("canvas", timeout=20000)
                 time.sleep(3.0)  # let plain candles render
 

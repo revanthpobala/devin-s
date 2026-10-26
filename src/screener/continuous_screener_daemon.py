@@ -775,6 +775,12 @@ class ContinuousScreenerDaemon(threading.Thread):
         except Exception as e_batch:
             logger.debug(f"[ContinuousScreener] Batch price fetch failed: {e_batch}")
 
+        try:
+            from src.logic.order_ticket import held_symbols
+            held_now = held_symbols()
+        except Exception:
+            held_now = set()
+
         triggered_movers = []
         for sym, d_info in dossiers_by_ticker.items():
             live_p = live_prices.get(sym)
@@ -853,9 +859,11 @@ class ContinuousScreenerDaemon(threading.Thread):
             if move_pct >= 5.0:
                 is_mover = True
                 mover_reason = f"+{move_pct:.1f}% from dossier spot (${dossier_spot:.2f})"
-            elif e_high_flt is not None and live_p > e_high_flt:
+            elif e_high_flt is not None and live_p > e_high_flt >= dossier_spot:
                 is_mover = True
                 mover_reason = f"broke zone top (${e_high_flt:.2f})"
+            if is_mover and sym.upper() in held_now:
+                continue
 
             if is_mover:
                 triggered_movers.append({"symbol": sym, "move_pct": move_pct, "live_price": live_p, "reason": mover_reason})
