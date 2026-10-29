@@ -433,13 +433,17 @@ def _fetch_schwab_chain(ticker: str, intent: dict) -> Optional[str]:
         strike_high = float(intent.get("strike_high", 1e9))
         today = date.today()
         client = get_schwab_client()
-        r = client.get_option_chain(
-            ticker.replace(".", "/"),
-            contract_type=client.Options.ContractType.ALL,
-            strike_count=40,
-            from_date=today + timedelta(days=max(int(intent.get("min_dte", 14)), 1)),
-            to_date=today + timedelta(days=int(intent.get("max_dte", 120))),
-        )
+        import concurrent.futures
+        def _call_schwab_chain():
+            return client.get_option_chain(
+                ticker.replace(".", "/"),
+                contract_type=client.Options.ContractType.ALL,
+                strike_count=40,
+                from_date=today + timedelta(days=max(int(intent.get("min_dte", 14)), 1)),
+                to_date=today + timedelta(days=int(intent.get("max_dte", 120))),
+            )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            r = ex.submit(_call_schwab_chain).result(timeout=2.5)
         if r.status_code != 200:
             logger.warning(f"[{ticker}] Schwab options chain HTTP {r.status_code}")
             return None
@@ -529,7 +533,7 @@ def _alpaca_52w(ticker: str) -> Optional[tuple]:
         r = requests.get(
             url,
             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
-            timeout=20,
+            timeout=2.5,
         )
         if r.status_code != 200:
             return None
@@ -558,7 +562,7 @@ def _alpaca_quote(ticker: str) -> Optional[str]:
         r = requests.get(
             url,
             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
-            timeout=20,
+            timeout=2.5,
         )
         if r.status_code != 200:
             logger.warning(f"[{ticker}] Alpaca snapshot HTTP {r.status_code}: {r.text[:200]}")

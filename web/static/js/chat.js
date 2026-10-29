@@ -1041,6 +1041,54 @@ window.AppChat = {
     }, 3000);
   },
 
+  async recoverActiveSession() {
+    const sid = this._revSessionId;
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/copilot/chats/history?session_id=${encodeURIComponent(sid)}`);
+      const data = await res.json();
+      const messages = (data && data.messages) || [];
+      if (messages.length && messages[messages.length - 1].role === 'assistant') {
+        const map = (msgs) => msgs.map(m => ({ role: m.role, content: m.content, date: m.date, created_at: m.created_at }));
+        window.AppState.revChatHistory = map(messages);
+        this.renderRevChat();
+      }
+    } catch (e) {
+      console.debug('Failed to manually recover session:', e);
+    }
+  },
+
+  _autoRecoverSession(sid, bubbleEl, headerTitle, tries = 0) {
+    if (tries > 60 || !sid || this._revSessionId !== sid) return;
+    setTimeout(async () => {
+      if (this._revSessionId !== sid) return;
+      try {
+        const res = await fetch(`/api/copilot/chats/history?session_id=${encodeURIComponent(sid)}`);
+        const data = await res.json();
+        const messages = (data && data.messages) || [];
+        if (messages.length) {
+          const lastMsg = messages[messages.length - 1];
+          if (lastMsg.role === 'assistant' && lastMsg.content && !lastMsg.content.includes('(interrupted: you left the page')) {
+            const cleanContent = lastMsg.content;
+            if (bubbleEl) {
+              this._flushRcStreamRender(bubbleEl, cleanContent, headerTitle, false);
+            }
+            if (window.AppState.revChatHistory && window.AppState.revChatHistory.length) {
+              const lastHist = window.AppState.revChatHistory[window.AppState.revChatHistory.length - 1];
+              if (lastHist && lastHist.role === 'assistant') {
+                lastHist.content = cleanContent;
+              } else {
+                window.AppState.revChatHistory.push({ role: 'assistant', content: cleanContent });
+              }
+            }
+            return;
+          }
+        }
+      } catch (err) {}
+      this._autoRecoverSession(sid, bubbleEl, headerTitle, tries + 1);
+    }, 2500);
+  },
+
   startNewChat(target = 'modal') {
     const isModal = target === 'modal';
     if (isModal) {
@@ -1240,8 +1288,15 @@ window.AppChat = {
 
   async handleSetAlertAction(queryString) {
     try {
-      const params = new URLSearchParams(queryString);
-      const ticker = (params.get('ticker') || params.get('symbol') || '').toUpperCase().replace(/^\$/, '');
+      const params = new URLSearchParams(queryString || '');
+      const ticker = (
+        params.get('ticker') ||
+        params.get('symbol') ||
+        window.AppState?.activeChatTicker ||
+        (window.AppState?.currentReportData && window.AppState.currentReportData.ticker) ||
+        (document.getElementById('ticker-input') && document.getElementById('ticker-input').value) ||
+        ''
+      ).toUpperCase().replace(/^\$/, '').trim();
       const price = parseFloat(params.get('price') || params.get('threshold') || 0);
       const op = params.get('op') || '<=';
       if (!ticker || !price) {
@@ -1277,6 +1332,52 @@ window.AppChat = {
       console.error('Error setting alert:', e);
       if (window.AppUtils && window.AppUtils.showToast) {
         window.AppUtils.showToast(`Error setting alert: ${e.message}`, 'error');
+      }
+    }
+  },
+
+  async handleSyncTastytradeAlertsAction(queryString) {
+    try {
+      const params = new URLSearchParams(queryString || '');
+      const ticker = (
+        params.get('ticker') ||
+        params.get('symbol') ||
+        window.AppState?.activeChatTicker ||
+        (window.AppState?.currentReportData && window.AppState.currentReportData.ticker) ||
+        (document.getElementById('ticker-input') && document.getElementById('ticker-input').value) ||
+        ''
+      ).toUpperCase().replace(/^\$/, '').trim();
+      const date = params.get('date') || window.AppState?.activeDate || '';
+      if (!ticker) {
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast('Please specify a ticker to sync alerts', 'error');
+        }
+        return;
+      }
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`⏳ Registering Tastytrade cloud quote alerts for ${ticker}...`, 'info');
+      }
+      const resp = await fetch('/api/tastytrade-alerts/sync-ticker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: ticker, date: date || null })
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        const count = data.tt_alerts_count || data.indexed_count || 0;
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`📲 Registered ${count} Tastytrade cloud quote alert(s) for ${ticker}! (Mobile push active 24/7)`, 'success');
+        }
+      } else {
+        const msg = data.detail || data.error || data.message || 'Failed to sync Tastytrade alerts';
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`Tastytrade Alert: ${msg}`, 'warning');
+        }
+      }
+    } catch (e) {
+      console.error('Error syncing TT alerts:', e);
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`Error syncing TT alerts: ${e.message}`, 'error');
       }
     }
   },
@@ -1376,11 +1477,21 @@ window.AppChat = {
 
   // Portfolio-desk entry point: drops any single-ticker focus so the copilot answers about the
   // whole carried book (every holding, contract, and recent fill) instead of one symbol.
+  // Starts a clean, isolated chat session and clears prior conversation history.
   askPortfolioCopilot(prompt) {
+    if (window.AppState.isRevChatStreaming) {
+      this.stopRevChatStream();
+    }
     this._forcePortfolioChat = true;
     this._portfolioSessionId = `sess_PORTFOLIO_${Date.now()}`;
+    this._revSessionId = this._portfolioSessionId;
+    window.AppState.revChatHistory = [];
+    window.AppState.revChatCrossTurns = [];
     this.clearRevChatFocus();
     this.enterPortfolioMode();
+    this.renderRevChat();
+    const panel = document.getElementById('sidebar-prior-chats-panel');
+    if (panel) panel.style.display = 'none';
     this.openChatWithPrompt(prompt);
   },
 
@@ -1388,8 +1499,16 @@ window.AppChat = {
   // Keeps the chat in portfolio mode for every subsequent message until the user hits New/Clear,
   // so a leftover ticker focus can never recapture the conversation.
   openPortfolioCopilot() {
-    this.enterPortfolioMode();
+    if (window.AppState.isRevChatStreaming) {
+      this.stopRevChatStream();
+    }
+    this._forcePortfolioChat = true;
+    this._portfolioSessionId = `sess_PORTFOLIO_${Date.now()}`;
+    this._revSessionId = this._portfolioSessionId;
     window.AppState.revChatHistory = [];
+    window.AppState.revChatCrossTurns = [];
+    this.clearRevChatFocus();
+    this.enterPortfolioMode();
     this.renderRevChat();
     const panel = document.getElementById('sidebar-prior-chats-panel');
     if (panel) panel.style.display = 'none';
@@ -1587,17 +1706,31 @@ window.AppChat = {
     const elapsed = st.t0 ? `${((Date.now() - st.t0) / 1000).toFixed(1)}s` : '';
     const tokens = text.length;
     const meta = [elapsed, `${tokens} chars`].filter(Boolean).join(' · ');
-    // The live tool timeline lives outside the innerHTML-replaced region so it survives re-renders
-    const timeline = st.bubble.querySelector('.rc-tool-timeline');
-    st.bubble.innerHTML =
-      `<div class="rc-msg-head"><span class="rc-msg-who">${st.title}</span>` +
-      `<span class="rc-msg-meta">${meta}</span>` +
-      `<button class="btn danger rc-stop-btn" onclick="AppChat.stopRevChatStream()">⏹ Stop</button></div>`;
-    if (timeline) st.bubble.appendChild(timeline);
-    st.bubble.insertAdjacentHTML('beforeend',
-      `<div class="rc-msg-body rc-streaming">${window.AppUtils.renderMarkdown(text)}<span class="rc-caret"></span></div>`);
+
+    let head = st.bubble.querySelector('.rc-msg-head');
+    let metaEl = st.bubble.querySelector('.rc-msg-meta');
+    let whoEl = st.bubble.querySelector('.rc-msg-who');
+    let body = st.bubble.querySelector('.rc-msg-body');
+
+    if (!head || !body) {
+      const timeline = st.bubble.querySelector('.rc-tool-timeline');
+      st.bubble.innerHTML =
+        `<div class="rc-msg-head"><span class="rc-msg-who">${st.title}</span>` +
+        `<span class="rc-msg-meta">${meta}</span>` +
+        `<button class="btn danger rc-stop-btn" onclick="AppChat.stopRevChatStream()">⏹ Stop</button></div>`;
+      if (timeline) st.bubble.appendChild(timeline);
+      st.bubble.insertAdjacentHTML('beforeend',
+        `<div class="rc-msg-body rc-streaming">${window.AppUtils.renderMarkdown(text)}<span class="rc-caret"></span></div>`);
+    } else {
+      if (whoEl && st.title && whoEl.textContent !== st.title) whoEl.textContent = st.title;
+      if (metaEl) metaEl.textContent = meta;
+      body.innerHTML = `${window.AppUtils.renderMarkdown(text)}<span class="rc-caret"></span>`;
+    }
+
     const thread = document.getElementById('rev-chat-thread');
-    if (thread && st.autoScroll) thread.scrollTop = thread.scrollHeight;
+    if (thread && st.autoScroll) {
+      thread.scrollTop = thread.scrollHeight;
+    }
     st.dirty = false;
   },
 
@@ -1765,7 +1898,7 @@ window.AppChat = {
         this._revSessionId = this._portfolioSessionId;
       } else if (activeTicker) {
         this.setRevChatFocus(activeTicker);
-        if (!this._revSessionId || !this._revSessionId.includes(`_${activeTicker}_`)) {
+        if (!this._revSessionId) {
           this._revSessionId = `sess_${activeTicker}_${Date.now()}`;
         }
       }
@@ -1822,10 +1955,25 @@ window.AppChat = {
                 const data = JSON.parse(jsonStr);
                 if (data.session_id) this._revSessionId = data.session_id;
                 if (data.status === 'connecting') {
-                  this._flushRcStreamRender(assistantBubble, 'Analyzing real-time market data...', chatHeaderTitle, false);
+                  this._flushRcStreamRender(assistantBubble, 'Connecting to AI Copilot...', chatHeaderTitle, false);
+                } else if (data.status === 'progress') {
+                  this._flushRcStreamRender(assistantBubble, `> ⚙️ ${data.step || 'Compiling data...'}\n\n_Formulating quantitative intelligence..._`, chatHeaderTitle, false);
+                } else if (data.status === 'provider') {
+                  const provTag = data.provider === 'local' ? '⚡ GPU' : `🌐 ${data.model || 'Cloud'}`;
+                  chatHeaderTitle = `${chatHeaderTitle} · ${provTag}`;
+                  if (this._rcStreamState) this._rcStreamState.title = chatHeaderTitle;
+                  const who = assistantBubble.querySelector('.rc-msg-who');
+                  if (who) who.textContent = chatHeaderTitle;
                 } else if (data.status === 'slot_notice' || data.notice) {
                   const noticeMsg = data.notice || '';
                   this._flushRcStreamRender(assistantBubble, `> ${noticeMsg}\n\n_Streaming response..._`, chatHeaderTitle, false);
+                } else if (data.status === 'thinking' || data.thought) {
+                  if (!fullAnswer) {
+                    if (!this._rcThinkingBuf) this._rcThinkingBuf = '';
+                    this._rcThinkingBuf += (data.thought || '');
+                    const snippet = this._rcThinkingBuf.replace(/\s+/g, ' ').slice(-140);
+                    this._flushRcStreamRender(assistantBubble, `> 💭 *Reasoning:* ...${snippet}\n\n_Formulating institutional response..._`, chatHeaderTitle, false);
+                  }
                 } else if (data.status === 'tool_start') {
                   this._rcToolStart(assistantBubble, data.tools || []);
                 } else if (data.status === 'tool_done') {
@@ -1857,14 +2005,18 @@ window.AppChat = {
 
       } catch (e) {
         const isAbort = e.name === 'AbortError' || (window.AppState.revChatAbortController && window.AppState.revChatAbortController.signal.aborted);
-        if (fullAnswer.trim()) {
-          const savedText = isAbort ? `${fullAnswer}\n\n*[⏹ Stream stopped by user]*` : `${fullAnswer}\n\n*[⚠️ Connection interrupted: ${e.message}]*`;
+        if (isAbort) {
+          const savedText = fullAnswer.trim() ? `${fullAnswer}\n\n*[⏹ Stream stopped by user]*` : '*[⏹ Stream cancelled]*';
           window.AppState.revChatHistory.push({ role: 'assistant', content: savedText });
-          this._flushRcStreamRender(assistantBubble, savedText, chatHeaderTitle, false);
+          this._flushRcStreamRender(assistantBubble, savedText, chatHeaderTitle, !fullAnswer.trim());
         } else {
-          const errText = isAbort ? '*[⏹ Stream cancelled]*' : `❌ Error: ${e.message}`;
-          window.AppState.revChatHistory.push({ role: 'assistant', content: errText });
-          this._flushRcStreamRender(assistantBubble, errText, chatHeaderTitle, true);
+          // Connection interrupted: detached server generator continues in background.
+          // Show recovery status and auto-poll SQLite to seamlessly recover the completed answer!
+          const currentSid = this._revSessionId;
+          const pendingNotice = (fullAnswer.trim() ? `${fullAnswer}\n\n` : '') +
+            `> ⏳ *Connection interrupted (${e.message || 'network blip'}). The server continues generation in background — recovering answer...* <button class="btn" style="padding:2px 8px; font-size:10px; margin-left:6px;" onclick="AppChat.recoverActiveSession()">🔄 Check Now</button>`;
+          this._flushRcStreamRender(assistantBubble, pendingNotice, chatHeaderTitle, false);
+          this._autoRecoverSession(currentSid, assistantBubble, chatHeaderTitle);
         }
       }
           } catch (topErr) {
@@ -1881,7 +2033,55 @@ window.AppChat = {
         sendBtn.disabled = false;
       }
       const thread = document.getElementById('rev-chat-thread');
-      if (thread) thread.scrollTop = thread.scrollHeight;
+    }
+  },
+
+  _autoRecoverSession(sessionId, bubble, title, attempts = 0) {
+    if (!sessionId || attempts >= 10) return;
+    setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/copilot/chats/history?session_id=${encodeURIComponent(sessionId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const msgs = (data && data.messages) || [];
+        const lastAsst = msgs.filter(m => m.role === 'assistant').pop();
+        if (lastAsst && lastAsst.content && !lastAsst.content.startsWith('❌ Context compilation error')) {
+          this._flushRcStreamRender(bubble, lastAsst.content, title, false);
+          if (window.AppState.revChatHistory) {
+            window.AppState.revChatHistory.push({ role: 'assistant', content: lastAsst.content });
+          }
+          return;
+        }
+        this._autoRecoverSession(sessionId, bubble, title, attempts + 1);
+      } catch (err) {
+        console.debug('Session recovery polling:', err);
+      }
+    }, 1200);
+  },
+
+  async recoverActiveSession() {
+    const sid = this._revSessionId;
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/copilot/chats/history?session_id=${encodeURIComponent(sid)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const msgs = (data && data.messages) || [];
+      const lastAsst = msgs.filter(m => m.role === 'assistant').pop();
+      if (lastAsst && lastAsst.content) {
+        const thread = document.getElementById('rev-chat-thread');
+        if (thread) {
+          const lastMsg = thread.querySelector('.rc-msg-assistant:last-child');
+          if (lastMsg) {
+            this._flushRcStreamRender(lastMsg, lastAsst.content, '⚡ REV CHAT', false);
+            if (window.AppState.revChatHistory) {
+              window.AppState.revChatHistory.push({ role: 'assistant', content: lastAsst.content });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Manual recovery failed:', e);
     }
   },
 
@@ -2251,12 +2451,39 @@ window.AppChat = {
                       contentEl.innerHTML = `<em>${streamObj.statusText}</em>`;
                     }
                   }
+                } else if (data.status === 'progress') {
+                  streamObj.statusText = data.step || `Compiling quantitative context for $${sym}...`;
+                  if (window.AppState.activeChatTicker === sym) {
+                    const contentEl = document.getElementById('modal-stream-content');
+                    if (contentEl && !streamObj.fullAnswer) {
+                      contentEl.innerHTML = `<em>⚙️ ${this.escapeHtml(streamObj.statusText)}</em>`;
+                    }
+                  }
+                } else if (data.status === 'provider') {
+                  const provTag = data.provider === 'local' ? '⚡ GPU' : `🌐 ${data.model || 'Cloud'}`;
+                  const titleEl = document.getElementById('modal-copilot-title');
+                  if (titleEl) {
+                    titleEl.innerText = `🤖 Copilot Intelligence · ${provTag}`;
+                  }
                 } else if (data.status === 'slot_notice' || data.notice) {
                   streamObj.statusText = data.notice || '';
                   if (window.AppState.activeChatTicker === sym) {
                     const contentEl = document.getElementById('modal-stream-content');
                     if (contentEl && !streamObj.fullAnswer) {
                       contentEl.innerHTML = `<div style="font-size:11px; color:var(--amber-light); margin-bottom:6px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:6px; padding:6px 8px;">${this.escapeHtml(streamObj.statusText)}</div><em>Streaming response...</em>`;
+                    }
+                  }
+                } else if (data.status === 'thinking' || data.thought) {
+                  if (!streamObj.fullAnswer) {
+                    if (!streamObj.thinkingBuf) streamObj.thinkingBuf = '';
+                    streamObj.thinkingBuf += (data.thought || '');
+                    const snippet = streamObj.thinkingBuf.replace(/\s+/g, ' ').slice(-140);
+                    streamObj.statusText = `💭 Reasoning: ...${snippet}`;
+                    if (window.AppState.activeChatTicker === sym) {
+                      const contentEl = document.getElementById('modal-stream-content');
+                      if (contentEl) {
+                        contentEl.innerHTML = `<div style="font-size:11px; color:var(--text-muted); font-style:italic; margin-bottom:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:6px 8px;">${this.escapeHtml(streamObj.statusText)}</div><em>Formulating institutional response...</em>`;
+                      }
                     }
                   }
                 } else if (data.token) {

@@ -36,9 +36,49 @@ def normalize_stance(raw: object) -> Optional[str]:
     return s if s in EARNINGS_STANCES else None
 
 
+DEFAULT_RISK_BUDGET_USD = 500.0
+
+
+def compute_position_shares(
+    entry: float,
+    stop: float,
+    risk_budget_usd: float = DEFAULT_RISK_BUDGET_USD,
+    min_shares: int = 1,
+    max_shares: int = 500,
+) -> int:
+    """Position sizing by dollar risk: Risk per trade is set by position size, not by squeezing the stop.
+    If the natural stop is wide, cut share count until dollar risk is the same.
+    """
+    try:
+        e = float(entry or 0.0)
+        s = float(stop or 0.0)
+        rb = float(risk_budget_usd or DEFAULT_RISK_BUDGET_USD)
+    except (TypeError, ValueError):
+        return SHARES_PER_TRADE
+    if e <= s or s <= 0 or e <= 0:
+        return SHARES_PER_TRADE
+    risk_per_share = max(e - s, 0.01)
+    shares = int(rb / risk_per_share)
+    return max(min_shares, min(shares, max_shares))
+
+
 def max_allowed_stop(fill: float, atr: float, pine_stop: float = 0.0) -> float:
-    """Highest stop (tightest) the rulebook allows: Pine's stop when present, else fill - STOP_ATR_MIN * ATR."""
-    return pine_stop if pine_stop > 0 else fill - STOP_ATR_MIN * atr
+    """Highest stop (tightest) the rulebook allows: never tighter than fill - STOP_ATR_MIN * ATR.
+    If Pine stop is provided and is at or below this floor, respect it. If Pine stop is tighter than 0.7 ATR,
+    clamp it down to the 0.7 ATR floor so the trade has statistical room to breathe.
+    """
+    try:
+        fill_f = float(fill or 0.0)
+        atr_f = float(atr or 0.0)
+        pine_f = float(pine_stop or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if atr_f <= 0:
+        return round(pine_f, 2) if pine_f > 0 else round(fill_f * 0.95, 2)
+    atr_cap = round(fill_f - STOP_ATR_MIN * atr_f, 2)
+    if pine_f > 0:
+        return round(min(pine_f, atr_cap), 2)
+    return atr_cap
 
 
 def risk_usd(entry: float, stop: float, qty: int = SHARES_PER_TRADE) -> float:

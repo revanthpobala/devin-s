@@ -343,7 +343,11 @@ def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str, skip_su
     limit = min(hi, entry_max) if hi > 0 else min(spot, entry_max)
     if limit <= stop:
         return None
-    qty = trade_rules.SHARES_PER_TRADE
+    raw_qty = sp.get("recommended_shares")
+    try:
+        qty = int(raw_qty) if (raw_qty and int(raw_qty) > 0) else trade_rules.SHARES_PER_TRADE
+    except (ValueError, TypeError):
+        qty = trade_rules.SHARES_PER_TRADE
     opt = watch_data.get("options_plan") or {}
     alt, opt_note = None, None
     if opt.get("actionable") and str(opt.get("structure") or "NONE").upper() != "NONE":
@@ -504,11 +508,12 @@ def repair_long_shares_plan(
     lo, hi = _f(sp.get("entry_zone_low")), _f(sp.get("entry_zone_high"))
     fill = hi if hi > 0 else close
 
-    if not pine_stop:
-        cap = trade_rules.max_allowed_stop(fill, atr)
-        if stop > cap:
-            sp["tactical_stop"] = stop = round(cap, 2)
-            notes.append(f"stop widened to {trade_rules.STOP_ATR_MIN:g} ATR below the fill: {stop}")
+    cap = trade_rules.max_allowed_stop(fill, atr, pine_stop=stop if pine_stop else 0.0)
+    if stop > cap:
+        sp["tactical_stop"] = stop = round(cap, 2)
+        notes.append(f"stop widened to {trade_rules.STOP_ATR_MIN:g} ATR below the fill: {stop}")
+
+    sp["recommended_shares"] = trade_rules.compute_position_shares(fill, stop)
 
     entry_max = trade_rules.entry_max_for_rr(t1, stop, rr)
     sp["entry_max"] = round(entry_max, 2)

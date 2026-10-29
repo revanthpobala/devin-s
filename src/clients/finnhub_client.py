@@ -62,7 +62,7 @@ def _cached_get(url: str, ttl: int = 60) -> object:
         return None
     _fh_throttle()
     try:
-        r = requests.get(url, timeout=(3, 6))
+        r = requests.get(url, timeout=(6, 10))
         if r.status_code == 429:
             logger.warning("Finnhub 429 rate limit hit — backing off.")
             _trigger_fh_backoff()

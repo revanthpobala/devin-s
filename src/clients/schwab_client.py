@@ -222,21 +222,19 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
         for i in range(0, len(to_fetch), 50):
             chunk = to_fetch[i : i + 50]
             resp = None
+            import concurrent.futures
             try:
-                resp = client.get_quotes(chunk)
+                def _do_get_quotes(cl, c):
+                    return cl.get_quotes(c)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(_do_get_quotes, client, chunk)
+                    resp = fut.result(timeout=2.0)
             except Exception as ex_call:
-                logger.warning(f"Schwab batch get_quotes attempt 1 failed for {chunk}: {ex_call!r}")
+                logger.warning(f"Schwab batch get_quotes attempt failed for {chunk}: {ex_call!r}")
                 if any(k in str(ex_call) for k in ("invalid_grant", "Refresh token is invalid", "unsupported_token_type")):
                     _SCHWAB_AUTH_COOLDOWN_UNTIL = time.time() + 300.0
                     break
-                # Transient network timeout or dropped connection: retry once with fresh client
-                try:
-                    time.sleep(0.3)
-                    client = get_schwab_client(force_new=True)
-                    resp = client.get_quotes(chunk)
-                except Exception as ex_retry:
-                    logger.warning(f"Schwab batch get_quotes retry failed for {chunk}: {ex_retry!r}")
-                    continue
+                resp = None
 
             if resp is not None and resp.status_code == 401:
                 try:
@@ -262,25 +260,37 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
                     if not isinstance(sym_val, dict):
                         continue
                     q = sym_val.get("quote") or {}
+                    ext = sym_val.get("extended") or {}
+                    reg = sym_val.get("regular") or {}
+                    
+                    # Determine true real-time price:
+                    # In extended hours or active trading, quote.mark or quote.lastPrice gives current live auction/trade print.
+                    # Fallback to regularMarketLastPrice or closePrice if mark/lastPrice are not populated.
                     last_px = (
-                        q.get("lastPrice")
+                        q.get("mark")
+                        or q.get("lastPrice")
+                        or reg.get("regularMarketLastPrice")
                         or q.get("closePrice")
-                        or sym_val.get("regular", {}).get("regularMarketLastPrice")
+                        or ext.get("lastPrice")
                     )
                     if last_px is not None and float(last_px) > 0:
+                        is_extended = bool(q.get("postMarketChange") or q.get("postMarketPercentChange"))
                         q_dict = {
                             "symbol": sym_key,
                             "last_price": float(last_px),
                             "bid": float(q.get("bidPrice") or 0.0),
                             "ask": float(q.get("askPrice") or 0.0),
-                            "net_change": float(q.get("netChange") or 0.0),
-                            "net_percent_change": float(q.get("netPercentChange") or 0.0),
+                            "net_change": float(q.get("netChange") or q.get("markChange") or 0.0),
+                            "net_percent_change": float(q.get("netPercentChange") or q.get("markPercentChange") or 0.0),
                             "high": float(q.get("highPrice") or 0.0),
                             "low": float(q.get("lowPrice") or 0.0),
                             "open": float(q.get("openPrice") or 0.0),
                             "close": float(q.get("closePrice") or 0.0),
                             "volume": int(q.get("totalVolume") or 0),
                             "quote_time": q.get("quoteTime"),
+                            "is_extended_hours": is_extended,
+                            "post_market_change": float(q.get("postMarketChange") or 0.0),
+                            "post_market_percent_change": float(q.get("postMarketPercentChange") or 0.0),
                             "source": "SCHWAB",
                         }
                         _QUOTE_CACHE[sym_key] = (now_ts, q_dict)
@@ -325,12 +335,16 @@ def get_intraday_candles(symbol: str, frequency: int = 5, lookback_bars: int = 3
         return []
 
     try:
+        import concurrent.futures
         client = get_schwab_client()
         start_dt = datetime.now() - timedelta(days=2)
-        if frequency == 1:
-            resp = client.get_price_history_every_minute(sym, start_datetime=start_dt)
-        else:
-            resp = client.get_price_history_every_five_minutes(sym, start_datetime=start_dt)
+        def _fetch_schwab():
+            if frequency == 1:
+                return client.get_price_history_every_minute(sym, start_datetime=start_dt)
+            return client.get_price_history_every_five_minutes(sym, start_datetime=start_dt)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            resp = ex.submit(_fetch_schwab).result(timeout=2.0)
 
         if resp.status_code == 200:
             data = resp.json()
@@ -459,45 +473,17 @@ def get_unusual_options_flow_data(ticker: str, force_refresh: bool = False) -> d
     try:
         # Note: Schwab API rejects from_date if it is today or in the past (HTTP 400).
         # Use tuned strike_count & date window to prevent massive payload timeouts on daily-expiration ETFs
-        try:
-            r = client.get_option_chain(
+        import concurrent.futures
+        def _fetch_chain_direct():
+            return client.get_option_chain(
                 schwab_sym,
                 contract_type=client.Options.ContractType.ALL,
                 strike_count=s_count,
                 to_date=to_date.date()
             )
-        except Exception as e_first:
-            # If TCP connect timed out or network connection failed, fail fast to fallback feeds
-            if isinstance(e_first, (httpx.ConnectTimeout, httpx.NetworkError)):
-                raise
-            logger.warning(f"Initial Schwab option chain query for {sym} failed ({e_first}). Retrying with strike_count=30 and 30-day window...")
-            to_date_short = now + timedelta(days=30)
-            r = client.get_option_chain(
-                schwab_sym,
-                contract_type=client.Options.ContractType.ALL,
-                strike_count=30,
-                to_date=to_date_short.date()
-            )
-        
-        # If token was refreshed or 401 returned, force reconnect once
-        if r.status_code == 401:
-            logger.info("Schwab returned 401, re-authenticating client from token file...")
-            client = get_schwab_client(force_new=True)
-            r = client.get_option_chain(
-                schwab_sym,
-                contract_type=client.Options.ContractType.ALL,
-                strike_count=70,
-                to_date=to_date.date()
-            )
-
-        # Fallback if 400 or any issue occurs with to_date
-        if r.status_code != 200:
-            logger.warning(f"Schwab API returned HTTP {r.status_code} with to_date={to_date.date()}, retrying with strike_count=50...")
-            r = client.get_option_chain(
-                schwab_sym,
-                contract_type=client.Options.ContractType.ALL,
-                strike_count=50
-            )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            _fut = _pool.submit(_fetch_chain_direct)
+            r = _fut.result(timeout=2.5)
 
         if r.status_code != 200:
             err_detail = r.text[:300] if r.text else f"HTTP {r.status_code}"

@@ -420,8 +420,8 @@ TOOLS = [
                     },
                     "plugin_name": {
                         "type": "string",
-                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility", "schwab_analytics"],
-                        "description": "The specific analytics plugin to execute. Use 'schwab_analytics' for active broker holdings & 90d unusual options sweeps, 'tastytrade_volatility' for IV Rank and borrow rates.",
+                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility", "schwab_analytics", "options_skew_gex"],
+                        "description": "The specific analytics plugin to execute. Use 'options_skew_gex' for Net Dealer Gamma Exposure (GEX), 25-delta skew, call/put walls, and gamma flip; 'schwab_analytics' for active broker holdings & 90d unusual options sweeps; 'tastytrade_volatility' for IV Rank and borrow rates.",
                     },
                 },
                 "required": ["ticker"],
@@ -456,6 +456,23 @@ TOOLS = [
                     "ticker": {
                         "type": "string",
                         "description": "The stock ticker symbol (e.g. 'META', 'AAPL', 'NVDA')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_gex",
+            "description": "Calculates Net Dealer Gamma Exposure (GEX) in $/1% move, 0-1 DTE Intraday GEX, <=45 DTE Swing GEX, Institutional Call Wall, Put Wall, Zero-Gamma Flip Point, and Net Dealer Regime (LONG_GAMMA dampening volatility vs SHORT_GAMMA amplifying moves).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock or ETF ticker symbol (e.g. 'SPCX', 'SPY', 'NVDA', 'AAPL')",
                     },
                 },
                 "required": ["ticker"],
@@ -671,6 +688,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_earnings_release",
+            "description": (
+                "Fetches the OFFICIAL earnings press release (Exhibit 99.1) from the most recent "
+                "8-K filing with Item 2.02 (Results of Operations) directly from SEC EDGAR. "
+                "Returns the verbatim press release text including GAAP Revenue, EPS, Net Income, "
+                "segment breakdowns, and management guidance. "
+                "USE THIS — not search_web or your training data — whenever the user asks about "
+                "actual reported earnings numbers, EPS beats/misses, or quarterly results. "
+                "This is DETERMINISTIC primary source data from SEC.gov — no hallucination possible."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'GOOGL', 'NOW', 'MSFT')",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_prediction_market",
             "description": "Queries Kalshi prediction markets for implied probabilities (odds) on macro events, earnings, and other binary outcomes. Use when the user asks about market expectations, prediction market odds, or probability of macro events (e.g. Fed rate decisions, CPI, recession).",
             "parameters": {
@@ -762,9 +804,14 @@ def _fetch_ohlc_df_fallback(ticker: str) -> "tuple":
     import pandas as pd
 
     try:
+        import concurrent.futures
         import yfinance as yf
 
-        raw = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=False)
+        def _do_download():
+            return yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=False)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            raw = ex.submit(_do_download).result(timeout=2.0)
         if raw is None or raw.empty:
             raise RuntimeError("no data")
         if isinstance(raw.columns, pd.MultiIndex):
@@ -848,12 +895,6 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
                 dw_path = dw_cand
             break
 
-    if not csv_path.exists():
-        return f"Error: No historical datawindow.csv found for {ticker} on {date_str}."
-
-    df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
-    dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
-
     p_key = plugin_name.lower().strip().replace("-", "_").replace(" ", "_")
     if p_key in ("orderflow", "order_flow_plugin"):
         p_key = "order_flow"
@@ -871,6 +912,18 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
         p_key = "monte_carlo"
     elif p_key in ("schwab", "schwab_analytics", "schwab_plugin", "schwab_holdings", "schwab_flow"):
         p_key = "schwab_analytics"
+    elif p_key in ("options_skew_gex", "skew_gex", "gex", "gamma", "options_gex", "options_skew", "options_skew_gex_plugin"):
+        p_key = "options_skew_gex"
+
+    if not csv_path.exists():
+        if p_key in ("options_skew_gex", "tastytrade_volatility", "schwab_analytics"):
+            df = pd.DataFrame()
+            dw = {}
+        else:
+            return f"Error: No historical datawindow.csv found for {ticker} on {date_str}."
+    else:
+        df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
+        dw = json.loads(dw_path.read_text(encoding="utf-8")) if dw_path.exists() else {}
 
     if p_key == "all":
         res = plugin_manager.run_all(ticker, df, dw)
@@ -1310,6 +1363,8 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         min_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("min_dte", 14))).strip('_')
         max_dte_slug = re.sub(r'[^\w\-]', '_', str(args.get("max_dte", 60))).strip('_')
         cache_key = f"options_chain_{direction_slug}_{min_dte_slug}_{max_dte_slug}"
+    elif function_name == "fetch_gex":
+        cache_key = "gex"
     elif function_name == "run_quantitative_plugin":
         plugin_slug = re.sub(r'[^\w\-]', '_', str(args.get("plugin_name", "all")).lower()).strip('_')
         cache_key = f"quant_plugin_{plugin_slug}"
@@ -1318,6 +1373,13 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         cache_key = f"prior_research_{lookback_slug}"
     elif function_name == "get_prior_plan_outcome":
         cache_key = "prior_plan_outcome"
+    elif function_name == "fetch_earnings_release":
+        from src.clients.sec_edgar_client import fetch_earnings_press_release
+        t_req = (args.get("ticker") or ticker or "").upper()
+        logger.info(f"LLM executed tool: fetch_earnings_release(ticker='{t_req}')")
+        res_str = fetch_earnings_press_release(t_req)
+        artifact_cache.save(date_str, t_req, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_sec_filings":
         form_slug = re.sub(r'[^\w\-]', '_', str(args.get("form_type", "ALL")).upper()).strip('_')
         limit_slug = re.sub(r'[^\w\-]', '_', str(args.get("limit", 5))).strip('_')
@@ -1515,10 +1577,26 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         res_str = get_unusual_options_flow(ticker)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
         return res_str
+    elif function_name == "fetch_gex":
+        t_req = (args.get("ticker") or ticker or "").upper()
+        logger.info(f"LLM executed tool: fetch_gex(ticker='{t_req}')")
+        from src.data.gex import format_gex_block
+        res_str = format_gex_block(t_req)
+        if not res_str:
+            res_str = f"Net Dealer Gamma Exposure (GEX) unavailable for {t_req} (no active options chain with open interest and IV)."
+        artifact_cache.save(date_str, t_req, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_schwab_positions":
         t_req = args.get("ticker") or ticker
         logger.info(f"LLM executed tool: fetch_schwab_positions(ticker='{t_req}')")
         return format_schwab_positions_tool(t_req)
+    elif function_name == "fetch_earnings_release":
+        from src.clients.sec_edgar_client import fetch_earnings_press_release
+        t_req = (args.get("ticker") or ticker or "").upper()
+        logger.info(f"LLM executed tool: fetch_earnings_release(ticker='{t_req}')")
+        res_str = fetch_earnings_press_release(t_req)
+        artifact_cache.save(date_str, t_req, cache_key, res_str)
+        return res_str
     elif function_name == "fetch_sec_filings":
         from src.clients.sec_edgar_client import format_sec_report
         form_type = args.get("form_type", "ALL")
@@ -1938,11 +2016,13 @@ def query_local_llm(
                 "\n\n[QUANTITATIVE EXECUTION & AUTONOMOUS RESEARCH MANDATE]:\n"
                 "You have full access to real-time market data, quantitative execution, and analytical tools:\n"
                 "- `get_candles`: Deterministic daily/5m/1m candles plus, per named level, crossed-or-not, first-touch time, held-on-close, and R:R at market. Use it for every level question — never compute crossings yourself.\n"
+                "- `fetch_gex`: Net Dealer Gamma Exposure (GEX in $/1%), zero-gamma flip point, call/put walls, and regime.\n"
                 "- `fetch_options_chain`: Look up live bid/ask, Greeks, open interest, and strike geometry.\n"
                 "- `get_realtime_quote`: Live spot price, bid/ask, and intraday range.\n"
                 "- `run_quantitative_plugin`: Run institutional plugins (order flow, squeeze expansion, candlestick patterns, tastytrade volatility).\n"
                 "- `scrape_tradingview_options_finder`: Strategy Finder spread search.\n"
                 "- `fetch_sec_filings`: Official U.S. SEC EDGAR filings (10-K, 10-Q, 8-K, Form 4) and financial facts.\n"
+                "- `fetch_earnings_release`: DETERMINISTIC primary-source 8-K Item 2.02 press release from SEC EDGAR. ALWAYS use this — never hallucinate earnings numbers from training memory.\n"
                 "- `scrape_tradingview_chart`: Fresh Playwright chart & Data Window scrape.\n"
                 "- `fetch_earnings_calendar`, `fetch_prior_research`, `search_web`, and `fetch_prediction_market` (Kalshi odds).\\n\\n"
                 "MANDATE:\n"

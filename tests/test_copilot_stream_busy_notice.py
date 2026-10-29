@@ -33,6 +33,11 @@ def _small_busy_budgets(monkeypatch):
     monkeypatch.setattr(cop, "CHAT_FIRST_TOKEN_BUSY_S", 0.2, raising=False)
     monkeypatch.setattr(cop, "CHAT_STALL_BUSY_S", 0.2, raising=False)
     monkeypatch.setattr(cop, "CHAT_WAIT_TICK_S", 0.1, raising=False)
+    monkeypatch.setattr(
+        cop,
+        "_build_copilot_context_and_tools",
+        lambda *a, **k: ("Sys prompt", [{"role": "user", "content": "hi"}], "User prompt", "GOOGL", "2026-10-13"),
+    )
 
 
 def _chunk(text: str):
@@ -114,6 +119,14 @@ class _FakeSocketConn:
 
 
 def _run_chat(monkeypatch, delay: float, session_id: str, limit: int = 500) -> str:
+    monkeypatch.setattr(cop, "get_chat_llm_config", lambda: {
+        "provider": "local",
+        "api_key": "not-needed",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "model": None,
+        "is_thinking": False,
+        "is_openrouter": False,
+    })
     async def _drive():
         # The patch must stay active while the generator streams, not just while
         # the endpoint coroutine is awaited: the SSE body is produced afterwards.

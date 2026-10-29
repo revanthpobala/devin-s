@@ -6,9 +6,11 @@ Pulls 10-K, 10-Q, 8-K filings, Form 4 insider transactions, and XBRL financial f
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
+import ssl
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,33 +26,80 @@ from src import config
 
 logger = logging.getLogger(__name__)
 
+# SEC requires a compliant User-Agent: "Name/Version (contact@email.com)"
+_SEC_UA = os.getenv("SEC_USER_AGENT", "AntigravityStockResearch/1.0 (research@antigravitystock.com)")
+
 SEC_HEADERS = {
-    "User-Agent": os.getenv("SEC_USER_AGENT", "AntigravityStockResearch/1.0 (research@antigravitystock.com)"),
-    "Accept-Encoding": "gzip, deflate",
+    "User-Agent": _SEC_UA,
+    "Accept-Encoding": "identity",  # data.sec.gov returns 403 with gzip request on some CDN nodes
     "Host": "data.sec.gov",
 }
 
 SEC_WWW_HEADERS = {
-    "User-Agent": os.getenv("SEC_USER_AGENT", "AntigravityStockResearch/1.0 (research@antigravitystock.com)"),
+    "User-Agent": _SEC_UA,
     "Accept-Encoding": "gzip, deflate",
     "Host": "www.sec.gov",
 }
 
 CIK_MAP_PATH = config.BASE_DIR / "data" / "sec_cik_map.json"
 
+# Build a robust SSL context that trusts system + certifi roots.
+def _make_ssl_context() -> Optional[ssl.SSLContext]:
+    """Returns certifi SSL context if available, else None (urllib default is fine on Windows)."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return None  # fall back to urllib default SSL handling
+
+_SSL_CTX = _make_ssl_context()
+_SEC_TIMEOUT = 12.0  # SEC EDGAR CDN can be slow on first hit; 12s is safe
+_SEC_RETRIES = 2
+
+
+def _fetch_url_raw(url: str, headers: dict) -> Optional[bytes]:
+    """Fetch raw bytes from a URL with SEC-compliant headers, SSL context, retry, and gzip decode."""
+    req = urllib.request.Request(url, headers=headers)
+    for attempt in range(_SEC_RETRIES + 1):
+        try:
+            open_kwargs: dict = {"timeout": _SEC_TIMEOUT}
+            if _SSL_CTX is not None:
+                open_kwargs["context"] = _SSL_CTX
+            with urllib.request.urlopen(req, **open_kwargs) as resp:
+                raw = resp.read()
+                enc = (resp.info().get("Content-Encoding") or "").lower()
+                if "gzip" in enc:
+                    raw = gzip.decompress(raw)
+                return raw
+        except urllib.error.HTTPError as e:
+            logger.warning(f"SEC EDGAR HTTP {e.code} on attempt {attempt + 1} for {url}: {e.reason}")
+            if e.code in (403, 404):
+                return None  # no point retrying
+        except Exception as e:
+            logger.warning(f"SEC EDGAR fetch attempt {attempt + 1} failed for {url}: {e}")
+            # On timeout with context, retry without context in case of proxy/SSL routing issue
+            if attempt == 0 and _SSL_CTX is not None and "timed out" in str(e).lower():
+                try:
+                    with urllib.request.urlopen(req, timeout=_SEC_TIMEOUT) as resp:
+                        raw = resp.read()
+                        enc = (resp.info().get("Content-Encoding") or "").lower()
+                        if "gzip" in enc:
+                            raw = gzip.decompress(raw)
+                        return raw
+                except Exception as e2:
+                    logger.warning(f"SEC EDGAR fetch attempt {attempt + 1} (no-ctx fallback) failed for {url}: {e2}")
+    return None
+
 
 def _fetch_url_json(url: str, headers: dict) -> Optional[dict]:
     """Helper to fetch and decode JSON from SEC.gov with proper headers and error handling."""
-    req = urllib.request.Request(url, headers=headers)
+    raw = _fetch_url_raw(url, headers)
+    if raw is None:
+        return None
     try:
-        import gzip
-        with urllib.request.urlopen(req, timeout=12) as response:
-            raw_data = response.read()
-            if response.info().get("Content-Encoding") == "gzip":
-                raw_data = gzip.decompress(raw_data)
-            return json.loads(raw_data.decode("utf-8", errors="ignore"))
+        return json.loads(raw.decode("utf-8", errors="ignore"))
     except Exception as e:
-        logger.warning(f"SEC EDGAR request to {url} failed: {e}")
+        logger.warning(f"SEC EDGAR JSON decode failed for {url}: {e}")
         return None
 
 
@@ -261,6 +310,154 @@ def format_sec_report(ticker: str, form_type: str = "ALL", limit: int = 5) -> st
                 f"{_fmt_curr(q.get('operating_income'))} | {_fmt_curr(q.get('net_income'))} | "
                 f"{_fmt_curr(q.get('cash'))} | {_fmt_curr(q.get('long_term_debt'))} |"
             )
+
+    return "\n".join(lines)
+
+
+def fetch_earnings_press_release(ticker: str) -> str:
+    """
+    Fetches the official earnings press release (Exhibit 99.1) from the most recent
+    8-K filing with Item 2.02 (Results of Operations) on SEC EDGAR.
+
+    Returns a formatted markdown block with:
+    - Filing accession number, filing date, and primary document URL
+    - Exhibit 99.1 (press release) URL
+    - Raw text excerpt (first 4000 chars) of the press release HTML
+    """
+    import html as html_mod
+    import re
+
+    ticker_clean = ticker.strip().upper()
+    cik = get_cik_for_ticker(ticker_clean)
+    if not cik:
+        return f"❌ Could not resolve SEC CIK for {ticker_clean}."
+
+    sub_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    sub_data = _fetch_url_json(sub_url, headers=SEC_HEADERS)
+    if not sub_data:
+        return f"❌ SEC EDGAR submissions unavailable for {ticker_clean} (CIK {cik})."
+
+    filings_dict = sub_data.get("filings", {}).get("recent", {})
+    forms = filings_dict.get("form", [])
+    filing_dates = filings_dict.get("filingDate", [])
+    accession_numbers = filings_dict.get("accessionNumber", [])
+    items_list = filings_dict.get("items", [])
+    primary_docs = filings_dict.get("primaryDocument", [])
+
+    # Locate the most recent 8-K with Item 2.02 (Results of Operations)
+    target_acc = None
+    target_date = None
+    target_primary_doc = None
+    for i, form in enumerate(forms):
+        if form != "8-K":
+            continue
+        items_str = items_list[i] if i < len(items_list) else ""
+        if "2.02" in str(items_str):
+            target_acc = accession_numbers[i]
+            target_date = filing_dates[i] if i < len(filing_dates) else "N/A"
+            target_primary_doc = primary_docs[i] if i < len(primary_docs) else None
+            break
+
+    if not target_acc:
+        # Fall back to most recent 8-K regardless of item
+        for i, form in enumerate(forms):
+            if form == "8-K":
+                target_acc = accession_numbers[i]
+                target_date = filing_dates[i] if i < len(filing_dates) else "N/A"
+                target_primary_doc = primary_docs[i] if i < len(primary_docs) else None
+                break
+
+    if not target_acc:
+        return f"❌ No recent 8-K filing found on EDGAR for {ticker_clean}."
+
+    cik_int = str(int(cik))
+    acc_clean = target_acc.replace("-", "")
+    filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/"
+    www_headers = dict(SEC_WWW_HEADERS)
+
+    # Fetch the EDGAR filing-summary.json (the programmatic document index)
+    # Format: /Archives/edgar/data/<cik>/<acc_clean>/filing-summary.json
+    filing_summary_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/filing-summary.json"
+    filing_summary_raw = _fetch_url_raw(filing_summary_url, headers=www_headers)
+
+    exhibit_url = None
+    primary_url = None
+
+    if filing_summary_raw:
+        try:
+            fs = json.loads(filing_summary_raw.decode("utf-8", errors="ignore"))
+            for report in (fs.get("FilingSummary", {}).get("MyReports", {}).get("Report", []) or []):
+                rtype = str(report.get("ReportType", "")).upper()
+                short_name = str(report.get("ShortName", "")).upper()
+                fname = report.get("HtmlFileName") or report.get("XmlFileName") or ""
+                if "EXHIBIT 99" in short_name or "EX-99" in rtype or "PRESS RELEASE" in short_name:
+                    exhibit_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/{fname}"
+                    break
+        except Exception:
+            pass
+
+    # Fallback: parse the plain-text index page to find EX-99.1 link
+    if not exhibit_url:
+        idx_txt_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/{target_acc}-index.htm"
+        idx_raw = _fetch_url_raw(idx_txt_url, headers=www_headers)
+        if idx_raw:
+            try:
+                idx_html = idx_raw.decode("utf-8", errors="ignore")
+                # Look for EX-99 document links
+                ex99_matches = re.findall(
+                    r'href="(/Archives/edgar/data/' + cik_int + r'/' + acc_clean + r'/[^"]+)"[^>]*>[^<]*(?:EX-99|ex-99|exhibit\s*99|99\.1)',
+                    idx_html, re.IGNORECASE
+                )
+                if not ex99_matches:
+                    # Broader scan: any .htm/.html file in a table row next to "EX-99"
+                    ex99_matches = re.findall(
+                        r'EX-99[^<]*</td>\s*<td[^>]*><a href="(/Archives/edgar/data/' + cik_int + r'/' + acc_clean + r'/[^"]+\.htm[^"]*)"',
+                        idx_html, re.IGNORECASE
+                    )
+                if ex99_matches:
+                    exhibit_url = "https://www.sec.gov" + ex99_matches[0]
+            except Exception:
+                pass
+
+    # Build primary document URL from the submissions listing
+    if target_primary_doc:
+        primary_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/{target_primary_doc}"
+
+    # Fetch and clean the exhibit HTML text
+    exhibit_text = ""
+    if exhibit_url:
+        raw = _fetch_url_raw(exhibit_url, headers=www_headers)
+        if raw:
+            try:
+                text = raw.decode("utf-8", errors="ignore")
+                text = re.sub(r"<[^>]+>", " ", text)
+                text = re.sub(r"\s+", " ", text).strip()
+                text = html_mod.unescape(text)
+                exhibit_text = text[:4500]
+            except Exception:
+                exhibit_text = raw[:4500].decode("utf-8", errors="ignore")
+
+    lines = [
+        f"### 📄 OFFICIAL EARNINGS PRESS RELEASE — {ticker_clean} (SEC EDGAR 8-K Item 2.02)",
+        f"- **CIK:** `{cik}` | **Filing Date:** {target_date}",
+        f"- **Accession:** `{target_acc}`",
+        f"- **Filing Index:** [View on EDGAR]({filing_url})",
+    ]
+    if primary_url:
+        lines.append(f"- **Primary Document:** [{primary_url.split('/')[-1]}]({primary_url})")
+    if exhibit_url:
+        lines.append(f"- **Exhibit 99.1 (Press Release):** [{exhibit_url.split('/')[-1]}]({exhibit_url})")
+    lines.append("")
+
+    if exhibit_text:
+        lines.append("#### 📰 Press Release Excerpt (Exhibit 99.1):")
+        lines.append("```")
+        lines.append(exhibit_text)
+        lines.append("```")
+    elif exhibit_url:
+        lines.append(f"*Press release text unavailable — view directly: [{exhibit_url}]({exhibit_url})*")
+    else:
+        lines.append(f"*Exhibit 99.1 URL not resolved from index. View filing directly: [{filing_url}]({filing_url})*")
 
     return "\n".join(lines)
 

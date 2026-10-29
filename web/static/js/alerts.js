@@ -4022,7 +4022,7 @@ window.AppAlerts = {
     }
     if (window.AppSwing) {
       window.AppSwing.setTicker(sym);
-      window.AppSwing.launchResearch(null, true);
+      window.AppSwing.launchResearch(null, true, sym);
     }
   },
 

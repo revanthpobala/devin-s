@@ -501,7 +501,7 @@ def _list_available_reports_uncached(date: Optional[str] = None):
     }
 
 
-def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Optional[str], Optional[dict]]:
+def _build_local_research_dossier(target_date: str, ticker_u: str, fetch_live_price: bool = True) -> tuple[Optional[str], Optional[dict]]:
     """Synthesize a complete Local Research Dossier from alerts, triage thesis, and suggestions."""
     thesis_data = None
     triage_base = config.BASE_DIR / "data" / "triage" / target_date
@@ -545,9 +545,24 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
 
     if not thesis_data:
         try:
-            for p in sorted(config.BASE_DIR.glob(f"data/triage/*/**/{ticker_u}_thesis.json"), reverse=True):
-                with open(p, "r", encoding="utf-8") as f:
-                    thesis_data = json.load(f)
+            triage_dir = config.BASE_DIR / "data" / "triage"
+            if triage_dir.exists():
+                recent_dates = sorted([d.name for d in triage_dir.iterdir() if d.is_dir() and d.name != target_date], reverse=True)[:3]
+                for rd in recent_dates:
+                    r_base = triage_dir / rd
+                    for cand_p in [
+                        r_base / "_DEEP_RESEARCH" / ticker_u / f"{ticker_u}_thesis.json",
+                        r_base / "force" / ticker_u / f"{ticker_u}_thesis.json",
+                        r_base / "pass" / ticker_u / f"{ticker_u}_thesis.json",
+                        r_base / "watch" / ticker_u / f"{ticker_u}_thesis.json",
+                        r_base / ticker_u / f"{ticker_u}_thesis.json",
+                        r_base / f"{ticker_u}_thesis.json",
+                    ]:
+                        if cand_p.exists():
+                            with open(cand_p, "r", encoding="utf-8") as f:
+                                thesis_data = json.load(f)
+                                if thesis_data:
+                                    break
                     if thesis_data:
                         break
         except Exception:
@@ -555,11 +570,16 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
 
     if not thesis_data:
         try:
-            for p in sorted(config.BASE_DIR.glob(f"data/raw/*/{ticker_u}/{ticker_u}_triage.json"), reverse=True):
-                with open(p, "r", encoding="utf-8") as f:
-                    thesis_data = json.load(f)
-                    if thesis_data:
-                        break
+            raw_dir = config.BASE_DIR / "data" / "raw"
+            if raw_dir.exists():
+                recent_raw = sorted([d.name for d in raw_dir.iterdir() if d.is_dir() and d.name != target_date], reverse=True)[:3]
+                for rd in recent_raw:
+                    cand_p = raw_dir / rd / ticker_u / f"{ticker_u}_triage.json"
+                    if cand_p.exists():
+                        with open(cand_p, "r", encoding="utf-8") as f:
+                            thesis_data = json.load(f)
+                            if thesis_data:
+                                break
         except Exception:
             pass
 
@@ -734,11 +754,12 @@ def _build_local_research_dossier(target_date: str, ticker_u: str) -> tuple[Opti
     stale_data = bool(triage_info.get("stale_data") or (isinstance(spot_age, (int, float)) and spot_age > 1))
 
     live_spot = None
-    try:
-        from src.clients.price_client import get_current_price
-        live_spot = get_current_price(ticker_u)
-    except Exception:
-        pass
+    if fetch_live_price:
+        try:
+            from src.clients.price_client import get_current_price
+            live_spot = get_current_price(ticker_u)
+        except Exception:
+            pass
 
     move_since_bar_pct = 0.0
     if spot_price and live_spot:
@@ -2350,9 +2371,10 @@ def trigger_research(req: ResearchRequest):
         except Exception:
             pass
         existing = c.execute(
-            "SELECT job_id, status, pid FROM active_research_jobs WHERE ticker = ? AND status IN ('RUNNING', 'QUEUED')",
+            "SELECT job_id, status, pid, mode, tier FROM active_research_jobs WHERE ticker = ? AND status IN ('RUNNING', 'QUEUED')",
             (ticker_u,)
         ).fetchone()
+        existing_queued_jid = None
         if existing:
             jid = existing["job_id"]
             thread = ACTIVE_RESEARCH_WORKERS.get(jid)
@@ -2371,14 +2393,16 @@ def trigger_research(req: ResearchRequest):
                     c.execute("UPDATE active_research_jobs SET pid = ? WHERE job_id = ?", (live_pid, jid))
                     conn.commit()
 
-            if existing["status"] == "QUEUED" or is_alive:
+            if existing["status"] == "RUNNING" and is_alive:
                 return {
-                    "status": existing["status"].lower(),
+                    "status": "running",
                     "job_id": jid,
                     "ticker": ticker_u,
-                    "mode": req.mode,
-                    "tier": req_tier,
+                    "mode": existing["mode"] if "mode" in existing.keys() else req.mode,
+                    "tier": existing["tier"] if "tier" in existing.keys() else req_tier,
                 }
+            elif existing["status"] == "QUEUED":
+                existing_queued_jid = jid
             else:
                 c.execute(
                     "UPDATE active_research_jobs SET status = 'FAILED', stage = 'ERROR', error_message = 'Process died unexpectedly', completed_at = ? WHERE job_id = ?",
@@ -2422,7 +2446,7 @@ def trigger_research(req: ResearchRequest):
                 "message": f"{ticker_u} failed the triage gate for {target_date} within 12h; use force to re-run",
             }
 
-    job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ticker_u}"
+    job_id = existing_queued_jid or f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ticker_u}"
     log_file = str(LOGS_DIR / f"{job_id}.log")
 
     is_local_job = (req.mode == "local_only")
@@ -2458,10 +2482,17 @@ def trigger_research(req: ResearchRequest):
             with get_db() as conn:
                 start_stage = "LOCAL_TRIAGE" if is_local_job else "STARTING"
                 start_detail = "Starting Local Triage" if is_local_job else f"Starting Deep Research ({req_tier})"
-                conn.cursor().execute("""
-                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
-                    VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier))
+                if existing_queued_jid:
+                    conn.cursor().execute("""
+                        UPDATE active_research_jobs
+                        SET mode = ?, pid = ?, stage = ?, status = 'RUNNING', started_at = ?, log_file = ?, target_date = ?, stage_detail = ?, tier = ?
+                        WHERE job_id = ?
+                    """, (req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier, job_id))
+                else:
+                    conn.cursor().execute("""
+                        INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
+                        VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)
+                    """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             # Duplicate active job for this ticker — return the existing one
@@ -2478,15 +2509,33 @@ def trigger_research(req: ResearchRequest):
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
         append_log(f"🚀 Started research [{req_tier}] for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
-        return {"status": "started", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "tier": req_tier, "stage": start_stage, "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+        return {
+            "status": "started",
+            "job_id": job_id,
+            "ticker": ticker_u,
+            "mode": req.mode,
+            "tier": req_tier,
+            "stage": start_stage,
+            "log_file": log_file,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "active_slots": active_slot_count + 1,
+            "max_slots": max_slots,
+        }
     else:
         try:
             with get_db() as conn:
                 q_detail = "Queued for Local Triage" if is_local_job else f"Queued for Deep Research ({req_tier})"
-                conn.cursor().execute("""
-                    INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
-                    VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?, ?)
-                """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier))
+                if existing_queued_jid:
+                    conn.cursor().execute("""
+                        UPDATE active_research_jobs
+                        SET mode = ?, stage = 'QUEUED', status = 'QUEUED', started_at = ?, log_file = ?, target_date = ?, stage_detail = ?, tier = ?
+                        WHERE job_id = ?
+                    """, (req.mode, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier, job_id))
+                else:
+                    conn.cursor().execute("""
+                        INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
+                        VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?, ?)
+                    """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             with get_db() as conn:
@@ -2500,7 +2549,18 @@ def trigger_research(req: ResearchRequest):
 
         q_label = "Local Queue" if is_local_job else "Deep Queue"
         append_log(f"📥 [{q_label}] Concurrency slots full ({active_slot_count}/{max_slots}). Queued {ticker_u} [{req_tier}] for research.")
-        return {"status": "queued", "job_id": job_id, "ticker": ticker_u, "mode": req.mode, "tier": req_tier, "stage": "QUEUED", "log_file": log_file, "started_at": datetime.now(timezone.utc).isoformat()}
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "ticker": ticker_u,
+            "mode": req.mode,
+            "tier": req_tier,
+            "stage": "QUEUED",
+            "log_file": log_file,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "active_slots": active_slot_count,
+            "max_slots": max_slots,
+        }
 
 
 @router.post("/api/research/arbitrate/{ticker}")

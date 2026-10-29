@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 CLIENT_ID = os.getenv("TASTY_TRADE_CLIENT_ID") or os.getenv("TASTYTRADE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("TASTY_TRADE_CLIENT_SECRET") or os.getenv("TASTYTRADE_CLIENT_SECRET")
 TOKEN_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "tastytrade_token.json")
-BASE_URL = "https://api.tastyworks.com"
+BASE_URL = "https://api.tastytrade.com"
 USER_AGENT = "StockResearchAlerts/1.0"
 
 

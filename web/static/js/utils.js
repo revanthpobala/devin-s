@@ -106,6 +106,11 @@ window.AppUtils = {
           return `<button type="button" class="ticker-pill-btn alert-pill-btn copilot-action-pill" data-action="alert" data-query="${this.escapeHtml(query)}" onclick="AppChat.handleSetAlertAction(this.dataset.query)" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#f59e0b; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🔔</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
         });
 
+        // Transform action:sync_tt into one-click Tastytrade cloud alert sync
+        html = html.replace(/<a\s+[^>]*href=["']action:(?:sync_tt|sync-tt|tastytrade)\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+          return `<button type="button" class="ticker-pill-btn alert-pill-btn copilot-action-pill" data-action="sync_tt" data-query="${this.escapeHtml(query)}" onclick="AppChat.handleSyncTastytradeAlertsAction(this.dataset.query)" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#38bdf8; border-color:rgba(56,189,248,0.4); background:rgba(56,189,248,0.12); cursor:pointer; font-weight:700;"><span style="font-size:12px;">📲</span> ${label.replace(/^[🔔🎯⚡📲]\s*/, '')}</button>`;
+        });
+
         // Transform action:watch into one-click Watchlist target trigger
         html = html.replace(/<a\s+[^>]*href=["']action:watch\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
           return `<button type="button" class="ticker-pill-btn watch-pill-btn copilot-action-pill" data-action="watch" data-query="${this.escapeHtml(query)}" onclick="AppChat.handleAddWatchAction(this.dataset.query)" style="display:inline-flex; align-items:center; gap:4px; margin:4px 4px 4px 0; font-size:11.5px; padding:3px 9px; color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.12); cursor:pointer; font-weight:600;"><span style="font-size:12px;">🎯</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;

@@ -148,12 +148,24 @@ def _daily_series(bars) -> List[Dict[str, Any]]:
     return out
 
 
+_INTRADAY_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+
 def _intraday_series(ticker: str, lookback_bars: int = 78) -> List[Dict[str, Any]]:
     """Latest-session 5m candles (78 bars ≈ one full session; absent means absent)."""
+    sym = (ticker or "").upper().strip()
+    if not sym:
+        return []
+    import time
+    now = time.time()
+    if sym in _INTRADAY_CACHE:
+        ts, cached = _INTRADAY_CACHE[sym]
+        if now - ts < 60.0:
+            return cached
+
     try:
         from src.clients.schwab_client import get_intraday_candles
 
-        raw = get_intraday_candles(ticker, frequency=5, lookback_bars=lookback_bars) or []
+        raw = get_intraday_candles(sym, frequency=5, lookback_bars=lookback_bars) or []
         out = []
         for c in raw:
             ts = c.get("datetime")
@@ -168,10 +180,12 @@ def _intraday_series(ticker: str, lookback_bars: int = 78) -> List[Dict[str, Any
                 "close": _f(c.get("close")),
                 "volume": _f(c.get("volume")),
             })
+        _INTRADAY_CACHE[sym] = (now, out)
         return out
     except Exception as e:
         logger.debug(f"[plan_outcome] intraday candles unavailable for {ticker}: {e}")
         return []
+
 
 
 def _level_outcome(

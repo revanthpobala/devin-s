@@ -436,52 +436,62 @@ def get_live_quote(symbol: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. EARNINGS CALENDAR  (Finnhub — with ER flag for the alerted ticker)
+# 6. EARNINGS CALENDAR  (Tastytrade + Deterministic earnings client — with ER flag)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def get_todays_earnings(ticker: str | None = None) -> str:
-    key = _fh()
-    if not key:
+    """Check for near-term earnings on the alerted ticker using Tastytrade and deterministic lookup."""
+    if not ticker:
         return ""
-    end = datetime.now(ET)
-    start = end - timedelta(days=1)
-    from_date = start.strftime("%Y-%m-%d")
-    to_date = end.strftime("%Y-%m-%d")
-    data = _cached_get(
-        f"https://finnhub.io/api/v1/calendar/earnings?from={from_date}&to={to_date}&token={key}", ttl=300
-    )
-    if not data:
-        return ""
-    items = data.get("earningsCalendar", [])
-    if not items:
-        return "Earnings (recent/scheduled): none found"
+    sym = ticker.strip().upper()
+    try:
+        from src.clients.earnings_client import resolve_next_earnings_date
+        from src.clients.tastytrade_client import get_tastytrade_client
 
-    lines = []
-    er_flag = ""
+        d, src = resolve_next_earnings_date(sym)
+        if not d:
+            return f"Earnings: none scheduled near-term for {sym}"
 
-    for e in items[:15]:
-        sym = e.get("symbol", "?")
-        e_date = e.get("date", "")
-        hour = {"bmo": "pre-mkt ✅ released", "amc": "after-mkt", "dmh": "DURING MKT ⚠️"}.get(
-            e.get("hour", ""), e.get("hour", "?")
-        )
-        eps_est = e.get("epsEstimate")
-        est_str = f"  EPS est: {eps_est:.2f}" if eps_est is not None else ""
+        today = date.today()
+        days_away = (d - today).days
 
-        # Flag if the alerted ticker itself has earnings
-        if ticker and sym.upper() == ticker.upper():
-            er_flag = (
-                f"🚨 ER ALERT: {sym} reports earnings ({e_date} {hour}) — "
+        hour_str = ""
+        eps_est_str = ""
+        try:
+            for m in get_tastytrade_client().get_market_metrics(sym) or []:
+                if str(m.get("symbol", "")).upper() == sym:
+                    earn = m.get("earnings") or {}
+                    tod = earn.get("time-of-day")
+                    if tod == "AMC":
+                        hour_str = "after-mkt"
+                    elif tod == "BTO":
+                        hour_str = "pre-mkt"
+                    elif tod:
+                        hour_str = str(tod)
+                    c_est = earn.get("consensus-estimate")
+                    if c_est:
+                        eps_est_str = f"  EPS est: {c_est}"
+                    break
+        except Exception:
+            pass
+
+        time_display = f" ({hour_str})" if hour_str else ""
+
+        if days_away <= 1:
+            return (
+                f"🚨 ER ALERT: {sym} reports earnings ({d}{time_display}){eps_est_str} — "
                 f"IV crush + binary risk. Gem rule: prefer debit spread, not naked."
             )
-
-        lines.append(f"  {sym} [{e_date}] ({hour}){est_str}")
-
-    result = "Earnings calendar (recent/today):\n" + "\n".join(lines)
-    if er_flag:
-        result = er_flag + "\n\n" + result
-    return result
+        elif days_away <= 7:
+            return (
+                f"⚠️ UPCOMING ER: {sym} reports earnings on {d}{time_display} ({days_away}d away){eps_est_str}. "
+                f"Watch for IV expansion or binary risk into the print."
+            )
+        return f"Earnings scheduled: {sym} on {d} ({days_away}d out){eps_est_str} [Source: {src}]"
+    except Exception as e:
+        logger.debug(f"get_todays_earnings check failed for {ticker}: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

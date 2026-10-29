@@ -147,6 +147,7 @@ def test_scorecard_rules_fire_on_veto_loss_and_weak_discretion(monkeypatch):
 def test_local_slot_cap_uses_idle_deep_slots(monkeypatch):
     from src.ui.services import research_queue as rq
     monkeypatch.setattr("src.data.tv_scraper.signed_in_profiles", lambda names=None: ["a", "b"])
+    monkeypatch.setattr(rq, "chat_reserve_count", lambda: 1)
     monkeypatch.setattr(rq, "get_active_deep_research_count", lambda: 0)
     assert rq.local_slot_cap() == 2
     monkeypatch.setattr(rq, "get_active_deep_research_count", lambda: 1)

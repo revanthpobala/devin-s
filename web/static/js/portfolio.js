@@ -797,8 +797,6 @@ window.AppPortfolio = {
     if (rootMatch) cleanSym = rootMatch[1];
     if (!cleanSym) return;
 
-    // Switch to swing desk
-    App.switchDesk('swing');
     if (window.AppSwing && typeof window.AppSwing.setTicker === 'function') {
       window.AppSwing.setTicker(cleanSym);
     }
@@ -808,7 +806,7 @@ window.AppPortfolio = {
     const modeSelect = document.getElementById('mode-select');
     if (modeSelect) modeSelect.value = 'full';
 
-    // Uncollapse and scroll execution queue into view so user sees progress immediately
+    // Uncollapse and scroll execution queue into view if present on this page
     const procsEl = document.getElementById('active-procs-wrapper');
     if (procsEl) {
       procsEl.style.display = 'block';
@@ -820,9 +818,25 @@ window.AppPortfolio = {
       }, 100);
     }
 
-    // Launch research with force = true so the screener triage gate doesn't skip deep research!
+    // Launch research with force = true, passing cleanSym directly
     if (window.AppSwing && typeof window.AppSwing.launchResearch === 'function') {
-      await window.AppSwing.launchResearch(null, true);
+      await window.AppSwing.launchResearch(null, true, cleanSym);
+    } else if (window.AppApi && typeof window.AppApi.triggerResearch === 'function') {
+      if (window.AppUtils && window.AppUtils.showToast) {
+        window.AppUtils.showToast(`🚀 Launching full deep research for $${cleanSym}...`, 'info');
+      }
+      try {
+        const res = await window.AppApi.triggerResearch(cleanSym, 'full', null, true);
+        if (window.AppStatus) {
+          await window.AppStatus.updateStatus();
+          await window.AppStatus.loadJobs();
+        }
+        if (window.AppUtils && window.AppUtils.showToast) {
+          window.AppUtils.showToast(`✅ Deep Research started for $${cleanSym} (Job: ${res.job_id || 'Active'})`, 'success');
+        }
+      } catch (err) {
+        alert(`Failed to launch research for ${cleanSym}: ${err.message}`);
+      }
     }
   },
 

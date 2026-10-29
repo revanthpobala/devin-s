@@ -16,6 +16,7 @@
   <!-- Base Cockpit Stylesheet -->
   <link rel="stylesheet" href="/static/css/base.css?v=55">
   <link rel="stylesheet" href="/static/css/components.css?v=55">
+  <link rel="stylesheet" href="/static/css/layout.css?v=55">
   
   <style>
     :root {
@@ -51,31 +52,177 @@
       padding: 0 14px;
       gap: 8px;
       box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-      overflow-x: auto;
-      scrollbar-width: none;
-    }
-    .research-header::-webkit-scrollbar {
-      display: none;
     }
 
     .header-left, .header-right {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       flex-wrap: nowrap;
-      min-width: 0;
       flex-shrink: 0;
+    }
+
+    /* Secondary Controls Toolbar (Collapsible) */
+    .research-toolbar {
+      flex-shrink: 0;
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border);
+      padding: 4px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      transition: all 0.2s ease;
+      font-size: 11px;
+    }
+    .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: nowrap;
+      flex-shrink: 0;
+    }
+    .toolbar-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .toolbar-icon {
+      font-size: 11px;
+    }
+    .toolbar-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+    .toolbar-select {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 3px 6px;
+      border-radius: var(--radius-md);
+      font-size: 11px;
+      font-family: var(--font-sans);
+      outline: none;
+      cursor: pointer;
+    }
+    .toolbar-select:focus {
+      border-color: var(--cyan);
+    }
+    .toolbar-divider {
+      width: 1px;
+      height: 15px;
+      background: var(--border);
+      margin: 0 2px;
+    }
+    .toolbar-util-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: var(--radius-sm);
+      padding: 2px 7px;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      transition: all 0.15s ease;
+    }
+    .toolbar-util-btn:hover {
+      background: rgba(56, 189, 248, 0.1);
+      color: var(--cyan);
+      border-color: var(--cyan);
+    }
+
+    /* Controls Modal Elements */
+    .modal-control-box {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .modal-control-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .modal-control-icon {
+      font-size: 18px;
+    }
+    .modal-control-title {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text-bright, #fff);
+    }
+    .modal-control-desc {
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+    .modal-select-lg {
+      width: 100%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 7px 10px;
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-family: var(--font-sans);
+      outline: none;
+      cursor: pointer;
+    }
+    .modal-select-lg:focus {
+      border-color: var(--cyan);
     }
 
     .global-desk-nav {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: 5px;
       flex-wrap: nowrap;
-      margin-right: 6px;
-      padding-right: 8px;
+      margin-right: 4px;
+      padding-right: 6px;
       border-right: 1px solid var(--border);
       flex-shrink: 0;
+    }
+
+    .desk-picker-wrap {
+      position: relative;
+      display: inline-block;
+    }
+    .desk-menu-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      z-index: 100;
+      min-width: 180px;
+      padding: 6px 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .desk-menu-item {
+      padding: 7px 14px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: all 0.12s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .desk-menu-item:hover {
+      background: rgba(56, 189, 248, 0.1);
+      color: var(--cyan);
     }
 
     .global-desk-link {
@@ -144,7 +291,7 @@
       font-size: 11px;
       font-weight: 600;
       color: var(--text-muted);
-      max-width: 130px;
+      max-width: 95px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -154,13 +301,13 @@
     .badge-live-quote {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       background: var(--bg-subtle);
       border: 1px solid var(--border);
-      padding: 3px 10px;
+      padding: 3px 7px;
       border-radius: var(--radius-md);
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: 11.5px;
       white-space: nowrap;
     }
 
@@ -260,7 +407,11 @@
       background: var(--bg-card-hover);
     }
 
-    /* Tactical Levels Cards Ribbon */
+    /* Tactical Levels Cards Ribbon & Collapsible Container */
+    .tactical-ribbon-container {
+      flex-shrink: 0;
+      position: relative;
+    }
     .tactical-ribbon {
       flex-shrink: 0;
       background: var(--bg-surface);
@@ -269,6 +420,7 @@
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 10px;
+      transition: all 0.2s ease;
     }
     .tactical-card {
       background: var(--bg-subtle);
@@ -278,6 +430,7 @@
       display: flex;
       flex-direction: column;
       gap: 2px;
+      min-width: 0;
     }
     .tactical-card-label {
       font-size: 10px;
@@ -294,10 +447,225 @@
       font-size: 13px;
       font-weight: 800;
       color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .tactical-card-sub {
       font-size: 10px;
       color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tactical-collapse-pill-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 9.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      transition: all 0.15s ease;
+      line-height: 1.2;
+    }
+    .tactical-collapse-pill-btn:hover {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--cyan);
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+    /* Sleek collapsed bar */
+    .tactical-collapsed-bar {
+      flex-shrink: 0;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 5px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      font-size: 11px;
+      user-select: none;
+      transition: background 0.15s ease;
+    }
+    .tactical-collapsed-bar:hover {
+      background: var(--bg-card-hover);
+    }
+    .tactical-collapsed-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .tactical-collapsed-badge {
+      font-family: var(--font-heading);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      color: var(--cyan);
+      flex-shrink: 0;
+    }
+    .tactical-collapsed-summary {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tactical-collapsed-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .tactical-collapsed-expand-btn {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--cyan);
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 4px;
+      padding: 2px 7px;
+      transition: all 0.15s ease;
+    }
+    .tactical-collapsed-bar:hover .tactical-collapsed-expand-btn {
+      background: var(--cyan);
+      color: #0b0f19;
+    }
+    .btn-action.btn-active-cyan {
+      background: rgba(56, 189, 248, 0.15) !important;
+      color: var(--cyan) !important;
+      border-color: rgba(56, 189, 248, 0.4) !important;
+    }
+
+    /* Tactical Levels Modal Overlay & Card */
+    .tactical-modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(10, 15, 29, 0.78);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      animation: modalFadeIn 0.18s ease-out;
+    }
+    @keyframes modalFadeIn {
+      from { opacity: 0; transform: scale(0.97); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .tactical-modal-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 680px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(56, 189, 248, 0.2);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .tactical-modal-header {
+      padding: 14px 20px;
+      background: var(--bg-subtle);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tactical-modal-title {
+      font-family: var(--font-heading);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      color: var(--cyan);
+    }
+    .tactical-modal-close-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.15s ease;
+    }
+    .tactical-modal-close-btn:hover {
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--rose);
+      border-color: rgba(244, 63, 94, 0.35);
+    }
+    .tactical-modal-body {
+      padding: 18px 20px;
+      overflow-y: auto;
+      max-height: calc(85vh - 120px);
+    }
+    .tactical-modal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 600px) {
+      .tactical-modal-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .tactical-modal-item {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .tactical-modal-val {
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 800;
+      margin-top: 2px;
+    }
+    .tactical-modal-sub {
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+    .tactical-modal-opt-val {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+      line-height: 1.45;
+      margin-top: 3px;
+      font-family: var(--font-mono);
+    }
+    .tactical-modal-inv {
+      font-size: 11px;
+      color: var(--rose);
+      margin-top: 5px;
+      font-weight: 600;
+    }
+    .tactical-modal-footer {
+      padding: 12px 20px;
+      background: var(--bg-subtle);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
 
     /* Main Container (Body + Copilot) */
@@ -476,9 +844,37 @@
       transition: transform 0.2s ease;
     }
 
-    /* Copilot Right Drawer */
+    /* Horizontal Splitter Resizer for Copilot Drawer */
+    .copilot-h-resizer {
+      width: 6px;
+      cursor: col-resize;
+      background: var(--border);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 25;
+      transition: background 0.15s ease;
+      touch-action: none;
+      user-select: none;
+    }
+    .copilot-h-resizer:hover, .copilot-h-resizer.active {
+      background: var(--cyan);
+      box-shadow: 0 0 10px rgba(6, 182, 212, 0.6);
+    }
+    .copilot-h-resizer.hidden {
+      display: none !important;
+    }
+    body.copilot-resizing {
+      cursor: col-resize !important;
+      user-select: none !important;
+    }
+    body.copilot-dragging {
+      cursor: move !important;
+      user-select: none !important;
+    }
+
+    /* Copilot Right Drawer & Floating Window */
     .copilot-pane {
-      width: var(--copilot-w);
+      width: var(--copilot-w, 420px);
       background: var(--bg-surface);
       border-left: 1px solid var(--border);
       display: flex;
@@ -486,12 +882,71 @@
       flex-shrink: 0;
       height: 100%;
       min-height: 0;
-      transition: width 0.2s ease, margin-right 0.2s ease;
+      transition: width 0.18s ease;
       overflow: hidden;
+      position: relative;
     }
     .copilot-pane.collapsed {
-      width: 0;
-      border-left: none;
+      display: none !important;
+    }
+
+    /* Floating Draggable Window Mode */
+    .copilot-pane.floating {
+      position: fixed !important;
+      top: var(--copilot-float-top, 85px);
+      left: var(--copilot-float-left, auto);
+      right: var(--copilot-float-right, 24px);
+      width: var(--copilot-float-w, 480px) !important;
+      height: var(--copilot-float-h, 660px) !important;
+      max-width: calc(100vw - 32px) !important;
+      max-height: calc(100vh - 40px) !important;
+      z-index: 1000 !important;
+      border-radius: 12px !important;
+      border: 1px solid var(--cyan) !important;
+      box-shadow: 0 16px 50px rgba(0, 0, 0, 0.65), 0 0 20px rgba(6, 182, 212, 0.25) !important;
+      resize: both !important;
+      overflow: hidden !important;
+      margin: 0 !important;
+    }
+    .copilot-pane.floating .copilot-header {
+      cursor: move;
+      border-top-left-radius: 12px;
+      border-top-right-radius: 12px;
+    }
+
+    /* Floating Edge Tab to Unhide Copilot */
+    .floating-copilot-trigger {
+      position: fixed;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      background: linear-gradient(135deg, var(--cyan, #06b6d4) 0%, #0891b2 100%);
+      color: #ffffff;
+      padding: 14px 8px;
+      border-radius: 8px 0 0 8px;
+      box-shadow: -3px 4px 18px rgba(6, 182, 212, 0.45);
+      cursor: pointer;
+      z-index: 999;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--font-heading, 'Outfit', sans-serif);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+      transition: transform 0.18s ease, padding 0.18s ease, box-shadow 0.18s ease;
+      user-select: none;
+    }
+    .floating-copilot-trigger:hover {
+      padding-right: 12px;
+      box-shadow: -4px 6px 24px rgba(6, 182, 212, 0.65);
+      transform: translateY(-50%) translateX(-2px);
+    }
+    .floating-copilot-trigger .floating-copilot-label {
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      transform: rotate(180deg);
     }
     .copilot-header {
       padding: 10px 14px;
@@ -598,26 +1053,104 @@
       background: rgba(16, 185, 129, 0.25);
       border-color: #10b981;
     }
-    .copilot-input-area {
-      padding: 10px 14px;
+    /* Copilot Input Container (Inline with other chat UI) */
+    .copilot-input-container {
+      display: flex;
+      flex-direction: column;
       background: var(--bg-surface);
       border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 20;
+      min-height: 90px;
+      box-sizing: border-box;
+    }
+    .copilot-input-v-resizer {
+      width: 100%;
+      height: 10px;
+      cursor: row-resize;
       display: flex;
-      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      user-select: none;
+      flex-shrink: 0;
+      margin-top: -1px;
+      transition: background 0.15s ease;
+    }
+    .copilot-input-v-resizer:hover, .copilot-input-v-resizer.active {
+      background: rgba(6, 182, 212, 0.15);
+    }
+    .copilot-resizer-pill {
+      width: 36px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      transition: all 0.15s ease;
+      pointer-events: none;
+    }
+    .copilot-input-v-resizer:hover .copilot-resizer-pill,
+    .copilot-input-v-resizer.active .copilot-resizer-pill {
+      width: 58px;
+      background: var(--cyan);
+      box-shadow: 0 0 8px rgba(6, 182, 212, 0.6);
+    }
+    .copilot-input-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 4px 12px 8px;
+      min-height: 0;
+      gap: 6px;
+      box-sizing: border-box;
+    }
+    .copilot-textarea {
+      width: 100%;
+      height: 52px;
+      min-height: 44px;
+      max-height: 350px;
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+      line-height: 1.45;
+      color: var(--text-main);
+      background: var(--bg-input, rgba(15, 23, 42, 0.5));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md, 6px);
+      padding: 8px 10px;
+      resize: none;
+      outline: none;
+      box-sizing: border-box;
+      overflow-y: auto;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .copilot-textarea:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+    }
+    .copilot-textarea::placeholder {
+      color: var(--text-muted);
+      opacity: 0.8;
+    }
+    .copilot-input-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
       flex-shrink: 0;
     }
-    .copilot-input {
-      flex: 1;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      color: var(--text-main);
-      padding: 8px 12px;
-      border-radius: var(--radius-md);
-      font-size: 12.5px;
-      outline: none;
+    .copilot-input-hint {
+      font-size: 10px;
+      color: var(--text-muted);
+      user-select: none;
     }
-    .copilot-input:focus {
-      border-color: var(--cyan);
+    .chat-user {
+      align-self: flex-end;
+      background: var(--cyan);
+      color: #fff;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
     /* Lightbox Modal */
@@ -875,24 +1408,19 @@
         <a href="/" class="brand-back-btn" title="Return to Stock Trading Operations Cockpit Home">
           <span>🏛️ Cockpit</span>
         </a>
-        <a href="/?desk=today" class="global-desk-link" title="Today's Operational Briefing">
-          <span>⚡ Today</span>
-        </a>
-        <a href="/?desk=radar" class="global-desk-link" title="Swing Research Radar & Queue">
-          <span>🎯 Radar</span>
-        </a>
-        <a href="/?desk=screener" class="global-desk-link" title="Schwab 1000 Screener & Pre-Move Scan">
-          <span>🚨 Screener</span>
-        </a>
-        <a href="/?desk=trades" class="global-desk-link" title="Institutional Trade Setups & P&L Log">
-          <span>💡 Trades</span>
-        </a>
-        <a href="/?desk=portfolio" class="global-desk-link" title="Active Positions & Account Risk">
-          <span>💼 Portfolio</span>
-        </a>
-        <a href="/?desk=watchlist" class="global-desk-link" title="Watchlist Price Triggers & Stalking">
-          <span>📡 Watchlist</span>
-        </a>
+        <div class="desk-picker-wrap">
+          <button class="btn-action btn-secondary" id="btn-desk-menu" onclick="toggleDeskMenu(event)" style="font-size:11px; padding:2px 7px;" title="Jump to other desks">
+            Desks ▾
+          </button>
+          <div class="desk-menu-dropdown" id="desk-menu-dropdown" style="display:none;">
+            <a href="/?desk=today" class="desk-menu-item">⚡ Today's Briefing</a>
+            <a href="/?desk=radar" class="desk-menu-item">🎯 Swing Radar</a>
+            <a href="/?desk=screener" class="desk-menu-item">🚨 Pre-Move Screener</a>
+            <a href="/?desk=trades" class="desk-menu-item">💡 Institutional Trades</a>
+            <a href="/?desk=portfolio" class="desk-menu-item">💼 Portfolio Risk</a>
+            <a href="/?desk=watchlist" class="desk-menu-item">📡 Trigger Watchlist</a>
+          </div>
+        </div>
       </nav>
 
       <div class="ticker-hero">
@@ -901,12 +1429,11 @@
       </div>
 
       <!-- Live Quote Pill -->
-      <div class="badge-live-quote" id="hdr-live-quote-box">
+      <div class="badge-live-quote" id="hdr-live-quote-box" title="Real-time live quote">
         <span class="pulse-dot"></span>
-        <span style="color:var(--text-muted); font-size:10.5px; text-transform:uppercase;">Live:</span>
         <span id="hdr-live-price" style="font-weight:800; color:var(--emerald);">--</span>
         <span id="hdr-spot-diff" style="font-size:10.5px; color:var(--text-muted);"></span>
-        <button class="btn-action btn-secondary" onclick="refreshLivePrice()" style="padding:1px 5px; font-size:10px;" title="Refresh real-time quote">🔄</button>
+        <span onclick="refreshLivePrice()" style="cursor:pointer; font-size:10px; margin-left:1px;" title="Refresh quote">🔄</span>
       </div>
 
       <!-- Verdict Pill -->
@@ -917,26 +1444,8 @@
     <div class="header-right">
       <!-- Quick Ticker Switcher -->
       <div class="ticker-switcher-wrap" title="Quickly switch to any of the 1,000 tickers">
-        <input type="text" id="quick-ticker-input" class="ticker-switcher-input" placeholder="TICKER" maxlength="7" list="constituent-tickers" onkeydown="handleSwitcherKey(event)" onchange="handleSwitcherChange(event)">
+        <input type="text" id="quick-ticker-input" class="ticker-switcher-input" placeholder="TICKER" maxlength="7" list="constituent-tickers" onkeydown="handleSwitcherKey(event)" onchange="handleSwitcherChange(event)" style="width:70px;">
         <datalist id="constituent-tickers"></datalist>
-      </div>
-
-      <!-- Date Selector -->
-      <div style="display:flex; align-items:center; gap:5px;">
-        <span style="font-size:11px; font-weight:700; color:var(--text-muted);">📅</span>
-        <select id="report-date-select" class="ticker-switcher-input" style="width:115px; font-size:11px; padding:3px 6px;" onchange="switchReportDate(this.value)">
-          <option value="latest">Latest</option>
-        </select>
-      </div>
-
-      <!-- Tier Selector -->
-      <div style="display:flex; align-items:center; gap:4px;">
-        <span style="font-size:11px; font-weight:700; color:var(--text-muted);">⚡ Tier:</span>
-        <select id="research-tier-select" class="ticker-switcher-input" style="width:72px; font-size:11px; padding:3px 4px;">
-          <option value="LITE">Lite</option>
-          <option value="MID" selected>Mid</option>
-          <option value="FULL">Full</option>
-        </select>
       </div>
 
       <!-- Action Buttons -->
@@ -944,45 +1453,121 @@
         ⚡ Run Deep
       </button>
 
-      <button class="btn-action btn-cyan-outline" id="btn-sync-tt" onclick="syncTastytradeAlerts()" title="Register cloud quote alerts in Tastytrade mobile app">
-        📲 TT Alerts
+      <button class="btn-action btn-secondary" id="btn-toggle-copilot" onclick="toggleCopilot(event)" title="Show/Hide Copilot AI Chat Sidebar" style="font-weight:700;">
+        <span id="txt-toggle-copilot">💬 Hide Chat</span>
       </button>
 
-      <a id="btn-open-cockpit" class="btn-action btn-secondary" href="/#desk" title="Open this ticker in the multi-desk trading cockpit modal">
-        🖥️ In Cockpit
-      </a>
-
-      <button class="btn-action btn-secondary" id="btn-toggle-copilot" onclick="toggleCopilot()" title="Toggle Copilot AI Chat Sidebar">
-        💬 Copilot
+      <!-- Controls Toolbar Toggle -->
+      <button class="btn-action btn-secondary" id="btn-toggle-toolbar" onclick="toggleToolbar(event)" title="Toggle Research Controls Toolbar (Date, Tier, TT Alerts, Cockpit)" style="padding:3px 7px; font-size:11px;">
+        ⚙️ Controls <span id="toolbar-arrow">▾</span>
       </button>
 
-      <button class="btn-action btn-secondary" id="btn-theme-toggle" onclick="toggleTheme()" title="Switch Light/Dark theme">
+      <!-- Theme Switcher -->
+      <button class="btn-action btn-secondary" id="btn-theme-toggle" onclick="toggleTheme()" title="Switch Light/Dark theme" style="padding:3px 7px;">
         ☀️
       </button>
     </div>
   </header>
 
-  <!-- Tactical Levels Ribbon -->
-  <div class="tactical-ribbon" id="tactical-ribbon" style="display:none;">
-    <div class="tactical-card">
-      <div class="tactical-card-label">🎯 Entry Zone</div>
-      <div class="tactical-card-val" id="tactical-entry" style="color:var(--cyan);">--</div>
-      <div class="tactical-card-sub" id="tactical-entry-sub">Limit accumulation</div>
+  <!-- Collapsible Secondary Controls Toolbar -->
+  <div class="research-toolbar" id="research-toolbar">
+    <div class="toolbar-left">
+      <!-- Date Selector -->
+      <div class="toolbar-item" title="Switch report date">
+        <span class="toolbar-icon">📅</span>
+        <select id="report-date-select" class="toolbar-select" onchange="switchReportDate(this.value)">
+          <option value="latest">Latest</option>
+        </select>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <!-- Tier Selector -->
+      <div class="toolbar-item" title="Set research model tier">
+        <span class="toolbar-icon">⚡</span>
+        <span class="toolbar-label">Tier:</span>
+        <select id="research-tier-select" class="toolbar-select" onchange="syncTierToModal(this.value)">
+          <option value="LITE">Lite</option>
+          <option value="MID" selected>Mid</option>
+          <option value="FULL">Full</option>
+        </select>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <!-- Tactical Levels Modal Trigger -->
+      <button class="btn-action btn-cyan-outline" id="btn-toggle-tactical" onclick="openTacticalModal(event)" title="View Tactical Levels Modal (Entry Zone, Stop, Targets, Options)" style="display:none; font-weight:800; padding:2px 8px; font-size:11px;">
+        🎯 Levels
+      </button>
+
+      <!-- Cloud Push Alerts -->
+      <button class="btn-action btn-secondary" id="btn-sync-tt" onclick="syncTastytradeAlerts()" title="Register cloud quote alerts in Tastytrade mobile app" style="padding:2px 8px; font-size:11px;">
+        📲 TT Alerts
+      </button>
+
+      <!-- Multi-Desk Cockpit Link -->
+      <a id="btn-open-cockpit" class="btn-action btn-secondary" href="/#desk" title="Open this ticker in the multi-desk trading cockpit modal" style="padding:2px 8px; font-size:11px;">
+        🖥️ In Cockpit
+      </a>
     </div>
-    <div class="tactical-card">
-      <div class="tactical-card-label">🛑 Tactical Stop</div>
-      <div class="tactical-card-val" id="tactical-stop" style="color:var(--rose);">--</div>
-      <div class="tactical-card-sub" id="tactical-stop-sub">Structural invalidation floor</div>
+
+    <div class="toolbar-right">
+      <button class="toolbar-util-btn" onclick="openControlsModal(event)" title="Open Full Research Controls Modal">
+        🗖 Modal
+      </button>
+      <button class="toolbar-util-btn" onclick="toggleToolbar(event)" title="Collapse this toolbar">
+        ▲ Collapse
+      </button>
     </div>
-    <div class="tactical-card">
-      <div class="tactical-card-label">🏁 Targets</div>
-      <div class="tactical-card-val" id="tactical-targets" style="color:var(--emerald);">--</div>
-      <div class="tactical-card-sub" id="tactical-rr">R:R: --</div>
+  </div>
+
+  <!-- Tactical Levels Ribbon Container -->
+  <div class="tactical-ribbon-container" id="tactical-ribbon-container" style="display:none;">
+    
+    <!-- Collapsed Slim Bar (visible when collapsed) -->
+    <div class="tactical-collapsed-bar" id="tactical-collapsed-bar" onclick="toggleTacticalRibbon(event)" style="display:none;" title="Click to expand Tactical Levels">
+      <div class="tactical-collapsed-left">
+        <span class="tactical-collapsed-badge">🎯 TACTICAL LEVELS</span>
+        <span class="tactical-collapsed-summary" id="tactical-collapsed-summary">--</span>
+      </div>
+      <div class="tactical-collapsed-right">
+        <button class="tactical-collapse-pill-btn" onclick="openTacticalModal(event)" title="Open Tactical Levels in Modal">🗖 Modal</button>
+        <span class="tactical-collapsed-expand-btn">▼ Expand</span>
+      </div>
     </div>
-    <div class="tactical-card" style="grid-column: span 2;">
-      <div class="tactical-card-label">🛡️ Options Structure</div>
-      <div class="tactical-card-val" id="tactical-options" style="font-size:12px; font-weight:700;">--</div>
-      <div class="tactical-card-sub" id="tactical-invalidation">Invalidation: --</div>
+
+    <!-- Expanded 4-Card Grid Ribbon -->
+    <div class="tactical-ribbon" id="tactical-ribbon">
+      <div class="tactical-card">
+        <div class="tactical-card-label">🎯 Entry Zone</div>
+        <div class="tactical-card-val" id="tactical-entry" style="color:var(--cyan);">--</div>
+        <div class="tactical-card-sub" id="tactical-entry-sub">Limit accumulation</div>
+      </div>
+      <div class="tactical-card">
+        <div class="tactical-card-label">🛑 Tactical Stop</div>
+        <div class="tactical-card-val" id="tactical-stop" style="color:var(--rose);">--</div>
+        <div class="tactical-card-sub" id="tactical-stop-sub">Structural invalidation floor</div>
+      </div>
+      <div class="tactical-card">
+        <div class="tactical-card-label">🏁 Targets</div>
+        <div class="tactical-card-val" id="tactical-targets" style="color:var(--emerald);">--</div>
+        <div class="tactical-card-sub" id="tactical-rr">R:R: --</div>
+      </div>
+      <div class="tactical-card" style="grid-column: span 2;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <div class="tactical-card-label">🛡️ Options Structure</div>
+          <div style="display:flex; gap:5px; align-items:center;">
+            <button class="tactical-collapse-pill-btn" onclick="openTacticalModal(event)" title="Open in Modal">
+              🗖 Modal
+            </button>
+            <button class="tactical-collapse-pill-btn" onclick="toggleTacticalRibbon(event)" title="Collapse Tactical Levels">
+              ▲ Collapse
+            </button>
+          </div>
+        </div>
+        <div class="tactical-card-val" id="tactical-options" style="font-size:12px; font-weight:700;">--</div>
+        <div class="tactical-card-sub" id="tactical-invalidation">Invalidation: --</div>
+      </div>
     </div>
   </div>
 
@@ -1016,14 +1601,26 @@
       </div>
     </div>
 
-    <!-- Right: Collapsible AI Copilot -->
+    <!-- Horizontal Resizer Splitter between Dossier and Copilot -->
+    <div class="copilot-h-resizer" id="copilot-resizer" title="Drag left/right to resize Copilot (Double-click to reset width)"></div>
+
+    <!-- Right: Draggable & Collapsible AI Copilot -->
     <div class="copilot-pane" id="copilot-pane">
-      <div class="copilot-header">
-        <div style="font-family:var(--font-heading); font-size:12.5px; font-weight:800; color:var(--cyan); display:flex; align-items:center; gap:6px;">
+      <div class="copilot-header" id="copilot-header" title="Drag here to move window when floating">
+        <div style="font-family:var(--font-heading); font-size:12.5px; font-weight:800; color:var(--cyan); display:flex; align-items:center; gap:6px; user-select:none;">
+          <span id="copilot-drag-icon" style="cursor:move; font-size:14px; opacity:0.75; display:inline-block;" title="Click & Drag to reposition floating window">✥</span>
           <span>🤖 REV COPILOT</span>
           <span style="font-size:10px; font-weight:600; color:var(--text-muted); text-transform:uppercase;" id="copilot-ticker-badge">--</span>
+          <span id="copilot-float-badge" class="pill cyan" style="font-size:9px; padding:1px 5px; display:none;">FLOATING</span>
         </div>
-        <button class="btn-action btn-secondary" onclick="toggleCopilot()" style="padding:2px 6px; font-size:10px;" title="Collapse Copilot">✕</button>
+        <div style="display:flex; align-items:center; gap:5px;" onclick="event.stopPropagation()">
+          <button class="btn-action btn-secondary" id="btn-copilot-float" onclick="toggleCopilotFloat(event)" style="padding:2px 7px; font-size:10.5px; display:inline-flex; align-items:center; gap:3px;" title="Float as draggable window (or Dock back to right panel)">
+            <span id="copilot-float-btn-icon">🗖</span> <span id="copilot-float-btn-txt">Float</span>
+          </button>
+          <button class="btn-action btn-secondary" id="btn-copilot-hide-pane" onclick="toggleCopilot(event)" style="padding:2px 7px; font-size:10.5px; display:inline-flex; align-items:center; gap:2px;" title="Hide Copilot Chat (or use button in header)">
+            <span>⇥</span> <span>Hide</span>
+          </button>
+        </div>
       </div>
 
       <div class="copilot-messages" id="copilot-messages">
@@ -1038,14 +1635,175 @@
         <span class="prompt-pill" onclick="sendCopilotPrompt('What are the primary structural risks and invalidation triggers?')">⚠️ Key Risks</span>
         <span class="prompt-pill" onclick="sendCopilotPrompt('Explain the options strategy, Greeks, and reward-to-risk ratio')">🛡️ Options Greek/RR</span>
         <span class="prompt-pill" onclick="sendCopilotPrompt('Compare the Bull vs Bear thesis arguments from the debate')">⚖️ Bull vs Bear</span>
+        <span class="prompt-pill" style="color:var(--cyan); border-color:rgba(6,182,212,0.4);" onclick="handleSyncTastytradeAlertsAction('ticker=' + (State.ticker || ''))" title="Register 24/7 Tastytrade cloud quote alerts for all tactical levels">📲 Sync TT Alerts</span>
       </div>
 
-      <div class="copilot-input-area">
-        <input type="text" id="copilot-input" class="copilot-input" placeholder="Ask about this research report..." onkeydown="handleCopilotKey(event)">
-        <button class="btn-action btn-cyan-outline" onclick="submitCopilotChat()" style="padding:6px 12px;">Send</button>
+      <!-- Input Container with Vertical Resizer for Multi-Line Paragraphs -->
+      <div id="copilot-input-container" class="copilot-input-container">
+        <div id="copilot-input-resizer" class="copilot-input-v-resizer" title="Drag up/down to resize text area (Double-click to toggle expand)">
+          <div class="copilot-resizer-pill"></div>
+        </div>
+        <div class="copilot-input-body">
+          <textarea id="copilot-input" class="copilot-textarea" placeholder="Ask about this research report, paste paragraphs, or press Shift+Enter for newlines..." onkeydown="handleCopilotKey(event)" oninput="autoGrowCopilotTextarea(this)"></textarea>
+          <div class="copilot-input-toolbar">
+            <div class="chat-input-toolbar-left" style="display:flex; align-items:center; gap:8px;">
+              <button type="button" class="btn-action btn-secondary" onclick="handleSyncTastytradeAlertsAction('ticker=' + (State.ticker || ''))" style="padding:2px 7px; font-size:10.5px; color:#38bdf8; border-color:rgba(56,189,248,0.35); background:rgba(56,189,248,0.08); font-weight:700;" title="Register 24/7 Tastytrade cloud quote alerts for this ticker (Entry, Stop, Targets)">📲 TT Alert</button>
+              <span class="copilot-input-hint">Shift+↵ Newline · ↵ Send</span>
+            </div>
+            <div class="chat-input-toolbar-right" style="display:flex; align-items:center; gap:6px;">
+              <button class="btn-action btn-secondary" id="btn-copilot-textarea-expand" onclick="toggleCopilotTextareaExpand(event)" style="padding:2px 7px; font-size:11px;" title="Toggle expand text area (or drag bar above)">⤢</button>
+              <button class="btn-action btn-cyan-outline" onclick="submitCopilotChat()" id="btn-copilot-send" style="padding:4px 13px; font-weight:700; font-size:11.5px; display:inline-flex; align-items:center; gap:4px;">💬 Send</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
+  <!-- Research Controls Modal -->
+  <div class="tactical-modal-overlay" id="controls-modal" onclick="handleControlsModalBackdrop(event)" style="display:none;">
+    <div class="tactical-modal-card" style="max-width: 520px;">
+      <div class="tactical-modal-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:20px;">⚙️</span>
+          <div>
+            <div class="tactical-modal-title" id="modal-controls-title">RESEARCH CONTROLS &amp; ACTIONS</div>
+            <div style="font-size:10.5px; color:var(--text-muted); font-family:var(--font-mono); margin-top:2px;">
+              Autonomous Engine Settings &amp; Execution Dispatch
+            </div>
+          </div>
+        </div>
+        <button class="tactical-modal-close-btn" onclick="closeControlsModal()" title="Close (ESC)">✕</button>
+      </div>
+
+      <div class="tactical-modal-body" style="display:flex; flex-direction:column; gap:14px;">
+        
+        <!-- Execution Tier -->
+        <div class="modal-control-box">
+          <div class="modal-control-header">
+            <span class="modal-control-icon">⚡</span>
+            <div>
+              <div class="modal-control-title">Deep Research Tier</div>
+              <div class="modal-control-desc">Select model pipeline depth for autonomous analysis</div>
+            </div>
+          </div>
+          <select id="modal-tier-select" class="modal-select-lg" onchange="syncTierFromModal(this.value)">
+            <option value="LITE">Lite — Fast Single Synthesis (Model A)</option>
+            <option value="MID" selected>Mid — Dual Synthesis &amp; Consensus (Model A + Model B)</option>
+            <option value="FULL">Full — Senior PM Arbitration + Bull/Bear Clash + Dual Models</option>
+          </select>
+        </div>
+
+        <!-- Archive Date -->
+        <div class="modal-control-box">
+          <div class="modal-control-header">
+            <span class="modal-control-icon">📅</span>
+            <div>
+              <div class="modal-control-title">Report Archive Date</div>
+              <div class="modal-control-desc">Browse previously generated research dossiers for this ticker</div>
+            </div>
+          </div>
+          <select id="modal-report-date-select" class="modal-select-lg" onchange="switchModalReportDate(this.value)">
+            <option value="latest">Latest Available</option>
+          </select>
+        </div>
+
+        <!-- Quick Launch Actions -->
+        <div class="modal-control-box">
+          <div class="modal-control-title" style="margin-bottom:6px;">🚀 Quick Actions</div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+            <button class="btn-action btn-primary-gradient" onclick="closeControlsModal(); triggerDeepResearch();" style="justify-content:center; padding:9px 12px; font-weight:800;">
+              ⚡ Run Deep Research
+            </button>
+            <button class="btn-action btn-cyan-outline" onclick="closeControlsModal(); openTacticalModal();" style="justify-content:center; padding:9px 12px; font-weight:800;">
+              🎯 Tactical Levels
+            </button>
+            <button class="btn-action btn-secondary" onclick="closeControlsModal(); syncTastytradeAlerts();" style="justify-content:center; padding:9px 12px;">
+              📲 Push TT Alerts
+            </button>
+            <a href="/#desk" class="btn-action btn-secondary" onclick="closeControlsModal();" style="justify-content:center; padding:9px 12px; text-decoration:none;">
+              🖥️ View in Cockpit
+            </a>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="tactical-modal-footer">
+        <span style="font-size:11px; color:var(--text-muted);">Tip: Press <kbd style="font-family:var(--font-mono); background:rgba(255,255,255,0.08); padding:1px 5px; border-radius:3px;">ESC</kbd> to dismiss</span>
+        <button class="btn-action btn-secondary" onclick="closeControlsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tactical Levels Modal -->
+  <div class="tactical-modal-overlay" id="tactical-modal" onclick="handleTacticalModalBackdrop(event)" style="display:none;">
+    <div class="tactical-modal-card">
+      <div class="tactical-modal-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:20px;">🎯</span>
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="tactical-modal-title" id="modal-tactical-title">TACTICAL LEVELS</span>
+              <span class="verdict-badge" id="modal-tactical-verdict" style="font-size:10px; padding:2px 7px;">--</span>
+              <span class="pill" id="modal-tactical-conviction" style="font-size:10px; font-family:var(--font-mono); padding:2px 6px;">--/10</span>
+            </div>
+            <div style="font-size:10.5px; color:var(--text-muted); font-family:var(--font-mono); margin-top:2px;">
+              Institutional Trade Architecture &amp; Execution Floor
+            </div>
+          </div>
+        </div>
+        <button class="tactical-modal-close-btn" onclick="closeTacticalModal()" title="Close (ESC)">✕</button>
+      </div>
+
+      <div class="tactical-modal-body">
+        <div class="tactical-modal-grid">
+          <!-- 1. Entry Zone -->
+          <div class="tactical-modal-item">
+            <div class="tactical-card-label" style="color:var(--cyan);">🎯 Entry Zone</div>
+            <div class="tactical-modal-val" id="modal-entry-val" style="color:var(--cyan);">--</div>
+            <div class="tactical-modal-sub" id="modal-entry-sub">Limit accumulation band</div>
+          </div>
+
+          <!-- 2. Tactical Stop -->
+          <div class="tactical-modal-item">
+            <div class="tactical-card-label" style="color:var(--rose);">🛑 Tactical Stop</div>
+            <div class="tactical-modal-val" id="modal-stop-val" style="color:var(--rose);">--</div>
+            <div class="tactical-modal-sub" id="modal-stop-sub">Structural invalidation floor</div>
+          </div>
+
+          <!-- 3. Targets & Lane -->
+          <div class="tactical-modal-item">
+            <div class="tactical-card-label" style="color:var(--emerald);">🏁 Targets</div>
+            <div class="tactical-modal-val" id="modal-targets-val" style="color:var(--emerald);">--</div>
+            <div class="tactical-modal-sub" id="modal-targets-sub">Lane: JUDGE</div>
+          </div>
+
+          <!-- 4. Options Structure (Full width) -->
+          <div class="tactical-modal-item" style="grid-column: 1 / -1;">
+            <div class="tactical-card-label" style="color:#38bdf8;">🛡️ Options Structure</div>
+            <div class="tactical-modal-opt-val" id="modal-options-val">--</div>
+            <div class="tactical-modal-inv" id="modal-invalidation-val">--</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tactical-modal-footer">
+        <div style="font-size:11px; color:var(--text-muted);">
+          Ticker: <b id="modal-tactical-ticker" style="color:var(--cyan); font-family:var(--font-mono);">--</b> · Spot: <b id="modal-tactical-spot" style="color:var(--text-main); font-family:var(--font-mono);">--</b>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="btn-action btn-secondary" onclick="copyTacticalLevels()" title="Copy entry, stop, and targets to clipboard">
+            📋 Copy Levels
+          </button>
+          <button class="btn-action btn-secondary" onclick="askCopilotAboutTactical()" title="Ask Rev Copilot to analyze these tactical levels">
+            💬 Ask Copilot
+          </button>
+          <button class="btn-action btn-primary-gradient" onclick="closeTacticalModal()" style="padding:4px 14px;">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Chart Lightbox Modal -->
@@ -1243,13 +2001,16 @@
           const diffPct = (diff / spotPrice) * 100;
           const sign = diff >= 0 ? '+' : '';
           const col = diff >= 0 ? '#10b981' : '#f43f5e';
-          spotDiffEl.innerHTML = `<span style="color:${col}; font-weight:700;">${sign}$${diff.toFixed(2)} (${sign}${diffPct.toFixed(1)}%)</span> vs spot`;
+          spotDiffEl.innerHTML = `<span style="color:${col}; font-weight:700;">${sign}${diffPct.toFixed(1)}%</span>`;
+          spotDiffEl.title = `Live $${Number(livePrice).toFixed(2)} vs Spot $${Number(spotPrice).toFixed(2)} (${sign}$${diff.toFixed(2)} / ${sign}${diffPct.toFixed(1)}%)`;
         } else {
           spotDiffEl.innerText = '';
+          spotDiffEl.title = '';
         }
       } else {
         livePriceEl.innerText = '--';
         spotDiffEl.innerText = '';
+        spotDiffEl.title = '';
       }
 
       // Verdict & Conviction
@@ -1266,14 +2027,20 @@
       else vPill.classList.add('verdict-avoid');
 
       const cPill = document.getElementById('hdr-conviction-pill');
-      cPill.innerText = conviction !== '--' ? `Conviction: ${conviction}/10` : 'Conviction: --';
+      cPill.innerText = conviction !== '--' ? `${conviction}/10` : '--/10';
+      cPill.title = conviction !== '--' ? `Conviction: ${conviction}/10` : 'Conviction: unrated';
     }
 
     function renderTacticalRibbon(data) {
+      const container = document.getElementById('tactical-ribbon-container');
       const ribbon = document.getElementById('tactical-ribbon');
+      const bar = document.getElementById('tactical-collapsed-bar');
+      const btnToggle = document.getElementById('btn-toggle-tactical');
       const wl = data.watch_levels;
+
       if (!wl) {
-        ribbon.style.display = 'none';
+        if (container) container.style.display = 'none';
+        if (btnToggle) btnToggle.style.display = 'none';
         return;
       }
 
@@ -1288,28 +2055,245 @@
       const t2 = sp.target_2;
 
       if (!ezLow && !stop && !t1) {
-        ribbon.style.display = 'none';
+        if (container) container.style.display = 'none';
+        if (btnToggle) btnToggle.style.display = 'none';
         return;
       }
 
-      ribbon.style.display = 'grid';
-      document.getElementById('tactical-entry').innerText = (ezLow && ezHigh) ? `$${Number(ezLow).toFixed(2)} – $${Number(ezHigh).toFixed(2)}` : '--';
-      document.getElementById('tactical-stop').innerText = stop ? `$${Number(stop).toFixed(2)}` : '--';
+      if (container) container.style.display = 'block';
+      if (btnToggle) btnToggle.style.display = 'inline-flex';
+
+      const entryText = (ezLow && ezHigh) ? `$${Number(ezLow).toFixed(2)} – $${Number(ezHigh).toFixed(2)}` : '--';
+      const stopText = stop ? `$${Number(stop).toFixed(2)}` : '--';
       
       let tgText = '--';
       if (t1 && t2) tgText = `T1: $${Number(t1).toFixed(2)} | T2: $${Number(t2).toFixed(2)}`;
       else if (t1) tgText = `T1: $${Number(t1).toFixed(2)}`;
-      document.getElementById('tactical-targets').innerText = tgText;
 
+      const optText = op.summary || op.structure || 'Cash/Shares Accumulation';
+
+      // On-page cards
+      document.getElementById('tactical-entry').innerText = entryText;
+      document.getElementById('tactical-stop').innerText = stopText;
+      document.getElementById('tactical-targets').innerText = tgText;
       document.getElementById('tactical-rr').innerText = wl.setup_lane ? `Lane: ${wl.setup_lane}` : 'Institutional Tactical Levels';
-      document.getElementById('tactical-options').innerText = op.summary || op.structure || 'Cash/Shares Accumulation';
+      document.getElementById('tactical-options').innerText = optText;
       document.getElementById('tactical-invalidation').innerText = inv.condition ? `Invalidation: ${inv.condition} ($${stop || '--'})` : '';
+
+      // Update Collapsed Mini Bar Preview
+      const summaryEl = document.getElementById('tactical-collapsed-summary');
+      if (summaryEl) {
+        summaryEl.innerHTML = `Entry <span style="color:var(--cyan); font-weight:700;">${entryText}</span> · Stop <span style="color:var(--rose); font-weight:700;">${stopText}</span> · Targets <span style="color:var(--emerald); font-weight:700;">${tgText}</span> · <span style="color:var(--text-muted);">${escapeHtml(optText)}</span>`;
+      }
+
+      // Populate Modal values
+      const modalTicker = document.getElementById('modal-tactical-ticker');
+      if (modalTicker) modalTicker.innerText = `$${State.ticker}`;
+      const modalTitle = document.getElementById('modal-tactical-title');
+      if (modalTitle) modalTitle.innerText = `${State.ticker} TACTICAL LEVELS`;
+      const modalSpot = document.getElementById('modal-tactical-spot');
+      if (modalSpot) modalSpot.innerText = `$${Number(data.live_price || data.spot_price || 0).toFixed(2)}`;
+      
+      const modalEntry = document.getElementById('modal-entry-val');
+      if (modalEntry) modalEntry.innerText = entryText;
+      const modalStop = document.getElementById('modal-stop-val');
+      if (modalStop) modalStop.innerText = stopText;
+      const modalTargets = document.getElementById('modal-targets-val');
+      if (modalTargets) modalTargets.innerText = tgText;
+      const modalTargetsSub = document.getElementById('modal-targets-sub');
+      if (modalTargetsSub) modalTargetsSub.innerText = wl.setup_lane ? `Lane: ${wl.setup_lane}` : 'Institutional Tactical Levels';
+      const modalOptions = document.getElementById('modal-options-val');
+      if (modalOptions) modalOptions.innerText = optText;
+      const modalInv = document.getElementById('modal-invalidation-val');
+      if (modalInv) modalInv.innerText = inv.condition ? `Invalidation: ${inv.condition} ($${stop || '--'})` : '';
+
+      const modalVerdict = document.getElementById('modal-tactical-verdict');
+      const modalConv = document.getElementById('modal-tactical-conviction');
+      if (modalVerdict) {
+        modalVerdict.innerText = (wl.verdict || (data.has_deep_research ? 'STALK' : 'UNRESEARCHED')).toUpperCase();
+        modalVerdict.className = document.getElementById('hdr-verdict-pill').className;
+      }
+      if (modalConv) {
+        modalConv.innerText = wl.conviction ? `Conviction: ${wl.conviction}/10` : 'Conviction: --';
+      }
+
+      // Check stored collapsed preference
+      const isCollapsed = localStorage.getItem('tactical_ribbon_collapsed') === 'true';
+      applyTacticalRibbonState(isCollapsed);
+    }
+
+    function toggleTacticalRibbon(event) {
+      if (event) {
+        event.stopPropagation();
+      }
+      const isCurrentlyCollapsed = localStorage.getItem('tactical_ribbon_collapsed') === 'true';
+      const newState = !isCurrentlyCollapsed;
+      localStorage.setItem('tactical_ribbon_collapsed', String(newState));
+      applyTacticalRibbonState(newState);
+    }
+
+    function applyTacticalRibbonState(isCollapsed) {
+      const ribbon = document.getElementById('tactical-ribbon');
+      const bar = document.getElementById('tactical-collapsed-bar');
+
+      if (isCollapsed) {
+        if (ribbon) ribbon.style.display = 'none';
+        if (bar) bar.style.display = 'flex';
+      } else {
+        if (ribbon) ribbon.style.display = 'grid';
+        if (bar) bar.style.display = 'none';
+      }
+    }
+
+    function openTacticalModal(event) {
+      if (event) event.stopPropagation();
+      const modal = document.getElementById('tactical-modal');
+      if (modal) {
+        modal.style.display = 'flex';
+      }
+    }
+
+    function closeTacticalModal() {
+      const modal = document.getElementById('tactical-modal');
+      if (modal) {
+        modal.style.display = 'none';
+      }
+    }
+
+    function handleTacticalModalBackdrop(event) {
+      if (event.target && event.target.id === 'tactical-modal') {
+        closeTacticalModal();
+      }
+    }
+
+    function copyTacticalLevels() {
+      const ticker = State.ticker || '';
+      const entry = (document.getElementById('modal-entry-val') || {}).innerText || '';
+      const stop = (document.getElementById('modal-stop-val') || {}).innerText || '';
+      const targets = (document.getElementById('modal-targets-val') || {}).innerText || '';
+      const options = (document.getElementById('modal-options-val') || {}).innerText || '';
+      const text = `${ticker} Tactical Levels:\n• Entry Zone: ${entry}\n• Tactical Stop: ${stop}\n• Targets: ${targets}\n• Options: ${options}`;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Tactical levels copied to clipboard', 'info');
+      }).catch(() => {
+        showToast('Failed to copy to clipboard', 'error');
+      });
+    }
+
+    function askCopilotAboutTactical() {
+      closeTacticalModal();
+      const ticker = State.ticker || '';
+      const entry = (document.getElementById('modal-entry-val') || {}).innerText || '';
+      const stop = (document.getElementById('modal-stop-val') || {}).innerText || '';
+      const targets = (document.getElementById('modal-targets-val') || {}).innerText || '';
+      const prompt = `Explain the tactical setup for ${ticker}: Entry zone ${entry}, Stop loss ${stop}, Targets ${targets}. What is the R:R, institutional edge, and invalidation criteria?`;
+      const copilotPane = document.getElementById('copilot-pane');
+      if (copilotPane && copilotPane.classList.contains('collapsed')) {
+        toggleCopilot();
+      }
+      sendCopilotPrompt(prompt);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeTacticalModal();
+        closeControlsModal();
+        closeLightbox();
+        const deskMenu = document.getElementById('desk-menu-dropdown');
+        if (deskMenu) deskMenu.style.display = 'none';
+      }
+    });
+
+    function toggleDeskMenu(event) {
+      if (event) event.stopPropagation();
+      const m = document.getElementById('desk-menu-dropdown');
+      if (m) {
+        m.style.display = m.style.display === 'none' ? 'flex' : 'none';
+      }
+    }
+
+    window.addEventListener('click', () => {
+      const m = document.getElementById('desk-menu-dropdown');
+      if (m) m.style.display = 'none';
+    });
+
+    // Secondary Controls Toolbar & Modal Logic
+    function toggleToolbar(event) {
+      if (event) event.stopPropagation();
+      const tb = document.getElementById('research-toolbar');
+      const arrow = document.getElementById('toolbar-arrow');
+      if (!tb) return;
+      const isCurrentlyHidden = tb.style.display === 'none';
+      if (isCurrentlyHidden) {
+        tb.style.display = 'flex';
+        if (arrow) arrow.innerText = '▲';
+        localStorage.setItem('research_toolbar_collapsed', 'false');
+      } else {
+        tb.style.display = 'none';
+        if (arrow) arrow.innerText = '▾';
+        localStorage.setItem('research_toolbar_collapsed', 'true');
+      }
+    }
+
+    function initToolbarState() {
+      const tb = document.getElementById('research-toolbar');
+      const arrow = document.getElementById('toolbar-arrow');
+      const isCollapsed = localStorage.getItem('research_toolbar_collapsed') === 'true';
+      if (tb) {
+        tb.style.display = isCollapsed ? 'none' : 'flex';
+      }
+      if (arrow) {
+        arrow.innerText = isCollapsed ? '▾' : '▲';
+      }
+    }
+
+    function openControlsModal(event) {
+      if (event) event.stopPropagation();
+      const m = document.getElementById('controls-modal');
+      if (m) m.style.display = 'flex';
+      const tSelect = document.getElementById('research-tier-select');
+      const modalTSelect = document.getElementById('modal-tier-select');
+      if (tSelect && modalTSelect) modalTSelect.value = tSelect.value;
+      const rSelect = document.getElementById('report-date-select');
+      const modalRSelect = document.getElementById('modal-report-date-select');
+      if (rSelect && modalRSelect) modalRSelect.value = rSelect.value;
+    }
+
+    function closeControlsModal() {
+      const m = document.getElementById('controls-modal');
+      if (m) m.style.display = 'none';
+    }
+
+    function handleControlsModalBackdrop(event) {
+      if (event.target && event.target.id === 'controls-modal') {
+        closeControlsModal();
+      }
+    }
+
+    function syncTierFromModal(val) {
+      const tSelect = document.getElementById('research-tier-select');
+      if (tSelect) tSelect.value = val;
+    }
+
+    function syncTierToModal(val) {
+      const modalTSelect = document.getElementById('modal-tier-select');
+      if (modalTSelect) modalTSelect.value = val;
+    }
+
+    function switchModalReportDate(newDate) {
+      const rSelect = document.getElementById('report-date-select');
+      if (rSelect) rSelect.value = newDate;
+      closeControlsModal();
+      switchReportDate(newDate);
     }
 
     function renderDateSelector(data) {
       const sel = document.getElementById('report-date-select');
+      const modalSel = document.getElementById('modal-report-date-select');
       const dates = data.available_dates || [data.date || 'latest'];
-      sel.innerHTML = dates.map(d => `<option value="${d}" ${d === data.date ? 'selected' : ''}>${d}</option>`).join('');
+      const opts = dates.map(d => `<option value="${d}" ${d === data.date ? 'selected' : ''}>${d}</option>`).join('');
+      if (sel) sel.innerHTML = opts;
+      if (modalSel) modalSel.innerHTML = opts;
 
       const histCountEl = document.getElementById('tab-hist-count');
       if (histCountEl) {
@@ -2303,15 +3287,20 @@
 
       // 2. Transform action:alert into one-click cloud alert trigger
       html = html.replace(/<a\s+[^>]*href=["']action:alert\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
-        return `<button type="button" class="copilot-action-pill alert-action-pill" onclick="handleActionUrl('action:alert?${esc(query)}')" title="Register Tastytrade Cloud Alert">${label}</button>`;
+        return `<button type="button" class="copilot-action-pill alert-action-pill" data-query="${esc(query)}" onclick="handleSetAlertAction(this.dataset.query)" style="color:#f59e0b; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.12); font-weight:600;" title="Register Tastytrade Cloud Quote Alert"><span style="font-size:12px;">🔔</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
       });
 
-      // 3. Transform action:watch into one-click Watchlist target trigger
+      // 3. Transform action:sync_tt into one-click Tastytrade cloud alert sync
+      html = html.replace(/<a\s+[^>]*href=["']action:(?:sync_tt|sync-tt|tastytrade)\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
+        return `<button type="button" class="copilot-action-pill" data-query="${esc(query)}" onclick="handleSyncTastytradeAlertsAction(this.dataset.query)" style="color:#38bdf8; border-color:rgba(56,189,248,0.4); background:rgba(56,189,248,0.12); font-weight:700;" title="Register Tastytrade Cloud Alerts for All Tactical Levels"><span style="font-size:12px;">📲</span> ${label.replace(/^[🔔🎯⚡📲]\s*/, '')}</button>`;
+      });
+
+      // 4. Transform action:watch into one-click Watchlist target trigger
       html = html.replace(/<a\s+[^>]*href=["']action:watch\?([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, query, label) => {
-        return `<button type="button" class="copilot-action-pill watch-action-pill" onclick="handleActionUrl('action:watch?${esc(query)}')" title="Add to Watch Targets">${label}</button>`;
+        return `<button type="button" class="copilot-action-pill watch-action-pill" data-query="${esc(query)}" onclick="handleAddWatchAction(this.dataset.query)" style="color:#10b981; border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.12); font-weight:600;" title="Add to Watch Targets"><span style="font-size:12px;">🎯</span> ${label.replace(/^[🔔🎯⚡]\s*/, '')}</button>`;
       });
 
-      // 4. Transform any other generic action: link into clickable button
+      // 5. Transform any other generic action: link into clickable button
       html = html.replace(/<a\s+[^>]*href=["'](action:[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, actUrl, label) => {
         return `<button type="button" class="copilot-action-pill" onclick="handleActionUrl(this.dataset.action)" data-action="${esc(actUrl)}">${label}</button>`;
       });
@@ -2549,33 +3538,399 @@
       return b;
     }
 
-    // Sync Tastytrade Alerts
-    async function syncTastytradeAlerts() {
+    // Tastytrade Cloud Alert Handlers & Watchlist Integrations
+    async function handleSyncTastytradeAlertsAction(queryString) {
       try {
-        const res = await fetch(`/api/watchlist/sync-tt?ticker=${encodeURIComponent(State.ticker)}`, { method: 'POST' });
-        if (res.ok) {
-          alert(`✅ Registered Tastytrade cloud quote alerts for $${State.ticker}! Check your Tastytrade mobile app.`);
+        const params = new URLSearchParams(queryString || '');
+        const ticker = (params.get('ticker') || params.get('symbol') || State.ticker || '').toUpperCase().replace(/^\$/, '');
+        const date = params.get('date') || State.date || '';
+        if (!ticker) {
+          showNotification('Please specify a ticker to sync alerts', 'error');
+          return;
+        }
+        showNotification(`⏳ Registering Tastytrade cloud quote alerts for ${ticker}...`, 'info');
+        const resp = await fetch('/api/tastytrade-alerts/sync-ticker', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticker: ticker, date: date || null })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          const count = data.tt_alerts_count || data.indexed_count || 0;
+          showNotification(`📲 Registered ${count} Tastytrade cloud quote alert(s) for ${ticker}! (Mobile push active 24/7)`, 'success');
         } else {
-          alert('Failed to register TT alerts: Server error');
+          const msg = data.detail || data.error || data.message || 'Failed to sync Tastytrade alerts';
+          showNotification(`Tastytrade Alert: ${msg}`, 'warning');
         }
       } catch (e) {
-        alert(`Error: ${e.message}`);
+        console.error('Error syncing TT alerts:', e);
+        showNotification(`Error syncing TT alerts: ${e.message}`, 'error');
       }
     }
 
-    // Copilot Controls
-    function toggleCopilot() {
+    async function handleSetAlertAction(queryString) {
+      try {
+        const params = new URLSearchParams(queryString || '');
+        const ticker = (params.get('ticker') || params.get('symbol') || State.ticker || '').toUpperCase().replace(/^\$/, '');
+        const price = parseFloat(params.get('price') || params.get('threshold') || 0);
+        const op = params.get('op') || '<=';
+        if (!ticker || !price) {
+          showNotification('Invalid alert parameters', 'error');
+          return;
+        }
+        showNotification(`⏳ Registering Tastytrade cloud alert for ${ticker} at ${op} $${price.toFixed(2)}...`, 'info');
+        const resp = await fetch('/api/tastytrade-alerts/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: ticker,
+            threshold: price,
+            operator: op.includes('<') ? '<' : '>',
+          })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          showNotification(`🔔 Cloud Quote Alert Set for ${ticker} at ${op} $${price.toFixed(2)}! (Tastytrade push active)`, 'success');
+        } else {
+          const errMsg = data.detail || data.error || 'Failed to set alert';
+          showNotification(`Alert Note: ${errMsg}`, 'warning');
+        }
+      } catch (e) {
+        console.error('Error setting alert:', e);
+        showNotification(`Error setting alert: ${e.message}`, 'error');
+      }
+    }
+
+    async function handleAddWatchAction(queryString) {
+      try {
+        const params = new URLSearchParams(queryString || '');
+        const ticker = (params.get('ticker') || params.get('symbol') || State.ticker || '').toUpperCase().replace(/^\$/, '');
+        if (!ticker) return;
+        showNotification(`🎯 Adding ${ticker} to Watchlist...`, 'info');
+        const resp = await fetch(`/api/watchlist/sync-tt?ticker=${encodeURIComponent(ticker)}`, { method: 'POST' });
+        if (resp.ok) {
+          showNotification(`🎯 $${ticker} synchronized to Watch Targets & Tastytrade!`, 'success');
+        } else {
+          showNotification('Failed to sync watch target', 'warning');
+        }
+      } catch (e) {
+        showNotification(`Error: ${e.message}`, 'error');
+      }
+    }
+
+    async function syncTastytradeAlerts() {
+      await handleSyncTastytradeAlertsAction('ticker=' + (State.ticker || ''));
+    }
+
+    // Copilot Controls, Resizers, Floating & Multiline Textarea
+    function toggleCopilot(event, forceState = null) {
+      if (event && event.stopPropagation) event.stopPropagation();
       const pane = document.getElementById('copilot-pane');
-      pane.classList.toggle('collapsed');
+      const resizer = document.getElementById('copilot-resizer');
+      const btn = document.getElementById('btn-toggle-copilot');
+      const btnTxt = document.getElementById('txt-toggle-copilot');
+      const floatTrigger = document.getElementById('floating-copilot-trigger');
+      if (!pane) return;
+
+      const isCurrentlyCollapsed = pane.classList.contains('collapsed');
+      const shouldCollapse = forceState !== null ? forceState : !isCurrentlyCollapsed;
+
+      if (shouldCollapse) {
+        pane.classList.add('collapsed');
+        if (resizer) resizer.classList.add('hidden');
+        if (btn) {
+          btn.classList.add('active-closed');
+          btn.classList.remove('active-open');
+        }
+        if (btnTxt) btnTxt.innerText = '💬 Show Chat';
+        if (floatTrigger) floatTrigger.style.display = 'flex';
+        try { localStorage.setItem('research_copilot_collapsed', '1'); } catch (e) {}
+      } else {
+        pane.classList.remove('collapsed');
+        if (resizer && !pane.classList.contains('floating')) resizer.classList.remove('hidden');
+        if (btn) {
+          btn.classList.remove('active-closed');
+          btn.classList.add('active-open');
+        }
+        if (btnTxt) btnTxt.innerText = '💬 Hide Chat';
+        if (floatTrigger) floatTrigger.style.display = 'none';
+        try { localStorage.setItem('research_copilot_collapsed', '0'); } catch (e) {}
+        const input = document.getElementById('copilot-input');
+        if (input) setTimeout(() => input.focus(), 80);
+      }
+    }
+
+    function toggleCopilotFloat(event, forceState = null) {
+      if (event && event.stopPropagation) event.stopPropagation();
+      const pane = document.getElementById('copilot-pane');
+      const resizer = document.getElementById('copilot-resizer');
+      const floatBadge = document.getElementById('copilot-float-badge');
+      const icon = document.getElementById('copilot-float-btn-icon');
+      const txt = document.getElementById('copilot-float-btn-txt');
+      if (!pane) return;
+
+      const isCurrentlyFloating = pane.classList.contains('floating');
+      const shouldFloat = forceState !== null ? forceState : !isCurrentlyFloating;
+
+      if (shouldFloat) {
+        pane.classList.add('floating');
+        if (resizer) resizer.classList.add('hidden');
+        if (floatBadge) floatBadge.style.display = 'inline-block';
+        if (icon) icon.innerText = '🗗';
+        if (txt) txt.innerText = 'Dock';
+
+        // Restore saved floating position and dimensions if available
+        try {
+          const saved = JSON.parse(localStorage.getItem('research_copilot_pos') || '{}');
+          if (saved.left && saved.top) {
+            pane.style.left = `${Math.min(saved.left, window.innerWidth - 300)}px`;
+            pane.style.top = `${Math.min(saved.top, window.innerHeight - 200)}px`;
+            pane.style.right = 'auto';
+            pane.style.bottom = 'auto';
+          }
+          if (saved.width && saved.height) {
+            pane.style.width = `${Math.min(saved.width, window.innerWidth - 40)}px`;
+            pane.style.height = `${Math.min(saved.height, window.innerHeight - 60)}px`;
+          }
+          localStorage.setItem('research_copilot_floating', '1');
+        } catch (e) {}
+      } else {
+        pane.classList.remove('floating');
+        if (resizer && !pane.classList.contains('collapsed')) resizer.classList.remove('hidden');
+        if (floatBadge) floatBadge.style.display = 'none';
+        if (icon) icon.innerText = '🗖';
+        if (txt) txt.innerText = 'Float';
+
+        // Clear inline coordinates so it returns to flex column
+        pane.style.left = '';
+        pane.style.top = '';
+        pane.style.right = '';
+        pane.style.bottom = '';
+        pane.style.position = '';
+        const savedW = parseFloat(localStorage.getItem('research_copilot_w')) || 420;
+        pane.style.width = `${savedW}px`;
+        pane.style.height = '';
+        try { localStorage.setItem('research_copilot_floating', '0'); } catch (e) {}
+      }
+    }
+
+    function initCopilotFloatingDrag() {
+      const header = document.getElementById('copilot-header');
+      const pane = document.getElementById('copilot-pane');
+      if (!header || !pane) return;
+
+      let isDragging = false;
+      let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+      header.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('button') || e.target.closest('input') || e.target.closest('a')) return;
+        if (!pane.classList.contains('floating')) return;
+
+        e.preventDefault();
+        isDragging = true;
+        document.body.classList.add('copilot-dragging');
+
+        const rect = pane.getBoundingClientRect();
+        startX = e.clientX;
+        startY = e.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+
+        pane.style.left = `${startLeft}px`;
+        pane.style.top = `${startTop}px`;
+        pane.style.right = 'auto';
+        pane.style.bottom = 'auto';
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        let newLeft = startLeft + dx;
+        let newTop = startTop + dy;
+
+        const maxLeft = Math.max(10, window.innerWidth - pane.offsetWidth - 10);
+        const maxTop = Math.max(10, window.innerHeight - pane.offsetHeight - 10);
+
+        newLeft = Math.max(10, Math.min(newLeft, maxLeft));
+        newTop = Math.max(10, Math.min(newTop, maxTop));
+
+        pane.style.left = `${newLeft}px`;
+        pane.style.top = `${newTop}px`;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.classList.remove('copilot-dragging');
+        try {
+          const rect = pane.getBoundingClientRect();
+          localStorage.setItem('research_copilot_pos', JSON.stringify({
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          }));
+        } catch (err) {}
+      });
+    }
+
+    function initCopilotHorizontalResize() {
+      const resizer = document.getElementById('copilot-resizer');
+      const pane = document.getElementById('copilot-pane');
+      if (!resizer || !pane) return;
+
+      let isResizing = false;
+
+      resizer.addEventListener('mousedown', (e) => {
+        if (pane.classList.contains('floating')) return;
+        e.preventDefault();
+        isResizing = true;
+        resizer.classList.add('active');
+        document.body.classList.add('copilot-resizing');
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const newWidth = Math.max(300, Math.min(window.innerWidth - e.clientX, window.innerWidth * 0.72));
+        document.documentElement.style.setProperty('--copilot-w', `${newWidth}px`);
+        pane.style.width = `${newWidth}px`;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (!isResizing) return;
+        isResizing = false;
+        resizer.classList.remove('active');
+        document.body.classList.remove('copilot-resizing');
+        try {
+          const currentW = parseFloat(pane.style.width) || 420;
+          localStorage.setItem('research_copilot_w', currentW);
+        } catch (err) {}
+      });
+
+      resizer.addEventListener('dblclick', () => {
+        document.documentElement.style.setProperty('--copilot-w', '420px');
+        pane.style.width = '420px';
+        localStorage.setItem('research_copilot_w', 420);
+      });
+    }
+
+    function initCopilotInputVerticalResize() {
+      const resizer = document.getElementById('copilot-input-resizer');
+      const textarea = document.getElementById('copilot-input');
+      if (!resizer || !textarea) return;
+
+      let isResizing = false;
+      let startY = 0, startH = 0;
+
+      resizer.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        isResizing = true;
+        resizer.classList.add('active');
+        document.body.classList.add('chat-v-resizing');
+        startY = e.clientY;
+        startH = textarea.offsetHeight;
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const dy = startY - e.clientY;
+        const newH = Math.max(44, Math.min(startH + dy, 320));
+        textarea.style.height = `${newH}px`;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (!isResizing) return;
+        isResizing = false;
+        resizer.classList.remove('active');
+        document.body.classList.remove('chat-v-resizing');
+        try {
+          localStorage.setItem('research_copilot_input_h', textarea.offsetHeight);
+        } catch (err) {}
+      });
+
+      resizer.addEventListener('dblclick', () => {
+        toggleCopilotTextareaExpand();
+      });
+    }
+
+    function toggleCopilotTextareaExpand(e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      const textarea = document.getElementById('copilot-input');
+      if (!textarea) return;
+      if (textarea.offsetHeight > 130) {
+        textarea.style.height = '52px';
+        try { localStorage.setItem('research_copilot_input_h', 52); } catch (err) {}
+      } else {
+        textarea.style.height = '200px';
+        try { localStorage.setItem('research_copilot_input_h', 200); } catch (err) {}
+      }
+    }
+
+    function autoGrowCopilotTextarea(el) {
+      if (!el) return;
+      if (el.scrollHeight > el.clientHeight && el.clientHeight < 240) {
+        el.style.height = Math.min(el.scrollHeight + 4, 240) + 'px';
+      }
     }
 
     function handleCopilotKey(e) {
-      if (e.key === 'Enter') submitCopilotChat();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitCopilotChat();
+      }
     }
 
     function sendCopilotPrompt(text) {
-      document.getElementById('copilot-input').value = text;
+      const input = document.getElementById('copilot-input');
+      if (input) input.value = text;
       submitCopilotChat();
+    }
+
+    function initCopilotUI() {
+      // 1. Saved docked width
+      try {
+        const savedW = parseFloat(localStorage.getItem('research_copilot_w'));
+        if (savedW && savedW >= 300) {
+          document.documentElement.style.setProperty('--copilot-w', `${savedW}px`);
+          const pane = document.getElementById('copilot-pane');
+          if (pane) pane.style.width = `${savedW}px`;
+        }
+      } catch (e) {}
+
+      // 2. Saved textarea height
+      try {
+        const savedH = parseFloat(localStorage.getItem('research_copilot_input_h'));
+        if (savedH && savedH >= 44) {
+          const textarea = document.getElementById('copilot-input');
+          if (textarea) textarea.style.height = `${savedH}px`;
+        }
+      } catch (e) {}
+
+      // 3. Initialize drag, resize, and floating handlers
+      initCopilotFloatingDrag();
+      initCopilotHorizontalResize();
+      initCopilotInputVerticalResize();
+
+      // 4. Saved floating state
+      try {
+        const isFloating = localStorage.getItem('research_copilot_floating') === '1';
+        if (isFloating) {
+          toggleCopilotFloat(null, true);
+        }
+      } catch (e) {}
+
+      // 5. Saved collapsed state
+      try {
+        const isCollapsed = localStorage.getItem('research_copilot_collapsed') === '1';
+        if (isCollapsed) {
+          toggleCopilot(null, true);
+        } else {
+          toggleCopilot(null, false);
+        }
+      } catch (e) {}
     }
 
     async function submitCopilotChat() {
@@ -2584,8 +3939,14 @@
       if (!q) return;
       input.value = '';
 
+      // Reset textarea height back to compact if auto-grown
+      if (parseInt(input.style.height) > 130 && !localStorage.getItem('research_copilot_input_h')) {
+        input.style.height = '52px';
+      }
+
       const msgs = document.getElementById('copilot-messages');
-      msgs.innerHTML += `<div class="chat-bubble chat-user">${escapeHtml(q)}</div>`;
+      const userHtml = escapeHtml(q).replace(/\n/g, '<br/>');
+      msgs.innerHTML += `<div class="chat-bubble chat-user">${userHtml}</div>`;
       msgs.innerHTML += `<div class="chat-bubble chat-assistant" id="copilot-loading-bubble">⏳ Thinking...</div>`;
       msgs.scrollTop = msgs.scrollHeight;
 
@@ -2594,6 +3955,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            question: q,
             prompt: q,
             ticker: State.ticker,
             date: State.date,
@@ -2681,10 +4043,15 @@
         if (prompt) {
           sendCopilotPrompt(prompt);
         }
+      } else if (href.startsWith('action:sync_tt?') || href.startsWith('action:sync-tt?') || href.startsWith('action:tastytrade?')) {
+        const rawQuery = href.substring(href.indexOf('?') + 1);
+        handleSyncTastytradeAlertsAction(rawQuery);
       } else if (href.startsWith('action:alert?')) {
-        syncTastytradeAlerts();
+        const rawQuery = href.substring(href.indexOf('?') + 1);
+        handleSetAlertAction(rawQuery);
       } else if (href.startsWith('action:watch?')) {
-        syncTastytradeAlerts();
+        const rawQuery = href.substring(href.indexOf('?') + 1);
+        handleAddWatchAction(rawQuery);
       } else {
         const raw = href.replace(/^action:[a-z_]*\??/i, '').replace(/\+/g, ' ');
         if (raw) {
@@ -2700,6 +4067,8 @@
     // App Startup
     document.addEventListener('DOMContentLoaded', () => {
       initTheme();
+      initToolbarState();
+      initCopilotUI();
       parseUrlParams();
       loadConstituentDatalist();
       loadReportBundle(State.ticker, State.date);
@@ -2745,5 +4114,10 @@
   <script src="/static/js/trade_level_graph.js?v=3"></script>
   <!-- Universal TradingView Live Chart Hover Engine -->
   <script src="/static/js/tv_hover.js?v=5"></script>
+  <!-- Floating Edge Tab to Expand/Unhide Copilot when Collapsed -->
+  <div class="floating-copilot-trigger" id="floating-copilot-trigger" onclick="toggleCopilot(event)" title="Click to open Rev Copilot chat sidebar">
+    <span style="font-size:13px;">💬</span>
+    <span class="floating-copilot-label">REV COPILOT ⇤</span>
+  </div>
 </body>
 </html>

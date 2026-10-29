@@ -484,7 +484,7 @@ _ORDERS_CACHE: Optional[List[Dict[str, Any]]] = None
 _ORDERS_CACHE_TIME: float = 0.0
 
 
-def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
+def get_portfolio_analysis(force_refresh: bool = False, allow_sync: bool = True) -> Dict[str, Any]:
     """
     Generate an executive synthesis of portfolio performance, asset allocation,
     concentration risks, and an analytical audit of recently executed trades.
@@ -507,8 +507,8 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Auto-sync live if older than 45 seconds or forced
-    if force_refresh or last_sync_age > 45.0:
+    # Auto-sync live if older than 45 seconds or forced, unless caller disabled sync
+    if allow_sync and (force_refresh or last_sync_age > 45.0):
         try:
             logger.info(f"🔄 [SchwabPortfolio] Auto-syncing live real-time quotes (sync age: {last_sync_age:.1f}s)...")
             sync_schwab_positions()
@@ -683,6 +683,8 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
     try:
         if _ORDERS_CACHE is not None and (now_ts - _ORDERS_CACHE_TIME) < 300.0:
             orders = _ORDERS_CACHE
+        elif not allow_sync:
+            orders = _ORDERS_CACHE or []
         else:
             from src.clients.schwab_client import get_schwab_client
             c = get_schwab_client()
@@ -873,24 +875,25 @@ def get_portfolio_analysis(force_refresh: bool = False) -> Dict[str, Any]:
                 })
 
     breaking_news = []
-    try:
-        from src.clients.finnhub_client import get_company_news
-        for sym_check in ["GOOGL", "AMZN", "UBER"]:
-            news_items = get_company_news(sym_check, days=1)
-            if news_items:
-                latest = news_items[0]
-                headline = latest.get("headline", "")
-                if headline:
-                    breaking_news.append({
-                        "symbol": sym_check,
-                        "headline": headline,
-                        "datetime": latest.get("datetime"),
-                        "source": latest.get("source", "Finnhub"),
-                        "url": latest.get("url", ""),
-                        "summary": latest.get("summary", "")[:140] + "..." if len(latest.get("summary", "")) > 140 else latest.get("summary", "")
-                    })
-    except Exception as e:
-        logger.debug(f"Finnhub news sentinel check note: {e}")
+    if allow_sync:
+        try:
+            from src.clients.finnhub_client import get_company_news
+            for sym_check in ["GOOGL", "AMZN", "UBER"]:
+                news_items = get_company_news(sym_check, days=1)
+                if news_items:
+                    latest = news_items[0]
+                    headline = latest.get("headline", "")
+                    if headline:
+                        breaking_news.append({
+                            "symbol": sym_check,
+                            "headline": headline,
+                            "datetime": latest.get("datetime"),
+                            "source": latest.get("source", "Finnhub"),
+                            "url": latest.get("url", ""),
+                            "summary": latest.get("summary", "")[:140] + "..." if len(latest.get("summary", "")) > 140 else latest.get("summary", "")
+                        })
+        except Exception as e:
+            logger.debug(f"Finnhub news sentinel check note: {e}")
 
     sentinel_status = {
         "status": "ALERT" if violent_drops else "CLEAR",

@@ -27,6 +27,15 @@ def test_research_waits_while_chat_waits_then_proceeds(tmp_path, monkeypatch):
         sleeps.append(s)
         chat_priority.clear()
 
+    class FakeResp:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+        def read(self):
+            return b'[{"is_processing": false}, {"is_processing": false}]'
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: FakeResp())
     monkeypatch.setattr(llm_client.time, "sleep", fake_sleep)
     llm_client._wait_for_spare_slot(max_wait_s=30)
     assert len(sleeps) == 1

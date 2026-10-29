@@ -105,14 +105,22 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
     except Exception as e_csv:
         logger.debug(f"Local CSV check failed for {sym}: {e_csv}")
 
-    # 2. Fallback to yfinance with silenced logger
+    # 2. Fallback to yfinance with silenced logger and strict 2.0s timeout
     try:
         yf_l = logging.getLogger("yfinance")
         yf_l.setLevel(logging.CRITICAL)
         yf_l.propagate = False
         import yfinance as yf
         import pandas as pd
-        df = yf.download(sym, start=start_date, progress=False, auto_adjust=False)
+        import concurrent.futures
+
+        def _fetch_yf():
+            return yf.download(sym, start=start_date, progress=False, auto_adjust=False, timeout=2.0)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(_fetch_yf)
+            df = fut.result(timeout=2.0)
+
         if df is not None and not df.empty:
             if hasattr(df, "columns") and isinstance(df.columns, pd.MultiIndex):
                 df = df.copy()

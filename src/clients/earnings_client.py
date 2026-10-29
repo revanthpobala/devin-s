@@ -101,23 +101,6 @@ def _yf_dates(sym: str) -> tuple[Optional[date], Optional[date]]:
     return nxt, last
 
 
-def _finnhub_date(sym: str) -> Optional[date]:
-    from src.clients import finnhub_client
-
-    key = finnhub_client._fh_key()
-    if not key:
-        return None
-    today = date.today()
-    url = (
-        f"https://finnhub.io/api/v1/calendar/earnings?from={today:%Y-%m-%d}"
-        f"&to={today + timedelta(days=120):%Y-%m-%d}&symbol={sym}&token={key}"
-    )
-    data = finnhub_client._cached_get(url, ttl=3600)
-    rows = (data or {}).get("earningsCalendar") if isinstance(data, dict) else None
-    ds = sorted(d for d in (_to_date(r.get("date")) for r in rows or []) if d and d >= today)
-    return ds[0] if ds else None
-
-
 def _grounded_date(sym: str, last_report: Optional[date]) -> Optional[date]:
     """Last resort. Accepts a Google-grounded date only if it fits the ~quarterly cadence."""
     from src.clients.google_grounding_client import ask_grounded
@@ -140,7 +123,7 @@ def _grounded_date(sym: str, last_report: Optional[date]) -> Optional[date]:
 def resolve_next_earnings_date(ticker: str) -> tuple[Optional[date], str]:
     """Next earnings date and the source that supplied it, cached 12h on disk.
 
-    Order: Tastytrade expected-report-date, yfinance, Finnhub calendar, Google grounding (cadence-checked).
+    Order: Tastytrade expected-report-date, yfinance, Google grounding (cadence-checked).
     """
     sym = (ticker or "").strip().upper()
     if not sym or sym in ("UNKNOWN", "NONE"):
@@ -184,7 +167,6 @@ def resolve_next_earnings_date(ticker: str) -> tuple[Optional[date], str]:
             logger.debug(f"[{sym}] earnings via yfinance failed: {e}")
         finally:
             ex.shutdown(wait=False, cancel_futures=True)
-    _try("finnhub", lambda: _finnhub_date(sym))
     _try("google-grounding (cadence-checked)", lambda: _grounded_date(sym, last_report))
 
     _cache_write(sym, {

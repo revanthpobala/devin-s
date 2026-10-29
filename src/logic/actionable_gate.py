@@ -240,7 +240,10 @@ def is_actionable(dw: Dict[str, Any], plan: Optional[Dict[str, Any]] = None) -> 
     if entry is not None and stop is not None and atr is not None and atr > 0:
         width = (entry - stop) / atr
         if width < STOP_ATR_MIN:
-            fails.append(f"stop width {width:.3f} ATR < {STOP_ATR_MIN} floor")
+            fails.append(
+                f"stop width {width:.3f} ATR < {STOP_ATR_MIN} floor "
+                "(inside noise: setup has no room to be wrong; widen stop + shrink size, convert to defined-risk, or pass)"
+            )
 
     # PB bit (Signal Pack bit 5).
     sig_pack = g.get("signal_pack")
@@ -341,3 +344,76 @@ def level_mismatch(
     if diffs:
         return "levels disagree with Data Window (" + ", ".join(diffs) + ")"
     return None
+
+
+def diagnose_tight_stop_resolution(
+    entry: float,
+    stop: float,
+    target: float,
+    atr: float,
+    structural_floor: Optional[float] = None,
+    options_spread: Optional[Dict[str, Any]] = None,
+    earnings_in_window: bool = False,
+    iv_rank: Optional[float] = None,
+    risk_budget_usd: float = 500.0,
+) -> Dict[str, Any]:
+    """Evaluates the 3 legitimate institutional fixes when a stop is tighter than 0.7 ATR:
+    1. Fix 1: Widen stop to >= 0.7 ATR + shrink share count (respect volatility, keep $ risk constant).
+    2. Fix 2: Defined-risk vertical options spread (contractual max loss eliminates wick-out).
+    3. Fix 3: Floor credit (CSP) if IV rank is elevated and price sits on support.
+    4. Fix 0: Pass (if none produce >= 2.0:1 R:R with a valid stop).
+    """
+    if atr <= 0 or entry <= stop:
+        return {"status": "INVALID", "reason": "invalid ATR or stop >= entry"}
+
+    raw_width = (entry - stop) / atr
+    is_tight = raw_width < STOP_ATR_MIN
+
+    widened_stop = round(entry - STOP_ATR_MIN * atr, 2)
+    widened_risk = entry - widened_stop
+    widened_rr = round((target - entry) / widened_risk, 2) if widened_risk > 0 else 0.0
+
+    breaks_structure = structural_floor is not None and widened_stop < structural_floor
+
+    from src.tracking.trade_rules import compute_position_shares
+
+    desized_shares = compute_position_shares(entry, widened_stop, risk_budget_usd=risk_budget_usd)
+
+    fix1_viable = (widened_rr >= rr_config.min_rr()) and not breaks_structure
+    fix2_viable = (
+        options_spread is not None
+        and not earnings_in_window
+        and float(options_spread.get("r_at_t1") or 0.0) >= 1.5
+    )
+    fix3_viable = (
+        iv_rank is not None
+        and iv_rank >= 50.0
+        and not earnings_in_window
+        and not breaks_structure
+    )
+
+    recommended_action = "PASS"
+    if fix1_viable and not earnings_in_window:
+        recommended_action = "FIX_1_WIDEN_AND_DESIZE"
+    elif fix2_viable:
+        recommended_action = "FIX_2_DEFINED_RISK_SPREAD"
+    elif fix3_viable:
+        recommended_action = "FIX_3_FLOOR_CREDIT_CSP"
+
+    return {
+        "is_tight": is_tight,
+        "raw_width_atr": round(raw_width, 3),
+        "widened_stop": widened_stop,
+        "widened_rr": widened_rr,
+        "recommended_shares": desized_shares,
+        "breaks_structure": breaks_structure,
+        "fix1_viable": fix1_viable,
+        "fix2_viable": fix2_viable,
+        "fix3_viable": fix3_viable,
+        "recommended_action": recommended_action,
+        "diagnosis": (
+            "Stop is inside noise floor (<0.7 ATR). The setup has no room to be wrong."
+            if is_tight
+            else "Stop width is statistically viable (>=0.7 ATR)."
+        ),
+    }

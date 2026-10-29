@@ -641,12 +641,17 @@ def _build_events_past_chat_context(ticker_u: str, date_str: str, history: list 
             "The jobs report has already printed, and the market is digesting the data live today."
         )
 
-    # Fetch live benchmark quotes
+    # Fetch live benchmark quotes in batch
     benchmarks = []
-    for b_sym in ["SPY", "QQQ", "VIX"]:
-        bp = get_current_price(b_sym)
-        if bp:
-            benchmarks.append(f"{b_sym}: ${bp:.2f}" if b_sym != "VIX" else f"VIX: {bp:.2f}")
+    try:
+        from src.clients.price_client import get_current_prices_batch
+        b_prices = get_current_prices_batch(["SPY", "QQQ", "VIX"])
+        for b_sym in ["SPY", "QQQ", "VIX"]:
+            bp = b_prices.get(b_sym)
+            if bp:
+                benchmarks.append(f"{b_sym}: ${bp:.2f}" if b_sym != "VIX" else f"VIX: {bp:.2f}")
+    except Exception:
+        pass
     if benchmarks:
         macro_notes.append(f"• **Live Market Regime Today:** {' | '.join(benchmarks)}")
 
@@ -1185,13 +1190,13 @@ ABSOLUTE OPERATING RULES (violating any rule is a failure)
 
 13. ACCOUNT & TAX AWARENESS. Distinguish MARGIN vs CASH accounts (they are labeled per leg). Call out assignment risk on short calls, capital-gains impact of trimming long-held winners, and never propose an action in a CASH account that requires unsettled funds.
 
-14. INTERACTIVE ACTIONS & TOOLS. Finish every recommendation with one-click buttons drawn from the real leg: `[🔔 Set Alert at $XX.XX](action:alert?ticker=XXX&price=XX.XX&op=OP)` and `[🎯 Add to Watch Targets](action:watch?ticker=XXX&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`. OP is `>=` for a breakout or target alert and `<=` for a stop or support-loss alert; never leave it as OP. Live quotes, options chains, and macro are already in context; emit any additional tool calls in your FIRST response so they run in parallel.
+14. INTERACTIVE ACTIONS & TOOLS. Finish every recommendation with one-click buttons drawn from the real leg: `[🔔 Set Alert at $XX.XX](action:alert?ticker=XXX&price=XX.XX&op=OP)`, `[📲 Set Tastytrade Alerts](action:sync_tt?ticker=XXX)`, and `[🎯 Add to Watch Targets](action:watch?ticker=XXX&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`. OP is `>=` for a breakout or target alert and `<=` for a stop or support-loss alert; never leave it as OP. Live quotes, options chains, and macro are already in context; emit any additional tool calls in your FIRST response so they run in parallel.
 
 15. TEMPORAL CHRONOLOGY. Today is {calendar_today} ({now_str} / {now_et_str}). The active baseline was recorded {dossier_date} ({elapsed_days_str}). Never speak of prior-day statements as future expectations, and never quote remembered dollar figures — only what is in the dossier below.
 
 15b. STAMP EVERY LIVE PRICE YOU CITE WITH ITS TIMESTAMP. When you quote a spot price, mark, or P&L figure from the dossier, include the timestamp shown for that data, e.g. `$188,927.85 (synced HH:MM ET)`. Unstamped prices read as stale.
 
-16. ANSWER SHAPE IS MANDATORY — LEAD WITH THE ANSWER. The user asks short questions and does NOT want a full research report every time. Open with a 1-3 line TL;DR that answers the question directly (the specific dollar figure, percentage, or verdict), then supporting detail ONLY as it serves the question. Default to under 350 words; go longer only when the user explicitly asks for depth ("explain", "deep dive", "full thesis", "detail"). Do NOT produce report scaffolding (numbered sections, H1/H2, catalyst history recaps) unless asked — the dossier below is SOURCE MATERIAL, not an outline to reproduce. Exception: rule 7's structure applies when a portfolio summary is explicitly requested.
+16. ANSWER SHAPE IS MANDATORY — LEAD WITH THE ANSWER. The user asks short questions and does NOT want a full research report or rigid boilerplate. Answer the question directly, conversationally, and quantitatively in the very first sentence without robotic labels like "TL;DR:" or "TL;DR —", without markdown tables (use clean bullet points instead of HTML/Markdown tables which break UI rendering), and without preamble. Default to under 300 words; go longer only when the user explicitly asks for depth ("explain", "deep dive", "full thesis", "detail"). Speak like an institutional portfolio manager having a real trading desk conversation. Exception: rule 7's structure applies when a portfolio summary is explicitly requested.
 
 TICKERS IN CONTEXT: The user's real Schwab holdings (see roster below) plus any ticker explicitly named in the conversation. NOT a research universe.
 
@@ -1240,7 +1245,7 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     local_wl = None
     try:
         from src.ui.routes.research import _build_local_research_dossier
-        local_dossier_md, local_wl = _build_local_research_dossier(target_dt, ticker_u)
+        local_dossier_md, local_wl = _build_local_research_dossier(target_dt, ticker_u, fetch_live_price=False)
     except Exception as le:
         logger.debug(f"Local research dossier check error for {ticker_u}: {le}")
 
@@ -1254,6 +1259,7 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
     invalidation_rule: Dict[str, Any] = {}
     verdict: str = "STALK"
     conviction: int = 5
+    scenarios_list: List[Dict[str, Any]] = []
     levels_file: Optional[Path] = None
     arb_file: Optional[Path] = None
     ind_file: Optional[Path] = None
@@ -1265,6 +1271,7 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
         invalidation_rule = dict(local_wl.get("invalidation") or {})
         verdict = local_wl.get("verdict") or verdict
         conviction = local_wl.get("conviction") or conviction
+        scenarios_list = list(local_wl.get("scenarios") or [])
         if local_wl.get("spot_price"):
             report_spot = float(local_wl["spot_price"])
         report_date = target_dt
@@ -1291,6 +1298,7 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
                 invalidation_rule = wl_data.get("invalidation") or {}
                 verdict = wl_data.get("verdict") or verdict
                 conviction = wl_data.get("conviction") or conviction
+                scenarios_list = list(wl_data.get("scenarios") or scenarios_list)
                 if wl_data.get("last_price"):
                     report_spot = float(wl_data["last_price"])
             except Exception:
@@ -1314,14 +1322,15 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
                     m_sp = re.search(r'(?:spot price|current spot|spot)\s*(?::|\(|is|\$)\s*\$?([0-9]+\.[0-9]+)', arb_text, re.IGNORECASE)
                     if m_sp:
                         report_spot = float(m_sp.group(1))
-                if not shares_plan:
+                if not shares_plan or not scenarios_list:
                     m_wl = re.search(r'```json:watch_levels\s*(\{.*?\})\s*```', arb_text, re.DOTALL)
                     if m_wl:
                         try:
                             wl_raw = json.loads(m_wl.group(1))
-                            shares_plan = wl_raw.get("shares_plan") or {}
-                            options_plan = wl_raw.get("options_plan") or {}
-                            invalidation_rule = wl_raw.get("invalidation") or {}
+                            shares_plan = shares_plan or wl_raw.get("shares_plan") or {}
+                            options_plan = options_plan or wl_raw.get("options_plan") or {}
+                            invalidation_rule = invalidation_rule or wl_raw.get("invalidation") or {}
+                            scenarios_list = scenarios_list or list(wl_raw.get("scenarios") or [])
                         except Exception:
                             pass
             except Exception:
@@ -1340,48 +1349,374 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
         if ind_cand.exists():
             ind_file = ind_cand
 
-    # 2. Live Real-Time Market Quote & Exact Numerical Spot Extraction
-    quote_str = ""
-    quote_src_label = "live quote"
-    try:
-        from src.clients.options_client import get_realtime_quote
-        quote_str = get_realtime_quote(ticker_u)
-    except Exception as qe:
-        logger.debug(f"Quote fetch failed for {ticker_u}: {qe}")
+    # 2. Multi-Threaded Concurrent Ingestion: Quotes, Options, Flow, GEX, Quant, Candles, SEC, and News
+    from concurrent.futures import ThreadPoolExecutor
 
-    from src.clients.price_client import get_current_price
-    live_spot: Optional[float] = None
-    bid_str, ask_str = "N/A", "N/A"
-    if quote_str:
-        m_lp = re.search(r'Last:\s*([0-9]+\.[0-9]+)', quote_str)
-        if m_lp:
+    def _fetch_quote_task():
+        q_str = ""
+        l_spot = None
+        b_str, a_str = "N/A", "N/A"
+        q_label = "live quote"
+        try:
+            from src.clients.options_client import get_realtime_quote
+            q_str = get_realtime_quote(ticker_u)
+        except Exception as qe:
+            logger.debug(f"Quote fetch failed for {ticker_u}: {qe}")
+
+        from src.clients.price_client import get_current_price
+        if q_str:
+            m_lp = re.search(r'Last:\s*([0-9]+\.[0-9]+)', q_str)
+            if m_lp:
+                try:
+                    l_spot = float(m_lp.group(1))
+                except Exception:
+                    pass
+            m_ba = re.search(r'Bid/Ask:\s*([0-9]+\.[0-9]+)\s*/\s*([0-9]+\.[0-9]+)', q_str)
+            if m_ba:
+                b_str, a_str = f"${m_ba.group(1)}", f"${m_ba.group(2)}"
+
+        if l_spot is None:
             try:
-                live_spot = float(m_lp.group(1))
+                from src.clients.price_client import get_realtime_quote_data
+                qd = get_realtime_quote_data(ticker_u)
+                if qd and qd.get("last_price") and float(qd["last_price"]) > 0:
+                    l_spot = float(qd["last_price"])
+                    if qd.get("bid") and qd.get("ask"):
+                        b_str, a_str = f"${float(qd['bid']):.2f}", f"${float(qd['ask']):.2f}"
+                    src_name = qd.get("source") or "FALLBACK"
+                    q_label = f"{src_name.lower()} quote" if "REALTIME" in src_name or "SCHWAB" in src_name else "fallback quote"
             except Exception:
                 pass
-        m_ba = re.search(r'Bid/Ask:\s*([0-9]+\.[0-9]+)\s*/\s*([0-9]+\.[0-9]+)', quote_str)
-        if m_ba:
-            bid_str, ask_str = f"${m_ba.group(1)}", f"${m_ba.group(2)}"
 
-    if live_spot is None:
+        if l_spot is None:
+            try:
+                l_spot = get_current_price(ticker_u)
+                q_label = "fallback quote"
+            except Exception:
+                pass
+        return q_str, l_spot, b_str, a_str, q_label
+
+    def _fetch_options_task():
+        sub_opts = []
         try:
-            from src.clients.price_client import get_realtime_quote_data
-            qd = get_realtime_quote_data(ticker_u)
-            if qd and qd.get("last_price") and float(qd["last_price"]) > 0:
-                live_spot = float(qd["last_price"])
-                if qd.get("bid") and qd.get("ask"):
-                    bid_str, ask_str = f"${float(qd['bid']):.2f}", f"${float(qd['ask']):.2f}"
-                src_name = qd.get("source") or "FALLBACK"
-                quote_src_label = f"{src_name.lower()} quote" if "REALTIME" in src_name or "SCHWAB" in src_name else "fallback quote"
+            from src.clients.llm_client import fetch_options_chain_tool
+            now_dt = datetime.now()
+            exp_hint = None
+            day_match_opt = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{1,2})\b', question, re.I)
+            if day_match_opt:
+                m_name, d_num = day_match_opt.groups()
+                mm_dict = {
+                    'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+                    'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+                }
+                mm = mm_dict.get(m_name.lower()[:3])
+                if mm:
+                    year_cand = now_dt.year
+                    explicit_yr = re.search(r'\b(202[5-9])\b', question)
+                    if explicit_yr:
+                        year_cand = int(explicit_yr.group(1))
+                    elif int(mm) < now_dt.month:
+                        year_cand += 1
+                    exp_hint = f"{year_cand}-{mm}-{int(d_num):02d}"
+
+            if is_leaps_req:
+                opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="BOTH", min_dte=180, max_dte=750, expiration=exp_hint)
+                if opt_data:
+                    sub_opts.append(f"### 📈 LIVE 2027-2028 LEAPS OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
+            else:
+                opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="BOTH", min_dte=14, max_dte=60, expiration=exp_hint)
+                if opt_data:
+                    sub_opts.append(f"### 📈 LIVE REAL-TIME UNIFIED OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
+        except Exception as oe:
+            logger.debug(f"Options chain fetch error for {ticker_u}: {oe}")
+
+        try:
+            from src.clients import tastytrade_client
+            tt_data = tastytrade_client.get_market_metrics(ticker_u)
+            if tt_data:
+                ivr = tt_data.get('iv_rank')
+                ivp = tt_data.get('iv_percentile')
+                hv30 = tt_data.get('historical_volatility_30d')
+                hv60 = tt_data.get('historical_volatility_60d')
+                hv90 = tt_data.get('historical_volatility_90d')
+                liq = tt_data.get('liquidity_rating')
+                borrow = tt_data.get('borrow_rate')
+                sub_opts.append(f"### 🏛️ TASTYTRADE VOLATILITY & LIQUIDITY METRICS ({ticker_u}):\nIV Rank: {ivr}% | IV Percentile: {ivp}% | 30d HV: {hv30} | 60d HV: {hv60} | 90d HV: {hv90} | Option Liquidity: {liq} Stars | Borrow Rate: {borrow}%")
         except Exception:
             pass
 
-    if live_spot is None:
         try:
-            live_spot = get_current_price(ticker_u)
-            quote_src_label = "fallback quote"
+            targeted_block = _extract_targeted_schwab_strikes(ticker_u, question)
+            if targeted_block:
+                sub_opts.append(targeted_block)
+        except Exception as te:
+            logger.debug(f"Error extracting targeted strikes for {ticker_u}: {te}")
+        return sub_opts
+
+    def _fetch_flow_gex_task():
+        sub_fg = []
+        try:
+            from src.clients.schwab_client import get_unusual_options_flow_data
+            flow = get_unusual_options_flow_data(ticker_u)
+            if flow and flow.get("status") == "ok" and flow.get("anomalies"):
+                anom_count = flow.get("total_anomalies_count", 0)
+                c_vol = flow.get("total_call_volume", 0)
+                p_vol = flow.get("total_put_volume", 0)
+                c_prem = flow.get("total_call_premium", 0) / 1e6
+                p_prem = flow.get("total_put_premium", 0) / 1e6
+                bias = flow.get("sentiment_label", "Balanced / Mixed")
+                
+                top_lines = []
+                for a in flow.get("anomalies", [])[:25]:
+                    prem_k = f"${a['notional_premium']/1e6:.2f}M" if a['notional_premium'] >= 1e6 else f"${round(a['notional_premium']/1000)}k"
+                    top_lines.append(f"• {a['type']} ${a['strike']} Exp {a['expiry']} ({a['dte']}d): Vol {a['volume']:,} vs OI {a['open_interest']:,} ({a['vol_to_oi']}x OI) | Delta {a['delta']} | Mid ${a['mid']} | Prem {prem_k}")
+                
+                flow_summary = (
+                    f"### 🔥 SCHWAB REAL-TIME INSTITUTIONAL OPTIONS FLOW ({ticker_u}):\n"
+                    f"• Flow Sentiment: **{bias}**\n"
+                    f"• Unusual Sweeps Count: {anom_count} ({flow.get('call_sweeps_count',0)} Calls / {flow.get('put_sweeps_count',0)} Puts)\n"
+                    f"• Call Sweep Volume: {c_vol:,} (${c_prem:.2f}M premium) | Put Sweep Volume: {p_vol:,} (${p_prem:.2f}M premium)\n"
+                    f"• Put/Call Ratios: {flow.get('put_call_volume_ratio',0)}x Vol | {flow.get('put_call_premium_ratio',0)}x Premium\n"
+                    f"**Top Institutional Sweeps (Vol > 1.5x OI):**\n" + "\n".join(top_lines)
+                )
+                sub_fg.append(flow_summary)
+        except Exception as fe:
+            logger.debug(f"Schwab options flow fetch error for {ticker_u}: {fe}")
+
+        try:
+            from src.data.gex import format_gex_block
+            gex_block = format_gex_block(ticker_u)
+            if gex_block:
+                sub_fg.append(f"### ⚡ INSTITUTIONAL NET DEALER GAMMA EXPOSURE (GEX) & REGIME ({ticker_u}):\n{gex_block}")
+        except Exception as ge:
+            logger.debug(f"GEX block generation error for {ticker_u}: {ge}")
+        return sub_fg
+
+    def _fetch_quant_task():
+        try:
+            from src.clients.llm_client import execute_python_code_tool
+            quant_py = """
+if not df.empty:
+    close = df['close'].iloc[-1]
+    high_52w = df['high'].tail(252).max()
+    low_52w = df['low'].tail(252).min()
+    sma20 = df['close'].tail(20).mean()
+    sma50 = df['close'].tail(50).mean()
+    sma200 = df['close'].tail(200).mean() if len(df) >= 200 else None
+    
+    returns = df['close'].pct_change().dropna()
+    hv20 = returns.tail(20).std() * np.sqrt(252) * 100
+    
+    high_low = df['high'] - df['low']
+    high_cp = (df['high'] - df['close'].shift()).abs()
+    low_cp = (df['low'] - df['close'].shift()).abs()
+    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+    atr14 = tr.tail(14).mean()
+    atr_pct = (atr14 / close) * 100 if close else 0
+    
+    daily_vol = (hv20 / 100) / np.sqrt(252) if hv20 else 0.015
+    np.random.seed(42)
+    sim_returns = np.random.normal(0, daily_vol, (10000, 30))
+    price_paths = close * np.cumprod(1 + sim_returns, axis=1)
+    p_up_5 = np.mean(np.any(price_paths >= close * 1.05, axis=1)) * 100
+    p_down_5 = np.mean(np.any(price_paths <= close * 0.95, axis=1)) * 100
+    p_up_10 = np.mean(np.any(price_paths >= close * 1.10, axis=1)) * 100
+
+    print(f"• Last Data Window Close: ${close:.2f}")
+    print(f"• 52-Week High / Low: ${high_52w:.2f} / ${low_52w:.2f}")
+    print(f"• Moving Averages: 20d SMA=${sma20:.2f} | 50d SMA=${sma50:.2f}" + (f" | 200d SMA=${sma200:.2f}" if sma200 else ""))
+    print(f"• 14d Average True Range (ATR): ${atr14:.2f} ({atr_pct:.2f}% of spot)")
+    print(f"• 20d Realized Volatility (HV20): {hv20:.1f}%")
+    print(f"• 30-Day Monte Carlo 10,000-Path Probabilities:")
+    print(f"  - P(Touch +5% Gain at ${close*1.05:.2f}): {p_up_5:.1f}%")
+    print(f"  - P(Touch -5% Drop at ${close*0.95:.2f}): {p_down_5:.1f}%")
+    print(f"  - P(Touch +10% Gain at ${close*1.10:.2f}): {p_up_10:.1f}%")
+"""
+            quant_out = execute_python_code_tool(quant_py, ticker=ticker_u, date_str=date_str)
+            if quant_out and "Error" not in quant_out and "No local" not in quant_out:
+                return f"### 🐍 VERIFIED PYTHON QUANTITATIVE ANALYTICS & MATH ({ticker_u}):\n{quant_out}"
+        except Exception as pe:
+            logger.debug(f"Python quantitative baseline error for {ticker_u}: {pe}")
+        return None
+
+    def _fetch_candles_task():
+        try:
+            from src.tracking.candle_service import get_candles_tool
+            potential_levels = []
+            for m in re.finditer(r'(?:level\s*|target\s*|strike\s*|touch\s*|cross\s*|\$)?\b(\d{2,4}(?:\.\d{1,2})?)\b', question, re.I):
+                val = float(m.group(1))
+                if 2020 <= val <= 2030:
+                    continue
+                if val not in potential_levels:
+                    potential_levels.append(val)
+            return get_candles_tool(ticker=ticker_u, interval="5m", days=5, levels=potential_levels)
+        except Exception as ce:
+            logger.debug(f"Candle & level pre-evaluation error for {ticker_u}: {ce}")
+            return None
+
+    is_fundamental_req = bool(re.search(r'\b(sec|edgar|10-k|10-q|filing|balance sheet|debt|revenue|fundamental|cash flow)\b', question, re.I))
+    def _fetch_sec_task():
+        if not is_fundamental_req:
+            return None
+        try:
+            from src.clients.sec_edgar_client import format_sec_report
+            sec_audit = format_sec_report(ticker_u, limit=3)
+            if sec_audit and "Error" not in sec_audit and "Could not resolve" not in sec_audit:
+                return sec_audit
+        except Exception as se:
+            logger.debug(f"SEC EDGAR fetch error for {ticker_u}: {se}")
+        return None
+
+    is_news_req = bool(re.search(r'\b(news|catalyst|headline|rumor|event|article|why\b|drop|rip|fell|jumped|data center|deal|partnership|earnings)\b', question, re.I))
+    def _fetch_news_task():
+        if not is_news_req:
+            return None
+        try:
+            live_news_items = []
+            from src.clients.search_client import search_web
+            search_results = search_web(f"{ticker_u} stock news earnings catalysts latest")
+            if search_results and isinstance(search_results, list):
+                for item in search_results[:3]:
+                    title = item.get("title", "").strip()
+                    body = item.get("body", "").strip()
+                    href = item.get("href", "").strip()
+                    if title:
+                        live_news_items.append(f"• **{title}**\n  {body}\n  Source: {href}")
+
+            import yfinance as yf
+            yf_ticker = yf.Ticker(ticker_u)
+            yf_news = getattr(yf_ticker, "news", [])
+            if yf_news and isinstance(yf_news, list):
+                for item in yf_news[:4]:
+                    content_obj = item.get("content", {})
+                    title = content_obj.get("title") or item.get("title")
+                    summary = content_obj.get("summary") or item.get("summary") or ""
+                    pub_date = content_obj.get("pubDate") or item.get("providerPublishTime") or ""
+                    if title and not any(title[:30].lower() in x.lower() for x in live_news_items):
+                        live_news_items.append(f"• **{title}** ({pub_date})\n  {summary[:200]}")
+
+            if live_news_items:
+                calendar_now = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d %H:%M MT")
+                return (
+                    f"### 📰 TODAY'S REAL-TIME BREAKING NEWS ({ticker_u} — Retrieved {calendar_now}):\n"
+                    f"> ⚠️ **TEMPORAL BOUNDARY**: The headlines below occurred TODAY ({calendar_now[:10]}). "
+                    f"They were **NOT** available when historical dossiers (e.g. earlier dates) were compiled. "
+                    f"Never claim an earlier research report 'had notice' of breaking news that was published after that report's date.\n\n"
+                    + "\n\n".join(live_news_items[:5])
+                )
+        except Exception as ne:
+            logger.debug(f"News fetch error for {ticker_u}: {ne}")
+        return None
+
+    def _fetch_positions_task():
+        sub_pos = []
+        try:
+            pos_file = config.BASE_DIR / "data" / "positions.json"
+            if pos_file.exists():
+                pos_dict = json.loads(pos_file.read_text(encoding="utf-8"))
+                if ticker_u in pos_dict:
+                    pos = pos_dict[ticker_u]
+                    p_side = (pos.get("side") or "LONG").upper()
+                    p_entry = float(pos.get("entry_price") or pos.get("alert_price") or 0.0)
+                    p_spot = float(pos.get("current_price") or pos.get("last_price") or p_entry)
+                    p_pnl = 0.0
+                    if p_entry > 0:
+                        p_pnl = ((p_spot - p_entry) / p_entry * 100) if p_side == "LONG" else ((p_entry - p_spot) / p_entry * 100)
+                    raw_alert = pos.get("raw_alert") or {}
+                    p_plan = raw_alert.get("plan") or (f"Entry: ${p_entry:.2f}" if p_entry else "N/A")
+                    p_wrong = raw_alert.get("wrong_if") or "N/A"
+                    p_ctx = raw_alert.get("context") or "N/A"
+                    p_opened = (pos.get("opened_at") or "")[11:19] or "Active"
+                    p_eval = pos.get("last_eval") or ""
+                    
+                    pos_card = [
+                        f"### 🚨 ACTIVE OPEN POSITION ON YOUR DESK ({ticker_u}):",
+                        f"• **Side**: **{p_side}** | **Entry Price**: **${p_entry:.2f}** | **Live Spot**: **${p_spot:.2f}** | **Unrealized P&L**: **{p_pnl:+.2f}%**",
+                        f"• **Opened At**: {p_opened} | **Strategy**: {pos.get('strategy', 'Intraday')}",
+                        f"• **Engine Card Plan**: {p_plan}",
+                        f"• **Kill Line / Invalidation**: {p_wrong}",
+                        f"• **Tape Context**: {p_ctx}",
+                    ]
+
+                    try:
+                        from src.tracking.position_monitor import review_tv_exit
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                            _fut = _ex.submit(review_tv_exit, ticker_u, raw_alert)
+                            exit_decision = _fut.result(timeout=1.5)
+                        if exit_decision:
+                            e_act = exit_decision.get("action", "EVALUATE")
+                            e_rsn = exit_decision.get("reason", "")
+                            e_icon = "🛑" if e_act == "CONFIRM_EXIT" else ("🛡️" if e_act == "VETO_HOLD" else "⚡")
+                            pos_card.append(f"• **Exit Veto Engine State**: {e_icon} **{e_act}** — {e_rsn}")
+                    except Exception as ee:
+                        logger.debug(f"Exit review check error for {ticker_u}: {ee}")
+
+                    if p_eval:
+                        pos_card.append(f"\n**Latest Position Monitor Evaluation & Guidance:**\n{p_eval}")
+                    sub_pos.append("\n".join(pos_card))
+        except Exception as pe:
+            logger.debug(f"Position check failed for {ticker_u}: {pe}")
+
+        try:
+            from src.tracking.schwab_portfolio_manager import get_portfolio_positions
+            schwab_all = get_portfolio_positions(search=ticker_u)
+            schwab_matches = [
+                p for p in schwab_all
+                if p.get("underlying_symbol", "").upper() == ticker_u or p.get("symbol", "").upper().startswith(ticker_u)
+            ]
+            if schwab_matches:
+                pos_lines = []
+                total_mkt = sum(float(p.get("market_value") or 0.0) for p in schwab_matches)
+                total_unreal = sum(float(p.get("unrealized_profit_loss") or 0.0) for p in schwab_matches)
+                total_day = sum(float(p.get("day_profit_loss") or 0.0) for p in schwab_matches)
+                total_cost = sum(float(p.get("cost_basis") or 0.0) for p in schwab_matches)
+                unreal_pct = (total_unreal / total_cost * 100.0) if total_cost > 0 else 0.0
+
+                pos_lines.append(
+                    f"• **AGGREGATE SCHWAB EXPOSURE:** Market Value: **${total_mkt:,.2f}** | Total Unrealized P&L: **${total_unreal:+,.2f} ({unreal_pct:+.2f}%)** | Day P&L: **${total_day:+,.2f}**"
+                )
+                pos_lines.append("")
+                for p in schwab_matches:
+                    sym = p.get("symbol", "")
+                    qty = p.get("quantity", 0)
+                    asset = p.get("asset_type", "EQUITY")
+                    mkt_val = float(p.get("market_value") or 0.0)
+                    pnl = float(p.get("unrealized_profit_loss") or 0.0)
+                    c_basis = float(p.get("cost_basis") or 0.0)
+                    pct = (pnl / c_basis * 100.0) if c_basis > 0 else 0.0
+                    if asset == "OPTION":
+                        exp = p.get("expiration_date", "")
+                        strike = p.get("strike_price", "")
+                        opt_type = p.get("option_type", "")
+                        pos_lines.append(f"  - **{sym}**: {qty:+d} {opt_type} ${strike} Exp {exp} | Market: ${mkt_val:,.2f} | P&L: ${pnl:+,.2f} ({pct:+.2f}%)")
+                    else:
+                        pos_lines.append(f"  - **{sym}** (Shares): {qty:,.0f} shs | Market: ${mkt_val:,.2f} | P&L: ${pnl:+,.2f} ({pct:+.2f}%)")
+                sub_pos.append(
+                    f"### 💼 USER'S ACTUAL REAL-TIME SCHWAB BROKERAGE POSITIONS ({ticker_u}):\n"
+                    + "\n".join(pos_lines)
+                )
         except Exception:
             pass
+        return sub_pos
+
+    from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
+
+    _pool = ThreadPoolExecutor(max_workers=9)
+    _f_quote = _pool.submit(_fetch_quote_task)
+    _f_opts = _pool.submit(_fetch_options_task)
+    _f_fg = _pool.submit(_fetch_flow_gex_task)
+    _f_quant = _pool.submit(_fetch_quant_task)
+    _f_candles = _pool.submit(_fetch_candles_task)
+    _f_sec = _pool.submit(_fetch_sec_task)
+    _f_news = _pool.submit(_fetch_news_task)
+    _f_pos = _pool.submit(_fetch_positions_task)
+    _f_past = _pool.submit(_build_events_past_chat_context, ticker_u, report_date or date_str, history=history, session_id=session_id)
+
+    try:
+        quote_str, live_spot, bid_str, ask_str, quote_src_label = _f_quote.result(timeout=2.0)
+    except Exception:
+        quote_str, live_spot, bid_str, ask_str, quote_src_label = "", None, "N/A", "N/A", "live quote"
 
 
     # 3. Deterministic Level Evaluation & Status
@@ -1563,326 +1898,95 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
 """)
     parts.append("\n".join(l for l in top_card if l))
 
-    # 1a-ii. Active Intraday Open Position Dossier (data/positions.json)
-    try:
-        pos_file = config.BASE_DIR / "data" / "positions.json"
-        if pos_file.exists():
-            pos_dict = json.loads(pos_file.read_text(encoding="utf-8"))
-            if ticker_u in pos_dict:
-                pos = pos_dict[ticker_u]
-                p_side = (pos.get("side") or "LONG").upper()
-                p_entry = float(pos.get("entry_price") or pos.get("alert_price") or 0.0)
-                p_spot = float(pos.get("current_price") or pos.get("last_price") or p_entry)
-                p_pnl = 0.0
-                if p_entry > 0:
-                    p_pnl = ((p_spot - p_entry) / p_entry * 100) if p_side == "LONG" else ((p_entry - p_spot) / p_entry * 100)
-                raw_alert = pos.get("raw_alert") or {}
-                p_plan = raw_alert.get("plan") or (f"Entry: ${p_entry:.2f}" if p_entry else "N/A")
-                p_wrong = raw_alert.get("wrong_if") or "N/A"
-                p_ctx = raw_alert.get("context") or "N/A"
-                p_opened = (pos.get("opened_at") or "")[11:19] or "Active"
-                p_eval = pos.get("last_eval") or ""
-                
-                pos_card = [
-                    f"### 🚨 ACTIVE OPEN POSITION ON YOUR DESK ({ticker_u}):",
-                    f"• **Side**: **{p_side}** | **Entry Price**: **${p_entry:.2f}** | **Live Spot**: **${p_spot:.2f}** | **Unrealized P&L**: **{p_pnl:+.2f}%**",
-                    f"• **Opened At**: {p_opened} | **Strategy**: {pos.get('strategy', 'Intraday')}",
-                    f"• **Engine Card Plan**: {p_plan}",
-                    f"• **Kill Line / Invalidation**: {p_wrong}",
-                    f"• **Tape Context**: {p_ctx}",
-                ]
-
-                # Evaluate against Exit Veto Engine (skills/exit_management_and_veto.md)
-                try:
-                    from src.tracking.position_monitor import review_tv_exit
-                    exit_decision = review_tv_exit(ticker_u, raw_alert)
-                    if exit_decision:
-                        e_act = exit_decision.get("action", "EVALUATE")
-                        e_rsn = exit_decision.get("reason", "")
-                        e_icon = "🛑" if e_act == "CONFIRM_EXIT" else ("🛡️" if e_act == "VETO_HOLD" else "⚡")
-                        pos_card.append(f"• **Exit Veto Engine State**: {e_icon} **{e_act}** — {e_rsn}")
-                except Exception as ee:
-                    logger.debug(f"Exit review check error for {ticker_u}: {ee}")
-
-                if p_eval:
-                    pos_card.append(f"\n**Latest Position Monitor Evaluation & Guidance:**\n{p_eval}")
-                parts.insert(1, "\n".join(pos_card))
-    except Exception as pe:
-        logger.debug(f"Position check failed for {ticker_u}: {pe}")
-
-    # 1a-iii. Official Schwab Brokerage Positions & Exposure (data/schwab_portfolio.db)
-    try:
-        from src.tracking.schwab_portfolio_manager import get_portfolio_positions
-        schwab_all = get_portfolio_positions(search=ticker_u)
-        schwab_matches = [
-            p for p in schwab_all
-            if p.get("underlying_symbol", "").upper() == ticker_u or p.get("symbol", "").upper().startswith(ticker_u)
-        ]
-        if schwab_matches:
-            pos_lines = []
-            total_mkt = sum(float(p.get("market_value") or 0.0) for p in schwab_matches)
-            total_unreal = sum(float(p.get("unrealized_profit_loss") or 0.0) for p in schwab_matches)
-            total_day = sum(float(p.get("day_profit_loss") or 0.0) for p in schwab_matches)
-            total_cost = sum(float(p.get("cost_basis") or 0.0) for p in schwab_matches)
-            unreal_pct = (total_unreal / total_cost * 100.0) if total_cost > 0 else 0.0
-
-            pos_lines.append(
-                f"• **AGGREGATE SCHWAB EXPOSURE:** Market Value: **${total_mkt:,.2f}** | Total Unrealized P&L: **${total_unreal:+,.2f} ({unreal_pct:+.2f}%)** | Day P&L: **${total_day:+,.2f}**"
-            )
-            pos_lines.append("")
-            for p in schwab_matches:
-                acct = f"{p.get('account_type', 'ACCT')} ({p.get('account_number_masked', '')})"
-                a_type = p.get("asset_type", "EQUITY")
-                qty = float(p.get("quantity") or 0.0)
-                mkt_val = float(p.get("market_value") or 0.0)
-                unreal = float(p.get("unrealized_profit_loss") or 0.0)
-                u_pct = float(p.get("unrealized_profit_loss_pct") or 0.0)
-                avg_px = float(p.get("average_price") or 0.0)
-                curr_px = float(p.get("current_price") or 0.0)
-                day_gl = float(p.get("day_profit_loss") or 0.0)
-
-                if a_type == "OPTION":
-                    desc = p.get("description") or p.get("symbol")
-                    exp = p.get("option_expiration") or "N/A"
-                    strike = p.get("option_strike") or 0
-                    o_type = p.get("option_type") or "CALL"
-                    pos_lines.append(
-                        f"• **[SCHWAB OPTION] {qty:+.0f} contract(s)**: `{ticker_u} {exp} ${strike} {o_type}` in **{acct}**\n"
-                        f"  - Description: {desc}\n"
-                        f"  - Position: {'Long' if qty > 0 else 'Short'} {abs(qty):.0f}x contract(s) | Premium Paid/Basis: **${avg_px:.2f}** | Current Mark: **${curr_px:.2f}**\n"
-                        f"  - Market Value: **${mkt_val:,.2f}** | Day P&L: **${day_gl:+,.2f}** | Total Unrealized P&L: **${unreal:+,.2f} ({u_pct:+.1f}%)**"
-                    )
-                else:
-                    pos_lines.append(
-                        f"• **[SCHWAB SHARES] {qty:.2f} shares** in **{acct}**\n"
-                        f"  - Average Cost Basis: **${avg_px:.2f}/share** | Current Price: **${curr_px:.2f}**\n"
-                        f"  - Market Value: **${mkt_val:,.2f}** | Day P&L: **${day_gl:+,.2f}** | Total Unrealized P&L: **${unreal:+,.2f} ({u_pct:+.1f}%)**"
-                    )
-
-            schwab_card = [
-                f"### 💼 USER'S ACTUAL REAL-TIME SCHWAB BROKERAGE POSITIONS ({ticker_u}):",
-                "> ⚠️ **MANDATORY BROKERAGE POSITION INTEGRATION**:",
-                f"> The user holds real live positions in **${ticker_u}** in their Schwab brokerage account(s).",
-                "> Whenever analyzing this ticker, you MUST incorporate their actual holdings, cost basis, unrealized P&L, and existing options legs into your recommendations (e.g. profit taking, stop protection, covered calls, or adding new legs).",
-                "",
-            ] + pos_lines
-            parts.insert(1, "\n".join(schwab_card))
-    except Exception as pe:
-        logger.debug(f"Schwab positions check failed for {ticker_u}: {pe}")
-
-    # 1b. Live Tape & Current Events Past Prior Chat / Dossier Date
-    try:
-        past_events = _build_events_past_chat_context(ticker_u, report_date or date_str, history=history, session_id=session_id)
-        if past_events:
-            parts.append(past_events)
-    except Exception as ee:
-        logger.debug(f"Error building past events context for {ticker_u}: {ee}")
-
-    # 2. Live Options Chain & Volatility Metrics
-    try:
-        from src.clients.options_client import fetch_options_chain_tool
-        q_lower = question.lower()
-        plan_str = str(options_plan).lower()
-        is_put_req = bool(re.search(r'\b(put|puts|bull put|bear put|credit spread|cash secured|csp|\d+p)\b', question, re.I)) or ("put" in plan_str)
-        is_call_req = bool(re.search(r'\b(call|calls|bull call|bear call|debit spread|long call|\d+c)\b', question, re.I)) or ("call" in plan_str)
-
-        # Check for specific expiration hints (e.g. Oct 2, Sep 25)
-        exp_hint = None
-        day_match_opt = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{1,2})\b', question, re.I)
-        if day_match_opt:
-            m_name, d_num = day_match_opt.groups()
-            mm_dict = {
-                'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
-                'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
-            }
-            mm = mm_dict.get(m_name.lower()[:3])
-            if mm:
-                now_dt = datetime.now()
-                year_cand = now_dt.year
-                explicit_yr = re.search(r'\b(202[5-9])\b', question)
-                if explicit_yr:
-                    year_cand = int(explicit_yr.group(1))
-                elif int(mm) < now_dt.month:
-                    year_cand += 1
-                exp_hint = f"{year_cand}-{mm}-{int(d_num):02d}"
-
-        if is_leaps_req:
-            opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="BOTH", min_dte=180, max_dte=750, expiration=exp_hint)
-            if opt_data:
-                parts.append(f"### 📈 LIVE 2027-2028 LEAPS OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
-        else:
-            opt_data = fetch_options_chain_tool(ticker=ticker_u, direction="BOTH", min_dte=14, max_dte=60, expiration=exp_hint)
-            if opt_data:
-                parts.append(f"### 📈 LIVE REAL-TIME UNIFIED OPTIONS CHAIN & GREEKS ({ticker_u}):\n{opt_data}")
-    except Exception as oe:
-        logger.debug(f"Options chain fetch error for {ticker_u}: {oe}")
-
-    try:
-        from src.clients import tastytrade_client
-        tt_data = tastytrade_client.get_market_metrics(ticker_u)
-        if tt_data:
-            ivr = tt_data.get('iv_rank')
-            ivp = tt_data.get('iv_percentile')
-            hv30 = tt_data.get('historical_volatility_30d')
-            hv60 = tt_data.get('historical_volatility_60d')
-            hv90 = tt_data.get('historical_volatility_90d')
-            liq = tt_data.get('liquidity_rating')
-            borrow = tt_data.get('borrow_rate')
-            parts.append(f"### 🏛️ TASTYTRADE VOLATILITY & LIQUIDITY METRICS ({ticker_u}):\nIV Rank: {ivr}% | IV Percentile: {ivp}% | 30d HV: {hv30} | 60d HV: {hv60} | 90d HV: {hv90} | Option Liquidity: {liq} Stars | Borrow Rate: {borrow}%")
-    except Exception:
-        pass
-
-    # 2a. Targeted Strike Specific Lookup (Live Verified Schwab Chain for strikes mentioned in prompt)
-    try:
-        targeted_block = _extract_targeted_schwab_strikes(ticker_u, question)
-        if targeted_block:
-            parts.append(targeted_block)
-    except Exception as te:
-        logger.debug(f"Error extracting targeted strikes for {ticker_u}: {te}")
-
-    # 2b. Schwab Institutional Options Flow & Sweeps
-    try:
-        from src.clients.schwab_client import get_unusual_options_flow_data
-        flow = get_unusual_options_flow_data(ticker_u)
-        if flow and flow.get("status") == "ok" and flow.get("anomalies"):
-            anom_count = flow.get("total_anomalies_count", 0)
-            c_vol = flow.get("total_call_volume", 0)
-            p_vol = flow.get("total_put_volume", 0)
-            c_prem = flow.get("total_call_premium", 0) / 1e6
-            p_prem = flow.get("total_put_premium", 0) / 1e6
-            bias = flow.get("sentiment_label", "Balanced / Mixed")
-            
-            top_lines = []
-            for a in flow.get("anomalies", [])[:25]:
-                prem_k = f"${a['notional_premium']/1e6:.2f}M" if a['notional_premium'] >= 1e6 else f"${round(a['notional_premium']/1000)}k"
-                top_lines.append(f"• {a['type']} ${a['strike']} Exp {a['expiry']} ({a['dte']}d): Vol {a['volume']:,} vs OI {a['open_interest']:,} ({a['vol_to_oi']}x OI) | Delta {a['delta']} | Mid ${a['mid']} | Prem {prem_k}")
-            
-            flow_summary = (
-                f"### 🔥 SCHWAB REAL-TIME INSTITUTIONAL OPTIONS FLOW ({ticker_u}):\n"
-                f"• Flow Sentiment: **{bias}**\n"
-                f"• Unusual Sweeps Count: {anom_count} ({flow.get('call_sweeps_count',0)} Calls / {flow.get('put_sweeps_count',0)} Puts)\n"
-                f"• Call Sweep Volume: {c_vol:,} (${c_prem:.2f}M premium) | Put Sweep Volume: {p_vol:,} (${p_prem:.2f}M premium)\n"
-                f"• Put/Call Ratios: {flow.get('put_call_volume_ratio',0)}x Vol | {flow.get('put_call_premium_ratio',0)}x Premium\n"
-                f"**Top Institutional Sweeps (Vol > 1.5x OI):**\n" + "\n".join(top_lines)
-            )
-            parts.append(flow_summary)
-    except Exception as fe:
-        logger.debug(f"Schwab options flow fetch error for {ticker_u}: {fe}")
-
-    # 3. Verified Python Quantitative Engine Calculations (df 300 bars x 85 indicators)
-    try:
-        from src.clients.llm_client import execute_python_code_tool
-        quant_py = """
-if not df.empty:
-    close = df['close'].iloc[-1]
-    high_52w = df['high'].tail(252).max()
-    low_52w = df['low'].tail(252).min()
-    sma20 = df['close'].tail(20).mean()
-    sma50 = df['close'].tail(50).mean()
-    sma200 = df['close'].tail(200).mean() if len(df) >= 200 else None
-    
-    # 20d Realized Volatility
-    returns = df['close'].pct_change().dropna()
-    hv20 = returns.tail(20).std() * np.sqrt(252) * 100
-    
-    # 14d ATR
-    high_low = df['high'] - df['low']
-    high_cp = (df['high'] - df['close'].shift()).abs()
-    low_cp = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    atr14 = tr.tail(14).mean()
-    atr_pct = (atr14 / close) * 100 if close else 0
-    
-    # 30-day Monte Carlo Probabilities (10,000 paths)
-    daily_vol = (hv20 / 100) / np.sqrt(252) if hv20 else 0.015
-    np.random.seed(42)
-    sim_returns = np.random.normal(0, daily_vol, (10000, 30))
-    price_paths = close * np.cumprod(1 + sim_returns, axis=1)
-    p_up_5 = np.mean(np.any(price_paths >= close * 1.05, axis=1)) * 100
-    p_down_5 = np.mean(np.any(price_paths <= close * 0.95, axis=1)) * 100
-    p_up_10 = np.mean(np.any(price_paths >= close * 1.10, axis=1)) * 100
-
-    print(f"• Last Data Window Close: ${close:.2f}")
-    print(f"• 52-Week High / Low: ${high_52w:.2f} / ${low_52w:.2f}")
-    print(f"• Moving Averages: 20d SMA=${sma20:.2f} | 50d SMA=${sma50:.2f}" + (f" | 200d SMA=${sma200:.2f}" if sma200 else ""))
-    print(f"• 14d Average True Range (ATR): ${atr14:.2f} ({atr_pct:.2f}% of spot)")
-    print(f"• 20d Realized Volatility (HV20): {hv20:.1f}%")
-    print(f"• 30-Day Monte Carlo 10,000-Path Probabilities:")
-    print(f"  - P(Touch +5% Gain at ${close*1.05:.2f}): {p_up_5:.1f}%")
-    print(f"  - P(Touch -5% Drop at ${close*0.95:.2f}): {p_down_5:.1f}%")
-    print(f"  - P(Touch +10% Gain at ${close*1.10:.2f}): {p_up_10:.1f}%")
-"""
-        quant_out = execute_python_code_tool(quant_py, ticker=ticker_u, date_str=date_str)
-        if quant_out and "Error" not in quant_out and "No local" not in quant_out:
-            parts.append(f"### 🐍 VERIFIED PYTHON QUANTITATIVE ANALYTICS & MATH ({ticker_u}):\n{quant_out}")
-    except Exception as pe:
-        logger.debug(f"Python quantitative baseline error for {ticker_u}: {pe}")
-
-    # 3b. Deterministic Candle & Level Evaluation (Schwab 1m/5m/Daily + First-Touch Times)
-    try:
-        from src.tracking.candle_service import get_candles_tool
-        potential_levels = []
-        for m in re.finditer(r'(?:level\s*|target\s*|strike\s*|touch\s*|cross\s*|\$)?\b(\d{2,4}(?:\.\d{1,2})?)\b', question, re.I):
-            val = float(m.group(1))
-            if 2020 <= val <= 2030:
+    if scenarios_list:
+        sc_block = [f"### 🧭 DETERMINISTIC CONDITIONAL SCENARIOS & WHAT-IF PLANS ({ticker_u}):"]
+        for sc in scenarios_list:
+            if not isinstance(sc, dict):
                 continue
-            if val not in potential_levels:
-                potential_levels.append(val)
-        candles_block = get_candles_tool(ticker=ticker_u, interval="5m", days=5, levels=potential_levels)
-        if candles_block:
-            parts.append(candles_block)
-    except Exception as ce:
-        logger.debug(f"Candle & level pre-evaluation error for {ticker_u}: {ce}")
+            k = sc.get("kind", "SCENARIO")
+            trig = sc.get("trigger")
+            st = sc.get("stop")
+            tgt = sc.get("target")
+            rr_trig = sc.get("rr_at_trigger")
+            p_odds = f"{sc.get('p_touch_pct')}% touch odds in ~{sc.get('median_sessions_to_touch')}d" if sc.get("p_touch_pct") is not None else ""
+            sc_block.append(f"• **[{k}]** Trigger: **${trig}** ({sc.get('entry', 'LIMIT')}) | Stop: **${st}** | Target: **${tgt}** | R:R: **{rr_trig}:1** ({p_odds})")
+            conf = sc.get("confirm") or []
+            if conf:
+                sc_block.append(f"  - Confirm On Arrival: {'; '.join(conf)}")
+            opts = sc.get("options") or {}
+            spread_sum = (opts.get("tactical_spread") or {}).get("summary")
+            if spread_sum:
+                sc_block.append(f"  - Tactical Spread @ Trigger: {spread_sum}")
+            csp_sum = (opts.get("income_or_csp") or {}).get("summary")
+            if csp_sum:
+                sc_block.append(f"  - Floor CSP @ Trigger: {csp_sum}")
+        parts.append("\n".join(sc_block))
 
-    # 4. SEC EDGAR Audit & Financial Facts (On-Demand or when fundamentals asked)
-    is_fundamental_req = bool(re.search(r'\b(sec|edgar|10-k|10-q|filing|balance sheet|debt|revenue|fundamental|cash flow)\b', question, re.I))
-    if is_fundamental_req:
+    # Collect concurrent background data fetches with a single unified 2.5s deadline
+    bg_futures = [_f_pos, _f_opts, _f_fg, _f_quant, _f_candles, _f_sec, _f_news, _f_past]
+    _futures_wait(bg_futures, timeout=2.5)
+    _pool.shutdown(wait=False, cancel_futures=True)
+
+    if _f_pos.done() and not _f_pos.exception():
         try:
-            from src.clients.sec_edgar_client import format_sec_report
-            sec_audit = format_sec_report(ticker_u, limit=3)
-            if sec_audit and "Error" not in sec_audit and "Could not resolve" not in sec_audit:
-                parts.append(sec_audit)
-        except Exception as se:
-            logger.debug(f"SEC EDGAR fetch error for {ticker_u}: {se}")
+            for p in _f_pos.result():
+                parts.insert(1, p)
+        except Exception:
+            pass
 
-    # 5. Live Breaking News & Web Search Catalysts (Triggered upfront if news/catalyst queried, or via LLM search_web tool)
-    is_news_req = bool(re.search(r'\b(news|catalyst|headline|rumor|event|article|why\b|drop|rip|fell|jumped|data center|deal|partnership|earnings)\b', question, re.I))
-    if is_news_req:
+    if _f_past.done() and not _f_past.exception():
         try:
-            live_news_items = []
-            from src.clients.search_client import search_web
-            search_results = search_web(f"{ticker_u} stock news earnings catalysts latest")
-            if search_results and isinstance(search_results, list):
-                for item in search_results[:3]:
-                    title = item.get("title", "").strip()
-                    body = item.get("body", "").strip()
-                    href = item.get("href", "").strip()
-                    if title:
-                        live_news_items.append(f"• **{title}**\n  {body}\n  Source: {href}")
+            past_events = _f_past.result()
+            if past_events:
+                parts.append(past_events)
+        except Exception:
+            pass
 
-            import yfinance as yf
-            yf_ticker = yf.Ticker(ticker_u)
-            yf_news = getattr(yf_ticker, "news", [])
-            if yf_news and isinstance(yf_news, list):
-                for item in yf_news[:4]:
-                    content_obj = item.get("content", {})
-                    title = content_obj.get("title") or item.get("title")
-                    summary = content_obj.get("summary") or item.get("summary") or ""
-                    pub_date = content_obj.get("pubDate") or item.get("providerPublishTime") or ""
-                    if title and not any(title[:30].lower() in x.lower() for x in live_news_items):
-                        live_news_items.append(f"• **{title}** ({pub_date})\n  {summary[:200]}")
+    if _f_opts.done() and not _f_opts.exception():
+        try:
+            for opt_str in _f_opts.result():
+                parts.append(opt_str)
+        except Exception:
+            pass
 
-            if live_news_items:
-                calendar_now = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d %H:%M MT")
-                parts.append(
-                    f"### 📰 TODAY'S REAL-TIME BREAKING NEWS ({ticker_u} — Retrieved {calendar_now}):\n"
-                    f"> ⚠️ **TEMPORAL BOUNDARY**: The headlines below occurred TODAY ({calendar_now[:10]}). "
-                    f"They were **NOT** available when historical dossiers (e.g. earlier dates) were compiled. "
-                    f"Never claim an earlier research report 'had notice' of breaking news that was published after that report's date.\n\n"
-                    + "\n\n".join(live_news_items[:5])
-                )
-        except Exception as ne:
-            logger.debug(f"Live news search fetch error for {ticker_u}: {ne}")
+    if _f_fg.done() and not _f_fg.exception():
+        try:
+            for fg_str in _f_fg.result():
+                parts.append(fg_str)
+        except Exception:
+            pass
+
+    if _f_quant.done() and not _f_quant.exception():
+        try:
+            q_out = _f_quant.result()
+            if q_out:
+                parts.append(q_out)
+        except Exception:
+            pass
+
+    if _f_candles.done() and not _f_candles.exception():
+        try:
+            c_out = _f_candles.result()
+            if c_out:
+                parts.append(c_out)
+        except Exception:
+            pass
+
+    if _f_sec.done() and not _f_sec.exception():
+        try:
+            s_out = _f_sec.result()
+            if s_out:
+                parts.append(s_out)
+        except Exception:
+            pass
+
+    if _f_news.done() and not _f_news.exception():
+        try:
+            n_out = _f_news.result()
+            if n_out:
+                parts.append(n_out)
+        except Exception:
+            pass
 
     # 5. Local Filesystem Research Reports
     try:
@@ -1941,6 +2045,8 @@ if not df.empty:
     return parts
 
 
+_DAILY_OVERVIEW_CACHE: Dict[str, Tuple[float, Tuple[str, List[str]]]] = {}
+
 def _build_daily_overview_context(date_str: Optional[str] = None, question: str = "") -> Tuple[str, List[str]]:
     """
     Assembles a high-level executive briefing and desk overview of:
@@ -1952,6 +2058,13 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     6. Market benchmark indices & volatility regime (SPY, QQQ, IWM, VIX).
     7. Synthesized desk gameplan: what was run, what was learned, and what we should do today.
     """
+    now_ts = time.time()
+    cache_key = f"{date_str or 'latest'}"
+    if cache_key in _DAILY_OVERVIEW_CACHE:
+        cached_ts, cached_val = _DAILY_OVERVIEW_CACHE[cache_key]
+        if now_ts - cached_ts < 90.0:
+            return cached_val[0], list(cached_val[1])
+
     parts = []
     today_tickers: List[str] = []
     
@@ -1975,6 +2088,7 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
         date_header += f" (Calendar Today: {calendar_today})"
         
     parts.append(f"# 🏛️ INSTITUTIONAL DAILY RESEARCH BRIEFING & DESK OVERVIEW\n**{date_header}**")
+
 
     if active_date != calendar_today:
         now_mt = datetime.now(ZoneInfo("America/Denver"))
@@ -2075,7 +2189,7 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     try:
         rep_dir = rep_root / active_date
         if rep_dir.exists():
-            arb_files = sorted(list(rep_dir.glob("*_arbitration.md")))
+            arb_files = sorted(list(rep_dir.glob("*_arbitration.md")))[:8]
             dossier_lines = []
             for af in arb_files:
                 sym = af.name.replace("_arbitration.md", "").upper()
@@ -2171,6 +2285,21 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                 if ruling_snippet:
                     card.append(f"  - **Judicial Ruling & Conflict Resolution:** {ruling_snippet}")
 
+                desk_scenarios = wl.get("scenarios") or []
+                if desk_scenarios and isinstance(desk_scenarios, list):
+                    sc_lines = []
+                    for sc in desk_scenarios:
+                        if not isinstance(sc, dict):
+                            continue
+                        sc_k = sc.get("kind", "SCENARIO")
+                        sc_trig = sc.get("trigger")
+                        sc_stop = sc.get("stop")
+                        sc_tgt = sc.get("target")
+                        sc_odds = f"{sc.get('p_touch_pct')}% odds in ~{sc.get('median_sessions_to_touch')}d" if sc.get("p_touch_pct") is not None else ""
+                        sc_lines.append(f"    • [{sc_k}] Trig: **${sc_trig}** | Stop: **${sc_stop}** | T1: **${sc_tgt}** ({sc_odds})")
+                    if sc_lines:
+                        card.append("  - **Conditional Modeled Scenarios (What-If):**\n" + "\n".join(sc_lines))
+
                 conviction_str = (
                     "unmeasured (no card score)" if conviction is None
                     else f"{conviction}/10 — label only, never a ranking key"
@@ -2187,18 +2316,36 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
             # Bounded to the desk's first tickers: each block costs a daily+intraday bars read.
             try:
                 from src.tracking.plan_outcome import build_prior_plan_outcome, plan_outcome_markdown
+                from concurrent.futures import ThreadPoolExecutor
 
                 ppo_blocks = []
-                for sym in today_tickers[:6]:
-                    if not sym or not str(sym).isalpha():
-                        continue
+                target_syms = [str(s).upper() for s in today_tickers[:6] if s and str(s).isalpha()]
+                if target_syms:
+                    def _get_ppo(sym_str):
+                        try:
+                            outcome = build_prior_plan_outcome(sym_str, as_of=active_date)
+                            block = plan_outcome_markdown(outcome)
+                            if "PRIOR PLAN OUTCOME" in block and "unavailable" not in block.split("\n")[1].lower():
+                                return block
+                        except Exception:
+                            return None
+                        return None
+
+                    ex = ThreadPoolExecutor(max_workers=min(len(target_syms), 4))
                     try:
-                        outcome = build_prior_plan_outcome(str(sym).upper(), as_of=active_date)
-                        block = plan_outcome_markdown(outcome)
-                        if "PRIOR PLAN OUTCOME" in block and "unavailable" not in block.split("\n")[1].lower():
-                            ppo_blocks.append(block)
-                    except Exception:
-                        continue
+                        futures = [ex.submit(_get_ppo, s) for s in target_syms[:4]]
+                        import concurrent.futures
+                        done, _ = concurrent.futures.wait(futures, timeout=1.5)
+                        for f in done:
+                            try:
+                                b = f.result()
+                                if b:
+                                    ppo_blocks.append(b)
+                            except Exception:
+                                pass
+                    finally:
+                        ex.shutdown(wait=False, cancel_futures=True)
+
                 if ppo_blocks:
                     parts.append(
                         "### 📐 PRIOR PLAN OUTCOMES (what the stored plans' levels actually did):\n"
@@ -2233,36 +2380,36 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
 
         already_covered = set(today_tickers)
         local_lines = []
-        for s_cand in sorted(list(cand_syms)):
-            if s_cand not in already_covered:
-                l_md, l_wl = _build_local_research_dossier(active_date, s_cand)
-                if l_wl:
-                    if s_cand not in today_tickers:
-                        today_tickers.append(s_cand)
-                    s_card = [
-                        f"• **{s_cand}** ({active_date} · Local Research Dossier) — Decision: **{l_wl.get('verdict', 'WATCH')}** | Conviction: **{l_wl.get('conviction', '--')}/10**",
-                    ]
-                    sp = l_wl.get("shares_plan") or {}
-                    ez_l, ez_h = sp.get("entry_zone_low"), sp.get("entry_zone_high")
-                    if ez_l is not None and ez_h is not None:
-                        try:
-                            s_card.append(f"  - **Entry Zone:** ${float(ez_l):.2f} – ${float(ez_h):.2f}")
-                        except (ValueError, TypeError):
-                            pass
-                    if sp.get("tactical_stop") is not None:
-                        try:
-                            s_card.append(f"  - **Tactical Stop:** ${float(sp['tactical_stop']):.2f}")
-                        except (ValueError, TypeError):
-                            pass
-                    if sp.get("target_1") is not None:
-                        try:
-                            s_card.append(f"  - **Target 1:** ${float(sp['target_1']):.2f}")
-                        except (ValueError, TypeError):
-                            pass
-                    op = l_wl.get("options_plan") or {}
-                    if op.get("structure"):
-                        s_card.append(f"  - **Structure:** {op['structure']}")
-                    local_lines.append("\n".join(s_card))
+        cand_uncovered = [s for s in sorted(list(cand_syms)) if s not in already_covered][:4]
+        for s_cand in cand_uncovered:
+            l_md, l_wl = _build_local_research_dossier(active_date, s_cand, fetch_live_price=False)
+            if l_wl:
+                if s_cand not in today_tickers:
+                    today_tickers.append(s_cand)
+                s_card = [
+                    f"• **{s_cand}** ({active_date} · Local Research Dossier) — Decision: **{l_wl.get('verdict', 'WATCH')}** | Conviction: **{l_wl.get('conviction', '--')}/10**",
+                ]
+                sp = l_wl.get("shares_plan") or {}
+                ez_l, ez_h = sp.get("entry_zone_low"), sp.get("entry_zone_high")
+                if ez_l is not None and ez_h is not None:
+                    try:
+                        s_card.append(f"  - **Entry Zone:** ${float(ez_l):.2f} – ${float(ez_h):.2f}")
+                    except (ValueError, TypeError):
+                        pass
+                if sp.get("tactical_stop") is not None:
+                    try:
+                        s_card.append(f"  - **Tactical Stop:** ${float(sp['tactical_stop']):.2f}")
+                    except (ValueError, TypeError):
+                        pass
+                if sp.get("target_1") is not None:
+                    try:
+                        s_card.append(f"  - **Target 1:** ${float(sp['target_1']):.2f}")
+                    except (ValueError, TypeError):
+                        pass
+                op = l_wl.get("options_plan") or {}
+                if op.get("structure"):
+                    s_card.append(f"  - **Structure:** {op['structure']}")
+                local_lines.append("\n".join(s_card))
         if local_lines:
             parts.append(f"### 📑 LOCAL RESEARCH & TRIAGE DOSSIERS ({active_date}):\n" + "\n\n".join(local_lines))
     except Exception as lde:
@@ -2324,7 +2471,7 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                 # Canonical Actionable Gate Summary & Closest to Gate
                 try:
                     s_rows = c.execute("""
-                        SELECT ticker, status, gate_status, last_price, action_long, signal_pack, fade, atr_at_signal, ext_z, rr_at_market_at_signal, notes
+                        SELECT ticker, gate_status, verdict, COALESCE(live_spot, spot_at_signal) as last_price, action_long, signal_pack, fade, atr_at_signal, ext_z, rr_at_market_at_signal, notes
                         FROM suggestions
                         WHERE date >= date('now', '-21 days')
                         ORDER BY id DESC
@@ -2335,7 +2482,7 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                     for sr in s_rows:
                         s_ticker = sr["ticker"].upper()
                         dw_map = {
-                            "long_in_zone": 1.0 if sr["status"] in ("IN_ZONE", "IN_TRADE") else 0.0,
+                            "long_in_zone": 1.0 if (sr["gate_status"] in ("IN_ZONE", "IN_TRADE") or sr["verdict"] in ("IN_ZONE", "IN_TRADE")) else 0.0,
                             "long_rr_at_market": sr["rr_at_market_at_signal"],
                             "atr14": sr["atr_at_signal"],
                             "price": sr["last_price"],
@@ -2384,16 +2531,12 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
                     wrong_if = raw_a.get("wrong_if") or ""
                     opened = (p.get("opened_at") or "")[11:19] or "Active"
                     line = f"• **${sym}** ({side}) | Entry: **${entry:.2f}** | Spot: **${spot:.2f}** | P&L: **{pnl:+.2f}%** | Opened: {opened}"
-                    try:
-                        from src.tracking.position_monitor import review_tv_exit
-                        e_rev = review_tv_exit(sym, raw_a)
-                        if e_rev:
-                            e_act = e_rev.get("action", "")
-                            e_rsn = e_rev.get("reason", "")
-                            e_icon = "🛑" if e_act == "CONFIRM_EXIT" else ("🛡️" if e_act == "VETO_HOLD" else "⚡")
-                            line += f"\n  - Exit Veto Status: {e_icon} **{e_act}** ({e_rsn})"
-                    except Exception:
-                        pass
+                    stop_val = p.get("stop")
+                    target_val = p.get("target")
+                    if stop_val:
+                        line += f" | Stop: ${float(stop_val):.2f}"
+                    if target_val:
+                        line += f" | Target: ${float(target_val):.2f}"
                     if plan:
                         line += f"\n  - Plan: {plan}"
                     if wrong_if:
@@ -2406,7 +2549,7 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     # 4b. Live Schwab Brokerage Portfolio & Wealth Analysis (data/schwab_portfolio.db)
     try:
         from src.tracking.schwab_portfolio_manager import get_portfolio_analysis, get_portfolio_summary
-        port_analysis = get_portfolio_analysis()
+        port_analysis = get_portfolio_analysis(allow_sync=False)
         port_summary = get_portfolio_summary()
         tot_val = float(port_summary.get("total_liquidation_value") or 0.0)
         tot_cash = float(port_summary.get("total_cash_balance") or 0.0)
@@ -2484,7 +2627,9 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
         pass
 
     overview_text = "\n\n".join(parts) if parts else ""
+    _DAILY_OVERVIEW_CACHE[cache_key] = (now_ts, (overview_text, list(today_tickers)))
     return overview_text, today_tickers
+
 
 
 def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None, date_str: str = None, history: list = None, session_id: str = None, board_context: str = None):
@@ -2608,6 +2753,118 @@ You MUST follow this exact structure:
         except Exception as se:
             context_parts.append(f"### 🔄 SCRAPE ATTEMPT\nNotice: Could not launch background scrape: {se}")
 
+    # 1b. Trigger Tastytrade Cloud Alert Sync if requested by user
+    tt_alert_intent = bool(re.search(
+        r'\b(tasty\s*trade|tasty\s*works|tt\s*alert|tt\s*cloud|sync\s*alerts?|register\s*alerts?|set\s*(?:an?\s*)?alerts?|create\s*(?:an?\s*)?alerts?|quote\s*alerts?|check\s*alerts?|active\s*alerts?)\b',
+        question, re.IGNORECASE
+    ))
+    if tt_alert_intent and primary_ticker and primary_ticker not in ("GENERAL", "AUTO", "NONE", ""):
+        is_query_only = bool(re.search(r'\b(what|which|show|list|check|view|see|any|existing|current)\b', question, re.IGNORECASE)) and not bool(re.search(r'\b(set|create|sync|register|add|put|place)\b', question, re.IGNORECASE))
+        if is_query_only:
+            # User is asking to inspect or list existing Tastytrade cloud alerts
+            try:
+                from src.clients.tastytrade_client import TastytradeClient
+                tt_client = TastytradeClient()
+                all_alerts = tt_client.get_quote_alerts() or []
+                ticker_alerts = [a for a in all_alerts if (a.get("symbol") or "").upper() == primary_ticker]
+                if ticker_alerts:
+                    alert_lines = [f"• {a.get('symbol')} {a.get('operator')} ${float(a.get('threshold', 0)):.2f} (Field: {a.get('field', 'Last')}, Expires: {str(a.get('expires-at', 'N/A'))[:10]})" for a in ticker_alerts]
+                    context_parts.append(
+                        f"### 📲 ACTIVE TASTYTRADE CLOUD ALERTS FOR ${primary_ticker}:\n"
+                        f"- Total Active: {len(ticker_alerts)} quote alert(s)\n"
+                        + "\n".join(alert_lines) + "\n"
+                        f"- Mobile Push: Active 24/7 on your Tastytrade phone app."
+                    )
+                else:
+                    context_parts.append(
+                        f"### ℹ️ TASTYTRADE CLOUD ALERTS STATUS FOR ${primary_ticker}:\n"
+                        f"- Status: No active Tastytrade quote alerts currently set for ${primary_ticker}.\n"
+                        f"- Action: Offer the user one-click alert registration via `[📲 Set Tastytrade Alerts](action:sync_tt?ticker={primary_ticker})`."
+                    )
+            except Exception as qe:
+                logger.debug(f"Query quote alerts failed for {primary_ticker}: {qe}")
+        else:
+            # Check if the user specified a single price threshold (e.g. "set alert at $320" or "alert below 315")
+            price_match = re.search(r'(?:at|price|above|below|[><]=?|\$)\s*\$?(\d+(?:\.\d{1,2})?)', question, re.IGNORECASE)
+            target_price = float(price_match.group(1)) if price_match else None
+
+            if target_price and 0.5 <= target_price <= 50000:
+                # User requested an alert at an explicit price threshold
+                is_below = bool(re.search(r'\b(below|under|drops?|falls?|<)\b', question, re.IGNORECASE))
+                op = "<" if is_below else ">"
+                try:
+                    from src.clients.tastytrade_client import TastytradeClient
+                    tt_client = TastytradeClient()
+                    alert = tt_client.create_quote_alert(
+                        symbol=primary_ticker,
+                        threshold=target_price,
+                        operator=op,
+                    )
+                    if alert:
+                        context_parts.append(
+                            f"### 📲 TASTYTRADE CLOUD ALERT CREATED FOR ${primary_ticker}:\n"
+                            f"- Single Price Alert: SUCCESS\n"
+                            f"- Details: {primary_ticker} when spot {op} ${target_price:.2f}\n"
+                            f"- Mobile Push: Instant push notification will trigger on the user's Tastytrade mobile app 24/7.\n"
+                            f"- Action: Inform the user clearly that their Tastytrade cloud quote alert is active at {op} ${target_price:.2f}."
+                        )
+                    else:
+                        context_parts.append(
+                            f"### 📲 TASTYTRADE CLOUD ALERT NOTICE FOR ${primary_ticker}:\n"
+                            f"- Price Alert: Server could not register alert directly at ${target_price:.2f}.\n"
+                            f"- Action: Provide the one-click action pill: `[🔔 Set Alert at ${target_price:.2f}](action:alert?ticker={primary_ticker}&price={target_price:.2f}&op={op})`."
+                        )
+                except Exception as pe:
+                    logger.debug(f"Direct price alert creation failed for {primary_ticker}: {pe}")
+                    context_parts.append(
+                        f"### 📲 TASTYTRADE CLOUD ALERT NOTICE FOR ${primary_ticker}:\n"
+                        f"- Action: Provide the one-click action pill: `[🔔 Set Alert at ${target_price:.2f}](action:alert?ticker={primary_ticker}&price={target_price:.2f}&op={op})`."
+                    )
+            else:
+                # User requested to sync tactical trade plan levels into Tastytrade cloud alerts
+                try:
+                    from run_watch_alerts import sync_reports_to_watchlist
+                    target_date_for_sync = dossier_date or (date_str if date_str != calendar_today else None)
+                    tt_res = sync_reports_to_watchlist(
+                        target_date=target_date_for_sync,
+                        target_ticker=primary_ticker,
+                        sync_tastytrade=True,
+                    )
+                    indexed_count = int(tt_res) if tt_res is not None else 0
+                    tt_count = getattr(tt_res, "tt_alerts_count", 0)
+                    rejected_list = getattr(tt_res, "rejected", [])
+                    ticker_rejected = next((r for r in rejected_list if r.get("ticker") == primary_ticker), None)
+
+                    if ticker_rejected:
+                        reasons = "; ".join(ticker_rejected.get("reasons", []))
+                        context_parts.append(
+                            f"### ⚠️ TASTYTRADE CLOUD ALERTS TOOL EXECUTION FOR ${primary_ticker}:\n"
+                            f"- Level Gate Status: REJECTED by risk validation gate ({reasons}).\n"
+                            f"- Tastytrade Alerts: NOT registered because the trade plan failed institutional risk criteria.\n"
+                            f"- Action: Inform the user honestly that automated cloud alerts were not placed because this setup failed validation ({reasons}). Provide one-click action pill if they still wish to arm a manual alert: `[📲 Set Tastytrade Alerts](action:sync_tt?ticker={primary_ticker})`."
+                        )
+                    elif indexed_count == 0 or tt_count == 0:
+                        context_parts.append(
+                            f"### ℹ️ TASTYTRADE CLOUD ALERTS TOOL EXECUTION FOR ${primary_ticker}:\n"
+                            f"- Result: NO ACTIVE LEVELS REGISTERED (0 cloud quote alerts placed).\n"
+                            f"- Note: No approved tactical watch levels found in {target_date_for_sync or 'today'} research reports for ${primary_ticker}.\n"
+                            f"- Action: Inform the user that no active levels were found in the research dossier to register as alerts. Provide the one-click sync action pill: `[📲 Set Tastytrade Alerts](action:sync_tt?ticker={primary_ticker})`."
+                        )
+                    else:
+                        context_parts.append(
+                            f"### 📲 TASTYTRADE CLOUD ALERTS TOOL EXECUTION RESULT FOR ${primary_ticker}:\n"
+                            f"- Tool Executed: `sync_reports_to_watchlist(target_ticker='{primary_ticker}', sync_tastytrade=True)`\n"
+                            f"- Result: SUCCESS ({tt_count} cloud quote alerts registered on Tastytrade servers for Entry Zone, Stop Loss, and Targets).\n"
+                            f"- Mobile Push: Instant push notification will trigger on the user's Tastytrade mobile phone app if spot crosses these levels 24/7 without needing local PC running.\n"
+                            f"- Action: Inform the user clearly that their Tastytrade cloud alerts have been registered and are active."
+                        )
+                except Exception as tte:
+                    logger.debug(f"Tastytrade alert sync tool failed for {primary_ticker}: {tte}")
+                    context_parts.append(
+                        f"### 📲 TASTYTRADE CLOUD ALERTS TOOL NOTICE FOR ${primary_ticker}:\n"
+                        f"- Cloud Alert Sync status: Ready to register via `[📲 Set Tastytrade Alerts](action:sync_tt?ticker={primary_ticker})`."
+                    )
+
     is_single_stock = bool(primary_ticker and primary_ticker not in ("GENERAL", "AUTO", "NONE", "ALL", ""))
 
     is_modal_or_alert = bool(board_context and any(k in board_context for k in (
@@ -2652,11 +2909,26 @@ You MUST follow this exact structure:
     # (charts, options chains, quant engine) are not built for it: the holdings dossier already
     # carries every real leg, and live quotes stay available through tools.
     if not is_portfolio_chat:
-        for sym in detected_tickers[:3]:
-            if sym and sym not in ("GENERAL", "AUTO", "NONE", ""):
-                sym_parts = _build_single_ticker_context(sym, date_str, question, history=history, session_id=session_id)
-                if sym_parts:
-                    context_parts.append(f"## ═══════════════════════════════════════════════════\n## 📌 REAL-TIME CONTEXT FOR TICKER: {sym}\n## ═══════════════════════════════════════════════════\n" + "\n\n".join(sym_parts))
+        valid_syms = [s for s in detected_tickers[:3] if s and s not in ("GENERAL", "AUTO", "NONE", "")]
+        if len(valid_syms) == 1:
+            sym = valid_syms[0]
+            sym_parts = _build_single_ticker_context(sym, date_str, question, history=history, session_id=session_id)
+            if sym_parts:
+                context_parts.append(f"## ═══════════════════════════════════════════════════\n## 📌 REAL-TIME CONTEXT FOR TICKER: {sym}\n## ═══════════════════════════════════════════════════\n" + "\n\n".join(sym_parts))
+        elif len(valid_syms) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(valid_syms)) as pool:
+                futures = {
+                    s: pool.submit(_build_single_ticker_context, s, date_str, question, history=history, session_id=session_id)
+                    for s in valid_syms
+                }
+                for s in valid_syms:
+                    try:
+                        sym_parts = futures[s].result(timeout=18.0)
+                        if sym_parts:
+                            context_parts.append(f"## ═══════════════════════════════════════════════════\n## 📌 REAL-TIME CONTEXT FOR TICKER: {s}\n## ═══════════════════════════════════════════════════\n" + "\n\n".join(sym_parts))
+                    except Exception as pe:
+                        logger.debug(f"Parallel context build failed for {s}: {pe}")
 
     # Fallback if somehow context_parts is still empty
     if not context_parts:
@@ -2799,12 +3071,13 @@ You NEVER output casual retail cliches, conversational fluff, or vague commentar
         system_prompt = f"""{role_header}
 
 Guidelines:
-1. ANSWER SHAPE IS MANDATORY - LEAD WITH THE ANSWER. The user asks short questions and does NOT want a full research report every time.
-   - Open with a 1-3 line TL;DR that answers the question directly with the specific number, verdict, or level.
-   - Then give supporting detail ONLY as it serves the question. Default to under 350 words; go longer only when the user explicitly asks for depth ("explain", "deep dive", "full thesis", "detail").
+1. ANSWER SHAPE IS MANDATORY - LEAD WITH THE ANSWER. The user asks short questions and does NOT want a full research report or robotic templates.
+   - Answer the question directly, conversationally, and quantitatively in the very first sentence without robotic labels like "TL;DR:" or "TL;DR —".
+   - Avoid markdown tables (use clean bullet points instead of HTML/Markdown tables which break UI rendering).
+   - Then give supporting detail ONLY as it serves the question. Default to under 300 words; go longer only when the user explicitly asks for depth ("explain", "deep dive", "full thesis", "detail").
    - Do NOT produce section numbering, H1/H2 report scaffolding, revenue-guidance history, or investor-day recaps unless the user asked for that structure. The context below is SOURCE MATERIAL, not an outline to reproduce.
-   - Never pad with restating the question, disclaimers, or "let me walk you through" preamble.
-2. You have FULL ACCESS to real-time live market data, options chains, SEC EDGAR filings, breaking news, daily research briefings, Senior PM arbitration rulings, watch triggers, and open positions provided in the context below for {symbols_list_str}.
+   - Never pad with restating the question, disclaimers, or "let me walk you through" preamble. Speak like an institutional portfolio manager having a real trading desk conversation.
+2. You have FULL ACCESS to real-time live market data, Net Dealer Gamma Exposure (GEX, gamma flip, call/put walls, dealer regime), options chains, SEC EDGAR filings, breaking news, daily research briefings, Senior PM arbitration rulings, watch triggers, and open positions provided in the context below for {symbols_list_str}.
 3. LEVEL & CANDLE VERIFICATION MANDATE (FIRST PRIORITY - DETERMINISTIC):
    - When the user names a price level or asks about a level cross / breakout (e.g. "GOOGL 355", "355 on GOOGL", "did it cross 355?"):
      * ALWAYS CALL OR USE THE DETERMINISTIC TOOL `get_candles(ticker, levels=[...])` AS YOUR FIRST PRIORITY!
@@ -2823,6 +3096,12 @@ Guidelines:
    - Any covered call, cash-secured put, or credit spread idea is premium selling and its profitability is UNMEASURED (no options history behind it). Label it UNMEASURED and justify the timing only from Ext Z and IV rank. Never suggest a short-side directional trade as having an edge.
 7. Mathematical Rigor & Deterministic Execution: All quantitative metrics, 14d ATRs, 20d Realized Volatilities, moving averages, and 10,000-path Monte Carlo probabilities are computed deterministically via the verified Python sandbox engine below. Always double-check mathematical identities (e.g. Max Profit + Max Loss = Spread Width, Breakeven = Strike ± Premium, R:R = Target Gain / Risk). Never hallucinate mental arithmetic.
 8. Strict Historical Factuality & No Retrospective Attribution: Never claim that a research report or technical model from an earlier date "had notice" or "saw the news" of a catalyst that occurred after that report was compiled. If a stock moved on news published today, state clearly that the news broke today, not in the earlier report. Distinguish between what the technical indicators saw on the report date and what news broke subsequently.
+8b. ANTI-HALLUCINATION — EARNINGS & SEC FILINGS (HARD RULE):
+   - NEVER assert, fabricate, or repeat from training memory any earnings numbers (EPS, Revenue, Net Income, Guidance), 8-K filing dates, exhibit URLs, or quarterly results.
+   - If the user asks about reported earnings or official SEC filings, you MUST call `fetch_earnings_release` (for press release text) or `fetch_sec_filings` (for filing index + XBRL facts) FIRST.
+   - Do NOT say "I just ran it" or "the tool returned" unless a tool result block is actually present in the conversation. If no tool result exists, say: "Let me pull the official 8-K from SEC EDGAR now." and call the tool.
+   - If the 8-K has not yet been filed (pre-announcement), state explicitly: "The official 8-K (Item 2.02) has not yet been filed on EDGAR — earnings have not officially reported." Do not invent numbers.
+   - After-hours / extended-hours price: ALWAYS call `get_realtime_quote` rather than citing stale report prices. The live quote IS the only authoritative price.
 9. Mandatory Two-Pass Clarification & Execution Protocol (Interactive Clarification & Ticker Verification):
    - When evaluating an alert, setup, or independent report for ${primary_ticker}:
      * PASS 1 — STATE ASSESSMENT & AMBIGUITY CHECK:
@@ -2886,10 +3165,12 @@ Guidelines:
    - Real-time market quotes, unified options chain (Calls + Puts), and Tastytrade IV Rank are already pre-loaded in your context below.
    - If you need additional live data, emit all needed tool calls in your FIRST response so they execute concurrently in parallel.
    - Once tool results are returned, immediately synthesize your final markdown answer without requesting further tools.
-15. One-Click Interactive Alerts & Watchlist Triggers:
+15. One-Click Interactive Alerts & Watchlist Triggers (Tastytrade Cloud Quote Alerts):
+   - You have access to the Tastytrade cloud alert engine for instant mobile push notifications to the Tastytrade phone app without needing the local PC running.
    - When proposing tactical trade levels (Entry Zone, Stop Loss, Target 1, Breakout Level) or quote alerts for ANY stock (${primary_ticker} or user-requested tickers):
      YOU MUST ALWAYS APPEND ONE-CLICK INTERACTIVE ACTION BUTTONS at the end of your trade plan:
      - Cloud Quote Alert: `[🔔 Set Alert at $XX.XX](action:alert?ticker=${primary_ticker}&price=XX.XX&op=OP)` where OP is `>=` for a breakout or target alert and `<=` for a stop or support-loss alert (never leave it as OP)
+     - Sync All Tactical Levels to Tastytrade Cloud: `[📲 Set Tastytrade Alerts](action:sync_tt?ticker=${primary_ticker})`
      - SQLite Watchlist Radar: `[🎯 Add to Watch Targets](action:watch?ticker=${primary_ticker}&entry=XX.XX&stop=YY.YY&target=ZZ.ZZ)`
      Clicking these buttons instantly triggers cloud push notifications via Tastytrade mobile or saves the target into the SQLite radar without requiring any typing!
  15b. LEVEL QUESTIONS ARE DETERMINISTIC — CALL get_candles, NEVER MENTAL ARITHMETIC:
@@ -2909,6 +3190,31 @@ Guidelines:
       (3) Options legs with strike/expiration/DTE and theta-decay risk;
       (4) Risk flags (concentration, sentinel shocks, breached tactical stops, near-dated expirations);
       (5) A ranked action list per position with exact strikes/expirations and one-click action buttons.
+ 17. CLOSE STOPS & NOISE FLOOR MANDATE (SETUP HAS NO ROOM TO BE WRONG):
+    - When analyzing any trade where the stop is close to the entry (<0.7 ATR), NEVER advise squeezing the stop closer to price to "make R:R fit."
+    - Understand that a stop <0.7 ATR on a volatile stock is inside daily noise and guarantees stop-out by noise alone.
+    - Follow the 5-step institutional protocol:
+      (1) Diagnose WHY: Entry is too close to invalidation or ATR is huge relative to the zone.
+      (2) Position size controls dollar risk, not stop tightness: Keep the natural structural stop and reduce share count.
+      (3) Evaluate the 3 Legitimate Fixes:
+          • Fix 1 (Widen Stop + De-size): Widen to >=0.7 ATR, keep risk budget constant by shrinking shares.
+          • Fix 2 (Defined-Risk Options): Vertical spread where max loss replaces physical stop (immune to intraday wicks).
+          • Fix 3 (Floor Credit / CSP): Sell OTM put/spread below structural floor when IV is elevated (>50) and no credit crisis.
+      (4) Calendar Gate: If earnings or FOMC is in the window, physical stops are useless (gap risk); use defined risk or exit before.
+      (5) Discipline: If none of the fixes produce >=1.5-2.0 R:R with a valid stop, declare "NO TRADE - PASS (setup has no room to be wrong)."
+    - One-line rule: "Size for the stop the market demands, not the stop your ego prefers — and if the math still doesn't work, the market is telling you there's no trade."
+ 18. "WHAT IF" PRICE MODELING & CONDITIONAL SCENARIOS MANDATE:
+    - When the user asks "what if price goes to $X?", "if it drops to $Y then what?", or poses hypothetical price trajectories:
+      YOU MUST RESPECT AND UTILIZE THE SYSTEM'S DETERMINISTIC MODELING TOOLS:
+      (1) Stored Conditional Scenarios: Check the armed scenarios (`PULLBACK`, `BREAKOUT`, `POST_EARNINGS`) in the context first. Report the model's exact numbers:
+          • Trigger price, Limit vs Stop order type, and Zone.
+          • Mathematically widened stop (>=0.7 ATR) and Target 1 (T1).
+          • Driftless GBM Touch Probability (% odds within window) and Median Sessions to Touch.
+          • Arrival Confirm Checklist (RVOL absorption, daily close hold, credit/CDS status).
+          • 3-Tier Repriced Options Menu at that future trigger price (Spread @ trigger, LEAPS @ trigger, CSP @ trigger).
+      (2) Intraday Level Verification: If the user asks whether price touched or crossed that level today, ALWAYS call `get_candles(ticker, levels=[...])` — never guess or compute crossings mentally.
+      (3) Dynamic Quantitative Simulation: If the user asks for a price level not covered in the stored scenarios, use `execute_python_code` to model the exact Greeks, P(Touch), Monte Carlo distribution, or options spread payoff.
+      (4) Never invent ad-hoc levels or dismiss modeled conditional scenarios. The system models what to do at each level ahead of time so the trader never has to guess in the heat of the tape.
 {desk_directive}
 {portfolio_mode_directive}
 
@@ -2937,17 +3243,15 @@ Guidelines:
                 content = re.sub(r"</?[a-zA-Z0-9_]+>", "", content)
                 content = content.strip()
                 if not content or len(content) < 15:
-                    if cleaned_turns and cleaned_turns[-1]["role"] == "user":
-                        cleaned_turns.pop()  # Discard the orphaned question that had no valid answer
-                    continue  # Discard incomplete, aborted, or pure telemetry assistant turns
+                    content = "_[Response was brief or interrupted]_"
             cleaned_turns.append({"role": role, "content": content})
 
         for idx, turn in enumerate(cleaned_turns):
             is_latest_assistant = (turn["role"] == "assistant" and idx == len(cleaned_turns) - 1)
             content = turn["content"]
-            # Compress earlier assistant responses if too long (>600 chars), keeping latest intact
-            if turn["role"] == "assistant" and not is_latest_assistant and len(content) > 500:
-                compressed = content[:400].rstrip() + " ...[summary truncated]"
+            # Compress earlier assistant responses only if unusually long (>2500 chars), preserving specific numbers and levels
+            if turn["role"] == "assistant" and not is_latest_assistant and len(content) > 2500:
+                compressed = content[:2000].rstrip() + "\n\n...[prior turn truncated for context window]"
                 messages.append({"role": "assistant", "content": compressed})
             else:
                 messages.append(turn)

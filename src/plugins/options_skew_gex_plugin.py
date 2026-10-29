@@ -117,6 +117,13 @@ class OptionsSkewGEXPlugin(BaseAnalyticsPlugin):
             spot_price = _safe_float(df["close"].iloc[-1])
 
         if not spot_price or spot_price <= 0:
+            try:
+                from src.clients.price_client import get_current_price
+                spot_price = _safe_float(get_current_price(safe_ticker))
+            except Exception:
+                pass
+
+        if not spot_price or spot_price <= 0:
             return {}
 
         # 1. Attempt primary Alpaca options snapshot pull

@@ -50,13 +50,17 @@ def _schwab_daily_candles(sym: str, days: int) -> List[Dict[str, Any]]:
             period_type, period = client.PriceHistory.PeriodType.DAY, max(1, days)
         else:
             period_type, period = client.PriceHistory.PeriodType.MONTH, 6
-        resp = client.get_price_history(
-            sym,
-            period_type=period_type,
-            period=period,
-            frequency_type=client.PriceHistory.FrequencyType.DAILY,
-            frequency=client.PriceHistory.Frequency.EVERY_DAY,
-        )
+        import concurrent.futures
+        def _call_price_history():
+            return client.get_price_history(
+                sym,
+                period_type=period_type,
+                period=period,
+                frequency_type=client.PriceHistory.FrequencyType.DAILY,
+                frequency=client.PriceHistory.Frequency.EVERY_DAY,
+            )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            resp = ex.submit(_call_price_history).result(timeout=2.0)
         if getattr(resp, "status_code", 0) != 200:
             return []
         out: List[Dict[str, Any]] = []

@@ -7,9 +7,19 @@ from __future__ import annotations
 
 import argparse
 import socket
+import sys
 import threading
 import webbrowser
 import uvicorn
+
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from src.ui.app import create_app
 from src.ui.state import init_db as _init_db, get_db as _get_db

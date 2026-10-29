@@ -583,7 +583,7 @@ def validate_levels(
             pine_stop = _dw_num(dw, "Long Stop Loss", "long_stop_loss")
             from src.tracking.rr_config import STOP_ATR_MIN
             max_allowed_stop = trade_rules.max_allowed_stop(fill, atr, pine_stop)
-            basis = "Pine stop" if pine_stop > 0 else f"fill - {STOP_ATR_MIN:.2f}*ATR"
+            basis = "Pine stop" if (pine_stop > 0 and pine_stop <= max_allowed_stop + 0.01) else f"fill - {STOP_ATR_MIN:.2f}*ATR (0.7 ATR noise floor)"
             if stop > max_allowed_stop + 0.005:
                 reasons.append(
                     f"stop ${stop:.4f} exceeds max allowed stop ${max_allowed_stop:.4f} (must be <= {basis})"

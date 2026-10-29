@@ -243,11 +243,21 @@ class QuoteRouter:
                 s = m.get(k) or m.get(str(k).replace("/", "."))
                 if s and sq and float(sq.get("last_price") or 0) > 0:
                     out[s] = QuoteData(
-                        symbol=s, last_price=float(sq["last_price"]), bid=float(sq.get("bid") or 0.0), ask=float(sq.get("ask") or 0.0),
-                        open=float(sq.get("open") or 0.0), high=float(sq.get("high") or 0.0), low=float(sq.get("low") or 0.0),
-                        close=float(sq.get("close") or 0.0), volume=int(sq.get("volume") or 0),
-                        net_change=float(sq.get("net_change") or 0.0), net_percent_change=float(sq.get("net_percent_change") or 0.0),
-                        source="SCHWAB", timestamp=time.time())
+                        symbol=s,
+                        last_price=float(sq["last_price"]),
+                        bid=float(sq.get("bid") or 0.0),
+                        ask=float(sq.get("ask") or 0.0),
+                        open=float(sq.get("open") or 0.0),
+                        high=float(sq.get("high") or 0.0),
+                        low=float(sq.get("low") or 0.0),
+                        close=float(sq.get("close") or 0.0),
+                        volume=int(sq.get("volume") or 0),
+                        net_change=float(sq.get("net_change") or 0.0),
+                        net_percent_change=float(sq.get("net_percent_change") or 0.0),
+                        source="SCHWAB",
+                        timestamp=time.time(),
+                        is_extended_hours=bool(sq.get("is_extended_hours", False)),
+                    )
             return out
         except Exception as e:
             logger.warning(f"Schwab quotes for {equities} failed: {e!r}")
@@ -350,6 +360,7 @@ class QuoteRouter:
                             net_percent_change=float(sq.get("net_percent_change") or 0.0),
                             source="SCHWAB",
                             timestamp=now,
+                            is_extended_hours=bool(sq.get("is_extended_hours", False)),
                         )
                         with self._cache_lock:
                             self._cache_execution[clean_sym] = (now, qd)
@@ -542,7 +553,7 @@ class QuoteRouter:
     # 3. SURVEILLANCE & WATCHLIST CHANNEL (SPLIT ACROSS NON-SCHWAB)
     # =========================================================================
     def get_watchlist_quote(self, symbol: str) -> Optional[QuoteData]:
-        """Fetch quote for watchlist stalking without touching Schwab."""
+        """Fetch quote for watchlist stalking with high-fidelity real-time broker pricing."""
         clean_sym = self._clean_symbol(symbol)
         if not clean_sym:
             return None
@@ -561,7 +572,43 @@ class QuoteRouter:
         if neg_hit:
             return self._stale_surveillance(clean_sym)
 
-        # Surveillance hierarchy: Tastytrade -> Alpaca -> Yahoo -> yfinance; failures negative-cached.
+        # Primary Broker Real-Time Route (Schwab) for high precision and extended-hours accuracy
+        try:
+            from src.tracking.screener_gate import is_screener_busy
+            screener_busy = is_screener_busy()
+        except Exception:
+            screener_busy = False
+
+        if not screener_busy and self.schwab_breaker.is_available():
+            try:
+                from src.clients.schwab_client import get_realtime_quote as schwab_get_rt
+                schwab_sym = self._format_for_schwab(clean_sym)
+                sq = schwab_get_rt(schwab_sym)
+                if sq and sq.get("last_price") and float(sq["last_price"]) > 0:
+                    qd = QuoteData(
+                        symbol=clean_sym,
+                        last_price=float(sq["last_price"]),
+                        bid=float(sq.get("bid") or 0.0),
+                        ask=float(sq.get("ask") or 0.0),
+                        open=float(sq.get("open") or 0.0),
+                        high=float(sq.get("high") or 0.0),
+                        low=float(sq.get("low") or 0.0),
+                        close=float(sq.get("close") or 0.0),
+                        volume=int(sq.get("volume") or 0),
+                        net_change=float(sq.get("net_change") or 0.0),
+                        net_percent_change=float(sq.get("net_percent_change") or 0.0),
+                        source="SCHWAB",
+                        timestamp=now,
+                        is_extended_hours=bool(sq.get("is_extended_hours", False)),
+                    )
+                    with self._cache_lock:
+                        self._cache_surveillance[clean_sym] = (now, qd)
+                        self._neg_cache.pop(clean_sym, None)
+                    return qd
+            except Exception as e_schwab:
+                logger.debug(f"[WatchlistQuote:{clean_sym}] Schwab direct quote skipped/failed: {e_schwab}")
+
+        # Secondary / Surveillance hierarchy: Tastytrade -> Alpaca -> Yahoo -> yfinance; failures negative-cached.
         qd = (
             self._fetch_tastytrade_quote(clean_sym)
             or self._fetch_alpaca_snapshot_single(clean_sym)
@@ -608,20 +655,7 @@ class QuoteRouter:
         if not to_fetch:
             return results
 
-        # 0. Tastytrade DXLink: primary high-speed batch
-        tt_syms = [x for x in to_fetch if not self._is_index(x)]
-        if tt_syms and self.tastytrade_breaker.is_available():
-            tt_quotes = self._tastytrade_quotes_batch(tt_syms)
-            with self._cache_lock:
-                for s_, qd in tt_quotes.items():
-                    self._cache_surveillance[s_] = (now, qd)
-                    results[s_] = qd
-            to_fetch = [x for x in to_fetch if x not in results]
-            if not to_fetch:
-                return results
-
-        # 1. Schwab API batch for equities/ETFs (fast broker batch)
-        # Avoid running Schwab batch if screener is actively querying Schwab to prevent quota contention
+        # 0. Schwab API batch for equities/ETFs (primary broker batch for true real-time)
         try:
             from src.tracking.screener_gate import is_screener_busy
             screener_active = is_screener_busy()
@@ -636,6 +670,21 @@ class QuoteRouter:
                     self._cache_surveillance[s] = (now, qd)
                     results[s] = qd
             to_fetch = [s for s in to_fetch if s not in results]
+
+        if not to_fetch:
+            return results
+
+        # 1. Tastytrade DXLink: secondary high-speed batch
+        tt_syms = [x for x in to_fetch if not self._is_index(x)]
+        if tt_syms and self.tastytrade_breaker.is_available():
+            tt_quotes = self._tastytrade_quotes_batch(tt_syms)
+            with self._cache_lock:
+                for s_, qd in tt_quotes.items():
+                    self._cache_surveillance[s_] = (now, qd)
+                    results[s_] = qd
+            to_fetch = [x for x in to_fetch if x not in results]
+            if not to_fetch:
+                return results
 
         if not to_fetch:
             return results
@@ -738,8 +787,9 @@ class QuoteRouter:
         bid_ask = f"{q.bid:.2f} / {q.ask:.2f}" if (q.bid > 0 and q.ask > 0) else "n/a"
         vol_str = f"{q.volume:,}" if q.volume > 0 else "n/a"
 
+        ext_tag = " (EXTENDED HOURS / AFTER HOURS)" if q.is_extended_hours else ""
         lines = [
-            f"REAL-TIME QUOTE for {clean_sym} (source: {q.source}):",
+            f"REAL-TIME QUOTE for {clean_sym} (source: {q.source}{ext_tag}):",
             f"- Last: {q.last_price:.2f}",
             f"- Bid/Ask: {bid_ask}",
             f"- Net Change: {q.net_change:+.2f} ({q.net_percent_change:+.2f}%)",
@@ -785,7 +835,7 @@ class QuoteRouter:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
         }
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1m&range=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1m&range=1d&includePrePost=true"
 
         try:
             r = _YAHOO_SESSION.get(url, headers=headers, timeout=(_CONNECT_S, _READ_S))
@@ -794,8 +844,24 @@ class QuoteRouter:
             elif r.status_code == 200:
                 self.yahoo_breaker.record_success()
                 data = r.json()
-                meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
-                price = meta.get("regularMarketPrice")
+                res = data.get("chart", {}).get("result", [{}])[0]
+                meta = res.get("meta", {})
+                
+                # Check extended hours / post market or latest intraday candle close
+                post_px = meta.get("postMarketPrice")
+                reg_px = meta.get("regularMarketPrice")
+                latest_close = None
+                try:
+                    closes = res.get("indicators", {}).get("quote", [{}])[0].get("close") or []
+                    for c in reversed(closes):
+                        if c is not None and float(c) > 0:
+                            latest_close = float(c)
+                            break
+                except Exception:
+                    pass
+
+                price = post_px or latest_close or reg_px
+                is_ext = bool(post_px or (latest_close and reg_px and abs(latest_close - float(reg_px)) > 0.01))
                 if price is not None and float(price) > 0:
                     px = float(price)
                     prev_close = float(meta.get("chartPreviousClose") or meta.get("previousClose") or px)
@@ -814,6 +880,7 @@ class QuoteRouter:
                         net_percent_change=net_pct,
                         source="YAHOO_DIRECT",
                         timestamp=time.time(),
+                        is_extended_hours=is_ext,
                     )
         except Exception as e:
             logger.debug(f"Yahoo Direct query failed for {symbol}: {e}")

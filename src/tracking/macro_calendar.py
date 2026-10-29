@@ -38,7 +38,7 @@ def fetch_events(now: datetime) -> List[Dict[str, Any]]:
     for url in URLS:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=2.0) as r:
                 raw += json.loads(r.read().decode("utf-8"))
         except Exception as e:
             logger.warning("macro calendar fetch failed for %s: %s", url, e)

@@ -40,6 +40,10 @@ def mock_copilot_network_services(monkeypatch):
     monkeypatch.setattr(tt.TastytradeClient, "get_market_metrics", lambda self, sym: [{"implied-volatility-index-rank": "0.45", "historical-volatility-30-day": "35.2"}])
     import src.clients.schwab_client as sc_client
     monkeypatch.setattr(sc_client, "get_unusual_options_flow_data", lambda sym: {"status": "ok", "anomalies": []})
+    import src.tracking.candle_service as cs
+    monkeypatch.setattr(cs, "get_candles_tool", lambda *args, **kwargs: None)
+    import src.data.gex as gex_mod
+    monkeypatch.setattr(gex_mod, "format_gex_block", lambda *args, **kwargs: "")
 
 
 def test_copilot_chat_persistence_and_sessions():

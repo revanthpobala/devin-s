@@ -2,7 +2,11 @@
  * Swing Stalking Desk Controller
  */
 window.AppSwing = {
+  _currentTicker: '',
+
   setTicker(sym) {
+    this._currentTicker = sym;
+    if (window.AppState) window.AppState.activeTicker = sym;
     const input = document.getElementById('ticker-input');
     if (input) input.value = sym;
     const revInput = document.getElementById('rev-chat-ticker');
@@ -16,9 +20,18 @@ window.AppSwing = {
     }
   },
 
-  async launchResearch(dateOverride = null, forceOverride = null) {
-    const tickerInput = document.getElementById('ticker-input');
-    const rawInput = (tickerInput ? tickerInput.value : '').trim();
+  async launchResearch(dateOverride = null, forceOverride = null, tickerOverride = null) {
+    let rawInput = (tickerOverride || '').trim();
+    if (!rawInput) {
+      const tickerInput = document.getElementById('ticker-input');
+      rawInput = (tickerInput ? tickerInput.value : '').trim();
+    }
+    if (!rawInput && this._currentTicker) {
+      rawInput = this._currentTicker.trim();
+    }
+    if (!rawInput && window.AppState && window.AppState.activeTicker) {
+      rawInput = window.AppState.activeTicker.trim();
+    }
     if (!rawInput) return alert('Please enter a ticker');
 
     // Support comma-separated or space-separated multiple tickers: e.g. "AAPL, MSFT, NVDA"
@@ -64,7 +77,10 @@ window.AppSwing = {
           }
         } else if (lastRes && lastRes.status === 'queued') {
           if (window.AppUtils && AppUtils.showToast) {
-            AppUtils.showToast(`⏳ Hardware slots busy (2/2). $${t} queued for research!`, 'info');
+            const slotMsg = (lastRes.active_slots !== undefined && lastRes.max_slots !== undefined)
+              ? ` (${lastRes.active_slots}/${lastRes.max_slots})`
+              : '';
+            AppUtils.showToast(`⏳ Hardware slots busy${slotMsg}. $${t} queued for research!`, 'info');
           }
         } else if (lastRes && lastRes.status === 'running') {
           if (window.AppUtils && AppUtils.showToast) {
@@ -80,7 +96,7 @@ window.AppSwing = {
             if (window.AppUtils && AppUtils.showToast) {
               AppUtils.showToast(`🚀 Forcing fresh deep research for $${t}...`, 'info');
             }
-            return await this.launchResearch(targetDate, true);
+            return await this.launchResearch(targetDate, true, t);
           } else {
             if (window.AppUtils && AppUtils.showToast) {
               AppUtils.showToast(`ℹ️ ${skipMsg}. Opening dossier...`, 'info');
@@ -2578,6 +2594,63 @@ window.AppSwing = {
     if (togglePosBtn) togglePosBtn.style.display = 'none';
 
     this.renderActiveChatTabs();
+    this.initModalHeaderDrag();
+  },
+
+  initModalHeaderDrag() {
+    const header = document.getElementById('modal-header');
+    const modal = document.getElementById('report-modal');
+    if (!header || !modal || header._hasDragAttached) return;
+    header._hasDragAttached = true;
+
+    let isDragging = false;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    const modalContent = modal.querySelector('.modal-content');
+
+    header.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      if (!modal.classList.contains('minimized')) return;
+      if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select') || e.target.closest('a')) return;
+
+      e.preventDefault();
+      isDragging = true;
+      document.body.classList.add('chat-resizing');
+
+      const rect = modalContent.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+
+      modalContent.style.left = `${startLeft}px`;
+      modalContent.style.top = `${startTop}px`;
+      modalContent.style.right = 'auto';
+      modalContent.style.bottom = 'auto';
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging || !modalContent) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+
+      let newLeft = startLeft + dx;
+      let newTop = startTop + dy;
+
+      const maxLeft = Math.max(10, window.innerWidth - modalContent.offsetWidth - 10);
+      const maxTop = Math.max(10, window.innerHeight - modalContent.offsetHeight - 10);
+
+      newLeft = Math.max(10, Math.min(newLeft, maxLeft));
+      newTop = Math.max(10, Math.min(newTop, maxTop));
+
+      modalContent.style.left = `${newLeft}px`;
+      modalContent.style.top = `${newTop}px`;
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!isDragging) return;
+      isDragging = false;
+      document.body.classList.remove('chat-resizing');
+    });
   },
 
   dismissMinimizedDock(event) {
@@ -2611,6 +2684,8 @@ window.AppSwing = {
     modalContent.style.position = '';
     modalContent.style.bottom = '';
     modalContent.style.right = '';
+    modalContent.style.left = '';
+    modalContent.style.top = '';
     modalContent.style.width = '96vw';
     modalContent.style.maxWidth = '1480px';
     modalContent.style.height = '92vh';
@@ -2736,6 +2811,8 @@ window.AppSwing = {
         modalContent.style.position = '';
         modalContent.style.bottom = '';
         modalContent.style.right = '';
+        modalContent.style.left = '';
+        modalContent.style.top = '';
         modalContent.style.width = '96vw';
         modalContent.style.maxWidth = '1480px';
         modalContent.style.height = '92vh';

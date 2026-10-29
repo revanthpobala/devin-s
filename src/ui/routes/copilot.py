@@ -14,6 +14,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+import httpx
+import openai
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -26,8 +28,44 @@ logger = logging.getLogger("ui_server")
 router = APIRouter(tags=["copilot"])
 
 
+def _make_async_openai_client(
+    base_url: str,
+    api_key: str,
+    default_headers: Optional[dict] = None,
+) -> tuple[Any, httpx.AsyncClient]:
+    """
+    Creates an AsyncOpenAI client backed by a tuned httpx.AsyncClient connection pool.
+    keepalive_expiry=15.0 ensures that idle pooled connections are closed and fresh
+    sockets are opened on subsequent tool turns, preventing Cloudflare 60s idle
+    socket drops (RemoteProtocolError / APIConnectionError: Connection error).
+    """
+    limits = httpx.Limits(
+        max_keepalive_connections=5,
+        max_connections=20,
+        keepalive_expiry=15.0,
+    )
+    timeout = httpx.Timeout(
+        connect=25.0,
+        read=180.0,
+        write=30.0,
+        pool=15.0,
+    )
+    http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+    client_kwargs: dict[str, Any] = {
+        "base_url": base_url,
+        "api_key": api_key,
+        "timeout": 180,
+        "http_client": http_client,
+        "max_retries": 3,
+    }
+    if default_headers:
+        client_kwargs["default_headers"] = default_headers
+    return openai.AsyncOpenAI(**client_kwargs), http_client
+
+
 class CopilotChatRequest(BaseModel):
     question: Optional[str] = ""
+    prompt: Optional[str] = None
     ticker: Optional[str] = None
     date: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = []
@@ -66,19 +104,30 @@ def get_chat_llm_config() -> dict:
     """
     Resolves the LLM configuration for Copilot Chat.
     Priority:
-      1. Dedicated chat key: CHAT_OPEN_ROUTER_API_KEY or CHAT_OPENROUTER_API_KEY
-      2. General OpenRouter key: OPENROUTER_API_KEY or OPENROUTER_KEY
-      3. Fallback: Local llama.cpp / Qwen server on port 8000
+      1. Explicit CHAT_PROVIDER override ('local' or 'openrouter' / 'cloud').
+      2. If CHAT_OPEN_ROUTER_API_KEY or OPENROUTER_API_KEY is configured:
+         Use OpenRouter (model from CHAT_MODEL or OPENROUTER_MODEL, e.g. z-ai/glm-5.3-flash).
+      3. Fallback: Local llama.cpp / Qwen server on port 8000.
     """
+    provider_override = (os.getenv("CHAT_PROVIDER") or "").strip().lower()
+
+    if provider_override == "local":
+        return {
+            "provider": "local",
+            "api_key": "sk-no-key-required",
+            "base_url": os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1"),
+            "model": None,
+            "default_headers": None,
+        }
+
+    # OpenRouter primary if configured
     chat_key = (
         os.getenv("CHAT_OPEN_ROUTER_API_KEY")
         or os.getenv("CHAT_OPENROUTER_API_KEY")
         or os.getenv("OPENROUTER_API_KEY")
         or os.getenv("OPENROUTER_KEY")
     )
-    is_openrouter = bool(chat_key and chat_key.strip().lower() not in ("none", "false", "0"))
-
-    if is_openrouter:
+    if chat_key and chat_key.strip().lower() not in ("none", "false", "0"):
         raw_model = (
             os.getenv("CHAT_MODEL")
             or os.getenv("OPENROUTER_MODEL")
@@ -93,13 +142,16 @@ def get_chat_llm_config() -> dict:
             "default_headers": {
                 "HTTP-Referer": "http://localhost:8050",
                 "X-Title": "Stock Cockpit Copilot",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
             },
         }
 
+    # Local llama.cpp fallback
+    local_url = os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1")
     return {
         "provider": "local",
         "api_key": "sk-no-key-required",
-        "base_url": os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:8000/v1"),
+        "base_url": local_url,
         "model": None,
         "default_headers": None,
     }
@@ -253,8 +305,9 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
     try:
         from src.clients.llm_client import query_local_llm
         
+        question_val = (req.question or req.prompt or "").strip()
         system_prompt, messages, user_prompt, ticker_u, date_str = _build_copilot_context_and_tools(
-            question=req.question,
+            question=question_val,
             explicit_ticker=req.ticker,
             date_str=req.date,
             history=req.history,
@@ -263,7 +316,7 @@ def copilot_chat_endpoint(req: CopilotChatRequest):
         )
 
         session_id = req.session_id or f"sess_{ticker_u}_{date_str}_{uuid.uuid4().hex[:8]}"
-        _save_chat_turn(session_id, ticker_u, date_str, "user", req.question)
+        _save_chat_turn(session_id, ticker_u, date_str, "user", question_val)
 
         chat_cfg = get_chat_llm_config()
         if chat_cfg["provider"] == "openrouter":
@@ -361,7 +414,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
     """
     request = _AlwaysConnected()
     try:
-        question_text = (req.question or "").strip()
+        question_text = (req.question or req.prompt or "").strip()
         if not question_text and req.image_data:
             question_text = "Please analyze this attached chart / snapshot and provide actionable trade execution guidance."
         elif not question_text:
@@ -390,12 +443,12 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     board_context=req.board_context,
                 ))
                 while True:
-                    done, _ = await asyncio.wait([build_task], timeout=4.0)
+                    done, _ = await asyncio.wait([build_task], timeout=2.0)
                     if not done:
                         if await request.is_disconnected():
                             build_task.cancel()
                             return
-                        yield ": ping\n\n"
+                        yield f"data: {json.dumps({'status': 'progress', 'step': 'Compiling market intelligence & quantitative context...'})}\n\n"
                     else:
                         system_prompt, messages, user_prompt, ticker_u, date_str = build_task.result()
                         break
@@ -430,16 +483,11 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
             if await request.is_disconnected():
                 return
 
-            from openai import AsyncOpenAI
-            client_kwargs = {
-                "base_url": chat_cfg["base_url"],
-                "api_key": chat_cfg["api_key"],
-                "timeout": 180,
-            }
-            if chat_cfg.get("default_headers"):
-                client_kwargs["default_headers"] = chat_cfg["default_headers"]
-
-            client = AsyncOpenAI(**client_kwargs)
+            client, http_client = _make_async_openai_client(
+                base_url=chat_cfg["base_url"],
+                api_key=chat_cfg["api_key"],
+                default_headers=chat_cfg.get("default_headers"),
+            )
 
             if is_openrouter:
                 model_name = chat_cfg["model"]
@@ -472,6 +520,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
 
                 if slot_notice:
                     yield f"data: {json.dumps({'status': 'slot_notice', 'notice': slot_notice})}\n\n"
+
+            yield f"data: {json.dumps({'status': 'provider', 'provider': chat_cfg['provider'], 'model': model_name or 'Qwen (Local GPU)'})}\n\n"
 
             # Multimodal Vision Payload (Qwen 27B Vision Projector or multimodal cloud)
             if req.image_data and messages:
@@ -653,8 +703,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                                 last_token_t = now_t
                                 busy_notice_sent = False
                                 turn_content_chunks.append(delta_content)
-                                # Suppress streaming raw <tool_call> XML markup to client
-                                if "<tool_call>" not in delta_content and "<function=" not in delta_content:
+                                # Suppress streaming raw <tool_call> and <think> XML markup to client
+                                if "<tool_call>" not in delta_content and "<function=" not in delta_content and "<think>" not in delta_content and "</think>" not in delta_content:
                                     full_answer_chunks.append(delta_content)
                                     yield f"data: {json.dumps({'token': delta_content})}\n\n"
                             reasoning_delta = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
@@ -665,6 +715,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                                 last_token_t = now_t
                                 busy_notice_sent = False
                                 turn_reasoning_chunks.append(reasoning_delta)
+                                yield f"data: {json.dumps({'status': 'thinking', 'thought': reasoning_delta})}\n\n"
                             if hasattr(delta, "tool_calls") and delta.tool_calls:
                                 for tc in delta.tool_calls:
                                     idx = tc.index
@@ -756,7 +807,16 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             "_chars": len(res_str),
                         }
 
-                    tool_results = await asyncio.gather(*[_run_single_tool(tc) for tc in tool_calls_acc.values()])
+                    async def _execute_all_tools():
+                        return await asyncio.gather(*[_run_single_tool(tc) for tc in tool_calls_acc.values()])
+
+                    tool_task = asyncio.create_task(_execute_all_tools())
+                    while True:
+                        done, _ = await asyncio.wait([tool_task], timeout=2.0)
+                        if done:
+                            tool_results = tool_task.result()
+                            break
+                        yield ": ping\n\n"
                     _tool_ms = int((asyncio.get_event_loop().time() - _tool_t0) * 1000)
                     for tr in tool_results:
                         messages.append({k: v for k, v in tr.items() if not k.startswith("_")})
@@ -781,7 +841,10 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
 
                 import re
                 raw_full = "".join(full_answer_chunks)
-                complete_answer = re.sub(r"<tool_call>.*?</tool_call>", "", raw_full, flags=re.DOTALL)
+                complete_answer = re.sub(r"<think>.*?</think>", "", raw_full, flags=re.DOTALL)
+                if "<think>" in complete_answer and "</think>" not in complete_answer:
+                    complete_answer = complete_answer.split("<think>")[0]
+                complete_answer = re.sub(r"<tool_call>.*?</tool_call>", "", complete_answer, flags=re.DOTALL)
                 complete_answer = re.sub(r"<function=.*?>.*?</function>", "", complete_answer, flags=re.DOTALL)
                 complete_answer = re.sub(r"<parameter=.*?>.*?</parameter>", "", complete_answer, flags=re.DOTALL)
                 complete_answer = re.sub(r"</?[a-zA-Z0-9_]+>", "", complete_answer)
@@ -818,6 +881,11 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     await client.close()
                 except Exception:
                     pass
+                if 'http_client' in locals() and http_client is not None:
+                    try:
+                        await http_client.aclose()
+                    except Exception:
+                        pass
 
         return StreamingResponse(
             _detached_stream(token_generator()),

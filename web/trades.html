@@ -391,6 +391,7 @@
 <div class="chat-input-toolbar-left">
 <button class="btn secondary" id="btn-rev-sync-board" onclick="AppChat.toggleActiveBoardSync('sidebar')" style="padding:3px 7px; font-size:11px;" title="Sync active dashboard/modal table to chat context">📌 <span style="font-size:10px;">Board</span></button>
 <button class="btn secondary" id="btn-rev-snap-view" onclick="AppChat.captureActiveBoardSnapshot('sidebar')" style="padding:3px 7px; font-size:11px;" title="Capture screenshot of active board/chart for Qwen 27B Vision">📸 <span style="font-size:10px;">Snap</span></button>
+<button class="btn secondary" id="btn-rev-sync-tt" onclick="AppChat.handleSyncTastytradeAlertsAction()" style="padding:3px 7px; font-size:11px; color:#38bdf8;" title="Register Tastytrade cloud quote alerts for active ticker (Entry, Stop, Targets)">📲 <span style="font-size:10px;">TT Alert</span></button>
 <input accept="image/*" id="rev-chat-file-input" onchange="AppChat.handleImageFileUpload(event, 'sidebar')" style="display:none;" type="file"/>
 <span class="chat-input-hint">Shift+↵ Newline</span>
 </div>
@@ -1193,6 +1194,7 @@
 <div class="chat-input-toolbar-left">
 <button class="btn secondary" id="btn-modal-sync-board" onclick="AppChat.toggleActiveBoardSync('modal')" style="padding:3px 7px; font-size:11px;" title="Sync active dossier tab (Options Flow, Chart, Arbitration) to chat">📌 <span style="font-size:10px;">Tab</span></button>
 <button class="btn secondary" id="btn-modal-snap-view" onclick="AppChat.captureActiveBoardSnapshot('modal')" style="padding:3px 7px; font-size:11px;" title="Capture screenshot of active tab/chart for Qwen 27B Vision">📸 <span style="font-size:10px;">Snap</span></button>
+<button class="btn secondary" id="btn-modal-sync-tt" onclick="AppChat.handleSyncTastytradeAlertsAction()" style="padding:3px 7px; font-size:11px; color:#38bdf8;" title="Register Tastytrade cloud quote alerts for this ticker (Entry, Stop, Targets)">📲 <span style="font-size:10px;">TT Alert</span></button>
 <input accept="image/*" id="modal-chat-file-input" onchange="AppChat.handleImageFileUpload(event, 'modal')" style="display:none;" type="file"/>
 <span class="chat-input-hint">Shift+↵ Newline</span>
 </div>

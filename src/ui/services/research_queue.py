@@ -194,7 +194,7 @@ CHAT_RESERVE = 0 if is_cloud_chat_enabled() else 1
 
 
 def local_slot_cap(has_queued_deep: bool = False) -> int:
-    """Local triage may use llama slots deep research is not using, capped at MAX_CONCURRENT_LOCAL (1).
+    """Local triage may use llama slots deep research is not using, one per signed-in TV profile.
     Deep research always has strict priority: if any deep research jobs are queued,
     local triage yields completely to avoid hardware starvation and preserve chat/deep capacity.
     """
@@ -203,7 +203,7 @@ def local_slot_cap(has_queued_deep: bool = False) -> int:
     from src.data.tv_scraper import signed_in_profiles
     idle = LLM_SLOTS - chat_reserve_count() - get_active_deep_research_count()
     profiles_count = len(signed_in_profiles()) if signed_in_profiles() else 1
-    return max(0, min(MAX_CONCURRENT_LOCAL, idle, profiles_count))
+    return max(0, min(idle, profiles_count))
 MAX_CONCURRENT_DEEP = MAX_CONCURRENT_FULL + MAX_CONCURRENT_MID
 
 
