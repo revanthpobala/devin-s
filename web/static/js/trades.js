@@ -93,6 +93,7 @@ window.AppTrades = {
 
       const sources = (resSources && resSources.sources) ? resSources.sources : ((resScoreboard && resScoreboard.swing) ? resScoreboard.swing : []);
       const mainRec = (resScoreboard && resScoreboard.main_record) ? resScoreboard.main_record : {};
+      const live = (resScoreboard && resScoreboard.intraday && resScoreboard.intraday.live) ? resScoreboard.intraday.live : {};
 
       const num = (v, d = 2) => (v === undefined || v === null ? 'n/a' : Number(v).toFixed(d));
       const sgn = (v) => (v === undefined || v === null ? 'n/a' : (v >= 0 ? '+' : '') + Number(v).toFixed(2));
@@ -164,6 +165,18 @@ window.AppTrades = {
             </div>
             <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
               ${gate.PASS || 0} passed of ${fun.suggestions || 0} suggestions (floor R:R 2.0)
+            </div>
+          </div>
+
+          <!-- Card 5: Intraday account R vs Pine R -->
+          <div style="background:var(--bg-main); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+            <div style="font-size:10.5px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Intraday: account vs Pine${live.since ? ' (since ' + live.since + ')' : ''}</div>
+            <div style="font-size:22px; font-weight:900; color:${(live.live_mean_r || 0) >= 0 ? '#10b981' : '#f43f5e'}; font-family:var(--font-mono); margin-top:2px;">
+              ${sgn(live.live_mean_r)}R <span style="font-size:12px; color:var(--text-muted); font-weight:600;">/ trade, n=${live.live_scored_n || 0} (sum ${sgn(live.live_sum_r)}R)</span>
+            </div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+              Same ${live.paired_n || 0} trades: Pine ${sgn(live.pine_mean_r_paired)}R vs live ${sgn(live.live_mean_r_paired)}R (gap ${sgn(live.gap_r)}R).
+              Fill slippage ${sgn(live.fill_slippage_mean_r)}R of plan risk (n=${live.fill_n || 0}) · ${live.no_fill_n || 0} refused: quote through stop at open.
             </div>
           </div>
         </div>

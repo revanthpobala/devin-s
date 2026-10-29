@@ -888,7 +888,10 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
     entry_px = signal.get("entry_px") if signal.get("entry_px") is not None else signal.get("entry_price")
     entry_stop = signal.get("entry_stop") if signal.get("entry_stop") is not None else signal.get("stop")
     entry_t1 = signal.get("entry_t1") if signal.get("entry_t1") is not None else signal.get("target_1")
-    exit_r = signal.get("exit_r") if signal.get("exit_r") is not None else signal.get("pine_exit_r")
+    # exit_r is the LIVE realized R (written by position_state.close_position). It is never derived
+    # from pine_exit_r: Pine sends "exit_r": 0 on every ENTRY payload, and copying that through
+    # stamped a phantom 0.0R onto live trades and counted untaken signals as session losses.
+    exit_r = signal.get("exit_r")
     exit_why = signal.get("exit_why")
 
     # Resolve hour in ET
@@ -949,7 +952,9 @@ def upsert_intraday_signal(signal: Dict[str, Any]) -> bool:
                                 END
                             ELSE intraday_signals.llm_verdict
                         END,
-                        exit_r=COALESCE(excluded.exit_r, intraday_signals.exit_r),
+                        -- An upsert never replaces a realized exit_r (an ENTRY alert processed
+                        -- after a fast close used to overwrite it); record_intraday_exit owns exits.
+                        exit_r=COALESCE(intraday_signals.exit_r, excluded.exit_r),
                         exit_why=COALESCE(excluded.exit_why, intraday_signals.exit_why),
                         pine_exit_r=COALESCE(excluded.pine_exit_r, intraday_signals.pine_exit_r),
                         replay_r=COALESCE(excluded.replay_r, intraday_signals.replay_r),

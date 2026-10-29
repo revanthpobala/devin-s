@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -34,6 +35,57 @@ logger = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
+
+
+# Fill at open (Oct 2026 audit). The entry used to be the TradingView alert level. By the time Gmail
+# polling + triage opened the position the tape had often moved: SPY/MSFT/GOOGL were opened and closed
+# by the catastrophic breaker in the same second, booking -1.16R..-2.37R against a level that was no
+# longer tradeable. The entry is now the live execution quote at open; the alert level is kept as
+# alert_price. INTRADAY_FILL_FROM_QUOTE=0 restores the alert-level entry.
+def _fill_from_quote_enabled() -> bool:
+    return os.getenv("INTRADAY_FILL_FROM_QUOTE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _alert_latency_s(alert_ts, now_et: datetime) -> float | None:
+    """Seconds from the alert timestamp to now_et; None when missing, unparseable or implausible."""
+    s = str(alert_ts or "").strip()
+    if not s:
+        return None
+    try:
+        ts = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=ZoneInfo("America/New_York"))
+    if now_et.tzinfo is None:
+        now_et = now_et.replace(tzinfo=ZoneInfo("America/New_York"))
+    lat = (now_et - ts).total_seconds()
+    return round(lat, 1) if 0 <= lat < 86400 else None
+
+
+def _resolve_fill(symbol: str, side: str, alert_entry: float | None, stop: float | None) -> dict:
+    """Entry fill for a new intraday position.
+
+    Returns {"fill", "source", "through_stop"}. source is "quote" when the live execution quote is
+    used, "alert" when it is unavailable (or the feature is off) and the alert level stands in.
+    through_stop is True when the quote is already at or beyond the plan stop: no entry with the
+    plan's risk existed, so the caller must not open the position.
+    """
+    out = {"fill": alert_entry, "source": "alert", "through_stop": False}
+    if not _fill_from_quote_enabled():
+        return out
+    try:
+        quote = get_current_price(symbol, context="execution")
+        quote = float(quote) if quote is not None else None
+    except Exception as e:
+        logger.debug(f"[fill:{symbol}] execution quote failed: {e}")
+        quote = None
+    if not quote or quote <= 0:
+        return out
+    out.update(fill=round(quote, 4), source="quote")
+    if stop is not None:
+        out["through_stop"] = (quote <= stop) if side == "LONG" else (quote >= stop)
+    return out
 
 
 # Tier 2 catastrophic circuit breaker (skills/exit_management_and_veto.md):
@@ -1038,6 +1090,51 @@ class PositionManager:
                 logger.info(f"[manager] ⏸️ {symbol} already open; verdict '{existing_verdict[:40]}' has no TAKE signal — keeping existing position.")
                 return
 
+        # Fill at open: the live execution quote, not the alert level (see _resolve_fill).
+        alert_entry = entry
+        fill_latency_s = _alert_latency_s(alert.get("timestamp"), eastern_now)
+        fill = _resolve_fill(symbol, side, alert_entry, stop)
+        if fill["through_stop"]:
+            no_fill_reason = (
+                f"NO FILL: quote ${fill['fill']:.2f} already through stop ${stop:.2f} "
+                f"(alert entry ${alert_entry or 0:.2f}, latency {fill_latency_s if fill_latency_s is not None else 'n/a'}s)"
+            )
+            logger.warning(f"[manager] ⛔ {symbol}: {no_fill_reason} — position NOT opened.")
+            try:
+                from src.tracking.alert_db import upsert_intraday_signal
+                upsert_intraday_signal({
+                    "trade_id": trade_id,
+                    "ticker": symbol,
+                    "date": eastern_now.strftime("%Y-%m-%d"),
+                    "entry_ts": alert.get("timestamp") or eastern_now.isoformat(timespec="seconds"),
+                    "hour": eastern_now.hour,
+                    "grade": grade_val,
+                    "score": score_val,
+                    "align": align_val,
+                    "side": side,
+                    "entry_type": "LIMIT",
+                    "entry_px": alert_entry,
+                    "entry_stop": stop,
+                    "entry_t1": target,
+                    "veto_reason": no_fill_reason,
+                    "llm_verdict": "GATE:no_fill",
+                    "your_fill": fill["fill"],
+                    "taken": 0,
+                })
+            except Exception as e_sig:
+                logger.debug(f"Failed to record no-fill intraday signal for {symbol}: {e_sig}")
+            return
+        if fill["source"] == "quote":
+            entry = fill["fill"]
+            if alert_entry:
+                adverse = (entry - alert_entry) if side == "LONG" else (alert_entry - entry)
+                logger.info(
+                    f"[manager] {symbol} fill ${entry:.2f} vs alert ${alert_entry:.2f} "
+                    f"(adverse {adverse:+.2f}, latency {fill_latency_s}s)"
+                )
+        elif _fill_from_quote_enabled():
+            logger.warning(f"[manager] {symbol}: no execution quote at open — entry is the alert level (unverified fill).")
+
         # Infallible guarantee: If stop or target are missing, derive via intraday ATR
         if (stop is None or target is None) and entry:
             try:
@@ -1071,14 +1168,18 @@ class PositionManager:
             entry_price=entry,
             stop=stop,
             target=target,
-            alert_price=entry,
+            alert_price=alert_entry if alert_entry is not None else entry,
             raw_alert=alert,
             quantity=computed_qty,
             trade_id=trade_id,
+            fill_source=fill["source"],
+            fill_latency_s=fill_latency_s,
         )
-        self._ensure_monitor(symbol)
 
-        # Record taken trade in intraday_signals shadow ledger
+        # Record the taken trade in intraday_signals BEFORE the monitor thread starts. The monitor
+        # can close on its first poll; if the row did not exist yet, close_position's exit_r found no
+        # row to land on and the live R was lost (SPY/MSFT/GOOGL closed in the same second).
+        # entry_px stays the alert level (the basis of Pine's R); your_fill is the live fill.
         try:
             from src.tracking.alert_db import upsert_intraday_signal
             upsert_intraday_signal({
@@ -1092,13 +1193,20 @@ class PositionManager:
                 "align": align_val,
                 "side": side,
                 "entry_type": "LIMIT",
-                "entry_px": entry,
+                "entry_px": alert_entry if alert_entry is not None else entry,
                 "entry_stop": stop,
                 "entry_t1": target,
                 "veto_reason": None,
                 "llm_verdict": "TAKE",
+                "your_fill": entry if fill["source"] == "quote" else None,
                 "taken": 1,
             })
+        except Exception as e_sig:
+            logger.debug(f"Failed to record taken intraday signal for {symbol}: {e_sig}")
+
+        self._ensure_monitor(symbol)
+
+        try:
             if grade_val == "A":
                 try:
                     from src.tracking.alert_evaluator import format_intraday_entry_push, notify_push
@@ -1106,8 +1214,8 @@ class PositionManager:
                     notify_push(push_msg)
                 except Exception as e_push:
                     logger.debug(f"Failed to emit entry push for {symbol}: {e_push}")
-        except Exception as e_sig:
-            logger.debug(f"Failed to record taken intraday signal for {symbol}: {e_sig}")
+        except Exception as e_push_outer:
+            logger.debug(f"Entry push block failed for {symbol}: {e_push_outer}")
 
     def _ensure_monitor(self, ticker: str):
         ticker = ticker.upper()

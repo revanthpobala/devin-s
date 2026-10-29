@@ -167,11 +167,16 @@ def test_intraday_trade_execution_alerts_parsed_and_routed(tmp_path):
         from zoneinfo import ZoneInfo
         parsed_entry["timestamp"] = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
 
-        mgr._handle_alert(parsed_entry)
+        # Entry is the live execution quote at open; the alert level is kept as alert_price.
+        import src.tracking.position_monitor as pm
+        with patch.object(pm, "get_current_price", lambda sym, context="execution": 822.40):
+            mgr._handle_alert(parsed_entry)
         state = position_state.load_state()
         assert "CAT" in state
         assert state["CAT"]["side"] == "SHORT"
-        assert state["CAT"]["entry_price"] == 822.74
+        assert state["CAT"]["entry_price"] == 822.40
+        assert state["CAT"]["alert_price"] == 822.74
+        assert state["CAT"]["fill_source"] == "quote"
         assert state["CAT"]["stop"] == 825.26
         assert state["CAT"]["target"] == 817.73
         mgr._ensure_monitor.assert_called_with("CAT")

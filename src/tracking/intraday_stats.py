@@ -8,6 +8,7 @@ measured statistics rather than discretionary anecdotes.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
 from collections import defaultdict
@@ -74,6 +75,106 @@ def _scoreable_r(row: Dict[str, Any]) -> Optional[float]:
     if abs(r_val) > MAX_PLAUSIBLE_R:
         return None
     return r_val
+
+
+def _finite_r(raw: Any) -> Optional[float]:
+    """float(raw) when it is a finite R within +/-MAX_PLAUSIBLE_R, else None."""
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")) or abs(v) > MAX_PLAUSIBLE_R:
+        return None
+    return v
+
+
+# First session of the clean live record. intraday_signals rows dated 2026-09-17..2026-10-01 include
+# pytest fixtures written into the production DB before tests/conftest.py isolated it (CAT +124R and
+# AMD -1.25R repeated dozens of times); averaging them reports a +0.56R account that never existed.
+INTRADAY_LIVE_RECORD_START = os.getenv("INTRADAY_LIVE_RECORD_START", "2026-10-02")
+
+
+def _live_r(row: Dict[str, Any]) -> Optional[float]:
+    """Live realized R of a TAKEN row: exit_r as written by position_state.close_position.
+
+    The signal stats above deliberately grade Pine's exits (pine_exit_r first). That measures the
+    indicator, not the account: on the 9 live trades audited in Oct 2026 Pine read -0.13R while the
+    positions closed at -4.68R. This is the account's number.
+    """
+    if not row.get("taken"):
+        return None
+    return _finite_r(row.get("exit_r"))
+
+
+def _live_record_rows(rows: List[Dict[str, Any]], since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Rows inside the clean live record: date >= max(INTRADAY_LIVE_RECORD_START, since)."""
+    start = max(INTRADAY_LIVE_RECORD_START, since) if since else INTRADAY_LIVE_RECORD_START
+    return [r for r in rows if str(r.get("date") or "") >= start]
+
+
+def compute_live_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Live (account) R for taken rows, Pine R on the same rows, and the gap between them.
+
+    - live_*: taken rows with a realized exit_r.
+    - paired_*: taken rows carrying BOTH a live and a Pine R -- the like-for-like comparison.
+      gap_r = live mean - Pine mean on those rows (negative = execution gives back edge).
+    - fill_*: taken rows with a recorded live fill (your_fill) vs the alert level (entry_px),
+      adverse slippage in R of the plan risk (alert entry - stop).
+    - no_fill_n: signals refused because the quote at open was already through the plan stop.
+    """
+    taken = [r for r in rows if r.get("taken")]
+    live_vals: List[float] = []
+    pairs: List[tuple] = []
+    for r in taken:
+        lv = _live_r(r)
+        if lv is None:
+            continue
+        live_vals.append(lv)
+        pv = _finite_r(r.get("pine_exit_r"))
+        if pv is not None:
+            pairs.append((pv, lv))
+
+    slips: List[float] = []
+    for r in taken:
+        try:
+            fill = float(r.get("your_fill")) if r.get("your_fill") is not None else None
+            alert_px = float(r.get("entry_px") or r.get("entry_price") or 0) or None
+        except (TypeError, ValueError):
+            continue
+        risk = _risk_per_share(r)
+        if fill is None or alert_px is None or not risk:
+            continue
+        side = str(r.get("side") or "LONG").upper()
+        adverse = (fill - alert_px) if "LONG" in side else (alert_px - fill)
+        slips.append(adverse / risk)
+
+    no_fill_n = sum(1 for r in rows if str(r.get("llm_verdict") or "").upper() == "GATE:NO_FILL")
+
+    def _mean(xs: List[float]) -> Optional[float]:
+        return round(sum(xs) / len(xs), 3) if xs else None
+
+    n_live = len(live_vals)
+    pine_paired = _mean([p for p, _ in pairs])
+    live_paired = _mean([lv for _, lv in pairs])
+    return {
+        "taken_n": len(taken),
+        "live_scored_n": n_live,
+        "live_missing_n": len(taken) - n_live,
+        "live_mean_r": _mean(live_vals),
+        "live_sum_r": round(sum(live_vals), 3) if live_vals else 0.0,
+        "live_win_rate": round(sum(1 for v in live_vals if v > 0) / n_live * 100.0, 1) if n_live else 0.0,
+        "live_stop_rate": round(sum(1 for v in live_vals if v <= -0.9) / n_live * 100.0, 1) if n_live else 0.0,
+        "paired_n": len(pairs),
+        "pine_mean_r_paired": pine_paired,
+        "live_mean_r_paired": live_paired,
+        "gap_r": round(live_paired - pine_paired, 3) if pairs else None,
+        "fill_n": len(slips),
+        "fill_slippage_mean_r": _mean(slips),
+        "no_fill_n": no_fill_n,
+        "read": n_live >= 30,
+    }
 
 
 def clear_bucket_stats_cache() -> None:
@@ -364,7 +465,10 @@ def generate_postmortem_stats(
                 "total_days": 0,
                 "day_win_rate": 0.0,
                 "status": "INSUFFICIENT SAMPLE (0/200 pairs)",
+                "n_grade_a_live": 0,
+                "mean_grade_a_live_r": None,
             },
+            "live": compute_live_stats([]),
         }
 
     by_grade: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -448,6 +552,11 @@ def generate_postmortem_stats(
 
     n_scored = sum(1 for r in rows if _scoreable_r(r) is not None)
 
+    live_rows = _live_record_rows(rows, since)
+    live_a = [v for v in (_live_r(r) for r in live_rows if str(r.get("grade") or "").upper() == "A") if v is not None]
+    live_block = compute_live_stats(live_rows)
+    live_block["since"] = max(INTRADAY_LIVE_RECORD_START, since) if since else INTRADAY_LIVE_RECORD_START
+
     return {
         "total_count": len(rows),
         "n_scored": n_scored,
@@ -466,7 +575,11 @@ def generate_postmortem_stats(
             "total_days": total_days,
             "day_win_rate": day_win_rate,
             "status": go_status,
+            # The status above grades the SIGNAL (Pine exits). The account's grade-A number:
+            "n_grade_a_live": len(live_a),
+            "mean_grade_a_live_r": round(sum(live_a) / len(live_a), 3) if live_a else None,
         },
+        "live": live_block,
     }
 
 
@@ -515,13 +628,32 @@ def regenerate_postmortem_markdown(
         "> [!IMPORTANT]",
         "> At n ≥ 200 grade-A pairs with `trade_id`, keep live desktop/push alerts ONLY if mean exit R is ≥ +0.10 and positive on the majority of trading days. Otherwise, the weekly indicator script is treated as context only. Do NOT tune time gates or discretionary vetoes before hitting the 200-pair threshold.",
         "",
+    ]
+    live = stats.get("live") or compute_live_stats([])
+
+    def _fmt(v: Optional[float]) -> str:
+        return "n/a" if v is None else f"{v:+.3f} R"
+
+    lines.extend([
+        "### 1b. Live account R vs Pine R (taken trades)",
+        "",
+        "The tables in this file grade Pine's exits (the signal). This block is what the account realized on the trades it took.",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Taken trades since {live.get('since', INTRADAY_LIVE_RECORD_START)} | {live['taken_n']} ({live['live_scored_n']} with live R, {live['live_missing_n']} missing) |",
+        f"| Live mean R / sum | `{_fmt(live['live_mean_r'])}` / `{live['live_sum_r']:+.2f} R` |",
+        f"| Same trades, Pine mean R vs live mean R (n={live['paired_n']}) | `{_fmt(live['pine_mean_r_paired'])}` vs `{_fmt(live['live_mean_r_paired'])}` (gap `{_fmt(live['gap_r'])}`) |",
+        f"| Mean fill slippage vs alert level (n={live['fill_n']}) | `{_fmt(live['fill_slippage_mean_r'])}` of plan risk |",
+        f"| Refused: quote already through stop at open | {live['no_fill_n']} |",
+        "",
         "---",
         "",
         "## 2. R Attribution by Setup Grade",
         "",
         "| Grade | Signals (n) | Scored (n) | Mean R | Win Rate % | Stop-Out % | Net Expectancy |",
         "|---|---|---|---|---|---|---|",
-    ]
+    ])
 
     for grade in sorted(stats["by_grade"].keys()):
         s = stats["by_grade"][grade]

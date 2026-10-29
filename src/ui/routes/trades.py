@@ -887,6 +887,8 @@ def get_scoreboard(since: Optional[str] = None):
             "by_llm": stats.get("by_llm", {}),
             "n_scored": stats.get("n_scored", 0),
             "go_no_go": stats.get("go_no_go", {}),
+            # Signal stats above grade Pine's exits; "live" is the account's realized R on taken trades.
+            "live": stats.get("live", {}),
         }
 
         swing_data = get_per_source_stats(since=since)
@@ -906,6 +908,7 @@ def get_scoreboard(since: Optional[str] = None):
                 "by_llm": {},
                 "n_scored": 0,
                 "go_no_go": {},
+                "live": {},
             },
             "swing": [],
             "error": str(e),

@@ -534,7 +534,8 @@ def process_alert_enrichment(alert: dict, sheets=None):
                         "target_2": float(t2_raw) if t2_raw not in (None, "") else None,
                         "veto_reason": v_reason,
                         "llm_verdict": verdict_val,
-                        "pine_exit_r": float(alert.get("exit_r")) if alert.get("exit_r") is not None else None,
+                        # Not an exit: Pine zero-fills exit_r on ENTRY payloads, so it is not an R.
+                        "pine_exit_r": None,
                     })
             except Exception as e_sig:
                 logger.debug(f"Failed to record intraday shadow signal for {symbol}: {e_sig}")

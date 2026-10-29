@@ -281,8 +281,17 @@ python run_watch_alerts.py --sync --date 2026-08-29
 - `src/tracking/alert_evaluator.py` — real-time local LLM triage & exit veto decision engine
 - `src/tracking/sheets_tracker.py` — Google Sheets mirror (Alerts, Trades, SWING-SPX sheets)
 
+**Fill at open & live R (Oct 2026)**:
+- An intraday entry fills at the live execution quote at open, not the TradingView alert level (`position_monitor._resolve_fill`). The alert level is kept as `alert_price` (position) / `entry_px` (`intraday_signals`); the fill is `entry_price` / `your_fill`, with `fill_source` (`quote` | `alert`) and `fill_latency_s`.
+- If the quote is already at or through the plan stop, no position is opened: the signal is logged `taken=0`, `llm_verdict='GATE:no_fill'`, with the reason.
+- The taken `intraday_signals` row is written before the monitor thread starts, so a first-poll close still records its realized `exit_r`. `exit_r` is the account's realized R only: it is never copied from `pine_exit_r`, and an upsert never overwrites it. ENTRY payloads no longer write `pine_exit_r` (Pine zero-fills `exit_r` on them).
+- `/api/scoreboard` → `intraday.live` and `skills/postmortem_live.md` §1b report live R next to Pine R on the same taken trades (gap, fill slippage in R, no-fill count), from `INTRADAY_LIVE_RECORD_START`. The signal tables still grade Pine exits.
+- One-time history repair: `python scripts/repair_intraday_exit_r.py` (dry run) / `--write` (backs up to `data/backups/` first).
+
 **Config**:
 - `POSITION_POLL_INTERVAL` (default 60) — seconds between quote polls per open position
+- `INTRADAY_FILL_FROM_QUOTE` (default 1) — `0` restores the alert-level entry
+- `INTRADAY_LIVE_RECORD_START` (default `2026-10-02`) — first date of the live R record; earlier `intraday_signals` rows include pytest fixtures written before `tests/conftest.py` isolated the DB
 
 ---
 
