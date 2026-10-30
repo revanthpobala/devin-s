@@ -370,19 +370,27 @@ def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str, skip_su
         else:
             opt_note = bounce["option_note"] if alt is None else opt_note
     inv = watch_data.get("invalidation") or {}
+    layers = sp.get("layers") if isinstance(sp.get("layers"), dict) else None
+    order_type = "LIMIT" if limit < spot or not spot else "LIMIT (marketable)"
+    risk = trade_rules.risk_usd(limit, stop, qty)
+    if layers and layers.get("tranches"):
+        qty = int(layers["total_shares"])
+        risk = float(layers["risk_usd_if_all_fill"])
+        order_type = "LAYERED"
     return {
+        "layers": layers,
         "ticker": watch_data.get("ticker"),
         "date": date_str,
         "plan_date": str(watch_data.get("date") or date_str)[:10],
         "side": "BUY",
-        "order_type": "LIMIT" if limit < spot or not spot else "LIMIT (marketable)",
+        "order_type": order_type,
         "limit_price": round(limit, 2),
         "max_chase_price": round(entry_max, 2),
         "qty": qty,
         "stop": round(stop, 2),
         "target_1": round(t1, 2),
         "target_2": round(t2, 2) if t2 > t1 else None,
-        "risk_usd": round(trade_rules.risk_usd(limit, stop, qty), 2),
+        "risk_usd": round(risk, 2),
         "rr_at_limit": round((t1 - limit) / (limit - stop), 2),
         "option_alternative": alt,
         "option_dropped": opt_note,
@@ -404,6 +412,14 @@ def build_ticket(watch_data: Dict[str, Any], spot: float, date_str: str, skip_su
 
 def ticket_text(t: Dict[str, Any]) -> str:
     alt = t.get("option_alternative")
+    if t.get("layers"):
+        from src.logic.layered_entry import layers_text
+
+        return (
+            f"{t['ticker']} {layers_text(t['layers'])} | {t['layers']['why']} | {t['lane']} ({t['levels_source']}) "
+            f"[{t['layers']['label']}]" + (f" | earnings {t['earnings_stance']}" if t.get("earnings_stance") else "")
+            + f" | good til {t['good_til']}"
+        )
     return (
         f"{t['ticker']} BUY {t['qty']} {t['order_type']} {t['limit_price']} (chase cap {t['max_chase_price']}) | "
         f"stop {t['stop']} T1 {t['target_1']}" + (f" T2 {t['target_2']}" if t.get("target_2") else "")
@@ -508,10 +524,15 @@ def repair_long_shares_plan(
     lo, hi = _f(sp.get("entry_zone_low")), _f(sp.get("entry_zone_high"))
     fill = hi if hi > 0 else close
 
-    cap = trade_rules.max_allowed_stop(fill, atr, pine_stop=stop if pine_stop else 0.0)
+    # The stop floor is measured from the LOWEST planned fill (zone low), the same fill
+    # level_validation's gate uses. Measuring from the zone top let a stop pass here and fail
+    # the gate (GOOGL 2026-10-29: 260.30 ok vs 268.31, rejected vs 265.64 -> 258.17), and the
+    # layered entry fills down to the zone low anyway.
+    floor_fill = lo if lo > 0 else fill
+    cap = trade_rules.max_allowed_stop(floor_fill, atr, pine_stop=stop if pine_stop else 0.0)
     if stop > cap:
         sp["tactical_stop"] = stop = round(cap, 2)
-        notes.append(f"stop widened to {trade_rules.STOP_ATR_MIN:g} ATR below the fill: {stop}")
+        notes.append(f"stop widened to {trade_rules.STOP_ATR_MIN:g} ATR below the lowest fill {floor_fill:.2f}: {stop}")
 
     sp["recommended_shares"] = trade_rules.compute_position_shares(fill, stop)
 
@@ -531,6 +552,11 @@ def repair_long_shares_plan(
         sp["limit_price"] = sp["trigger_price"] = sp["entry_zone_high"]
         sp["wait_for"] = f"resting limit {entry_max:.2f} (R:R floor)"
         notes.append(f"converted to resting limit at {entry_max:.2f}")
+        # The conversion can lower the zone low; keep the stop 0.7 ATR under the new lowest fill.
+        cap2 = trade_rules.max_allowed_stop(sp["entry_zone_low"], atr, pine_stop=stop if pine_stop else 0.0)
+        if stop > cap2:
+            sp["tactical_stop"] = round(cap2, 2)
+            notes.append(f"stop widened to {trade_rules.STOP_ATR_MIN:g} ATR below the new zone low: {sp['tactical_stop']}")
     return notes
 
 

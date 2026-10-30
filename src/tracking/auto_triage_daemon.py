@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import time
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -24,6 +24,24 @@ from src.ui.services.research_queue import dispatch_next_queued_job
 from src.tracking.watch_manager import _get_connection, _db_lock
 
 logger = logging.getLogger(__name__)
+
+
+def _coverage_prices(symbols: List[str]) -> Dict[str, float]:
+    """Surveillance batch first (Yahoo/Alpaca), Schwab execution batch for whatever it missed."""
+    from src.clients.price_client import get_current_prices_batch
+
+    prices: Dict[str, float] = {}
+    try:
+        prices = dict(get_current_prices_batch(symbols, context="surveillance") or {})
+    except Exception as e_px:
+        logger.warning(f"Queue coverage surveillance prices failed: {type(e_px).__name__} {e_px}")
+    rest = [s for s in symbols if not prices.get(s)]
+    if rest:
+        try:
+            prices.update({k: v for k, v in (get_current_prices_batch(rest, context="execution") or {}).items() if v})
+        except Exception as e_px:
+            logger.warning(f"Queue coverage execution prices failed: {type(e_px).__name__} {e_px}")
+    return prices
 
 
 def _ensure_queue_coverage(today_str: Optional[str] = None):
@@ -44,12 +62,14 @@ def _ensure_queue_coverage(today_str: Optional[str] = None):
             known = {r[0] for r in cur.execute("SELECT symbol FROM alerts WHERE date = ?", (today_str,))}
             prices: Dict[str, float] = {}
             fresh = [x for x in syms if x not in known]
-            if fresh:
-                try:
-                    from src.clients.price_client import get_current_prices_batch
-                    prices = get_current_prices_batch(fresh, context="surveillance") or {}
-                except Exception as e_px:
-                    logger.warning(f"Queue coverage price fetch failed: {type(e_px).__name__} {e_px}")
+            # Synthetic rows from earlier cycles that never got a price (the surveillance batch fails
+            # intermittently in market hours: 30-70% of weekday synth rows were stored with NULL).
+            unpriced = {r[0] for r in cur.execute(
+                "SELECT symbol FROM alerts WHERE date = ? AND message_id LIKE 'synth-%' "
+                "AND alert_price IS NULL AND market_price IS NULL", (today_str,))}
+            need = sorted(set(fresh) | unpriced)
+            if need:
+                prices = _coverage_prices(need)
             for sym, setup in items:
                 sym_u = (sym or "").strip().upper()
                 if not sym_u:
@@ -62,6 +82,18 @@ def _ensure_queue_coverage(today_str: Optional[str] = None):
                         alert_price, market_price
                     ) VALUES (?, ?, ?, ?, 'LONG', 'Swing', ?, 'PENDING', ?, '{}', ?, ?)
                 """, (msg_id, today_str, now_iso, sym_u, setup or 'Screener', now_iso, px, px))
+            # Self-heal: fill rows inserted earlier without a price; never overwrite a stored price.
+            for sym_u in unpriced:
+                px = prices.get(sym_u)
+                if px:
+                    cur.execute(
+                        "UPDATE alerts SET alert_price = ?, market_price = ? "
+                        "WHERE message_id = ? AND alert_price IS NULL AND market_price IS NULL",
+                        (px, px, f"synth-{sym_u}-{today_str}"),
+                    )
+            missing = [s for s in need if not prices.get(s)]
+            if missing:
+                logger.warning(f"Queue coverage: no price for {len(missing)} of {len(need)} symbol(s): {', '.join(missing[:10])}")
             conn.commit()
     except Exception as e:
         logger.debug(f"Queue coverage sync note: {e}")

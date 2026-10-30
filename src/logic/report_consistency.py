@@ -47,6 +47,13 @@ def check(text: str, watch_data: Dict[str, Any], dw: Dict[str, Any], spot: float
                       if not any(a > 0 and abs(v - a) <= tol for a in ok)})
         if bad:
             issues.append(f"report names T1 {', '.join(f'${v:g}' for v in bad)}; stored T1 is ${t1:g}")
+    # One stop per plan: the sizing stop (tactical_stop) and the invalidation level must agree.
+    # If invalidation sits BELOW the stop, the plan's real risk is larger than the share count implies
+    # (NOW: stop $103.86 for sizing, but invalidation $99.50 is where the thesis actually breaks).
+    inv_level = _f((watch_data.get("invalidation") or {}).get("price_level"))
+    if stop > 0 and 0 < inv_level < stop - tol:
+        issues.append(f"sizing stop ${stop:g} is above the invalidation ${inv_level:g}: shares are sized to a "
+                      f"tighter stop than where the thesis breaks (real risk is larger)")
     for k in held_option_strikes(position_block):
         if not re.search(rf"(?<![\d.]){re.escape(f'{k:g}')}(?:\.0+)?(?!\.?\d)", text):
             issues.append(f"held ${k:g} option never addressed")
@@ -59,6 +66,36 @@ def check(text: str, watch_data: Dict[str, Any], dw: Dict[str, Any], spot: float
         if k and em and spot and er and exp and er <= exp and k < spot * (1 + em / 100):
             issues.append(f"covered call ${k:g} is inside the 21-bar expected move (${spot * (1 + em / 100):.2f}) with earnings {er} before expiry {exp}")
     return list(dict.fromkeys(issues))
+
+
+_NON_ACTIONABLE_VERDICTS = ("STALK", "WATCH", "HOLD", "MANAGE", "CASH_SKIP", "NO_LEVELS", "AVOID", "REJECT")
+
+
+def _plan_not_actionable_now(watch_data: Dict[str, Any]) -> bool:
+    """A layered share count must not read as 'buy now' when the plan is not actionable at market.
+
+    True when the level gate rejected the plan, the verdict is a stalk/watch/hold state, or the
+    research itself flagged no entry at market (R:R below the layering floor with no starter tranche).
+    """
+    if watch_data.get("level_gate_rejected"):
+        return True
+    if not watch_data.get("actionable", True):
+        return True
+    v = str(watch_data.get("verdict") or "").upper()
+    if any(w in v for w in _NON_ACTIONABLE_VERDICTS):
+        return True
+    lay = (watch_data.get("shares_plan") or {}).get("layers") or {}
+    if lay.get("mode") in ("LIMITS_ONLY", "NO_SIZE"):
+        return True  # no marketable starter -> nothing to buy at market right now
+    return False
+
+
+def _layers_disclaimer(watch_data: Dict[str, Any]) -> str:
+    if watch_data.get("level_gate_rejected"):
+        return " *(display only — level gate rejected this plan)*"
+    if _plan_not_actionable_now(watch_data):
+        return " *(not actionable at market now — resting limits / stalk only; see verdict)*"
+    return ""
 
 
 def binding_block(watch_data: Dict[str, Any], issues: List[str], dw: Optional[Dict[str, Any]] = None) -> str:
@@ -78,6 +115,10 @@ def binding_block(watch_data: Dict[str, Any], issues: List[str], dw: Optional[Di
     if sp.get("exit_rule"):
         parts.append(f"exit: {sp['exit_rule']}")
     lines = [_MARK, f"> **Binding levels** ({watch_data.get('levels_source') or 'llm'}; these drive alerts and tickets): " + (" · ".join(parts) or "none")]
+    if isinstance(sp.get("layers"), dict):
+        from src.logic.layered_entry import layers_line
+
+        lines.append("> " + layers_line(sp["layers"]) + _layers_disclaimer(watch_data))
     if issues:
         lines.append("> ⚠️ **Report text disagrees — trust the binding levels:**")
         lines += [f"> - {i}" for i in issues]

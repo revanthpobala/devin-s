@@ -9,6 +9,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# In-memory mtime-aware caches to eliminate redundant disk reads across multi-pass research flows
+_DW_CACHE: dict[tuple[str, float], dict] = {}
+_DOSSIER_CACHE: dict[tuple[str, float], str] = {}
+_TRIAGE_CACHE: dict[tuple[str, float], dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Triage record loading (was _load_triage_record at module level)
@@ -35,9 +40,13 @@ def load_triage_record(
         for fname in (f"{safe}_thesis.json", f"{safe}_triage.json"):
             p = d / fname
             if p.exists():
-                # Check for stale cache against refreshed datawindow or chart artifacts
                 try:
                     p_mtime = p.stat().st_mtime
+                    cache_key = (str(p.resolve()), p_mtime)
+                    if cache_key in _TRIAGE_CACHE:
+                        return dict(_TRIAGE_CACHE[cache_key])
+
+                    # Check for stale cache against refreshed datawindow or chart artifacts
                     is_stale = False
                     for check_dir in search_dirs:
                         for art_name in (f"{safe}_datawindow.json", f"{safe}_datawindow.csv", f"{safe}_chart.png"):
@@ -57,6 +66,7 @@ def load_triage_record(
                     # _thesis.json wraps the record; _triage.json is flat.
                     rec = data.get("triage") or data.get("llm_data") or data
                     if isinstance(rec, dict) and rec:
+                        _TRIAGE_CACHE[cache_key] = dict(rec)
                         return rec
                 except Exception as e:
                     logger.debug(f"[{ticker}] Could not parse {p}: {e}")
@@ -136,40 +146,59 @@ def load_data_window(ticker: str, dw_path: Path) -> dict:
     """Load and return the data window JSON dict, or ``{}`` on failure.
     Injects derived missing Pine fields (RSI2 ATR14, RSI2 RSI2, Long RR At Market,
     Action Long/Short Code, Protocol Version, Prev Ext Z).
+    Cached by file mtime to avoid re-parsing JSON & CSV during multi-pass pipelines.
     """
     dw_path = Path(dw_path)
     if not dw_path.exists():
         logger.warning(f"[{ticker}] Data window JSON not found at {dw_path}")
         return {}
+
+    try:
+        mtime = dw_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+
+    cache_key = (str(dw_path.resolve()), mtime)
+    if cache_key in _DW_CACHE:
+        return dict(_DW_CACHE[cache_key])
+
     try:
         dw_dict = json.loads(dw_path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning(f"[{ticker}] Error loading data window: {e}")
         return {}
 
-    # Look for sibling or related datawindow CSV for OHLC derivations
-    df = None
-    safe = ticker.replace(":", "_")
-    csv_candidates = [
-        dw_path.with_suffix(".csv"),
-        dw_path.parent / f"{safe}_datawindow.csv",
-        dw_path.parent / f"{ticker}_datawindow.csv",
-    ]
-    for cand in csv_candidates:
-        if cand.exists():
-            try:
-                import pandas as pd
-                df = pd.read_csv(cand)
-                break
-            except Exception:
-                pass
+    # Check if key derived fields are already present to avoid expensive pandas CSV parse
+    has_pine_derived = (
+        dw_dict.get("Action Long Code") is not None
+        and dw_dict.get("Prev Ext Z") is not None
+    )
 
-    try:
-        from src.data.csv_adapter import derive_datawindow_fields
-        dw_dict = derive_datawindow_fields(dw_dict, df)
-    except Exception as e:
-        logger.debug(f"[{ticker}] derive_datawindow_fields notice: {e}")
+    if not has_pine_derived:
+        # Look for sibling or related datawindow CSV for OHLC derivations
+        df = None
+        safe = ticker.replace(":", "_")
+        csv_candidates = [
+            dw_path.with_suffix(".csv"),
+            dw_path.parent / f"{safe}_datawindow.csv",
+            dw_path.parent / f"{ticker}_datawindow.csv",
+        ]
+        for cand in csv_candidates:
+            if cand.exists():
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(cand)
+                    break
+                except Exception:
+                    pass
 
+        try:
+            from src.data.csv_adapter import derive_datawindow_fields
+            dw_dict = derive_datawindow_fields(dw_dict, df)
+        except Exception as e:
+            logger.debug(f"[{ticker}] derive_datawindow_fields notice: {e}")
+
+    _DW_CACHE[cache_key] = dict(dw_dict)
     return dw_dict
 
 
@@ -231,11 +260,18 @@ def load_news_dossier(ticker: str, dossier_path: Path, thesis_path: Path) -> str
     """Return the pre-compiled news research dossier string.
 
     Falls back to cached Alpaca sentiment from *thesis_path* when the dossier
-    file is missing or empty.
+    file is missing or empty. Cached by file mtime to eliminate duplicate reads.
     """
+    dossier_path = Path(dossier_path)
     if dossier_path.exists():
         try:
+            mtime = dossier_path.stat().st_mtime
+            ck = (str(dossier_path.resolve()), mtime)
+            if ck in _DOSSIER_CACHE:
+                return _DOSSIER_CACHE[ck]
+
             content = dossier_path.read_text(encoding="utf-8")
+            _DOSSIER_CACHE[ck] = content
             logger.info(f"[{ticker}] Loaded news research dossier ({len(content):,} chars)")
             return content
         except Exception as e:

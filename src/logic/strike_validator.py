@@ -8,6 +8,63 @@ Eliminates model rationalizations on naked legs, ITM credit spreads, or distorte
 from typing import List, Optional, Tuple
 
 
+def _direction_defects(
+    strat: str,
+    spot_price: float,
+    long_strike: Optional[float],
+    short_strike: Optional[float],
+    max_profit: Optional[float],
+    max_loss: Optional[float],
+) -> List[str]:
+    """Leg ordering and premium sign must match the structure's stated direction.
+
+    Credit verticals (bull put, bear call) collect premium: the short leg is the near strike and the
+    net is a credit (max_profit < |max_loss|, both reported per contract). Debit verticals (bull call,
+    bear put) pay premium: the long leg is the near strike and the net is a debit (|max_loss| < max_profit).
+    A sign/ordering mismatch means the label and the actual position disagree -- the NOW report called a
+    long-$105P / short-$95P / net-debit position a 'bull put spread R:R 3.9:1', which is a bear put debit.
+    """
+    out: List[str] = []
+    ls, ss = long_strike, short_strike
+    if ls is None or ss is None:
+        return out
+
+    def _debit() -> Optional[bool]:
+        if max_profit is None or max_loss is None:
+            return None
+        mp, ml = abs(float(max_profit)), abs(float(max_loss))
+        if mp == ml:
+            return None
+        return ml < mp  # debit: risk less than reward on a defined vertical
+
+    if "BULL_PUT" in strat or "PUT_CREDIT" in strat:
+        if not (ss > ls):
+            out.append(f"{strat}: a bull put credit spread sells the HIGHER put and buys the lower one, "
+                       f"but long ${ls:.2f} >= short ${ss:.2f} -- this is a bear put DEBIT, not a bull put credit.")
+        if _debit() is True:
+            out.append(f"{strat}: labelled a credit spread but the P&L is a net debit (max_loss < max_profit); "
+                       f"the position profits when price FALLS. Mislabelled direction.")
+    elif "BEAR_CALL" in strat or "CALL_CREDIT" in strat:
+        if not (ss < ls):
+            out.append(f"{strat}: a bear call credit spread sells the LOWER call and buys the higher one, "
+                       f"but short ${ss:.2f} >= long ${ls:.2f}. Mislabelled direction.")
+        if _debit() is True:
+            out.append(f"{strat}: labelled a credit spread but the P&L is a net debit. Mislabelled direction.")
+    elif "BULL_CALL" in strat or "CALL_DEBIT" in strat:
+        if not (ls < ss):
+            out.append(f"{strat}: a bull call debit spread buys the LOWER call and sells the higher one, "
+                       f"but long ${ls:.2f} >= short ${ss:.2f}. Mislabelled direction.")
+        if _debit() is False:
+            out.append(f"{strat}: labelled a debit spread but the P&L is a net credit. Mislabelled direction.")
+    elif "BEAR_PUT" in strat or "PUT_DEBIT" in strat:
+        if not (ls > ss):
+            out.append(f"{strat}: a bear put debit spread buys the HIGHER put and sells the lower one, "
+                       f"but long ${ls:.2f} <= short ${ss:.2f}. Mislabelled direction.")
+        if _debit() is False:
+            out.append(f"{strat}: labelled a debit spread but the P&L is a net credit. Mislabelled direction.")
+    return out
+
+
 def validate_strike_geometry(
     strategy_type: str,
     spot_price: float,
@@ -31,6 +88,11 @@ def validate_strike_geometry(
 
     if not spot_price or spot_price <= 0:
         return False, ["Missing or invalid spot price"]
+
+    # 0. Leg DIRECTION must match the structure name. A "bull put spread" that is long the higher
+    # strike and short the lower one (a net DEBIT) is really a bear put debit; the structure label
+    # and the P&L sign disagree. This catches the exact NOW defect the OTM checks missed.
+    defects += _direction_defects(strat, spot_price, long_strike, short_strike, max_profit, max_loss)
 
     try:
         exp_move_num = float(exp_move_pct_21b) if exp_move_pct_21b is not None else None

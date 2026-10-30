@@ -247,6 +247,9 @@ def due_jobs(now_et: datetime, ctl: Dict[str, Any], session: Optional[str] = Non
     if (not sweeping and "score" not in jobs and ctl.get("last_counterfactual_date") != session
             and retry("last_counterfactual_attempt_ts")):
         jobs.append("counterfactual")
+    if (not sweeping and "score" not in jobs and "counterfactual" not in jobs
+            and ctl.get("last_scorecard_date") != session and retry("last_scorecard_attempt_ts")):
+        jobs.append("scorecard")
     return jobs
 
 
@@ -277,6 +280,12 @@ def run_job(job: str, day: str, session: str) -> Any:
         bc.update(last_counterfactual_attempt_ts=time.time())
         res = counterfactual.run_all()
         bc.update(last_counterfactual_date=session, last_counterfactual=res)
+    elif job == "scorecard":
+        from src.tracking import research_scorecard
+
+        bc.update(last_scorecard_attempt_ts=time.time())
+        res = research_scorecard.run()
+        bc.update(last_scorecard_date=session, last_scorecard=res)
     elif job == "thesis":
         from src.tracking import thesis_ledger
 
@@ -312,7 +321,7 @@ def tick() -> None:
     day = now.strftime("%Y-%m-%d")
     session = current_session(now)
     for job in due_jobs(now, bc.read(), session):
-        if job in _running or (job in ("score", "counterfactual") and "sweep" in _running):
+        if job in _running or (job in ("score", "counterfactual", "scorecard") and "sweep" in _running):
             continue
         _running.add(job)
 

@@ -676,7 +676,10 @@ def _rescore_at_market(
     _ok, gate_reasons = is_actionable(gate_in, {"side": "long", "entry": live_price})
     running_reasons = [r for r in gate_reasons if "zone" not in r.lower()]
     try:
-        from src.logic.level_validation import EARNINGS_BLOCK_DAYS, earnings_days_for
+        # EARNINGS_BLOCK_DAYS lives in order_ticket; importing it from level_validation raised
+        # ImportError, which the except below swallowed, so this earnings block never ran.
+        from src.logic.level_validation import earnings_days_for
+        from src.logic.order_ticket import EARNINGS_BLOCK_DAYS
 
         _ed = earnings_days_for(ticker)
         if _ed is not None and 0 <= _ed <= EARNINGS_BLOCK_DAYS:

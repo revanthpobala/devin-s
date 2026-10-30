@@ -777,6 +777,8 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                         ]
                     }
                     messages.append(asst_msg)
+                    # Clear preliminary preamble chunks so they do not pollute the final synthesized answer
+                    full_answer_chunks.clear()
 
                     # Inform UI of active tool execution (live timeline start)
                     tool_names = [tc["name"] for tc in tool_calls_acc.values() if tc.get("name")]

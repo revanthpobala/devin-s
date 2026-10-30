@@ -169,8 +169,11 @@ def test_runaway_rescore_is_watch_only_without_a_measured_corpus():
         atr_at_signal=3.0,
     ))
 
+    # Earnings pinned to "unknown": the earnings block now actually runs (its import used to fail
+    # silently), and "RUN" is a real ticker whose live calendar would otherwise decide this test.
     with patch("run_watch_alerts.get_eastern_now", return_value=_mock_et()), \
          patch("run_watch_alerts.get_current_price", return_value=109.0), \
+         patch("src.logic.level_validation.earnings_days_for", return_value=None), \
          patch("src.tracking.execution_validator.get_bars_since_date", return_value=None):
         res = evaluate_watch_cycle(sync_sheets=False)
 

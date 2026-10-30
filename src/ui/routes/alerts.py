@@ -73,10 +73,26 @@ def get_alerts_today_board(date: Optional[str] = None):
 
         groups = {}
         for a in get_alerts_for_date(d):
-            g = groups.setdefault(a["symbol"], {"symbol": a["symbol"], "alerts": 0, "actions": set(), "strategies": set(), "price": a.get("alert_price"), "last": a.get("timestamp"), "setup": a.get("setup")})
+            g = groups.setdefault(a["symbol"], {"symbol": a["symbol"], "alerts": 0, "actions": set(), "strategies": set(), "price": None, "last": a.get("timestamp"), "setup": a.get("setup")})
+            if g["price"] is None:
+                g["price"] = a.get("alert_price") or a.get("market_price")
             g["alerts"] += 1
             g["actions"].add(a.get("action"))
             g["strategies"].add(a.get("strategy"))
+        # Rows with no stored price (synthetic coverage alerts whose insert-time quote failed) get a
+        # live price at read time; the coverage daemon back-fills the stored row on its next cycle.
+        no_px = [s for s, g in groups.items() if not g["price"]]
+        if no_px:
+            try:
+                from src.clients.price_client import get_current_prices_batch
+
+                live = get_current_prices_batch(no_px, context="surveillance") or {}
+                for s in no_px:
+                    if live.get(s):
+                        groups[s]["price"] = live[s]
+                        groups[s]["price_source"] = "live"
+            except Exception as e_px:
+                logger.debug(f"today-board live price fill failed: {e_px}")
         rows = []
         for sym, g in groups.items():
             fdir = raw / sym
@@ -93,7 +109,8 @@ def get_alerts_today_board(date: Optional[str] = None):
             reasons = wl.get("gate_reasons") or []
             rows.append({
                 "symbol": sym, "alerts": g["alerts"], "actions": sorted(x for x in g["actions"] if x),
-                "strategies": sorted(x for x in g["strategies"] if x), "price": g["price"], "last": g["last"],
+                "strategies": sorted(x for x in g["strategies"] if x), "price": g["price"],
+                "price_source": g.get("price_source", "alert" if g["price"] else None), "last": g["last"],
                 "stage": stage, "triage": tri.get("triage"), "triage_reason": tri.get("reason"), "flags": tri.get("flags") or [],
                 "deep_verdict": wl.get("verdict"), "gate_rejected": bool(wl.get("level_gate_rejected")),
                 "gate_reason": reasons[0] if reasons else None, "explore": sym in explore,

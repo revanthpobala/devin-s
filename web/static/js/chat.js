@@ -1975,6 +1975,7 @@ window.AppChat = {
                     this._flushRcStreamRender(assistantBubble, `> 💭 *Reasoning:* ...${snippet}\n\n_Formulating institutional response..._`, chatHeaderTitle, false);
                   }
                 } else if (data.status === 'tool_start') {
+                  fullAnswer = '';
                   this._rcToolStart(assistantBubble, data.tools || []);
                 } else if (data.status === 'tool_done') {
                   this._rcToolDone(assistantBubble, data.tools || [], data.total_ms || 0);

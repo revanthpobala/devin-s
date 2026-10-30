@@ -109,6 +109,11 @@ def _build_trust():
             from src.tracking.counterfactual import policy_report
 
             rep["components"] = {"scorecard": component_scorecard(load_component_rows()), "entry_policy": policy_report()}
+            try:
+                from src.tracking.research_scorecard import report as research_report
+                rep["components"]["research_scorecard"] = research_report()
+            except Exception as e_rs:
+                rep["components"]["research_scorecard"] = {"error": str(e_rs)}
         except Exception as e_comp:
             rep["components"] = {"error": str(e_comp)}
         try:

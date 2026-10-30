@@ -68,10 +68,29 @@ def validate_ticker(ticker: str) -> str:
     return ticker_u
 
 
+_EXTRACT_CARD_CACHE: dict[tuple[str, str, float], Dict[str, Any]] = {}
+
+
 def extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
     """Extract structured levels and PM verdict metadata for a research report."""
     ticker_u = ticker.upper()
     rep_dir = config.BASE_DIR / "reports" / date
+
+    # Fast mtime check on report file to avoid hundreds of disk and SQLite queries
+    main_rep = rep_dir / f"{ticker_u}_summary.md"
+    arb_rep = rep_dir / f"{ticker_u}_arbitration.md"
+    mtime = 0.0
+    for cand_f in (arb_rep, main_rep):
+        if cand_f.exists():
+            try:
+                mtime = cand_f.stat().st_mtime
+                break
+            except OSError:
+                pass
+
+    cache_key = (date, ticker_u, mtime)
+    if mtime > 0.0 and cache_key in _EXTRACT_CARD_CACHE:
+        return dict(_EXTRACT_CARD_CACHE[cache_key])
 
     # 1. Search for watch_levels.json across all known locations (raw, triage, reports)
     levels_candidates = [
@@ -228,7 +247,7 @@ def extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
         fade=dbt.get("fade"),
     )
 
-    return {
+    res_card = {
         "ticker": ticker_u,
         "date": date,
         "verdict": verdict,
@@ -244,6 +263,9 @@ def extract_report_card(date: str, ticker: str) -> Dict[str, Any]:
         "has_arbitration": (rep_dir / f"{ticker_u}_arbitration.md").exists(),
         "has_independent": (rep_dir / f"{ticker_u}_independent.md").exists(),
     }
+    if mtime > 0.0:
+        _EXTRACT_CARD_CACHE[cache_key] = dict(res_card)
+    return res_card
 
 
 def find_chart_path(date: str, ticker: str, chart_type: str) -> Optional[Path]:

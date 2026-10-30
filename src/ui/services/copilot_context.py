@@ -655,19 +655,8 @@ def _build_events_past_chat_context(ticker_u: str, date_str: str, history: list 
     if benchmarks:
         macro_notes.append(f"• **Live Market Regime Today:** {' | '.join(benchmarks)}")
 
-    # 4. Breaking News Past That Chat
+    # 4. Breaking News Past That Chat (Non-blocking: let LLM search on demand via tools if needed)
     news_lines = []
-    try:
-        from src.clients.search_client import search_web
-        res = search_web(f"{ticker_u} stock news {calendar_today}")
-        if res and isinstance(res, list):
-            for it in res[:3]:
-                t = it.get("title", "").strip()
-                b = it.get("body", "").strip()
-                if t:
-                    news_lines.append(f"• **{t}**\n  {b[:180]}")
-    except Exception:
-        pass
 
     # 5. Live SQLite Watch Target status
     watch_lines = []
@@ -1494,50 +1483,69 @@ def _build_single_ticker_context(ticker_u: str, date_str: str, question: str, hi
 
     def _fetch_quant_task():
         try:
-            from src.clients.llm_client import execute_python_code_tool
-            quant_py = """
-if not df.empty:
-    close = df['close'].iloc[-1]
-    high_52w = df['high'].tail(252).max()
-    low_52w = df['low'].tail(252).min()
-    sma20 = df['close'].tail(20).mean()
-    sma50 = df['close'].tail(50).mean()
-    sma200 = df['close'].tail(200).mean() if len(df) >= 200 else None
-    
-    returns = df['close'].pct_change().dropna()
-    hv20 = returns.tail(20).std() * np.sqrt(252) * 100
-    
-    high_low = df['high'] - df['low']
-    high_cp = (df['high'] - df['close'].shift()).abs()
-    low_cp = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    atr14 = tr.tail(14).mean()
-    atr_pct = (atr14 / close) * 100 if close else 0
-    
-    daily_vol = (hv20 / 100) / np.sqrt(252) if hv20 else 0.015
-    np.random.seed(42)
-    sim_returns = np.random.normal(0, daily_vol, (10000, 30))
-    price_paths = close * np.cumprod(1 + sim_returns, axis=1)
-    p_up_5 = np.mean(np.any(price_paths >= close * 1.05, axis=1)) * 100
-    p_down_5 = np.mean(np.any(price_paths <= close * 0.95, axis=1)) * 100
-    p_up_10 = np.mean(np.any(price_paths >= close * 1.10, axis=1)) * 100
+            # Fast, direct in-memory calculation from local raw datawindow. Takes ~10ms.
+            # (20,000-path Monte Carlo simulation is available on-demand via the run_monte_carlo_simulation tool)
+            import pandas as pd
+            import numpy as np
 
-    print(f"• Last Data Window Close: ${close:.2f}")
-    print(f"• 52-Week High / Low: ${high_52w:.2f} / ${low_52w:.2f}")
-    print(f"• Moving Averages: 20d SMA=${sma20:.2f} | 50d SMA=${sma50:.2f}" + (f" | 200d SMA=${sma200:.2f}" if sma200 else ""))
-    print(f"• 14d Average True Range (ATR): ${atr14:.2f} ({atr_pct:.2f}% of spot)")
-    print(f"• 20d Realized Volatility (HV20): {hv20:.1f}%")
-    print(f"• 30-Day Monte Carlo 10,000-Path Probabilities:")
-    print(f"  - P(Touch +5% Gain at ${close*1.05:.2f}): {p_up_5:.1f}%")
-    print(f"  - P(Touch -5% Drop at ${close*0.95:.2f}): {p_down_5:.1f}%")
-    print(f"  - P(Touch +10% Gain at ${close*1.10:.2f}): {p_up_10:.1f}%")
-"""
-            quant_out = execute_python_code_tool(quant_py, ticker=ticker_u, date_str=date_str)
-            if quant_out and "Error" not in quant_out and "No local" not in quant_out:
-                return f"### 🐍 VERIFIED PYTHON QUANTITATIVE ANALYTICS & MATH ({ticker_u}):\n{quant_out}"
+            cand_csv = t_raw_dir / f"{ticker_u}_datawindow.csv"
+            if not cand_csv.exists():
+                for od in sorted_hist_dates:
+                    c = raw_root / od / ticker_u / f"{ticker_u}_datawindow.csv"
+                    if c.exists():
+                        cand_csv = c
+                        break
+
+            if not cand_csv.exists():
+                return None
+
+            df_local = pd.read_csv(cand_csv)
+            if df_local.empty:
+                return None
+
+            c_col = next((c for c in df_local.columns if c.lower() == "close"), None)
+            h_col = next((c for c in df_local.columns if c.lower() == "high"), None)
+            l_col = next((c for c in df_local.columns if c.lower() == "low"), None)
+            if not (c_col and h_col and l_col):
+                return None
+
+            closes = pd.to_numeric(df_local[c_col], errors="coerce").dropna()
+            highs = pd.to_numeric(df_local[h_col], errors="coerce").dropna()
+            lows = pd.to_numeric(df_local[l_col], errors="coerce").dropna()
+            if len(closes) < 14:
+                return None
+
+            close = float(closes.iloc[-1])
+            high_52w = float(highs.tail(252).max())
+            low_52w = float(lows.tail(252).min())
+            sma20 = float(closes.tail(20).mean()) if len(closes) >= 20 else close
+            sma50 = float(closes.tail(50).mean()) if len(closes) >= 50 else close
+            sma200 = float(closes.tail(200).mean()) if len(closes) >= 200 else None
+
+            returns = closes.pct_change().dropna()
+            hv20 = float(returns.tail(20).std() * np.sqrt(252) * 100) if len(returns) >= 20 else 0.0
+
+            high_low = highs - lows
+            high_cp = (highs - closes.shift()).abs()
+            low_cp = (lows - closes.shift()).abs()
+            tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+            atr14 = float(tr.tail(14).mean())
+            atr_pct = (atr14 / close) * 100 if close else 0.0
+
+            sma200_str = f" | 200d SMA=${sma200:.2f}" if sma200 else ""
+            out = [
+                f"### 🐍 VERIFIED QUANTITATIVE TECHNICALS ({ticker_u}):",
+                f"• Last Data Window Close: ${close:.2f}",
+                f"• 52-Week High / Low: ${high_52w:.2f} / ${low_52w:.2f}",
+                f"• Moving Averages: 20d SMA=${sma20:.2f} | 50d SMA=${sma50:.2f}{sma200_str}",
+                f"• 14d Average True Range (ATR): ${atr14:.2f} ({atr_pct:.2f}% of spot)",
+                f"• 20d Realized Volatility (HV20): {hv20:.1f}%",
+                "• *Note: Multi-horizon Monte Carlo simulation cones (20,000 paths) available on-demand via `run_monte_carlo_simulation` tool.*"
+            ]
+            return "\n".join(out)
         except Exception as pe:
-            logger.debug(f"Python quantitative baseline error for {ticker_u}: {pe}")
-        return None
+            logger.debug(f"Quantitative baseline error for {ticker_u}: {pe}")
+            return None
 
     def _fetch_candles_task():
         try:
@@ -2898,6 +2906,9 @@ You MUST follow this exact structure:
         # The portfolio copilot answers about the book, not the research desk. The full daily
         # research briefing (pipelines, arbitration, jobs, ranked swing candidates) is noise for
         # this persona and costs ~50s of pipeline fetching plus ~125k chars of context.
+        is_overview_request = False
+    elif detected_tickers and any(s not in ("GENERAL", "AUTO", "NONE", "") for s in detected_tickers):
+        # When a specific ticker is being discussed, do not build the heavy multi-ticker daily desk overview.
         is_overview_request = False
     if is_overview_request:
         daily_overview_text, today_universe_tickers = _build_daily_overview_context(date_str, question)

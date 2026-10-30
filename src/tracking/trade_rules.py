@@ -89,3 +89,52 @@ def entry_max_for_rr(target: float, stop: float, rr: Optional[float] = None) -> 
     """Highest entry price at which (target - entry) / (entry - stop) still meets the green R:R (2.0)."""
     r = float(rr if rr is not None else GREEN_RR)
     return (target + r * stop) / (1.0 + r)
+
+
+# --- account-level caps (sizing guardrails, measurement-independent) --------------------------
+# The research edge is small (~+0.03R/trade relative to the market). Position size, concentration
+# and earnings-gap exposure are risk limits, not alpha. Every layered plan and ticket is capped by
+# these so a single name or a single gap cannot blow a hole in the account. Env-overridable.
+import os as _os
+
+ACCOUNT_EQUITY_USD = float(_os.getenv("ACCOUNT_EQUITY_USD", "170000"))
+MAX_POSITION_NOTIONAL_PCT = float(_os.getenv("MAX_POSITION_NOTIONAL_PCT", "0.05"))  # 5% of equity per name
+MAX_EARNINGS_GAP_LOSS_USD = float(_os.getenv("MAX_EARNINGS_GAP_LOSS_USD", "1000"))  # 2x implied move gap
+MIN_STOP_ATR_FOR_SIZING = STOP_ATR_MIN  # never size off a stop tighter than the 0.7 ATR floor
+
+
+def max_shares_by_notional(price: float, equity_usd: float = 0.0) -> int:
+    """Largest whole-share count whose notional stays within MAX_POSITION_NOTIONAL_PCT of equity."""
+    try:
+        p = float(price or 0.0)
+        eq = float(equity_usd or 0.0) or ACCOUNT_EQUITY_USD
+    except (TypeError, ValueError):
+        return 10_000_000
+    if p <= 0:
+        return 10_000_000
+    return max(0, int((eq * MAX_POSITION_NOTIONAL_PCT) / p))
+
+
+def max_shares_by_earnings_gap(
+    price: float, implied_move_pct: Optional[float], days_to_earnings: Optional[int],
+    window_bars: int = EARNINGS_WINDOW_BARS, max_gap_loss_usd: float = 0.0,
+) -> Optional[int]:
+    """Share cap so a down-gap of 2x the implied move loses at most max_gap_loss_usd.
+
+    Returns None when earnings are outside the holding window or the implied move is unknown (no cap).
+    A hard stop does NOT protect a gap, so this bounds exposure that the stop can't.
+    """
+    if not earnings_in_window(days_to_earnings):
+        return None
+    try:
+        p = float(price or 0.0)
+        im = float(implied_move_pct or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if p <= 0 or im <= 0:
+        return None
+    cap_usd = float(max_gap_loss_usd or MAX_EARNINGS_GAP_LOSS_USD)
+    gap_loss_per_share = p * (2.0 * im / 100.0)
+    if gap_loss_per_share <= 0:
+        return None
+    return max(0, int(cap_usd / gap_loss_per_share))

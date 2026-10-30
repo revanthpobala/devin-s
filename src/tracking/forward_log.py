@@ -44,6 +44,12 @@ UNMEASURED_RULES = {
         "status": "UNMEASURED",
         "min_observations": MIN_FORWARD_OBSERVATIONS,
     },
+    "LAYERED_ENTRY": {
+        "ship_date": "2026-10-28",
+        "description": "Deep-research plan scaled in: 1/3 at market when R:R at market >= 1.5 and no earnings in the block window, rest as limits at the zone; sized so risk if all fill = budget. In-sample n=67 (+0.41R mean, +0.15R median) is too small to claim an edge.",
+        "status": "UNMEASURED",
+        "min_observations": MIN_FORWARD_OBSERVATIONS,
+    },
     "RUNAWAY_AT_MARKET": {
         "ship_date": RUNAWAY_SHIP_DATE,
         "description": "At-market re-score after a level cross: price running above the plan, gates cleared, R:R at market >= floor. Not the in-zone PB lane, so it cannot claim that lane's edge until the honest replay measures it.",

@@ -1613,6 +1613,12 @@ window.AppDesk = {
                     ${opp.pm_bullets.map(b => `<div style="margin-bottom:3px;">• ${b}</div>`).join('')}
                   </div>` : ''}
 
+                  <!-- Layered entry (starter + zone limits, sized to the position target when held) -->
+                  ${opp.layers_line ? `
+                  <div style="margin-top:8px; font-size:11px; color:var(--text-main); background:rgba(16,185,129,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(16,185,129,0.25); font-family:var(--font-mono);">
+                    ${String(opp.layers_line).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}
+                  </div>` : ''}
+
                   <!-- Stalk Limit Price Target or Honest PB Note (Task f3) -->
                   ${opp.wait_for ? `
                   <div style="margin-top:8px; font-size:11px; color:var(--cyan); background:rgba(6,182,212,0.08); padding:6px 8px; border-radius:6px; border:1px solid rgba(6,182,212,0.25); font-family:var(--font-mono); font-weight:700;">
@@ -2118,6 +2124,7 @@ window.AppDesk = {
               <div style="font-family:var(--font-mono); font-size:11px; margin-top:6px;">
                 Chase cap ${esc(t.max_chase_price)} · Stop ${esc(t.stop)} · T1 ${esc(t.target_1)}${t.target_2 ? ' · T2 ' + esc(t.target_2) : ''} · R:R ${esc(t.rr_at_limit)} · Risk $${esc(t.risk_usd)}
               </div>
+              ${t.layers && t.layers.tranches && t.layers.tranches.length ? `<div style="font-family:var(--font-mono); font-size:11px; margin-top:4px;">🪜 ${t.layers.tranches.map(x => x.type === 'MARKET' ? `${esc(x.shares)} now (cap ${esc(x.limit_cap)})` : `${esc(x.shares)} @ ${esc(x.price)}`).join(' + ')} · avg if all fill ${esc(t.layers.avg_price_if_all_fill)} · ${esc(t.layers.why)}</div>` : ''}
               <div style="font-size:11px; margin-top:4px;">Good til ${esc(t.good_til)} · Cancel if ${esc(t.cancel_if)}${t.earnings_stance ? ' · Earnings ' + esc(t.earnings_stance) : ''}</div>
               ${t.bounce_target ? `<div style="font-size:11px; margin-top:4px;">${esc(t.play)}: bounce to ${esc(t.bounce_target)} by ${esc(t.exit_by)} (${esc(t.horizon_bars)} bars)</div>` : ''}
               ${t.option_alternative && t.option_alternative.cost_usd ? `<div style="font-size:11px; margin-top:4px;">Option: ${esc(t.option_alternative.structure)} ${esc(t.option_alternative.expiration)} ${esc(t.option_alternative.long_strike)}${t.option_alternative.short_strike ? '/' + esc(t.option_alternative.short_strike) : ''} @ ${esc(t.option_alternative.mid_debit != null ? t.option_alternative.mid_debit : 'credit ' + t.option_alternative.mid_credit)} (max loss $${esc(t.option_alternative.cost_usd)}, BE ${esc(t.option_alternative.breakeven)}, R@T1 ${esc(t.option_alternative.r_at_t1)})</div>` : (t.option_dropped ? `<div style="font-size:11px; margin-top:4px; color:#999;">Option dropped: ${esc(t.option_dropped)}</div>` : '')}

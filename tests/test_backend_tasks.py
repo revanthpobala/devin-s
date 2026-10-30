@@ -61,7 +61,9 @@ def test_due_jobs_schedule(monkeypatch):
     assert bt.due_jobs(mon_after, swept) == ["score"]
     scored = {**swept, "last_score_date": "2026-10-12"}
     assert bt.due_jobs(mon_after, scored) == ["counterfactual"]
-    assert bt.due_jobs(mon_after, {**scored, "last_counterfactual_date": "2026-10-12"}) == []
+    cf_done = {**scored, "last_counterfactual_date": "2026-10-12"}
+    assert bt.due_jobs(mon_after, cf_done) == ["scorecard"]
+    assert bt.due_jobs(mon_after, {**cf_done, "last_scorecard_date": "2026-10-12"}) == []
     assert bt.due_jobs(mon_after, {**swept, "last_score_attempt_ts": mon_after.timestamp() - 60}) == ["counterfactual"]
     # Missed close: Saturday and Tuesday morning catch up on the last completed session.
     assert bt.due_jobs(sat, {"last_backup_date": "2026-10-17"}) == ["chain", "sweep"]

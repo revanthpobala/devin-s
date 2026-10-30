@@ -420,8 +420,25 @@ TOOLS = [
                     },
                     "plugin_name": {
                         "type": "string",
-                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility", "schwab_analytics", "options_skew_gex"],
-                        "description": "The specific analytics plugin to execute. Use 'options_skew_gex' for Net Dealer Gamma Exposure (GEX), 25-delta skew, call/put walls, and gamma flip; 'schwab_analytics' for active broker holdings & 90d unusual options sweeps; 'tastytrade_volatility' for IV Rank and borrow rates.",
+                        "enum": ["all", "order_flow", "earnings_history", "squeeze_expansion", "htf_confluence", "candlestick_patterns", "tastytrade_volatility", "schwab_analytics", "options_skew_gex", "monte_carlo"],
+                        "description": "The specific analytics plugin to execute. Use 'options_skew_gex' for Net Dealer Gamma Exposure (GEX), 25-delta skew, call/put walls, and gamma flip; 'schwab_analytics' for active broker holdings & 90d unusual options sweeps; 'tastytrade_volatility' for IV Rank and borrow rates; 'monte_carlo' for 20,000-path simulation.",
+                    },
+                },
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_monte_carlo_simulation",
+            "description": "Runs an on-demand 20,000-path Geometric Brownian Motion Monte Carlo simulation across 21d, 45d, 63d, and 126d horizons. Computes P(Target before Stop), P(Stop before Target), 5th-95th percentile price cones, barrier touch probabilities, and Volatility Risk Premium (VRP). ONLY invoke this tool when the user specifically asks for Monte Carlo simulations, probability distribution cones, or touch odds.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'AMZN', 'AAPL', 'NVDA')",
                     },
                 },
                 "required": ["ticker"],
@@ -1012,16 +1029,24 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         df = df[keep_cols]
         dw = {}
 
-    # Preload df_daily and df_intraday from live Schwab candle service
+    # Preload df_daily and df_intraday from live Schwab candle service.
+    # CRITICAL: wrap in a strict timeout — fetch_candles can block indefinitely on
+    # network errors (Schwab auth refresh, slow Wi-Fi). The 5s exec-sandbox timeout
+    # does NOT cover this setup phase, so we gate it separately.
     df_daily = pd.DataFrame()
     df_intraday = pd.DataFrame()
     try:
         from src.tracking.candle_service import fetch_candles
-        candle_res = fetch_candles(ticker, interval="5m", days=5)
-        if candle_res.get("df_daily") is not None and not candle_res["df_daily"].empty:
-            df_daily = candle_res["df_daily"].copy(deep=True)
-        if candle_res.get("df_intraday") is not None and not candle_res["df_intraday"].empty:
-            df_intraday = candle_res["df_intraday"].copy(deep=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _preload_ex:
+            _preload_future = _preload_ex.submit(fetch_candles, ticker, "5m", 5)
+            try:
+                candle_res = _preload_future.result(timeout=4.0)
+                if candle_res.get("df_daily") is not None and not candle_res["df_daily"].empty:
+                    df_daily = candle_res["df_daily"].copy(deep=True)
+                if candle_res.get("df_intraday") is not None and not candle_res["df_intraday"].empty:
+                    df_intraday = candle_res["df_intraday"].copy(deep=True)
+            except concurrent.futures.TimeoutError:
+                logger.debug(f"Candle preload timed out for sandbox {ticker} — running without live candles")
     except Exception as e_c:
         logger.debug(f"Could not preload live candles into sandbox for {ticker}: {e_c}")
 
@@ -1055,21 +1080,28 @@ def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = Non
         "df_intraday": df_intraday.copy(deep=True),
         "dw": json.loads(json.dumps(dw)),
         "ticker": ticker,
-        "print": print,
+        "print": print,  # overridden inside _run_sandbox with thread-safe version
     }
 
     def _run_sandbox():
         stdout_buf = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = stdout_buf
+
+        # Thread-safe print: write directly into the buffer rather than redirecting
+        # the shared sys.stdout global (which is NOT thread-safe and causes silent
+        # output loss when multiple tool calls run concurrently).
+        def _sandbox_print(*args, sep=" ", end="\n", **kwargs):
+            stdout_buf.write(sep.join(str(a) for a in args) + end)
+
+        sandbox_globals["print"] = _sandbox_print
+
         try:
             exec(code, sandbox_globals)
             output = stdout_buf.getvalue()
             if not output.strip():
                 output = "(Code executed successfully with no print output. Tip: Use print(...) to return calculated values.)"
             return output.strip()
-        finally:
-            sys.stdout = old_stdout
+        except Exception as exec_err:
+            raise exec_err
 
     # Strict 5.0-second timeout
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -1368,6 +1400,8 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
     elif function_name == "run_quantitative_plugin":
         plugin_slug = re.sub(r'[^\w\-]', '_', str(args.get("plugin_name", "all")).lower()).strip('_')
         cache_key = f"quant_plugin_{plugin_slug}"
+    elif function_name == "run_monte_carlo_simulation":
+        cache_key = "monte_carlo_sim"
     elif function_name == "fetch_prior_research":
         lookback_slug = re.sub(r'[^\w\-]', '_', str(args.get("lookback_days", 14))).strip('_')
         cache_key = f"prior_research_{lookback_slug}"
@@ -1519,6 +1553,12 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         logger.info(f"LLM executed tool: run_quantitative_plugin(ticker='{ticker}', plugin='{plugin_name}')")
         res_str = run_quantitative_plugin_tool(ticker, plugin_name=plugin_name, date_str=date_str, is_independent=is_independent)
         artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "run_monte_carlo_simulation":
+        t_req = (args.get("ticker") or ticker or "").upper()
+        logger.info(f"LLM executed tool: run_monte_carlo_simulation(ticker='{t_req}')")
+        res_str = run_quantitative_plugin_tool(t_req, plugin_name="monte_carlo", date_str=date_str, is_independent=is_independent)
+        artifact_cache.save(date_str, t_req, cache_key, res_str)
         return res_str
     elif function_name == "fetch_prior_research":
         lookback = int(args.get("lookback_days", 14))

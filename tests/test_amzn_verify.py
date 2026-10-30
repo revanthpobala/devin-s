@@ -21,8 +21,8 @@ def test_amzn_darkpool_engine():
 
 def test_amzn_darkpool_formatter():
     md = format_darkpool_block("AMZN")
-    assert "OFF-EXCHANGE / DARK POOL ORDER FLOW" in md
-    assert "Key Institutional Defense / Resistance Shelves" in md
+    assert "OFF-EXCHANGE (FINRA TRF) TAPE" in md
+    assert "Off-exchange volume clusters in window" in md
 
 
 def test_amzn_darkpool_api_endpoint():

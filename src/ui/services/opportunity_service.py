@@ -259,6 +259,16 @@ def _collect_opportunities_uncached(lookback_days: int = 3) -> List[Dict[str, An
                 v_label = f"EQUITY SHARES · Entry: ${entry_low:.2f}–${entry_high:.2f} · Stop: ${stop:.2f} · T1: ${target_1:.2f}"
 
             pm_bullets = _extract_pm_takeaways(arb_file, max_bullets=2)
+            layers_line = None
+            if isinstance(shares_p.get("layers"), dict):
+                try:
+                    from src.logic.layered_entry import layers_line as _ll
+
+                    layers_line = _ll(shares_p["layers"])
+                    if watch_data.get("level_gate_rejected"):
+                        layers_line += " (display only, level gate rejected)"
+                except Exception:
+                    layers_line = None
             invalidation = watch_data.get("invalidation") or {}
             conviction = int(watch_data.get("conviction") or 6)
 
@@ -280,6 +290,7 @@ def _collect_opportunities_uncached(lookback_days: int = 3) -> List[Dict[str, An
                 "vehicle_label": v_label,
                 "options_plan": options_p,
                 "pm_bullets": pm_bullets,
+                "layers_line": layers_line,
                 "invalidation": invalidation,
                 "summary_path": str(sum_file) if sum_file.exists() else None,
                 "arbitration_path": str(arb_file),

@@ -518,6 +518,50 @@ def run_arbitration(
             except Exception as e_rep:
                 logger.warning(f"[{ticker}] ticket repair skipped: {e_rep}")
 
+            # Layered entry: a starter now (when R:R at market clears the floor and no earnings in
+            # the block window) plus limits at the zone, sized so risk if ALL fill = the budget.
+            # One resting limit 20c under spot missed RKLB/ON/EBAY runs; see src/logic/layered_entry.py.
+            try:
+                from src.logic.layered_entry import build_layers
+                from src.logic.level_validation import earnings_days_for
+                from src.logic.order_ticket import EARNINGS_BLOCK_DAYS
+                from src.tracking import trade_rules as _tr
+
+                try:
+                    _ed = earnings_days_for(ticker, date_str, dw_dict)
+                except Exception:
+                    _ed = None
+                _sp_l = watch_data.setdefault("shares_plan", {})
+                _im = None
+                for _k in ("Exp Move Pct 21b", "implied_move_pct", "iv_expected_move_pct"):
+                    _v = dw_dict.get(_k) if isinstance(dw_dict, dict) else None
+                    if _v not in (None, "", "N/A"):
+                        try:
+                            _im = float(_v)
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                _layers = build_layers(
+                    spot_num, _sp_l.get("entry_zone_low"), _sp_l.get("entry_zone_high"),
+                    _sp_l.get("tactical_stop"), _sp_l.get("target_1"), watch_data.get("atr14"),
+                    _tr.DEFAULT_RISK_BUDGET_USD, earnings_days=_ed, earnings_block_days=EARNINGS_BLOCK_DAYS,
+                    implied_move_pct=_im, equity_usd=_tr.ACCOUNT_EQUITY_USD,
+                )
+                if _layers:
+                    # Held name: size the layers as the gap to the per-ticker target position
+                    # (data/position_targets.json), "no adds" at/above it.
+                    try:
+                        from src.logic.layered_entry import cap_layers_to_position
+                        from src.tracking.position_targets import get_target, held_shares
+
+                        _layers = cap_layers_to_position(_layers, held_shares(ticker), get_target(ticker))
+                    except Exception as e_pos:
+                        logger.debug(f"[{ticker}] position-target sizing skipped: {e_pos}")
+                    _sp_l["layers"] = _layers
+                    logger.info(f"[{ticker}] layered entry: {_layers['mode']} ({_layers['why']})")
+            except Exception as e_lay:
+                logger.warning(f"[{ticker}] layered entry skipped: {e_lay}")
+
         from src.logic.pine_levels import apply_rsi2_order
 
         rsi2_order = (triage_lane == "RSI2" and "CASH_SKIP" not in str(watch_data.get("verdict", "")).upper()
@@ -644,6 +688,12 @@ def run_arbitration(
             except Exception as e_rej:
                 logger.debug(f"[{ticker}] rejected judge suggestion not logged: {e_rej}")
             clean_judge += f"\n\n> 🛑 **LEVEL GATE REJECTED**: {'; '.join(_reasons)}"
+            _lay = (watch_data.get("shares_plan") or {}).get("layers")
+            if _lay:
+                from src.logic.layered_entry import layers_markdown
+
+                _lay["status"] = "DISPLAY_ONLY (level gate rejected)"
+                clean_judge += "\n\n" + layers_markdown(_lay, ticker, rejected=True)
             # Still write watch_levels.json so the briefing/UI can display the thesis card.
             # Mark level_gate_rejected=True and options_plan actionable=False so callers know not to treat these as actionable levels.
             watch_data["level_gate_rejected"] = True
@@ -659,6 +709,16 @@ def run_arbitration(
             raw_gate_watch_path.write_text(json.dumps(watch_data, indent=2), encoding="utf-8")
             logger.info(f"[{ticker}] watch_levels.json written (gate-rejected, display-only) → {gate_watch_path}")
             arbitration_path.write_text(clean_judge, encoding="utf-8")
+            # The binding/layered header goes on top of both reports here too; this early return
+            # used to skip it, so rejected plans showed their layers only at the end of arbitration.
+            try:
+                from src.logic import report_consistency as rc
+
+                _blk = rc.binding_block(watch_data, [], dw_dict)
+                rc.stamp(arbitration_path.parent / f"{ticker}_summary.md", _blk)
+                rc.stamp(arbitration_path, _blk)
+            except Exception as e_rc:
+                logger.debug(f"[{ticker}] binding block skipped (rejected plan): {e_rc}")
             _record_research_completed(ticker, date_str, dw_dict, watch_data.get("shares_plan") or plan)
             return clean_judge
 
@@ -801,6 +861,23 @@ def run_arbitration(
                 void_ticket(ticker, date_str, "latest research has no valid entry plan")
         except Exception as e_tk:
             logger.warning(f"[{ticker}] ticket build skipped: {e_tk}")
+
+        _lay = sp.get("layers")
+        if _lay:
+            from src.logic.layered_entry import layers_markdown
+
+            _lay["status"] = "ACTIVE" if watch_data.get("actionable") else "WATCH (gate not clear)"
+            clean_judge += "\n\n" + layers_markdown(_lay, ticker)
+            if _lay["mode"] == "STARTER_PLUS_LIMITS" and watch_data.get("actionable"):
+                try:
+                    from src.tracking.forward_log import record_forward_observation
+
+                    record_forward_observation("LAYERED_ENTRY", ticker, {
+                        "date": date_str, "spot": spot_num, "rr_at_market": _lay["rr_at_market"],
+                        "tranches": _lay["tranches"], "stop": _lay["stop"], "target_1": _lay["target_1"],
+                    })
+                except Exception as e_fl:
+                    logger.debug(f"[{ticker}] LAYERED_ENTRY forward log skipped: {e_fl}")
 
         upsert_watch_target(watch_data)
         logger.info(f"[{ticker}] Watch levels upserted to SQLite watch DB (suggestion_id={watch_data.get('suggestion_id')}).")
