@@ -119,8 +119,9 @@ def toggle_continuous_screener_pause_endpoint():
 def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str = Query("long")):
     """Fetch current coiled pre-move swing candidates (Long or Short) from survivors manifests."""
     raw_dir = config.BASE_DIR / "data" / "raw"
-    target_date = date
-    req_side = (side or "").lower()
+    target_date = date if isinstance(date, str) and date else None
+    raw_side = side.default if hasattr(side, "default") else (side or "long")
+    req_side = (str(raw_side) or "").lower()
 
     if req_side == "short":
         primary_fname = "short_survivors.json"
@@ -218,7 +219,7 @@ def get_schwab_screener_candidates(date: Optional[str] = Query(None), side: str 
 
     return {
         "date": target_date,
-        "side": (side or "long").upper(),
+        "side": req_side.upper(),
         "count": len(enriched),
         "eligible_count": sum(1 for c in enriched if c.get("eligible")),
         "candidates": enriched,

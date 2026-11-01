@@ -1873,6 +1873,18 @@ window.AppChat = {
         if (['GENERAL', 'AUTO', 'NONE', 'ALL', 'STOCK', 'MARKET'].includes(activeTicker)) activeTicker = '';
       }
 
+      // Broad market, personal finances, cash management, emotional trading reflection, or conceptual questions
+      // should drop any stale single-ticker focus unless the user explicitly named that ticker ($TICKER or stock TICKER)
+      // or asked an unmistakable follow-up about it ("its price", "the stock", "stop loss", etc.).
+      const generalReflection = /(paycheck|salary|wages|deposit|savings|cash\s*flow|emergency\s*fund|bills?|rent|income|sitting\s*on\s*cash|staying\s*in\s*cash|holding\s*cash|keep\s*in\s*cash|stay\s*in\s*cash|all\s*cash|dry\s*powder|not\s*(gonna|going\s*to)?\s*(buy|trade|add|enter|touch|chase)\s*(anything|any|more|stocks?|shares?)|taking\s*a\s*(break|breather|step\s*back|pause)|taking\s*time\s*off|stepping\s*away|brutal\s*(month|week|day|year)|tough\s*(month|week|day|year)|bad\s*(month|week|day)|rough\s*(month|week|day)|lost\s*money|broad\s*market|whole\s*market|overall\s*market|market\s*conditions?|macro\s*picture|market\s*(flushed|tanked|dumped|crashed|selloff|rout|bleed|crash)|everything\s*(is\s*)?red|when\s+does\s+it\s+make\s+sense|how\s+(do|does|can)\s+(?:[\w\s]{0,25}?\b)?(?:spreads?|leaps?|options?|calls?|puts?|condors?|straddles?|strangles?|theta|gamma|delta|vega|greeks?|iv|volatility)\s+work|what\s+is\s+theta\s+decay|what\s+(is|are)\s+options?)/i;
+      const explicitPromptTicker = /\$[A-Za-z]{1,5}\b/.test(question) || /\b(?:stock|ticker|symbol|quote\s+for)\s+[A-Za-z]{1,5}\b/i.test(question);
+      const continuityToFocus = /\b((?:buy|bought|buying|sell|sold|selling|hold|holding|trade|trading|short|long|close|trim|add|scale)\s+(?:it|this|that|them)|(?:about|for|on|with|into|of)\s+(?:it|this|that|them)|(?:its|their)\s+(?:price|spot|chart|stop|target|targets|levels?|support|resistance|earnings|gate|thesis|setup|entry|breakout|iv)|the\s+(?:stock|company|setup|ticker|trade|position|underlying)|stop\s*loss|targets?|entry\s*zone|breakout)\b/i.test(question);
+
+      if (activeTicker && generalReflection.test(question) && !explicitPromptTicker && !continuityToFocus) {
+        activeTicker = '';
+        this.clearRevChatFocus();
+      }
+
       // Portfolio Chat detection: this chat is a SEPARATE persona from the generic REV CHAT desk.
       // It fires when the question is about the book itself, or when the user is on the Schwab
       // Portfolio desk and is not asking about a specific stock. It must never be captured by a
@@ -1881,7 +1893,7 @@ window.AppChat = {
       const pfQuestion = /(portfolio|holdings?|positions?|my\s+(trades?|account|book|legs?|spreads?|leaps|shares|options?|contracts?|schwab|covered\s+calls?)|covered\s+calls?|allocation|concentrat\w*|net\s+liquidation|account\s+balance|buying\s+power|net\s+worth|dry\s+powder|cash\s+balance|what\s+do\s+i\s+own|what\s+am\s+i\s+holding|do\s+i\s+own|how\s+much\s+\w+\s+do\s+i\s+(own|have)|ndxp|brokerage)/i;
       // Unmistakable book-ownership phrasing switches the chat to the dedicated portfolio persona
       // from any desk; the broad regex only does so while the Portfolio desk is the active desk.
-      const pfStrong = /(my\s+(portfolio|book|account|holdings|positions|trades|schwab|brokerage|shares|options?|contracts?|legs?|spreads?|leaps|covered\s+calls?|covered\s+call)|portfolio\s+(summary|update|status|review|health|thoughts|overview|tactics)|thoughts\s+on\s+the\s+portfolio|summariz\w*\s+.{0,25}portfolio|net\s+liquidation|what\s+do\s+i\s+own|how\s+is\s+my\s+book|over-?concentrat\w*|dry\s+powder)/i;
+      const pfStrong = /(my\s+(portfolio|book|account|holdings|positions|trades|schwab|brokerage|shares|options?|contracts?|legs?|spreads?|leaps|covered\s+calls?|covered\s+call)|portfolio\s+(summary|update|status|review|health|thoughts|overview|tactics)|thoughts\s+on\s+the\s+portfolio|summariz\w*\s+.{0,25}portfolio|net\s+liquidation|what\s+do\s+i\s+own|how\s+is\s+my\s+book|over-?concentrat\w*|dry\s+powder|paycheck|salary|cash\s*flow|emergency\s*fund|brutal\s*(month|week)|tough\s*(month|week)|not\s*(gonna|going\s*to)?\s*(buy|trade)\s*anything)/i;
       const isPortfolioChat = this._portfolioMode || this._forcePortfolioChat || pfStrong.test(question) || (
         currentDeskName === 'portfolio' && (pfQuestion.test(question) || !activeTicker)
       );

@@ -34,33 +34,60 @@ def _make_async_openai_client(
     default_headers: Optional[dict] = None,
 ) -> tuple[Any, httpx.AsyncClient]:
     """
-    Creates an AsyncOpenAI client backed by a tuned httpx.AsyncClient connection pool.
-    keepalive_expiry=15.0 ensures that idle pooled connections are closed and fresh
-    sockets are opened on subsequent tool turns, preventing Cloudflare 60s idle
-    socket drops (RemoteProtocolError / APIConnectionError: Connection error).
+    Creates an AsyncOpenAI client backed by a tuned httpx.AsyncClient with active retries
+    and transport-level connection recovery to prevent Cloudflare/OpenRouter idle socket drops
+    (RemoteProtocolError / APIConnectionError: Connection error).
     """
     limits = httpx.Limits(
-        max_keepalive_connections=5,
-        max_connections=20,
-        keepalive_expiry=15.0,
+        max_keepalive_connections=10,
+        max_connections=30,
+        keepalive_expiry=60.0,
     )
     timeout = httpx.Timeout(
-        connect=25.0,
-        read=180.0,
-        write=30.0,
-        pool=15.0,
+        connect=30.0,
+        read=300.0,
+        write=60.0,
+        pool=30.0,
     )
-    http_client = httpx.AsyncClient(limits=limits, timeout=timeout)
+    transport = httpx.AsyncHTTPTransport(retries=3, limits=limits)
+    http_client = httpx.AsyncClient(transport=transport, timeout=timeout)
     client_kwargs: dict[str, Any] = {
         "base_url": base_url,
         "api_key": api_key,
-        "timeout": 180,
+        "timeout": 300,
         "http_client": http_client,
         "max_retries": 3,
     }
     if default_headers:
         client_kwargs["default_headers"] = default_headers
     return openai.AsyncOpenAI(**client_kwargs), http_client
+
+
+async def _open_stream_with_retries(client, create_kwargs, max_attempts=3):
+    """
+    Opens an LLM completion stream with automatic retry on transient socket/connection drops.
+    Retries immediately on connection resets, RemoteProtocolError, and EOF read errors.
+    """
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await client.chat.completions.create(**create_kwargs)
+        except Exception as ex:
+            last_err = ex
+            ex_str = str(ex).lower()
+            is_conn_error = any(
+                w in ex_str
+                for w in ("connection", "remote", "protocol", "reset", "closed", "timeout", "econnreset", "broken pipe")
+            )
+            if is_conn_error and attempt < max_attempts:
+                logger.warning(
+                    f"[Copilot Stream] Transient connection failure on attempt {attempt}/{max_attempts}: {ex}. "
+                    f"Retrying in {attempt * 0.8:.1f}s..."
+                )
+                await asyncio.sleep(attempt * 0.8)
+                continue
+            raise
+    raise last_err
 
 
 class CopilotChatRequest(BaseModel):
@@ -76,8 +103,8 @@ class CopilotChatRequest(BaseModel):
 
 class SaveChatMessageRequest(BaseModel):
     session_id: str
-    ticker: str
-    date: str
+    ticker: Optional[str] = "GENERAL"
+    date: Optional[str] = None
     role: str
     content: str
 
@@ -421,16 +448,16 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
             question_text = "Provide a summary of current market status and actionable setups."
 
         initial_ticker = (req.ticker or "").strip().upper()
+        session_id = req.session_id or f"sess_{initial_ticker or 'GENERAL'}_{uuid.uuid4().hex[:8]}"
 
         async def token_generator():
-            # 1. Immediately yield initial connection event so client receives HTTP 200 in <50ms
-            yield f"data: {json.dumps({'status': 'connecting', 'ticker': initial_ticker})}\n\n"
+            # 1. Immediately yield initial connection event with session_id so client can track/recover in <50ms
+            yield f"data: {json.dumps({'status': 'connecting', 'ticker': initial_ticker, 'session_id': session_id})}\n\n"
 
             if await request.is_disconnected():
                 return
 
             from starlette.concurrency import run_in_threadpool
-            session_id = req.session_id or f"sess_{initial_ticker or 'GENERAL'}_{uuid.uuid4().hex[:8]}"
             _save_chat_turn(session_id, initial_ticker, req.date, "user", question_text)
             try:
                 build_task = asyncio.create_task(run_in_threadpool(
@@ -597,11 +624,18 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                     if not is_openrouter:
                         create_kwargs["extra_body"] = {"cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}}
                     else:
-                        create_kwargs["extra_body"] = {"include_reasoning": False}
+                        create_kwargs["extra_body"] = {
+                            "include_reasoning": True,
+                            "provider": {"allow_fallbacks": True},
+                        }
 
                     if turn_tools_enabled:
                         create_kwargs["tools"] = TOOLS
                         create_kwargs["tool_choice"] = "auto"
+                    elif not is_openrouter:
+                        # On local llama.cpp server, keep tools with tool_choice='none' so the prompt template at token 0 stays identical and prefix cache hits 100%
+                        create_kwargs["tools"] = TOOLS
+                        create_kwargs["tool_choice"] = "none"
 
                     # The call itself blocks while the GPU has no free slot, before any token loop
                     # exists, so poll it and keep the user informed instead of a silent stream.
@@ -609,7 +643,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
 
                     if not is_openrouter:
                         chat_priority.mark_waiting()
-                    open_task = asyncio.create_task(client.chat.completions.create(**create_kwargs))
+                    open_task = asyncio.create_task(_open_stream_with_retries(client, create_kwargs))
                     client_gone = False
                     while True:
                         opened, _ = await asyncio.wait([open_task], timeout=CHAT_WAIT_TICK_S)
@@ -644,7 +678,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             tools_enabled = False
                             create_kwargs.pop("tools", None)
                             create_kwargs.pop("tool_choice", None)
-                            stream_response = await client.chat.completions.create(**create_kwargs)
+                            stream_response = await _open_stream_with_retries(client, create_kwargs)
                         else:
                             raise
 
@@ -690,6 +724,12 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                             break
                         except (asyncio.CancelledError, GeneratorExit):
                             break
+                        except Exception as chunk_read_err:
+                            logger.warning(f"[Copilot Stream] Stream read terminated: {chunk_read_err}")
+                            if full_answer_chunks:
+                                # Prior tokens already streamed to user; conclude gracefully
+                                break
+                            raise
 
                         if await request.is_disconnected():
                             break
@@ -852,7 +892,7 @@ async def copilot_chat_stream_endpoint(req: CopilotChatRequest, request: Request
                 complete_answer = re.sub(r"</?[a-zA-Z0-9_]+>", "", complete_answer)
                 complete_answer = re.sub(r"⚙️\s*\*Executing live tool.*?\(s\):.*?\*", "", complete_answer)
                 complete_answer = complete_answer.strip()
-                if complete_answer and len(complete_answer) > 20:
+                if complete_answer and len(complete_answer) > 3:
                     _save_chat_turn(session_id, ticker_u, date_str, "assistant", complete_answer)
                     answer_saved = True
 

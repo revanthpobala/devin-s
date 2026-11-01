@@ -181,12 +181,30 @@ _GENERAL_CONCEPT_PATTERNS = [
     re.compile(r"\b(?:leap\s+spreads?|vertical\s+spreads?|credit\s+spreads?|debit\s+spreads?|iron\s+condors?|calendar\s+spreads?|diagonal\s+spreads?|covered\s+calls?|cash\s+secured\s+puts?|options\s+trading|options\s+basics|greeks|theta\s+decay|iv\s+crush)\b", re.IGNORECASE),
 ]
 
+_GENERAL_CONVERSATION_PATTERNS = [
+    re.compile(r"\b(?:paycheck|salary|wages|deposit|savings|cash\s*flow|emergency\s*fund|bills?|rent|expenses?|income)\b", re.IGNORECASE),
+    re.compile(r"\b(?:sitting\s*on\s*cash|staying\s*in\s*cash|holding\s*cash|keep\s*in\s*cash|stay\s*in\s*cash|all\s*cash|cash\s*is\s*king|dry\s*powder)\b", re.IGNORECASE),
+    re.compile(r"\b(?:not\s*(?:gonna|going\s*to)?\s*(?:buy|trade|add|enter|touch|chase)\s*(?:anything|any|more|stocks?|shares?|positions?))\b", re.IGNORECASE),
+    re.compile(r"\b(?:taking\s*a\s*(?:break|breather|step\s*back|pause)|taking\s*time\s*off|stepping\s*away|sit\s*on\s*my\s*hands)\b", re.IGNORECASE),
+    re.compile(r"\b(?:brutal|tough|rough|bad|terrible|awful|horrible|painful)\s*(?:month|week|day|year|stretch|session|period)\b", re.IGNORECASE),
+    re.compile(r"\b(?:lost\s*money|down\s*bad|chopped\s*up|bleed\s*out|bleeding\s*red)\b", re.IGNORECASE),
+    re.compile(r"\b(?:broad\s*market|whole\s*market|overall\s*market|market\s*conditions?|macro\s*picture|market\s*(?:flushed|tanked|dumped|crashed|selloff|rout|bleed|crash))\b", re.IGNORECASE),
+    re.compile(r"\b(?:everything\s*(?:is\s*)?red|blood\s*in\s*the\s*streets|market\s*wide\s*dump)\b", re.IGNORECASE),
+]
+
 _TARGET_REF_RE = re.compile(r"\b(?:on|for|in|with)\s+(?:it|this|that|them|\$[A-Za-z]{1,5})\b", re.IGNORECASE)
 
 _CONTINUITY_RE = re.compile(
-    r"\b(it|its|this|that|them|the\s+stock|the\s+company|the\s+setup|the\s+ticker|the\s+trade|the\s+position|"
+    r"\b("
+    r"(?:buy|bought|buying|sell|sold|selling|hold|holding|trade|trading|short|shorting|long|longing|close|closing|trim|trimming|own|owning|add|adding|scale|into)\s+(?:it|this|that|them)|"
+    r"(?:about|for|on|with|into|of)\s+(?:it|this|that|them)|"
+    r"(?:what\s+about|how\s+about)\s+(?:it|this|that|them)|"
+    r"(?:is|will|can|should|does|did)\s+(?:it|this|that)\s+(?:hold|break|bounce|drop|fall|rally|recover|dump|hit|reach|trigger|fill|work|make\s+sense)|"
+    r"(?:its|their)\s+(?:price|spot|chart|stop|target|targets|levels?|support|resistance|earnings|gate|thesis|setup|entry|breakout|iv|volume|trend|valuation|dividend|guidance|rebound|drop|rally|dip)|"
+    r"the\s+(?:stock|company|setup|ticker|trade|position|name|underlying)|"
     r"levels?|stop\s*loss|targets?|entry\s*zone|breakout|chart|thesis|ruling|judge|verdict|"
-    r"invalidation|r:r|rr|risk\s*to\s*reward|dossier|flow|sweeps?|filings?|10-k|10-q)\b",
+    r"invalidation|r:r|rr|risk\s*to\s*reward|dossier|flow|sweeps?|filings?|10-k|10-q"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -205,17 +223,34 @@ def _is_general_conceptual_question(question: str) -> bool:
     return any(pat.search(question) for pat in _GENERAL_CONCEPT_PATTERNS)
 
 
+def _is_general_or_macro_conversation(question: str) -> bool:
+    """
+    Returns True if the prompt is an educational question, conceptual options question,
+    personal finance / cash flow reflection, emotional trading reflection, or broad macro question
+    that does NOT explicitly name a specific stock ticker.
+    """
+    if not question or not isinstance(question, str):
+        return False
+    if re.search(r"\$[A-Za-z]{1,5}\b", question):
+        return False
+    if re.search(r"\b(?:stock|ticker|symbol|shares\s+of|shares\s+in)\s+[A-Za-z]{1,5}\b", question, re.IGNORECASE):
+        return False
+    if any(pat.search(question) for pat in _GENERAL_CONCEPT_PATTERNS):
+        return True
+    return any(pat.search(question) for pat in _GENERAL_CONVERSATION_PATTERNS)
+
+
 def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history: list = None) -> dict:
     """
     Extracts all tickers and tracks whether each ticker was explicitly specified ($TICKER / modal / keyword)
     or inferred from casual company names / conversational words.
     """
-    is_general_strategy = _is_general_conceptual_question(question)
+    is_general_conv = _is_general_or_macro_conversation(question)
     has_target_ref = bool(_TARGET_REF_RE.search(question or ""))
 
-    # If the user asks a purely general strategy or educational options question with no explicit ticker target,
-    # return GENERAL immediately so no random ticker (like LINE or an inherited stock) hijacks the answer.
-    if is_general_strategy and not has_target_ref:
+    # If the user asks a purely general strategy, personal finance/cash, or macro question with no explicit ticker target,
+    # return GENERAL immediately so no random ticker (like CASH, PAY, or an inherited stock) hijacks the answer.
+    if is_general_conv and not has_target_ref:
         return {
             "tickers": ["GENERAL"],
             "primary_ticker": "GENERAL",
@@ -347,7 +382,10 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
         "VOLATILITY", "EXTRINSIC", "INTRINSIC", "DEBIT", "CREDIT", "RATIO", "WING", "WINGS", "LEG", "LEGS",
         "ROLL", "ROLLS", "HOT", "COOL", "WARM", "PRINT", "PRINTS", "SAFE", "POOL", "BILL", "ROOT", "HOPE",
         "LIVE", "LIFE", "BEAT", "MIND", "LUCK", "POST", "PEAK", "BASE", "EDGE", "BOOK", "DECK", "FILL", "FILLS",
-        "PAIR", "PAIRS", "SWAP", "SWAPS", "ALPHA", "BETA", "SENSE", "REASON"
+        "PAIR", "PAIRS", "SWAP", "SWAPS", "ALPHA", "BETA", "SENSE", "REASON",
+        "CASH", "PAY", "JOB", "GROW", "FUND", "LOT", "COST", "RUN", "CARE", "CARD", "FAST", "TRIP",
+        "HELP", "SAVE", "DEBT", "RATE", "REST", "FEEL", "TALK", "READ", "RICH", "POOR", "DEAL",
+        "FINE", "BACK", "STAY", "WAIT", "JUMP", "SEND", "WISH", "MEET", "GAIN", "LOSS"
     }
 
     # 5a. First check standalone known ticker tokens (e.g. WMT, AAPL, NVDA, GOOGL)
@@ -376,7 +414,7 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
 
     # 7. Inherit active conversation ticker if none detected in prompt
     has_continuity = bool(_CONTINUITY_RE.search(question or ""))
-    if not detected and history and not is_general_strategy and has_continuity:
+    if not detected and history and not is_general_conv and has_continuity:
         for turn in reversed(history):
             content = turn.get("content", "")
             role = turn.get("role", "")
@@ -414,7 +452,7 @@ def _detect_ticker_metadata(question: str, explicit_ticker: str = None, history:
     primary = final_tickers[0]
     match_type = matched_by.get(primary, "none")
     is_explicit = (match_type in ("dollar", "modal", "keyword"))
-    is_inferred = (primary != "GENERAL" and not is_explicit)
+    is_inferred = (primary != "GENERAL" and not is_explicit and match_type in ("standalone", "alias"))
 
     return {
         "tickers": final_tickers,
@@ -905,7 +943,10 @@ _STRONG_PORTFOLIO_RE = re.compile(
     r'|\bwhat\s+do\s+i\s+own\b'
     r'|\bhow\s+is\s+my\s+book\b'
     r'|\bover-?concentrat\w*\b'
-    r'|\bdry\s+powder\b)',
+    r'|\bdry\s+powder\b'
+    r'|\bpaycheck\b|\bsalary\b|\bcash\s*flow\b|\bemergency\s*fund\b'
+    r'|\bbrutal\s*(?:month|week)\b|\btough\s*(?:month|week)\b'
+    r'|\bnot\s*(?:gonna|going\s*to)?\s*(?:buy|trade)\s*anything\b)',
     re.IGNORECASE
 )
 
@@ -2176,22 +2217,63 @@ def _build_daily_overview_context(date_str: Optional[str] = None, question: str 
     except Exception as je:
         logger.debug(f"Error querying research jobs: {je}")
 
-    # Check survivors.json for active date
+    # Check survivors.json and short_survivors.json for active date
     try:
         surv_file = config.BASE_DIR / "data" / "raw" / active_date / "survivors.json"
+        short_file = config.BASE_DIR / "data" / "raw" / active_date / "short_survivors.json"
+        surv_rows = []
         if surv_file.exists():
             with open(surv_file, "r", encoding="utf-8") as sf:
-                surv_data = json.load(sf)
-                if isinstance(surv_data, list):
-                    surv_syms = [s.get("Symbol") or s.get("Ticker") for s in surv_data if isinstance(s, dict)]
-                    surv_syms = [s.upper() for s in surv_syms if s]
-                    for s in surv_syms:
-                        if s not in today_tickers:
-                            today_tickers.append(s)
-                    if surv_syms:
-                        parts.append(f"### 📋 SCREENER SURVIVOR CANDIDATES ({active_date}):\nActive Screened Universe: **{', '.join(surv_syms)}**")
-    except Exception:
-        pass
+                s_data = json.load(sf)
+                if isinstance(s_data, list):
+                    for s in s_data:
+                        if not isinstance(s, dict):
+                            continue
+                        sym = (s.get("Symbol") or s.get("Ticker") or "").upper()
+                        if not sym:
+                            continue
+                        if sym not in today_tickers:
+                            today_tickers.append(sym)
+                        setup = s.get("screener_setup") or s.get("lane") or "Long Setup"
+                        tier = s.get("priority_tier", "")
+                        b_score = s.get("buy_score")
+                        rev_z = s.get("rev_zone_long", 0.0)
+                        is_rev = s.get("is_extreme_reversal", False)
+                        notes = []
+                        if is_rev or rev_z > 0:
+                            notes.append(f"Oversold/Reversal Zone Z{int(rev_z)}")
+                        if b_score is not None:
+                            try:
+                                notes.append(f"Score: {float(b_score):.1f}")
+                            except (ValueError, TypeError):
+                                pass
+                        if tier:
+                            notes.append(str(tier))
+                        note_str = f" ({', '.join(notes)})" if notes else ""
+                        surv_rows.append(f"• **${sym}** [LONG]: {setup}{note_str}")
+
+        if short_file.exists():
+            with open(short_file, "r", encoding="utf-8") as sf:
+                sh_data = json.load(sf)
+                if isinstance(sh_data, list):
+                    for s in sh_data:
+                        if not isinstance(s, dict):
+                            continue
+                        sym = (s.get("Symbol") or s.get("Ticker") or "").upper()
+                        if not sym:
+                            continue
+                        if sym not in today_tickers:
+                            today_tickers.append(sym)
+                        setup = s.get("screener_setup") or s.get("lane") or "Short Setup"
+                        surv_rows.append(f"• **${sym}** [SHORT]: {setup}")
+
+        if surv_rows:
+            parts.append(
+                f"### 📋 SCHWAB 1000 AUTONOMOUS SCREENER SURVIVORS ({active_date}):\n"
+                + "\n".join(surv_rows)
+            )
+    except Exception as e_surv:
+        logger.debug(f"Error loading screener survivors in overview: {e_surv}")
 
     # 2. Senior PM Arbitration Directives & Theses
     try:
@@ -2658,6 +2740,7 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
     has_specific_ticker = any(t for t in detected_tickers if t not in ("GENERAL", "AUTO", "NONE", "ALL", ""))
     primary_ticker = detected_tickers[0] if has_specific_ticker else "GENERAL"
     is_explicit = ticker_meta["is_explicit"]
+    match_type = ticker_meta.get("match_type", "none")
     company_name = ticker_meta["company_name"]
 
     now_mt = datetime.now(ZoneInfo("America/Denver"))
@@ -2733,7 +2816,9 @@ def _build_copilot_context_and_tools(question: str, explicit_ticker: str = None,
         desk_directive = ""
 
     # 0b. Ticker Verification Directive for Inferred / Unconfirmed Symbols
-    if has_specific_ticker and not is_explicit and not has_explicit_dossier:
+    # Only fire when a ticker was inferred from an ambiguous word/alias in the CURRENT prompt text.
+    # NEVER fire for history continuity (the user already discussed this ticker earlier; asking "I detected $XYZ" is jarring and incorrect).
+    if has_specific_ticker and not is_explicit and not has_explicit_dossier and match_type in ("standalone", "alias"):
         ticker_confirmation_block = f"""### 🎯 MANDATORY TICKER VERIFICATION & CONFIRMATION DIRECTIVE:
 The ticker '${primary_ticker}' was INFERRED from the user's conversational text ("{question}"), NOT from an explicit '$' symbol or active modal selection.
 The user may be asking about {company_name} (${primary_ticker}), or they might be speaking colloquially, using a typo, or asking a general question.

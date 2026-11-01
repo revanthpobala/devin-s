@@ -803,6 +803,49 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_schwab_screener",
+            "description": (
+                "Queries the Schwab 1000 screener candidate pool (983 stocks) and allows on-demand filtering or triggering. "
+                "Filter setups by side ('long', 'short', 'both'), technical posture ('oversold', 'dip_buy', 'pullback', 'breakout', 'short_stall', 'all'), "
+                "or minimum priority score (e.g. 50+). Set trigger_new_scan=True to dispatch a fresh live scan across the Schwab 1000 universe."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "side": {
+                        "type": "string",
+                        "enum": ["long", "short", "both"],
+                        "description": "Screener side (default: 'long')",
+                    },
+                    "posture": {
+                        "type": "string",
+                        "enum": ["all", "oversold", "dip_buy", "pullback", "breakout", "short_stall"],
+                        "description": "Specific technical setup posture: 'oversold' (Connors Extreme Reversal Z0-Z3 / oversold movers), 'dip_buy' (open runway bases), 'pullback' (20 EMA continuation stalking), 'breakout' (volume expansion), 'short_stall' (ceiling rejection stalls).",
+                    },
+                    "min_score": {
+                        "type": "number",
+                        "description": "Minimum priority score filter (e.g. 50.0 or 70.0 for high priority)",
+                    },
+                    "top": {
+                        "type": "integer",
+                        "description": "Maximum number of candidates to return (default: 10)",
+                    },
+                    "trigger_new_scan": {
+                        "type": "boolean",
+                        "description": "If true, triggers an immediate fresh scan across all 983 Schwab 1000 stocks in the background.",
+                    },
+                    "autonomous": {
+                        "type": "boolean",
+                        "description": "If triggering a new scan, whether to automatically dispatch top high-priority setups into deep research.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -967,6 +1010,159 @@ def run_quantitative_plugin_tool(ticker: str, plugin_name: str = "all", date_str
             lines.append(f"- **{k}**: {v}")
 
     return "\n".join(lines)
+
+
+def query_schwab_screener_tool(
+    side: str = "long",
+    posture: str = "all",
+    min_score: float = 0.0,
+    top: int = 10,
+    trigger_new_scan: bool = False,
+    autonomous: bool = False,
+    date_str: str = None,
+) -> str:
+    """Queries or triggers the Schwab 1000 screener engine across 983 stocks."""
+    import json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from src import config
+    from src.ui.state import _SCHWAB_SCAN_STATE
+
+    date_str = date_str or datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
+    output_lines = []
+
+    if trigger_new_scan:
+        try:
+            from src.ui.routes.screener import trigger_schwab_screener_scan, SchwabScanRequest
+            if _SCHWAB_SCAN_STATE.get("running"):
+                output_lines.append(f"⚡ **A Schwab 1000 scan is already active in the background** (Side: {_SCHWAB_SCAN_STATE.get('side', '').upper()}).")
+            else:
+                req = SchwabScanRequest(top=top, side=side, autonomous=autonomous, date=date_str)
+                trigger_schwab_screener_scan(req)
+                scan_type = "Autonomous Scan & Research" if autonomous else "Constituent Scan"
+                output_lines.append(f"🚀 **Triggered on-demand Schwab 1000 {scan_type}** ({side.upper()} side, top {top}) across 983 stocks in the background.\n")
+        except Exception as e_scan:
+            output_lines.append(f"⚠️ Failed to trigger scan: {e_scan}\n")
+
+    # Load candidates from raw manifests
+    raw_dir = config.BASE_DIR / "data" / "raw" / date_str
+    if not raw_dir.exists():
+        all_dates = sorted([d.name for d in (config.BASE_DIR / "data" / "raw").glob("202*") if (d / "survivors.json").exists()], reverse=True)
+        if all_dates:
+            raw_dir = config.BASE_DIR / "data" / "raw" / all_dates[0]
+            date_str = all_dates[0]
+
+    all_candidates = []
+    side_lower = (side or "long").lower()
+
+    if side_lower in ("long", "both"):
+        for fname in ["schwab_survivors.json", "survivors.json"]:
+            fpath = raw_dir / fname
+            if fpath.exists():
+                try:
+                    c_list = json.loads(fpath.read_text(encoding="utf-8"))
+                    if isinstance(c_list, list):
+                        for c in c_list:
+                            c["_scan_side"] = "LONG"
+                        all_candidates.extend(c_list)
+                    break
+                except Exception:
+                    pass
+
+    if side_lower in ("short", "both"):
+        fpath = raw_dir / "short_survivors.json"
+        if fpath.exists():
+            try:
+                c_list = json.loads(fpath.read_text(encoding="utf-8"))
+                if isinstance(c_list, list):
+                    for c in c_list:
+                        c["_scan_side"] = "SHORT"
+                    all_candidates.extend(c_list)
+            except Exception:
+                pass
+
+    posture_clean = (posture or "all").lower().strip()
+    filtered = []
+    seen_syms = set()
+
+    for c in all_candidates:
+        if not isinstance(c, dict):
+            continue
+        sym = (c.get("Symbol") or c.get("Ticker") or "").upper()
+        if not sym or sym in seen_syms:
+            continue
+
+        score = float(c.get("priority_score") or c.get("buy_score") or c.get("sell_score") or 0.0)
+        if min_score > 0 and score < min_score:
+            continue
+
+        setup_str = str(c.get("screener_setup") or c.get("setup_posture") or c.get("lane") or "").upper()
+        is_rev = bool(c.get("is_extreme_reversal", False))
+        rev_z = float(c.get("rev_zone_long") or c.get("rev_zone_short") or 0.0)
+        crsi = float(c.get("crsi_3", 50.0)) if c.get("crsi_3") is not None else 50.0
+
+        if posture_clean in ("oversold", "reversal"):
+            if not (is_rev or rev_z > 0 or "OVERSOLD" in setup_str or "DIP BUY" in setup_str or "REVERSAL" in setup_str or crsi <= 25):
+                continue
+        elif posture_clean in ("dip_buy", "runway"):
+            if not ("DIP BUY" in setup_str or "RUNWAY" in setup_str):
+                continue
+        elif posture_clean in ("pullback", "continuation", "20_ema"):
+            if not ("PULLBACK" in setup_str or "20 EMA" in setup_str):
+                continue
+        elif posture_clean in ("breakout", "mover"):
+            if not ("BREAKOUT" in setup_str or "MOVER" in setup_str):
+                continue
+        elif posture_clean in ("short_stall", "exhaustion", "ceiling"):
+            if not ("STALL" in setup_str or "CEILING" in setup_str or "REJECTION" in setup_str):
+                continue
+
+        seen_syms.add(sym)
+        filtered.append(c)
+
+    filtered = sorted(
+        filtered,
+        key=lambda x: (
+            float(x.get("priority_score") or x.get("buy_score") or 0.0),
+            bool(x.get("pb_funnel", False)),
+            bool(x.get("is_extreme_reversal", False)),
+        ),
+        reverse=True,
+    )[:top]
+
+    if not filtered:
+        output_lines.append(f"No candidates found matching posture='{posture}', side='{side}', min_score={min_score} on {date_str}.")
+        return "\n\n".join(output_lines)
+
+    output_lines.append(f"### 🎯 Schwab 1000 Screener Candidates ({side.upper()} | Posture: {posture.upper()} | Date: {date_str})")
+    output_lines.append("| Ticker | Side | Price | Setup Posture | Stage | Stop | T1 Target | Score | Edge / Volatility |")
+    output_lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+
+    for c in filtered:
+        sym = c.get("Symbol") or c.get("Ticker") or ""
+        cand_side = c.get("_scan_side", "LONG")
+        px = f"${float(c.get('price', 0)):.2f}" if c.get('price') else "—"
+        setup = c.get("screener_setup") or c.get("lane") or "—"
+        stg = f"Stage {c.get('weinstein_stage')}" if c.get('weinstein_stage') else "—"
+        stop = f"${float(c.get('stop_level', 0)):.2f}" if c.get('stop_level') else "—"
+        t1 = f"${float(c.get('target_level', 0)):.2f}" if c.get('target_level') else "—"
+        sc = f"{float(c.get('priority_score', 0)):.1f}" if c.get('priority_score') else "—"
+
+        edge_notes = []
+        if c.get("is_extreme_reversal") or (c.get("rev_zone_long") or 0) > 0:
+            edge_notes.append(f"Connors Z{int(c.get('rev_zone_long', 0))} Reversal")
+        if c.get("pb_funnel"):
+            edge_notes.append("PB Funnel")
+        if c.get("nr7"):
+            edge_notes.append("NR7 Squeeze")
+        tt = c.get("tastytrade") or {}
+        if isinstance(tt, dict) and tt.get("iv_rank") is not None:
+            edge_notes.append(f"IVR {float(tt['iv_rank']):.0f}%")
+        edge_str = ", ".join(edge_notes) if edge_notes else c.get("priority_tier", "MONITOR")
+
+        output_lines.append(f"| **${sym}** | {cand_side} | {px} | {setup} | {stg} | {stop} | {t1} | {sc} | {edge_str} |")
+
+    return "\n\n".join(output_lines)
 
 
 def execute_python_code_tool(code: str, ticker: str = "AMD", date_str: str = None, is_independent: bool = False) -> str:
@@ -1367,7 +1563,7 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
     active_ticker = None if chat_ticker is not None else options_client._ACTIVE_TICKER
     req_ticker = (args.get("ticker") or args.get("symbol") or active_ticker or chat_ticker or "GLOBAL").upper()
 
-    if active_ticker and req_ticker != active_ticker and function_name not in ("search_web", "fetch_prediction_market"):
+    if active_ticker and req_ticker != active_ticker and function_name not in ("search_web", "fetch_prediction_market", "query_schwab_screener"):
         logger.warning(
             f"Cross-contamination guardrail: LLM attempted tool '{function_name}' for ticker '{req_ticker}' "
             f"while researching '{active_ticker}'. Overriding to '{active_ticker}'."
@@ -1713,6 +1909,24 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
             logger.error(f"TradingView chart scrape failed for {ticker}: {e}", exc_info=True)
             res_str = f"TradingView scrape failed for {ticker}: {str(e)}"
         artifact_cache.save(date_str, ticker, cache_key, res_str)
+        return res_str
+    elif function_name == "query_schwab_screener":
+        side = args.get("side", "long")
+        posture = args.get("posture", "all")
+        min_score = float(args.get("min_score") or 0.0)
+        top = int(args.get("top") or 10)
+        trigger_new_scan = bool(args.get("trigger_new_scan", False))
+        autonomous = bool(args.get("autonomous", False))
+        logger.info(f"Chat executed tool: query_schwab_screener(side='{side}', posture='{posture}', min_score={min_score}, trigger={trigger_new_scan})")
+        res_str = query_schwab_screener_tool(
+            side=side,
+            posture=posture,
+            min_score=min_score,
+            top=top,
+            trigger_new_scan=trigger_new_scan,
+            autonomous=autonomous,
+            date_str=date_str,
+        )
         return res_str
     else:
         logger.warning(f"Unknown tool called: {function_name}")
