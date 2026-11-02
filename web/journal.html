@@ -50,7 +50,7 @@
 <span class="nav-icon">💼</span>
 <span class="nav-label">Portfolio</span>
 </a>
-<a class="nav-item" href="/intraday" id="nav-item-intraday" onclick="event.preventDefault(); App.navigateTo('intraday')">
+<a class="nav-item" href="/intraday" id="nav-item-intraday" style="display:none" onclick="event.preventDefault(); App.navigateTo('intraday')">
 <span class="nav-icon">⚡</span>
 <span class="nav-label">0DTE</span>
 </a>
@@ -196,14 +196,23 @@
 <div style="display:flex; gap:8px; border-bottom:1px solid var(--border); padding-bottom:10px;">
 <button class="btn" onclick="App.switchDesk('journal')">📖 Active &amp; Evaluated Journal</button>
 <button class="btn secondary" onclick="App.switchDesk('record')">🏆 Closed P&amp;L Record</button>
+<button class="btn secondary" onclick="App.switchDesk('rulelab')">🧪 Rule Lab</button>
 </div>
 <div id="journal-content-container"></div>
 </div><div id="desk-pane-record" style="display:none; flex-direction:column; gap:20px;">
 <div style="display:flex; gap:8px; border-bottom:1px solid var(--border); padding-bottom:10px;">
 <button class="btn secondary" onclick="App.switchDesk('journal')">📖 Active &amp; Evaluated Journal</button>
 <button class="btn" onclick="App.switchDesk('record')">🏆 Closed P&amp;L Record</button>
+<button class="btn secondary" onclick="App.switchDesk('rulelab')">🧪 Rule Lab</button>
 </div>
 <div id="record-content-container"></div>
+</div><div id="desk-pane-rulelab" style="display:none; flex-direction:column; gap:20px;">
+<div style="display:flex; gap:8px; border-bottom:1px solid var(--border); padding-bottom:10px;">
+<button class="btn secondary" onclick="App.switchDesk('journal')">📖 Active &amp; Evaluated Journal</button>
+<button class="btn secondary" onclick="App.switchDesk('record')">🏆 Closed P&amp;L Record</button>
+<button class="btn" onclick="App.switchDesk('rulelab')">🧪 Rule Lab</button>
+</div>
+<div id="rulelab-content-container"></div>
 </div></div> <!-- Close .main-desks-column -->
 <!-- ================================================================= -->
 <!-- PERMANENT RIGHT-SIDE REV CHAT SIDEBAR                             -->
@@ -894,6 +903,7 @@
 <button class="tab-btn" id="tab-arb-btn" onclick="AppSwing.switchDossierTab('arb')">⚖️ Senior PM Arbitration</button>
 <button class="tab-btn" id="tab-sum-btn" onclick="AppSwing.switchDossierTab('sum')">📊 Model A (Synthesis)</button>
 <button class="tab-btn" id="tab-ind-btn" onclick="AppSwing.switchDossierTab('ind')">🧭 Model B (Independent)</button>
+<button class="tab-btn" id="tab-trades-btn" onclick="AppSwing.switchDossierTab('trades')">💼 Prior Trades (<span id="modal-trades-count">0</span>)</button>
 <button class="tab-btn" id="tab-history-btn" onclick="AppSwing.switchDossierTab('history')">📜 History &amp; Drift (<span id="modal-hist-count">0</span>)</button>
 <button class="tab-btn" id="tab-chart-btn" onclick="AppSwing.switchDossierTab('chart')">📸 Scraped Charts</button>
 <button class="tab-btn" id="tab-tv-btn" onclick="AppSwing.switchDossierTab('tv')">📈 Live TradingView</button>
@@ -1170,7 +1180,7 @@
 <div class="pnl-kpi-sub" id="pnl-kpi-ai-taken-sub">0 trades (0% win rate)</div>
 </div>
 <div class="pnl-kpi-card ai-avoided">
-<div class="pnl-kpi-title"><span>🛡️ Losses Avoided (AI Filter)</span></div>
+<div class="pnl-kpi-title"><span>🛡️ Vetoed Losers (one side only; see Net Edge)</span></div>
 <div class="pnl-kpi-value" id="pnl-kpi-avoided" style="color:#38bdf8;">$0.00</div>
 <div class="pnl-kpi-sub" id="pnl-kpi-avoided-sub">0 losing alerts vetoed by AI</div>
 </div>
@@ -1423,9 +1433,9 @@
 <script src="/static/js/logs.js?v=88"></script>
 <script src="/static/js/alerts.js?v=90"></script>
 <script src="/static/js/chat.js?v=91"></script>
-<script src="/static/js/desk.js?v=99"></script>
+<script src="/static/js/desk.js?v=100"></script>
 <script src="/static/js/tv_hover.js?v=88"></script>
-<script src="/static/js/app.js?v=89"></script>
+<script src="/static/js/app.js?v=90"></script>
 <script src="/static/js/notifications.js?v=3"></script>
 </body>
 </html>

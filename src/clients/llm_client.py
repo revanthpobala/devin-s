@@ -516,6 +516,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_filled_trades",
+            "description": "Retrieves the user's real filled and closed trades (Charles Schwab brokerage executions, options contracts, equity fills, and closed alert positions) for a given ticker. Returns completed execution details: fill price, execution timestamp, quantity, instruction, and notional value. Excludes canceled, pending, and unfilled orders.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "The stock ticker symbol (e.g. 'GOOGL', 'AAPL', 'NVDA'). Defaults to the active ticker.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Calendar days of execution history to retrieve (default: 60, max: 90).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "scrape_tradingview_chart",
             "description": "Triggers a live TradingView Playwright scraper for a ticker to generate fresh naked + 90d zoom chart screenshots and a fresh 300-bar Data Window CSV with 85 quantitative indicator columns.",
             "parameters": {
@@ -1507,6 +1528,67 @@ def format_schwab_positions_tool(ticker: Optional[str] = None) -> str:
         return f"Error retrieving Schwab positions: {e}"
 
 
+def format_filled_trades_tool(ticker: Optional[str] = None, days: int = 60) -> str:
+    """Format user's real filled and closed Schwab and system trades into a structured report for the LLM."""
+    try:
+        from src.ui.routes.research import get_ticker_trades_endpoint
+        t_clean = (ticker or "").strip().upper()
+        if not t_clean or t_clean in ("NONE", "GLOBAL"):
+            return "Please specify a ticker symbol (e.g. 'GOOGL', 'AAPL') to fetch filled trade history."
+
+        data = get_ticker_trades_endpoint(t_clean, refresh=False)
+        trades = data.get("trades") or []
+        summary = data.get("summary") or {}
+
+        if not trades:
+            return (
+                f"### 💼 FILLED & CLOSED TRADES FOR ${t_clean} (Last {days} Days):\n"
+                f"No filled or closed historical executions found for ${t_clean} across linked Schwab brokerage accounts or alert positions "
+                "(canceled, replaced, and unfilled orders are excluded)."
+            )
+
+        schwab_cnt = summary.get("schwab_trades_count", 0)
+        opt_cnt = summary.get("options_trades_count", 0)
+        eq_cnt = summary.get("equity_trades_count", 0)
+
+        lines = [
+            f"### 💼 VERIFIED FILLED & CLOSED TRADES FOR ${t_clean} (Last {days} Days):",
+            f"• Total Completed Fills: **{len(trades)}** ({schwab_cnt} Schwab executions, {opt_cnt} options fills, {eq_cnt} equity fills)",
+            f"• Win/Loss (closed AI alerts): {summary.get('wins', 0)}W / {summary.get('losses', 0)}L | Win Rate: {summary.get('win_rate_pct', 0)}%",
+            "",
+            "#### Execution Ledger (Chronological Fills):",
+        ]
+
+        for t in trades[:25]:
+            dt = t.get("fill_date") or t.get("date") or "N/A"
+            src = t.get("source") or "Schwab Broker"
+            asset = t.get("asset_type") or "EQUITY"
+            inst = t.get("instruction") or t.get("side") or "TRADE"
+            st = t.get("status") or "FILLED"
+            qty = t.get("quantity") or 0
+            fill_p = f"${float(t['fill_price']):.2f}" if t.get("fill_price") is not None else "N/A"
+            notional = f"${float(t['pnl_dollars']):,.2f}" if t.get("pnl_dollars") is not None else (f"${float(t['notional']):,.2f}" if t.get("notional") is not None else "")
+            acct = f"({t['account']})" if t.get("account") else ""
+            name = t.get("name") or f"{inst} {asset}"
+            desc = name.split(":", 1)[1].strip() if ":" in name else name
+            notes = t.get("notes") or ""
+
+            bullet = f"• **{dt}** | `{st}` {asset} **{inst}** {acct}: {qty}x {desc} @ {fill_p}"
+            if notional:
+                bullet += f" (Notional: {notional})"
+            if notes:
+                bullet += f" — {notes}"
+            lines.append(bullet)
+
+        if len(trades) > 25:
+            lines.append(f"... and {len(trades) - 25} earlier filled executions.")
+
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error in format_filled_trades_tool: {e}", exc_info=True)
+        return f"Error retrieving filled trades for {ticker}: {e}"
+
+
 def fetch_darkpool_levels_tool(ticker: str) -> str:
     """Fetch on-demand off-exchange / Dark Pool volume clusters and signature blocks."""
     try:
@@ -1603,6 +1685,9 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         cache_key = f"prior_research_{lookback_slug}"
     elif function_name == "get_prior_plan_outcome":
         cache_key = "prior_plan_outcome"
+    elif function_name == "fetch_filled_trades":
+        days_slug = re.sub(r'[^\w\-]', '_', str(args.get("days", 60))).strip('_')
+        cache_key = f"filled_trades_{days_slug}"
     elif function_name == "fetch_earnings_release":
         from src.clients.sec_edgar_client import fetch_earnings_press_release
         t_req = (args.get("ticker") or ticker or "").upper()
@@ -1826,6 +1911,13 @@ def execute_tool_call(tool_call, date_str: str = None, is_independent: bool = Fa
         t_req = args.get("ticker") or ticker
         logger.info(f"LLM executed tool: fetch_schwab_positions(ticker='{t_req}')")
         return format_schwab_positions_tool(t_req)
+    elif function_name == "fetch_filled_trades":
+        t_req = (args.get("ticker") or args.get("symbol") or ticker or chat_ticker or "").upper()
+        days = int(args.get("days", 60))
+        logger.info(f"LLM executed tool: fetch_filled_trades(ticker='{t_req}', days={days})")
+        res_str = format_filled_trades_tool(t_req, days=days)
+        artifact_cache.save(date_str, t_req or "GLOBAL", cache_key, res_str)
+        return res_str
     elif function_name == "fetch_earnings_release":
         from src.clients.sec_edgar_client import fetch_earnings_press_release
         t_req = (args.get("ticker") or ticker or "").upper()

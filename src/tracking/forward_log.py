@@ -50,6 +50,12 @@ UNMEASURED_RULES = {
         "status": "UNMEASURED",
         "min_observations": MIN_FORWARD_OBSERVATIONS,
     },
+    "EARNINGS_DRIFT": {
+        "ship_date": "2026-11-01",
+        "description": "Earnings-drift scan: 8-K 2.02 reaction day gapped >=5% on 2x volume and held through day 3; buy next open, 2 ATR stop, 21-bar exit. PEAD in-sample n=1,144 +0.61% vs universe (gate PASS); survivorship and no-hold variant caveats apply.",
+        "status": "UNMEASURED",
+        "min_observations": MIN_FORWARD_OBSERVATIONS,
+    },
     "RUNAWAY_AT_MARKET": {
         "ship_date": RUNAWAY_SHIP_DATE,
         "description": "At-market re-score after a level cross: price running above the plan, gates cleared, R:R at market >= floor. Not the in-zone PB lane, so it cannot claim that lane's edge until the honest replay measures it.",

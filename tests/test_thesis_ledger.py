@@ -120,7 +120,7 @@ def test_earnings_within_five_days_blocks_starter():
     assert tl._rows("SELECT * FROM tranches") == []
 
 
-def test_score_vs_spy_net_of_costs():
+def test_score_vs_spy():
     days = _days(8)
     tl.seed(book={"equity": {"AAA": 1.0}}, today=days[0])
     closes = [100, 100, 100, 100, 100, 110, 110, 110]
@@ -130,7 +130,7 @@ def test_score_vs_spy_net_of_costs():
         c.execute("INSERT INTO tranches VALUES ('AAA',1,?,100,10,95)", (days[0],))
     h = tl.score(horizons=(5,))["horizons"][5]
     assert h["n"] == 1 and h["unmeasured"] is True
-    assert h["mean_excess_pct"] == pytest.approx(100 * (0.10 - 0.001 - 0.01), abs=1e-3)
+    assert h["mean_excess_pct"] == pytest.approx(100 * (0.10 - 2 * tl.SIDE_COST - 0.01), abs=1e-3)
 
 
 def test_nightly_replay_idempotent_and_queues_stalest():

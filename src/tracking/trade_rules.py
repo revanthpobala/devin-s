@@ -7,6 +7,7 @@ Size is 100 shares, or an option at the chain mid; dollar risk is information, n
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from src.tracking.rr_config import GREEN_RR, STOP_ATR_MIN, min_rr  # noqa: F401  (single copy, re-exported)
@@ -81,6 +82,25 @@ def max_allowed_stop(fill: float, atr: float, pine_stop: float = 0.0) -> float:
     return atr_cap
 
 
+# Pine quick_exit_stalk_study.py, zero cost, full_v4_av2 in zone & fade off, Long RR At Market 0.5-1.0: plan T1 +0.039R
+# (2006-11 negative); target raised to entry + 1R +0.051R (entry risk) / +0.063R (signal-close risk), 52.8% win, positive
+# in all four eras and both ticker halves.
+ONE_R_BAND = (0.5, 1.0)
+
+
+def one_r_target(rr_at_market: Optional[float], spot: float, stop: float, target_1: float) -> Optional[float]:
+    """1R target for a long whose Pine R:R at market is in ONE_R_BAND; None when the rule does not apply.
+    A stop more than 25% below spot means a bad stored spot (HAL 4725 vs a $35 close), not a plan."""
+    try:
+        rr, px, st, t1 = float(rr_at_market), float(spot or 0), float(stop or 0), float(target_1 or 0)
+    except (TypeError, ValueError):
+        return None
+    if not (ONE_R_BAND[0] <= rr < ONE_R_BAND[1]) or not (0.75 * px < st < px) or min_rr() > 1.0:
+        return None
+    t = math.ceil(round((2 * px - st) * 100, 6)) / 100
+    return t if t > t1 else None
+
+
 def risk_usd(entry: float, stop: float, qty: int = SHARES_PER_TRADE) -> float:
     return round(max(entry - stop, 0.0) * qty, 2)
 
@@ -118,23 +138,36 @@ def max_shares_by_notional(price: float, equity_usd: float = 0.0) -> int:
 def max_shares_by_earnings_gap(
     price: float, implied_move_pct: Optional[float], days_to_earnings: Optional[int],
     window_bars: int = EARNINGS_WINDOW_BARS, max_gap_loss_usd: float = 0.0,
+    gap_pct: Optional[float] = None,
 ) -> Optional[int]:
-    """Share cap so a down-gap of 2x the implied move loses at most max_gap_loss_usd.
+    """Share cap so an earnings down-gap loses at most max_gap_loss_usd.
 
-    Returns None when earnings are outside the holding window or the implied move is unknown (no cap).
-    A hard stop does NOT protect a gap, so this bounds exposure that the stop can't.
+    Uses ``gap_pct`` (full down move in percent) when provided; otherwise 2× ``implied_move_pct``.
+    Returns None when earnings are outside the holding window or no gap input is usable.
     """
     if not earnings_in_window(days_to_earnings):
         return None
     try:
         p = float(price or 0.0)
-        im = float(implied_move_pct or 0.0)
     except (TypeError, ValueError):
         return None
-    if p <= 0 or im <= 0:
+    if p <= 0:
         return None
     cap_usd = float(max_gap_loss_usd or MAX_EARNINGS_GAP_LOSS_USD)
-    gap_loss_per_share = p * (2.0 * im / 100.0)
+    try:
+        gp = float(gap_pct) if gap_pct is not None else None
+    except (TypeError, ValueError):
+        gp = None
+    if gp is not None and gp > 0:
+        gap_loss_per_share = p * (gp / 100.0)
+    else:
+        try:
+            im = float(implied_move_pct or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if im <= 0:
+            return None
+        gap_loss_per_share = p * (2.0 * im / 100.0)
     if gap_loss_per_share <= 0:
         return None
     return max(0, int(cap_usd / gap_loss_per_share))

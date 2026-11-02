@@ -307,6 +307,18 @@ def run_job(job: str, day: str, session: str) -> Any:
             logger.info("catalyst ledger: %s", catalyst_ledger.run_daily(session))
         except Exception as e_cat:
             logger.warning("catalyst ledger failed: %s", e_cat)
+        try:
+            from src.logic import earnings_move
+
+            logger.info("earnings ledger: %s", earnings_move.score_ledger())
+        except Exception as e_el:
+            logger.warning("earnings ledger failed: %s", e_el)
+        try:
+            from src.logic import postmortem
+
+            logger.info("postmortem scan: %s", postmortem.scan(date.fromisoformat(session)))
+        except Exception as e_pm:
+            logger.warning("postmortem scan failed: %s", e_pm)
         ctl = bc.read()
         tries = ctl.get("chain_tries", {}).get(session, 0) + 1
         done = res["rows"] > 0 or tries >= 3

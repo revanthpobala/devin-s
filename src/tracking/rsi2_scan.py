@@ -32,6 +32,21 @@ BAND_PRIORS = {(3.0, 8.0): (64.0, 0.075), (8.0, 15.0): (67.4, 0.232)}
 ALL_PRIOR = (62.3, 0.050)
 HIGH_VOL_ATR_PCT = 2.601844534208747
 ETFS = ("SPY", "QQQ", "IWM")
+# Share of RSI2 signals whose next open sits at or below close x (1 + gap): full_v4_av2, 57,078 signals
+# (Pine repo quick_exit_stalk_study.py). When ATR is above 2.5% of price the 5% risk cap puts the ceiling below the
+# close, and past a 1% gap the order almost never fills, so those rows are STALK, not ENTER.
+FILL_AT_GAP = ((0.0, 44.3), (-0.01, 8.4), (-0.02, 2.8), (-0.03, 1.2), (-0.05, 0.4), (-0.08, 0.1))
+REACHABLE_GAP = -0.01
+
+
+def fill_odds(gap: float) -> float:
+    """Percent of signals that open at or below a ceiling `gap` below the signal close (linear between points)."""
+    if gap >= FILL_AT_GAP[0][0]:
+        return FILL_AT_GAP[0][1]
+    for (g0, p0), (g1, p1) in zip(FILL_AT_GAP, FILL_AT_GAP[1:]):
+        if g1 <= gap <= g0:
+            return p0 + (p1 - p0) * (gap - g0) / (g1 - g0)
+    return FILL_AT_GAP[-1][1]
 
 
 def _rma(xs: List[float], n: int) -> List[Optional[float]]:
@@ -135,15 +150,19 @@ def run(bars: Dict[str, List[Dict[str, Any]]], write: bool = True, now_et: Optio
                 s["skipped"] = "open RSI2 trade"
                 continue
             vol = "high" if s["atr_pct"] > HIGH_VOL_ATR_PCT else "normal"
+            gap = s["ceiling"] / s["close"] - 1
+            reachable = gap >= REACHABLE_GAP
+            s["fill_odds_pct"] = round(fill_odds(gap), 1)
             append_suggestion({
                 "ticker": s["ticker"], "date": s["date"], "source": SOURCE, "side": "LONG", "entry_type": "NEXT_OPEN",
                 "entry_low": s["ceiling"], "entry_high": s["ceiling"], "stop": s["stop"], "target_1": s["target"],
                 "planned_rr": TARGET_ATR / STOP_ATR, "atr_at_signal": s["atr"], "spot_at_signal": s["close"],
-                "stop_width_atr": STOP_ATR, "verdict": "ENTER" if enter else "STALK", "gate_status": "PASS",
+                "stop_width_atr": STOP_ATR, "verdict": "ENTER" if enter and reachable else "STALK", "gate_status": "PASS",
                 "gate_reasons": "measured lane: fixed RSI2 geometry, level gate bypassed", "setup_lane": "RSI2",
                 "kind": "NEW", "lane_prior_win": win, "lane_prior_ev": ev,
                 "notes": (f"RSI2 {s['rsi2']:.1f}; QQQ {off_txt} below 252d high; ATR {s['atr_pct']:.2f}% ({vol} vol); "
-                          f"buy next open only at or below {s['ceiling']:.2f}; risk/share {s['close'] - s['stop']:.2f}; "
+                          f"buy next open only at or below {s['ceiling']:.2f} ({100 * gap:+.1f}% vs close, ~{s['fill_odds_pct']:.0f}% of "
+                          f"signals open that low{'' if reachable else '; unreachable, STALK'}); risk/share {s['close'] - s['stop']:.2f}; "
                           f"exit next open after close > EMA5, or {MAX_HOLD_BARS} bars"),
             })
             written.append(s["ticker"])

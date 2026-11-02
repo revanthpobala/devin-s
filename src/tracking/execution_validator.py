@@ -115,7 +115,7 @@ def get_bars_since_date(symbol: str, start_date: str) -> Optional[Any]:
         import concurrent.futures
 
         def _fetch_yf():
-            return yf.download(sym, start=start_date, progress=False, auto_adjust=False, timeout=2.0)
+            return yf.download(sym.replace(".", "-"), start=start_date, progress=False, auto_adjust=False, timeout=2.0)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_fetch_yf)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, Optional, Tuple
 
 from src.tracking import trade_rules
@@ -179,8 +179,23 @@ def _kalshi(ticker: str) -> str:
         return ""
 
 
-def build_earnings_packet(ticker: str, spot: Optional[float] = None) -> Dict[str, Any]:
+def _run21(ticker: str) -> Optional[float]:
+    try:
+        import yfinance as yf
+
+        h = yf.Ticker(ticker).history(period="3mo", auto_adjust=True)
+        if h is None or len(h) < 22:
+            return None
+        return float(h["Close"].iloc[-1] / h["Close"].iloc[-22] - 1)
+    except Exception as e:
+        logger.debug(f"[{ticker}] run21 failed: {e}")
+        return None
+
+
+def build_earnings_packet(ticker: str, spot: Optional[float] = None, dw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from src.clients.earnings_client import get_next_earnings_days, resolve_next_earnings_date
+    from src.logic import earnings_move
+    from src.logic.level_validation import _dw_num
 
     ticker = ticker.upper()
     report, source = resolve_next_earnings_date(ticker)
@@ -196,6 +211,23 @@ def build_earnings_packet(ticker: str, spot: Optional[float] = None) -> Dict[str
         pkt["reaction"] = _historical_reaction(ticker)
         pkt["implied"] = _implied_move(ticker, report, spot)
         pkt["kalshi"] = _kalshi(ticker)
+    if report:
+        pkt["own_history"] = earnings_move.forecast(ticker)
+        extz = _dw_num(dw or {}, "Ext Z Self Relative", "ext_z_self")
+        ivr = _dw_num(dw or {}, "Energy IV Rank Pct", "iv_rank")
+        pkt["conditions"] = earnings_move.condition_lines(_run21(ticker), extz, ivr)
+        implied = (pkt.get("implied") or {}).get("implied_move_pct")
+        if days is not None:
+            try:
+                earnings_move.append_ledger({
+                    "recorded": datetime.now().isoformat(timespec="seconds"), "ticker": ticker,
+                    "report_date": str(report), "trading_days": days, "implied_move_pct": implied,
+                    "own_median_pct": round((pkt["own_history"] or {}).get("median_abs", 0) * 100, 2) or None,
+                    "own_p95_pct": round((pkt["own_history"] or {}).get("p95_abs", 0) * 100, 2) or None,
+                    "spot": spot,
+                })
+            except Exception as e:
+                logger.debug(f"[{ticker}] ledger append failed: {e}")
     return pkt
 
 
@@ -212,6 +244,13 @@ def format_earnings_packet(pkt: Dict[str, Any]) -> str:
             f"- Last {r['n']} reports: avg |day-1 move| {r['avg_abs_day1_pct']}%, up {r['up_count']}/{r['n']}; recent "
             + ", ".join(f"{x['date']} {x['day1_pct']:+.1f}% (3d drift {x['drift_3d_pct']:+.1f}%)" for x in r["last"])
         )
+    fc = pkt.get("own_history")
+    if fc:
+        lines.append(
+            f"- Own-history earnings move: median {fc['median_abs'] * 100:.1f}%, 80% within {fc['p80_abs'] * 100:.1f}%, "
+            f"95% within {fc['p95_abs'] * 100:.1f}%, down {round(fc['down_share'] * fc['n_hist'])}/{fc['n_hist']} of last reports"
+        )
+    lines += pkt.get("conditions") or []
     i = pkt.get("implied") or {}
     if i:
         lines.append(f"- Options implied move: {i['implied_move_pct']}% (ATM {i['strike']:g} straddle ${i['straddle']} exp {i['expiry']})")

@@ -9,6 +9,9 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOGS_DIR = BASE_DIR / "logs"
+# First signal date the record views count. Rows before it came from a pipeline with known defects
+# (wrong TradingView listings, fees, old R:R floors) and stay in the DB for reference only.
+RECORD_EPOCH = os.getenv("RECORD_EPOCH", "2026-11-02")
 
 
 def research_watch_db_path() -> Path:

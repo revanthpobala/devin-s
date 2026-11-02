@@ -28,7 +28,7 @@ UPDATE_FRESH_SESSIONS = 5
 EARNINGS_BLOCK_DAYS = 5
 CASH_SKIP_KILL = 3
 HORIZONS = (5, 21, 63)
-SIDE_COST = 0.0005
+SIDE_COST = 0.0
 MIN_SCORED = 200
 
 
@@ -361,7 +361,7 @@ def run_nightly(as_of: str, bars_for: Callable[[str], List[Dict[str, Any]]] = _d
 
 
 def score(horizons: Iterable[int] = HORIZONS) -> Dict[str, Any]:
-    """Per-tranche and per-thesis return minus SPY at h sessions after the fill, 5bps per side."""
+    """Per-tranche and per-thesis return minus SPY at h sessions after the fill, SIDE_COST per side."""
     rows = _rows("SELECT * FROM tranches")
     marks: Dict[str, List[Dict[str, Any]]] = {}
     for m in _rows("SELECT ticker, date, close, spy_close FROM marks ORDER BY date"):

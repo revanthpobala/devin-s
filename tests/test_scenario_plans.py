@@ -74,6 +74,16 @@ def test_hard_veto_and_rsi2_veto_stay_skipped():
     assert wd["verdict"] == "CASH_SKIP" and not wd["shares_plan"].get("entry_zone_high")
 
 
+def test_event_risk_keeps_pullbacks_and_tickets():
+    from src.logic.order_ticket import ticket_blocker
+
+    wd = {"verdict": "WATCH (EVENT RISK)", "veto": "EVENT_RISK", "side": "LONG", "shares_plan": {},
+          "scenarios": [{"kind": "PULLBACK", "trigger": 96, "stop": 92, "target": 112}]}
+    kept = sp.attach_scenarios(wd, "X", 100.0, 2.0, 8.0, None, today=TODAY, chain=_chain(100.0), persist=False)
+    assert [s["kind"] for s in kept] == ["PULLBACK"]
+    assert ticket_blocker("X", {"verdict": wd["verdict"]}, str(TODAY), held=set(), skip_superseded=True) is None
+
+
 def test_seed_from_plan_when_judge_writes_none():
     seeds = sp.seed_from_plan({"breakout_level": 104, "breakout_stop": 100, "target_1": 125}, 100.0)
     assert seeds == [{"kind": "BREAKOUT", "trigger": 104, "stop": 100, "target": 125, "origin": "seeded"}]
@@ -97,7 +107,7 @@ def test_ledger_limit_fill_uses_trigger_risk():
                   ("2026-10-27", 97, 112.5, 96, 111)])
     r = fill_ticket(100.0, 92.0, 112.0, bars, "LIMIT", 96.0)
     assert r["filled_price"] == 96.0 and r["exit_via"] == "TARGET"
-    assert abs(r["r_multiple"] - (16 - 0.0005 * 208) / 4) < 1e-3
+    assert abs(r["r_multiple"] - 16 / 4) < 1e-3
 
 
 def test_ledger_stop_entry_respects_not_before():

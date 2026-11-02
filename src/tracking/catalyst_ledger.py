@@ -224,11 +224,27 @@ def mover_events(today: str, quotes: Dict[str, float], sigmas: Dict[str, float],
     return out
 
 
+def _batch_bars(names: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """One Alpaca batch for the whole mover universe; {} on failure (per-name Schwab fallback runs instead)."""
+    from src.tracking.bars_store import fetch_daily
+
+    try:
+        return fetch_daily(names, 30)
+    except Exception as e:
+        logger.warning("mover batch bars failed: %s", e)
+        return {}
+
+
 def log_movers(today: str, tickers: Iterable[str], bars_for=None) -> int:
     from src.tracking import zone_ledger
     from src.tracking.candle_service import _schwab_daily_candles
 
-    bars_for = bars_for or (lambda t: _schwab_daily_candles(t, 30))
+    names = list(tickers)
+    if bars_for is None:
+        batch = _batch_bars(names)
+
+        def bars_for(t: str):
+            return batch.get(t, []) if batch else _schwab_daily_candles(t, 30)
     plans = zone_ledger.load_plans(today)
     cats: Dict[str, List[Dict[str, Any]]] = {}
     if db_path().exists():
@@ -236,14 +252,19 @@ def log_movers(today: str, tickers: Iterable[str], bars_for=None) -> int:
             for t, k, d in conn.execute("SELECT ticker, kind, date FROM catalyst"):
                 cats.setdefault(t, []).append({"kind": k, "date": d})
     n = 0
+    missing = 0
     with sqlite3.connect(str(db_path()), timeout=30) as conn:
         _init(conn)
-        for t in tickers:
+        for t in names:
             try:
-                m = classify_move(bars_for(t))
+                bars = bars_for(t)
             except Exception as e:
-                logger.debug("mover bars %s failed: %s", t, e)
+                logger.warning("mover bars %s failed: %s", t, e)
+                bars = []
+            if not bars:
+                missing += 1
                 continue
+            m = classify_move(bars)
             if not m:
                 continue
             tracked = any(p["date"] < m["start"] for p in plans.get(t, []))
@@ -252,13 +273,26 @@ def log_movers(today: str, tickers: Iterable[str], bars_for=None) -> int:
                                (t, m["end"], m["dir"], m["move_pct"], m["gap_pct"], m["gap_driven"], int(tracked),
                                 ",".join(known), datetime.now().isoformat(timespec="seconds")))
             n += cur.rowcount
+    if missing:
+        logger.warning("mover scan: no bars for %d of %d names, %d new movers", missing, len(names), n)
     return n
 
 
 def run_daily(today: str) -> Dict[str, int]:
+    from src.screener.universe import load_constituents
+
     book = held_book()
     names = universe(today, book)
-    return {"names": len(names), "catalysts": refresh_calendar(today, names), "movers": log_movers(today, names)}
+    movers = sorted(set(names) | {t.replace("/", ".") for t in load_constituents()})
+    out = {"names": len(names), "catalysts": refresh_calendar(today, names), "movers": log_movers(today, movers)}
+    try:
+        from src.tracking import earnings_drift_scan
+
+        out["drift"] = len(earnings_drift_scan.run_daily(today, movers).get("written", []))
+    except Exception as e:
+        logger.warning("earnings drift scan failed: %s", e)
+        out["drift"] = -1
+    return out
 
 
 def mover_summary() -> Dict[str, Any]:

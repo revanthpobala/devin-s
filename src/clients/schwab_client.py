@@ -1175,3 +1175,183 @@ def cancel_order(order_id: str, account_hash: Optional[str] = None) -> dict:
     return resp.json()
 
 
+_SCHWAB_TRADES_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_SCHWAB_TRADES_CACHE_TTL = 60.0  # seconds
+
+
+def get_schwab_trades_history(ticker: str, days: int = 60, force_refresh: bool = False) -> list[dict]:
+    """
+    Fetch all historical orders, executions, and settled transactions from Schwab
+    across all linked accounts for a given ticker symbol (both equity and options).
+    Returns normalized trade records with execution timestamps, fill prices, quantities,
+    order types, instructions, and account masks.
+    """
+    global _SCHWAB_TRADES_CACHE
+    sym = (ticker or "").upper().strip()
+    if not sym:
+        return []
+
+    now_ts = time.time()
+    if not force_refresh and sym in _SCHWAB_TRADES_CACHE:
+        cached_ts, cached_list = _SCHWAB_TRADES_CACHE[sym]
+        if now_ts - cached_ts < _SCHWAB_TRADES_CACHE_TTL:
+            return cached_list
+
+    trades: list[dict] = []
+    seen_order_ids: set[str] = set()
+
+    try:
+        client = get_schwab_client()
+        if not client:
+            return []
+    except Exception as e:
+        logger.debug(f"Schwab client unavailable for trades history: {e}")
+        return []
+
+    from_dt = datetime.now() - timedelta(days=max(1, min(days, 60)))
+    to_dt = datetime.now()
+
+    # 1. Pull orders across all linked accounts
+    try:
+        resp = client.get_orders_for_all_linked_accounts(from_entered_datetime=from_dt, to_entered_datetime=to_dt)
+        if resp.status_code == 200:
+            for o in resp.json():
+                matched_legs = []
+                for leg in o.get("orderLegCollection", []):
+                    inst = leg.get("instrument", {})
+                    s = (inst.get("symbol") or "").upper().strip()
+                    u = (inst.get("underlyingSymbol") or "").upper().strip()
+                    if s == sym or u == sym or s.startswith(sym + " "):
+                        matched_legs.append(leg)
+                if not matched_legs:
+                    continue
+
+                order_id = str(o.get("orderId", ""))
+                if order_id:
+                    seen_order_ids.add(order_id)
+                st = str(o.get("status", "UNKNOWN")).upper()
+                if st != "FILLED":
+                    continue  # only filled and completed executions
+
+                qty = o.get("filledQuantity") or 0
+                if not qty or float(qty) <= 0:
+                    continue
+
+                fill_p = None
+                exec_legs = []
+                for act in o.get("orderActivityCollection", []):
+                    exec_legs.extend(act.get("executionLegs", []))
+                if exec_legs:
+                    fill_p = exec_legs[0].get("price")
+                if fill_p is None:
+                    fill_p = o.get("price")
+                if fill_p is None or float(fill_p) <= 0:
+                    continue
+
+                leg = matched_legs[0]
+                inst = leg.get("instrument", {})
+                inst_type = inst.get("assetType", "EQUITY")
+                desc = inst.get("description") or inst.get("symbol") or sym
+                instruction = leg.get("instruction", "TRADE")
+
+                close_time = o.get("closeTime") or o.get("enteredTime") or ""
+                date_str = close_time[:10] if close_time else ""
+                acc_num = str(o.get("accountNumber", ""))
+                acc_mask = f"...{acc_num[-4:]}" if len(acc_num) >= 4 else acc_num
+
+                notional = round(float(qty) * float(fill_p), 2) if (qty and fill_p) else None
+                if inst_type == "OPTION" and notional:
+                    notional = round(notional * 100, 2)
+
+                trades.append({
+                    "id": f"schwab_ord_{order_id}",
+                    "name": f"Schwab {inst_type} {instruction}: {desc}",
+                    "source": "Schwab Broker",
+                    "side": "LONG" if "BUY" in instruction else "SHORT",
+                    "status": st,
+                    "order_type": o.get("orderType", "LIMIT"),
+                    "instruction": instruction,
+                    "asset_type": inst_type,
+                    "symbol": inst.get("symbol"),
+                    "fill_date": close_time[:19].replace("T", " ") if close_time else date_str,
+                    "date": date_str,
+                    "fill_price": fill_p,
+                    "quantity": qty,
+                    "pnl_dollars": notional,
+                    "account": acc_mask,
+                    "notes": f"Order #{order_id} · {o.get('orderType', 'LIMIT')} · Account {acc_mask}",
+                })
+    except Exception as e_ord:
+        logger.debug(f"Schwab orders fetch failed for {sym}: {e_ord}")
+
+    # 2. Pull settled transactions across all linked accounts
+    try:
+        acc_resp = client.get_account_numbers()
+        if acc_resp.status_code == 200:
+            for a in acc_resp.json():
+                h = a.get("hashValue")
+                mask = str(a.get("accountNumber", ""))
+                mask_fmt = f"...{mask[-4:]}" if len(mask) >= 4 else mask
+                tx_resp = client.get_transactions(h, start_date=from_dt)
+                if tx_resp.status_code == 200:
+                    for t in tx_resp.json():
+                        tx_type = str(t.get("type", "")).upper()
+                        if tx_type != "TRADE":
+                            continue  # only real settled trades, skip RECEIVE_AND_DELIVER, journals, transfers
+
+                        t_order_id = str(t.get("orderId", ""))
+                        if t_order_id and t_order_id in seen_order_ids:
+                            continue  # already covered by orders
+
+                        for it in t.get("transferItems", []):
+                            inst = it.get("instrument", {})
+                            s = (inst.get("symbol") or "").upper().strip()
+                            u = (inst.get("underlyingSymbol") or "").upper().strip()
+                            root_sym = ""
+                            for deliv in inst.get("optionDeliverables", []):
+                                if deliv.get("rootSymbol"):
+                                    root_sym = deliv.get("rootSymbol").upper().strip()
+
+                            if s == sym or u == sym or root_sym == sym or s.startswith(sym + " "):
+                                p = it.get("price")
+                                if p is None or float(p) <= 0:
+                                    continue
+                                qty = it.get("amount", 0)
+                                if not qty or float(qty) == 0:
+                                    continue
+
+                                act_id = t.get("activityId")
+                                desc = inst.get("description") or inst.get("symbol") or sym
+                                inst_type = inst.get("assetType", "EQUITY")
+                                cost = it.get("cost")
+                                t_time = t.get("time") or t.get("tradeDate") or ""
+                                date_str = t_time[:10] if t_time else ""
+
+                                trades.append({
+                                    "id": f"schwab_tx_{act_id}",
+                                    "name": f"Schwab {inst_type} {tx_type}: {desc}",
+                                    "source": "Schwab Broker",
+                                    "side": "LONG" if float(qty) > 0 else "SHORT",
+                                    "status": "FILLED",
+                                    "order_type": "SETTLED",
+                                    "instruction": it.get("positionEffect") or tx_type,
+                                    "asset_type": inst_type,
+                                    "symbol": inst.get("symbol"),
+                                    "fill_date": t_time[:19].replace("T", " ") if t_time else date_str,
+                                    "date": date_str,
+                                    "fill_price": p,
+                                    "quantity": abs(float(qty)),
+                                    "pnl_dollars": cost,
+                                    "account": mask_fmt,
+                                    "notes": f"Activity #{act_id} · {tx_type} · Account {mask_fmt}",
+                                })
+    except Exception as e_tx:
+        logger.debug(f"Schwab transactions fetch failed for {sym}: {e_tx}")
+
+    # Sort descending by date/time
+    trades.sort(key=lambda x: str(x.get("fill_date") or x.get("date") or ""), reverse=True)
+
+    _SCHWAB_TRADES_CACHE[sym] = (now_ts, trades)
+    return trades
+
+

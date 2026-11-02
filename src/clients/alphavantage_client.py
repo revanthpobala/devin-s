@@ -80,3 +80,18 @@ def format_av_block(ticker: str) -> str:
     except Exception as e:
         logger.error(f"Alpha Vantage request failed: {e}")
         return f"--- PER-TICKER FUNDAMENTALS ({ticker} AV) ---\n(Request failed)\n"
+
+
+def fetch_earnings_history(ticker: str):
+    """Full quarterly EPS history (reportedDate, reportedEPS, estimatedEPS, surprisePercentage), or None on quota/rate limit."""
+    if not _check_and_increment_quota():
+        return None
+    try:
+        resp = requests.get(BASE_URL, params={"function": "EARNINGS", "symbol": ticker, "apikey": API_KEY}, timeout=(3, 8))
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.warning(f"[{ticker}] Alpha Vantage EARNINGS failed: {e}")
+        return None
+    if "Information" in data or "Note" in data or "Error Message" in data:
+        return None
+    return data.get("quarterlyEarnings") or []

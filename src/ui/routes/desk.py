@@ -677,16 +677,25 @@ def update_journal_notes(id: int, update: JournalNotesUpdate):
             return {"success": True}
 
 
+@router.get("/rule-lab")
+def get_rule_lab():
+    """Rule Lab registry exported by Pine data-windows/scripts/rule_lab.py (mined, frozen, forward-judged rules)."""
+    path = config.BASE_DIR / "data" / "rule_lab.json"
+    if not path.exists():
+        return {"rules": [], "live_lanes": [], "tested_count": 0, "generated": None}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @router.get("/record")
 def get_record(
-    from_date: str = Query("2026-09-23", alias="from"),
+    from_date: Optional[str] = Query(None, alias="from"),
     scope: str = Query("gated"),
 ):
     if not isinstance(from_date, str):
-        from_date = getattr(from_date, "default", "2026-09-23")
+        from_date = getattr(from_date, "default", None)
     if not isinstance(scope, str):
         scope = getattr(scope, "default", "gated")
-    from_date = from_date or "2026-09-23"
+    from_date = from_date or config.RECORD_EPOCH
     scope = str(scope or "gated").lower()
 
     try:

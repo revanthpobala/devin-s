@@ -4,7 +4,8 @@ One row per (ticker, date) research plan in `suggestions` (judge preferred over 
 PASS or REJECTED alike. Daily bars after the research date, scored four ways:
 
   hold   buy at the research spot, close-to-close 5/10/21 bars later, minus SPY over the same bars
-  market enter next open, plan stop / T1, 21-bar walk from the signal, stop first on a shared bar
+  market enter next open, plan stop / T1, 21-bar walk from the signal, stop first on a shared bar, a gap
+         through the stop exits at the open
   limit  one resting limit at the zone top, good for 10 sessions (order_ticket.TICKET_GOOD_TIL_SESSIONS)
   layer  src.logic.layered_entry tranches (starter when R:R at market >= 1.5; earnings unknown historically,
          so no earnings block), equal shares, R = P&L / risk-if-all-fill; unfilled tranches cancel on a
@@ -16,6 +17,7 @@ night until 21 bars have passed (mature = 1). Run: python -m src.tracking.resear
 
 `b1_n` = B1 composite count from the research run's own Pine datawindow (src.logic.b1_label); by_b1 splits
 plans into B1 (>= 3), not_B1, no_datawindow. Label only: B1 passed the T20 holdout as a ranking rule, not a gate.
+`by_rr_band` splits on R:R at market at signal: 1-2 is the half-size lane opened 2026-11-01 (floor 1.0).
 """
 
 from __future__ import annotations
@@ -36,12 +38,14 @@ START_DATE = "2026-08-01"
 RAN, FELL = 0.05, -0.05
 MIN_READ = 30
 B1_MIN = 3  # src.logic.b1_label.MIN_COUNT; frozen 2026-10-29
+FEE = 0.0
+SCORER_V = 2  # 2: gap-through stops exit at the open; older mature rows re-score once
 
 _COLS = (
     "suggestion_id INTEGER PRIMARY KEY, ticker TEXT, date TEXT, source TEXT, lane TEXT, gate TEXT, verdict TEXT,"
     " spot REAL, rel10_pre REAL, run_bucket TEXT, h5 REAL, h10 REAL, h21 REAL, s5 REAL, s10 REAL, s21 REAL,"
     " r_market REAL, r_limit REAL, r_layer REAL, limit_filled INTEGER, layer_fills INTEGER, layer_mode TEXT,"
-    " bars INTEGER, mature INTEGER, scored_at TEXT, b1_n INTEGER"
+    " bars INTEGER, mature INTEGER, scored_at TEXT, b1_n INTEGER, scorer_v INTEGER, rr_mkt REAL"
 )
 
 
@@ -50,6 +54,9 @@ def _init(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(research_scorecard)")}
     if "b1_n" not in cols:
         conn.execute("ALTER TABLE research_scorecard ADD COLUMN b1_n INTEGER")
+    for col, typ in (("scorer_v", "INTEGER"), ("rr_mkt", "REAL")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE research_scorecard ADD COLUMN {col} {typ}")
 
 
 def _bars(ticker: str, start: str) -> List[Dict[str, Any]]:
@@ -76,16 +83,19 @@ def _atr14(before: List[Dict[str, Any]]) -> float:
     return atr
 
 
+def _net(fill: float, exit_px: float, stop: float) -> float:
+    return (exit_px * (1 - FEE) - fill * (1 + FEE)) / (fill - stop)
+
+
 def _walk(after, i0: int, fill: float, stop: float, t1: float) -> float:
-    """R of one entry from bar i0 (the fill bar) to the end of the 21-bar window; stop first on a shared bar."""
-    risk = fill - stop
+    """Net R of one entry from bar i0 (the fill bar) to the end of the 21-bar window; stop first on a shared bar."""
     end = min(len(after), HORIZON)
-    for x in after[i0:end]:
+    for i, x in enumerate(after[i0:end]):
         if x["low"] <= stop:
-            return -1.0
+            return _net(fill, stop if i == 0 else min(x["open"], stop), stop)
         if x["high"] >= t1:
-            return (t1 - fill) / risk
-    return (after[end - 1]["close"] - fill) / risk
+            return _net(fill, t1, stop)
+    return _net(fill, after[end - 1]["close"], stop)
 
 
 def score_market(after, stop: float, t1: float) -> Optional[float]:
@@ -127,10 +137,10 @@ def score_layers(after, lay: Dict[str, Any]) -> Dict[str, Any]:
                         filled.append((k, x["open"], t["shares"]))
                     elif x["low"] <= cap < x["high"] and cap > stop:
                         filled.append((k, cap, t["shares"]))
-            elif i < LIMIT_GOOD_BARS and x["low"] <= t["price"]:
+            elif i < LIMIT_GOOD_BARS and x["low"] <= t["price"] and min(t["price"], x["open"]) > stop:
                 filled.append((k, min(t["price"], x["open"]), t["shares"]))
         if filled and x["low"] <= stop:
-            exit_px = stop
+            exit_px = min(x["open"], stop) if i > 0 else stop
             break
         if filled and x["high"] >= t1:
             exit_px = t1
@@ -141,7 +151,7 @@ def score_layers(after, lay: Dict[str, Any]) -> Dict[str, Any]:
         return {"r": None, "fills": 0}
     if exit_px is None:
         exit_px = after[end - 1]["close"]
-    pnl = sum(sh * (exit_px - px) for _, px, sh in filled)
+    pnl = sum(sh * (exit_px * (1 - FEE) - px * (1 + FEE)) for _, px, sh in filled)
     return {"r": pnl / full_risk, "fills": len(filled)}
 
 
@@ -205,8 +215,9 @@ def _candidates() -> List[Dict[str, Any]]:
         rows = [dict(x) for x in conn.execute(
             "SELECT s.* FROM suggestions s LEFT JOIN research_scorecard c ON c.suggestion_id = s.id "
             "WHERE s.source IN ('judge', 'rule') AND (s.kind IS NULL OR s.kind = 'NEW') "
-            "AND COALESCE(s.side, 'LONG') = 'LONG' AND s.date >= ? AND (c.suggestion_id IS NULL OR c.mature = 0) "
-            "ORDER BY s.date", (START_DATE,))]
+            "AND COALESCE(s.side, 'LONG') = 'LONG' AND s.date >= ? AND COALESCE(s.gate_status, '') != 'BAD_PRICE' "
+            "AND (c.suggestion_id IS NULL OR c.mature = 0 OR COALESCE(c.scorer_v, 1) < ?) "
+            "ORDER BY s.date", (START_DATE, SCORER_V))]
         done = {(x[0], x[1]) for x in conn.execute("SELECT ticker, date FROM research_scorecard WHERE source = 'judge'")}
     best: Dict[tuple, Dict[str, Any]] = {}
     for r in rows:
@@ -251,12 +262,12 @@ def run() -> Dict[str, int]:
                 conn.execute(
                     "INSERT OR REPLACE INTO research_scorecard (suggestion_id, ticker, date, source, lane, gate, verdict,"
                     " spot, rel10_pre, run_bucket, h5, h10, h21, s5, s10, s21, r_market, r_limit, r_layer, limit_filled,"
-                    " layer_fills, layer_mode, bars, mature, scored_at, b1_n) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-                    " (SELECT b1_n FROM research_scorecard WHERE suggestion_id = ?))",
+                    " layer_fills, layer_mode, bars, mature, scored_at, b1_n, scorer_v, rr_mkt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+                    " (SELECT b1_n FROM research_scorecard WHERE suggestion_id = ?), ?, ?)",
                     (r["id"], tk, str(r["date"])[:10], r["source"], r.get("setup_lane"), r.get("gate_status"), r.get("verdict"),
                      res["spot"], res["rel10_pre"], res["run_bucket"], res["h5"], res["h10"], res["h21"], res["s5"],
                      res["s10"], res["s21"], res["r_market"], res["r_limit"], res["r_layer"], res["limit_filled"],
-                     res["layer_fills"], res["layer_mode"], res["bars"], res["mature"], _now_iso(), r["id"]))
+                     res["layer_fills"], res["layer_mode"], res["bars"], res["mature"], _now_iso(), r["id"], SCORER_V, r.get("rr_at_market_at_signal")))
                 conn.commit()
             scored += 1
             mature += res["mature"]
@@ -335,22 +346,31 @@ def _group(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def report() -> Dict[str, Any]:
-    """hold = % vs SPY; r_* = R per plan (unfilled limit/layers count as None in R, see fill pcts)."""
+def report(since: Optional[str] = None) -> Dict[str, Any]:
+    """hold = % vs SPY; r_* = R per plan (unfilled limit/layers count as None in R, see fill pcts).
+    since defaults to config.RECORD_EPOCH; pass START_DATE for the full history."""
+    from src import config
+
+    since = since or config.RECORD_EPOCH
     with _db_lock, _get_connection() as conn:
         conn.row_factory = sqlite3.Row
         _init(conn)
-        rows = [dict(r) for r in conn.execute("SELECT * FROM research_scorecard")]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT c.* FROM research_scorecard c LEFT JOIN suggestions s ON s.id = c.suggestion_id "
+            "WHERE COALESCE(s.gate_status, '') != 'BAD_PRICE' AND c.date >= ?", (since,))]
     if not rows:
         return {"n": 0}
     for r in rows:
         b = r.get("b1_n")
         r["b1"] = "unlabeled" if b is None else ("no_datawindow" if b < 0 else ("B1" if b >= B1_MIN else "not_B1"))
+        rr = r.get("rr_mkt")
+        r["rr_band"] = "na" if rr is None else ("<1" if rr < 1 else ("1-2" if rr < 2 else ">=2"))
     out: Dict[str, Any] = {"all": _group(rows), "dates": [min(r["date"] for r in rows), max(r["date"] for r in rows)]}
-    for key in ("gate", "source", "run_bucket", "lane", "layer_mode", "b1"):
+    for key in ("gate", "source", "run_bucket", "lane", "layer_mode", "b1", "rr_band"):
         out[f"by_{key}"] = {str(k): _group([r for r in rows if r[key] == k]) for k in sorted({r[key] for r in rows}, key=str)}
     out["note"] = ("Measurement only. hold = close-to-close % vs SPY from the research spot; r_market / r_limit / r_layer = "
-                   "plan stop & T1, 21 bars, stop first, no costs. Read a cell only when read=true (n >= 30).")
+                   "plan stop & T1, 21 bars, stop first, gaps through the stop exit at the open, no costs. "
+                   "Read a cell only when read=true (n >= 30).")
     return out
 
 
@@ -370,16 +390,18 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--since", help="first signal date (default RECORD_EPOCH)")
+    ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     if not a.report:
         print(run())
-    rep = report()
+    rep = report(a.since)
     if rep.get("n") == 0:
         print("no rows")
     else:
         print("ALL        ", _fmt(rep["all"]))
-        for key in ("gate", "run_bucket", "source", "layer_mode", "b1"):
+        for key in ("gate", "run_bucket", "source", "layer_mode", "b1", "rr_band"):
             for k, g in rep[f"by_{key}"].items():
                 print(f"{key}={k:<14}", _fmt(g))
-        if "--json" in __import__("sys").argv:
+        if a.json:
             print(json.dumps(rep, indent=1))

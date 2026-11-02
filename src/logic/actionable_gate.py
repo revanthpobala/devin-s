@@ -197,7 +197,7 @@ def is_actionable(dw: Dict[str, Any], plan: Optional[Dict[str, Any]] = None) -> 
         fails.append("not in the long zone")
 
     # Long RR At Market >= min_rr (unrounded).
-    rr_at_market = g.get("long_rr_at_market")
+    rr_at_market = 1.0 if plan_dict.get("one_r_target") else g.get("long_rr_at_market")
     if rr_at_market is None and plan_dict.get("rr") is not None:
         try:
             rr_at_market = float(plan_dict.get("rr"))

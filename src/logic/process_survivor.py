@@ -1549,10 +1549,11 @@ def generate_thesis_task(
         "high_52w": safe_float(data_window.get("high_52w") or data_window.get("_52w_high")),
         "tastytrade_iv_rank": safe_float(data_window.get("tastytrade_iv_rank")),
         "tastytrade_volatility_regime": data_window.get("tastytrade_volatility_regime"),
-        "monte_carlo_p_target_first": safe_float(
-            (data_window.get("monte_carlo_horizons") or {}).get("21", {}).get("p_target_first_pct")
-            or (data_window.get("monte_carlo_horizons") or {}).get("45", {}).get("p_target_first_pct")
-        ),
+        "monte_carlo_p_target_first": safe_float(next(
+            (h.get("p_target_first_pct") for k in (21, "21", 45, "45")
+             for h in [(data_window.get("monte_carlo_horizons") or {}).get(k) or {}] if h.get("p_target_first_pct") is not None),
+            None,
+        )),
     }
 
 

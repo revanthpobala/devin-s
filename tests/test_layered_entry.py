@@ -187,3 +187,44 @@ def test_binding_block_flags_invalidation_below_sizing_stop():
           "invalidation": {"price_level": 99.5}}
     issues = rc.check("stop 103.86 T1 120.17", wd, {}, spot=111.80)
     assert any("invalidation" in i and "99.5" in i for i in issues)
+
+
+def test_spot_below_zone_gets_no_starter():
+    from src.logic.layered_entry import build_layers
+
+    assert build_layers(98, 100, 102, 95, 115, 2, 500.0, equity_usd=170000.0) is None
+
+
+def test_gap_to_target_never_exceeds_the_plan_total():
+    from src.logic.layered_entry import build_layers
+
+    lay = build_layers(104, 100, 102, 95, 115, 2, 500.0, equity_usd=170000.0)
+    capped = cap_layers_to_position(lay, held=10, target=1000)
+    assert capped["total_shares"] <= lay["total_shares"]
+    assert capped["risk_usd_if_all_fill"] <= lay["risk_usd_if_all_fill"] + 1e-6
+
+
+def test_amh_2026_11_01_one_cent_zone_is_one_order():
+    lay = build_layers(31.60, 31.47, 31.48, 31.09, 32.25, 0.56, 500.0, earnings_days=2, equity_usd=170000)
+    assert [t["price"] for t in lay["tranches"]] == [31.48]
+
+
+def test_prose_veto_fact_is_read_when_json_says_none():
+    from src.logic.deep_research.arbitration import prose_veto_fact
+
+    assert "Culper" in prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact: **Earnings Nov 12 (8d) and live Culper short report.**")
+    assert prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact if any: none") == ""
+    assert prose_veto_fact("* **Final Verdict:** **ARMED**") == ""
+
+
+def test_event_risk_is_limits_only_and_gap_capped():
+    lay = build_layers(53.82, 52.40, 53.37, 51.04, 63.12, atr=2.5, risk_budget_usd=500,
+                       implied_move_pct=15.0, equity_usd=170000, event_risk=True)
+    assert lay["mode"] == "LIMITS_ONLY" and "event" in lay["why"] and lay["size_cap"] == "earnings_gap"
+
+
+def test_intc_gap_cap_uses_forecast_full_move():
+    lay = build_layers(92.0, 88.0, 90.0, 85.0, 100.0, atr=3.0, risk_budget_usd=500,
+                       earnings_days=2, equity_usd=170000, gap_pct=34.3)
+    assert lay["size_cap"] == "earnings_gap"
+    assert 0 < lay["total_shares"] <= 31

@@ -21,7 +21,7 @@ from src.tracking.watch_manager import _db_lock, _get_connection, _now_iso
 
 logger = logging.getLogger(__name__)
 
-FEES_BPS = 5.0
+FEES_BPS = 0.0
 HORIZON = 21
 
 _COLS = {

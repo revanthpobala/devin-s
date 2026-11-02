@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 LAYER_RR_MIN = 1.5
 STARTER_CAP_ATR = 0.10  # marketable-limit cap above spot for the starter
 MAX_TOTAL_SHARES = 500
+LAYER_MIN_GAP_ATR = 0.10  # tranches closer than this are one order split for nothing
 
 
 def _f(v: Any) -> float:
@@ -43,7 +44,9 @@ def build_layers(
     earnings_block_days: int = 7,
     rr_min: float = LAYER_RR_MIN,
     implied_move_pct: Optional[float] = None,
+    gap_pct: Optional[float] = None,
     equity_usd: float = 0.0,
+    event_risk: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Tranches for a long plan, or None when no valid layering exists (never invents levels).
 
@@ -61,8 +64,11 @@ def build_layers(
         return None
     rr_mkt = (t1 - spot) / (spot - stop)
     earnings_blocked = earnings_days is not None and 0 <= int(earnings_days) <= earnings_block_days
+    event_only = event_risk and not earnings_blocked
+    if event_only:
+        earnings_blocked, earnings_days = True, 0
 
-    starter = rr_mkt >= rr_min and not earnings_blocked
+    starter = rr_mkt >= rr_min and not earnings_blocked and spot >= lo  # below the zone it has broken: no buying into it
     if starter:
         limits = [p for p in (hi, lo) if p < spot - 0.005]
     else:
@@ -72,7 +78,10 @@ def build_layers(
     prices: List[tuple] = []
     if starter:
         prices.append(("MARKET", round(spot, 2)))
-    prices += [("LIMIT", p) for p in limits]
+    for p in limits:
+        if atr > 0 and prices and prices[-1][1] - p < LAYER_MIN_GAP_ATR * atr:
+            continue
+        prices.append(("LIMIT", p))
     if not prices:
         return None
 
@@ -85,7 +94,9 @@ def build_layers(
     n = len(prices)
     size_cap = None
     notional_total = _tr.max_shares_by_notional(max(p for _, p in prices), equity_usd)
-    gap_total = _tr.max_shares_by_earnings_gap(spot, implied_move_pct, earnings_days)
+    gap_total = _tr.max_shares_by_earnings_gap(
+        spot, implied_move_pct, earnings_days, gap_pct=gap_pct,
+    )
     total_cap = notional_total
     if gap_total is not None and gap_total < total_cap:
         total_cap, size_cap = gap_total, "earnings_gap"
@@ -117,12 +128,23 @@ def build_layers(
     avg = sum(t["price"] for t in tranches) / len(tranches)
     if starter:
         why = f"R:R at market {rr_mkt:.2f} >= {rr_min:g}: starter now, add on pullbacks to the zone"
+    elif event_only:
+        why = "binary event risk: no starter before it, limits only"
     elif earnings_blocked:
         why = f"earnings in {earnings_days} trading days: no starter through the print, limits only"
     else:
         why = f"R:R at market {rr_mkt:.2f} < {rr_min:g}: no starter (measured no help), limits only"
     if size_cap == "earnings_gap":
-        why += f"; capped to {total} shares so a 2x-implied-move earnings gap loses <= ${_tr.MAX_EARNINGS_GAP_LOSS_USD:.0f}"
+        if gap_pct is not None and float(gap_pct) > 0:
+            why += (
+                f"; capped to {total} shares so a {float(gap_pct):.1f}% earnings gap "
+                f"loses <= ${_tr.MAX_EARNINGS_GAP_LOSS_USD:.0f}"
+            )
+        else:
+            why += (
+                f"; capped to {total} shares so a 2x-implied-move earnings gap "
+                f"loses <= ${_tr.MAX_EARNINGS_GAP_LOSS_USD:.0f}"
+            )
     elif size_cap == "notional":
         why += f"; capped to {total} shares at {_tr.MAX_POSITION_NOTIONAL_PCT:.0%} of equity"
     return {
@@ -147,7 +169,7 @@ def cap_layers_to_position(
 ) -> Optional[Dict[str, Any]]:
     """Held name with a target position: size the layers as the gap to the target, never past it.
 
-    remaining = target - held (whole shares, rounded). <= 0 -> mode AT_TARGET, no tranches.
+    remaining = target - held (whole shares, rounded), at most the plan's own total. <= 0 -> mode AT_TARGET, no tranches.
     Shares go to the highest-priced tranches first, so a small add fills first at the top layer.
     Held with no target: layers unchanged, the holding is stated.
     """
@@ -160,7 +182,7 @@ def cap_layers_to_position(
         lay["position_note"] = f"you hold {held:g} shares; no target position set"
         return lay
     gap = float(target) - float(held)
-    remaining = int(round(gap))
+    remaining = min(int(round(gap)), int(lay.get("total_shares") or 0))  # never past the plan's risk budget and account caps
     lay["target_shares"] = float(target)
     if remaining <= 0:
         return {**lay, "mode": "AT_TARGET", "tranches": [], "total_shares": 0, "risk_usd_if_all_fill": 0.0,

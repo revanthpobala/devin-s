@@ -784,6 +784,23 @@ def test_sweep_expired_watch_targets(tmp_path):
         assert all_t["FRESH_TICKER"]["status"] == "STALKING"
 
 
+def test_sweep_deactivates_terminal_rows_past_the_window(tmp_path):
+    test_db = tmp_path / "test_sweep_terminal.db"
+    with patch.object(watch_manager, "DB_PATH", test_db):
+        watch_manager.init_watch_db()
+        for tk, d in (("OLD_HIT", "2026-08-10"), ("NEW_HIT", "2026-08-24")):
+            watch_manager.upsert_watch_target({
+                "ticker": tk, "date": d, "created_date": d, "verdict": "STALK",
+                "shares_plan": {"entry_zone_low": 50.0, "entry_zone_high": 52.0, "tactical_stop": 47.0, "target_1": 60.0},
+                "status": "STALKING",
+            })
+            watch_manager.update_target_live_state(tk, 61.0, "TARGET_HIT")
+        watch_manager.sweep_expired_watch_targets(days=5, as_of_date="2026-08-25")
+        all_t = {t["ticker"]: t for t in watch_manager.get_all_watch_targets()}
+        assert all_t["OLD_HIT"]["status"] == "TARGET_HIT" and all_t["OLD_HIT"]["is_active"] == 0
+        assert all_t["NEW_HIT"]["is_active"] == 1
+
+
 
 
 
@@ -1005,3 +1022,19 @@ def test_zone_is_not_entered_before_the_next_open(tmp_path):
         })
         with patch("run_watch_alerts.get_current_price", return_value=50.0):
             assert evaluate_watch_cycle(sync_sheets=False)[0]["status"] == "STALKING"
+
+
+def test_sync_ignores_rule_baseline_rows(tmp_path):
+    from datetime import date
+
+    day = date.today().isoformat()
+    with patch.object(watch_manager, "DB_PATH", tmp_path / "t.db"):
+        _sync_db(tmp_path)
+        with watch_manager._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO suggestions (ticker, date, side, entry_low, entry_high, stop, target_1, verdict, gate_status, source)"
+                " VALUES ('RUL', ?, 'LONG', 10, 11, 9, 14, 'ENTER', 'PASS', 'rule'),"
+                " ('JDG', ?, 'LONG', 10, 11, 9, 14, 'ENTER', 'PASS', 'judge')", (day, day))
+            conn.commit()
+        assert watch_manager.sync_active_suggestions_to_watch_targets() == 1
+        assert {t["ticker"] for t in watch_manager.get_all_watch_targets()} == {"JDG"}

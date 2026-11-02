@@ -2467,6 +2467,53 @@ window.AppDesk = {
     }
   },
 
+  async loadRuleLab() {
+    const cont = document.getElementById('rulelab-content-container');
+    if (!cont) return;
+    try {
+      const d = await window.AppApi.request('/api/desk/rule-lab');
+      const fmt = (v, p = 3, sign = true) => (v === null || v === undefined) ? '–' : `${sign && v >= 0 ? '+' : ''}${Number(v).toFixed(p)}`;
+      const tone = { PROMOTE_READY: 'var(--blue)', PROMOTED: 'var(--text-main)', FROZEN: 'var(--amber)', RETIRED: 'var(--text-muted)', REJECTED: 'var(--text-muted)' };
+      const g = d.gates || {};
+      const run = d.last_run || {};
+      let html = `<div class="station-card" style="padding:12px 18px; font-size:12px; line-height:1.6;">
+        <div style="font-weight:800; font-size:13px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted);">Rule Lab · ZONE_RR conditions</div>
+        <div>Mined in-sample, auto-frozen if they pass, judged only on bars after the freeze. Promotion needs your approval (<code>rule_lab.py approve ID</code>).</div>
+        <div style="color:var(--text-muted);">Gate: n ≥ ${g.min_n || '–'}, lift ≥ ${g.min_lift || '–'}R, all 4 eras + both ticker halves, median agrees · forward n ≥ ${g.forward_min_n || '–'} · ${d.tested_count || 0} specs tested to date${run.date ? ` · last mine ${run.date} on ${run.corpus} (${run.passed}/${run.tested} passed)` : ''}</div>
+      </div>`;
+      if ((d.live_lanes || []).length) {
+        html += `<div class="station-card" style="padding:10px 18px; display:flex; gap:20px; flex-wrap:wrap; font-size:11px; font-family:var(--font-mono); font-weight:700;">`;
+        d.live_lanes.forEach(l => {
+          const c = l.health === 'REVIEW' ? 'var(--rose-light)' : (l.health === 'OK' ? 'var(--blue)' : 'var(--text-muted)');
+          html += `<div>${l.lane} <span style="color:${c};">${l.health}</span> <span style="color:var(--text-muted);">recent n=${l.n_recent} R_rel ${fmt(l.R_rel_recent)}</span></div>`;
+        });
+        html += `</div>`;
+      }
+      html += `<div class="station-card" style="overflow-x:auto;"><table class="data-table" style="width:100%; font-size:11.5px;"><thead><tr>
+        <th>ID</th><th>Status</th><th>Rule</th><th>Frozen</th><th>IS n</th><th>IS lift</th><th>IS win%</th><th>Fwd n</th><th>Fwd lift</th><th>Fwd R_rel</th><th>Fwd breadth</th></tr></thead><tbody>`;
+      if (!(d.rules || []).length) {
+        html += `<tr><td colspan="11" style="text-align:center; padding:16px; color:var(--text-muted);">No rules yet. Run <code>rule_lab.py mine</code>.</td></tr>`;
+      }
+      (d.rules || []).forEach(r => {
+        const is = r.in_sample || {};
+        const f = r.forward || {};
+        const dim = r.status === 'RETIRED' || r.status === 'REJECTED' ? 'opacity:0.55;' : '';
+        html += `<tr style="${dim}">
+          <td style="font-family:var(--font-mono);">${r.id}</td>
+          <td style="font-weight:800; color:${tone[r.status] || 'var(--text-main)'};">${r.status}</td>
+          <td>${r.rule}</td><td>${r.frozen_date || '–'}</td>
+          <td>${is.n ?? '–'}</td><td>${fmt(is.lift)}</td><td>${fmt(is.win_pct, 1, false)}</td>
+          <td>${f.n ?? 0}${f.n_logged ? ` / ${f.n_logged}` : ''}</td><td>${fmt(f.lift)}</td><td>${fmt(f.R_rel)}</td><td>${f.breadth_pct != null ? fmt(f.breadth_pct, 0, false) + '%' : '–'}</td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+      if (d.generated) html += `<div style="font-size:10.5px; color:var(--text-muted);">Exported ${d.generated}. Forward numbers are unreadable below n=${g.forward_min_n || 200}.</div>`;
+      cont.innerHTML = html;
+    } catch (err) {
+      cont.innerHTML = `<div style="color:var(--rose-light);">Failed to load Rule Lab: ${err}</div>`;
+    }
+  },
+
   async loadRecord(scope) {
     try {
       if (scope) this._activeRecordScope = scope;

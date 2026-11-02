@@ -5,7 +5,7 @@ Deterministic CPU Quantitative Analytics Plugin:
 1. Core Technical Structure: 52W High/Low, Moving Average Extensions (SMA20/50/200, EMA8/13/21), ATR14, Unfilled Gaps.
 2. Volatility Risk Premium (VRP): Realized Volatilities (HV10/20/30/60/90), Implied Volatility (IV30), IV-HV spread.
 3. 20,000-Path Vectorized Monte Carlo Simulation:
-   - Geometric Brownian Motion with Ito drift correction across 21d, 45d, 63d, 126d horizons.
+   - Zero-drift Geometric Brownian Motion at realized HV20 across 21d, 45d, 63d, 126d horizons.
    - First-passage barrier probabilities: P(Target 1 Hit before Stop Loss), P(Stop Loss Hit before Target).
    - Multi-horizon percentile price cones: 5th, 25th, 50th (median), 75th, 95th percentiles.
    - Key structural barrier touch probabilities (AVWAPs, Darvas boundaries, 52W High).
@@ -122,7 +122,6 @@ class MonteCarloPlugin(BaseAnalyticsPlugin):
         # 2. VOLATILITY RISK PREMIUM (IV vs HV)
         # -------------------------------------------------------------
         log_rets = np.diff(np.log(closes.values))
-        mu_daily = float(np.mean(log_rets))
         sigma_daily = float(np.std(log_rets, ddof=1))
 
         hv10 = float(np.std(log_rets[-10:], ddof=1) * math.sqrt(252) * 100) if len(log_rets) >= 10 else sigma_daily * math.sqrt(252) * 100
@@ -164,13 +163,9 @@ class MonteCarloPlugin(BaseAnalyticsPlugin):
             _safe_float(dw.get("Long Target"))
             or _safe_float(dw.get("Long Target T1 Waypoint"))
             or _safe_float(dw.get("target_1"))
-            or round(S0 * 1.15, 2)
         )
-        pine_stop = (
-            _safe_float(dw.get("Long Stop Loss"))
-            or _safe_float(dw.get("tactical_stop"))
-            or round(S0 * 0.92, 2)
-        )
+        pine_stop = _safe_float(dw.get("Long Stop Loss")) or _safe_float(dw.get("tactical_stop"))
+        has_levels = bool(pine_target1 and pine_stop and pine_stop < S0 < pine_target1)
         pine_target2 = _safe_float(dw.get("Long Target 2")) or _safe_float(dw.get("target_2"))
 
         # Other structural barriers to test touch probability
@@ -190,34 +185,37 @@ class MonteCarloPlugin(BaseAnalyticsPlugin):
         if high_52w > S0:
             barriers[f"52W High (${high_52w:.2f})"] = high_52w
 
-        # Use blended or historical daily vol for simulation
-        sim_sigma_daily = (iv30 / 100 / math.sqrt(252)) if (iv30 and iv30 > 0) else sigma_daily
+        # Zero drift, realized HV20. Calibrated on 32,374 corpus trades (Pine mc_calibration.py): trailing-mean
+        # drift with Energy IV30 scored worse than quoting the base rate in all four eras; this scored best.
+        sim_sigma_daily = hv20 / 100 / math.sqrt(252) if hv20 > 0 else sigma_daily
 
         horizons = [21, 45, 63, 126]
         mc_results: Dict[int, Dict[str, Any]] = {}
 
         for H in horizons:
-            # Geometric Brownian Motion with Ito drift correction
-            r = rng.normal(mu_daily - 0.5 * sim_sigma_daily**2, sim_sigma_daily, size=(N, H))
+            r = rng.normal(-0.5 * sim_sigma_daily**2, sim_sigma_daily, size=(N, H))
             paths = S0 * np.exp(np.cumsum(r, axis=1))
 
             end_prices = paths[:, -1]
             pmin = paths.min(axis=1)
             pmax = paths.max(axis=1)
 
-            # First-passage hitting time logic (Target 1 vs Stop Loss)
-            hit_target = paths >= pine_target1
-            hit_stop = paths <= pine_stop
-
-            has_target = hit_target.any(axis=1)
-            has_stop = hit_stop.any(axis=1)
-
-            first_target_idx = np.where(has_target, np.argmax(hit_target, axis=1), H + 1)
-            first_stop_idx = np.where(has_stop, np.argmax(hit_stop, axis=1), H + 1)
-
-            p_target_first = float(np.mean((first_target_idx < first_stop_idx) & has_target))
-            p_stop_first = float(np.mean((first_stop_idx < first_target_idx) & has_stop))
-            p_neither = float(np.mean(~has_target & ~has_stop))
+            pct: Dict[str, Optional[float]] = dict.fromkeys(
+                ("p_target_first_pct", "p_stop_first_pct", "p_neither_pct", "p_reach_target_pct", "p_reach_stop_pct"))
+            if has_levels:
+                hit_target = paths >= pine_target1
+                hit_stop = paths <= pine_stop
+                has_target = hit_target.any(axis=1)
+                has_stop = hit_stop.any(axis=1)
+                first_target_idx = np.where(has_target, np.argmax(hit_target, axis=1), H + 1)
+                first_stop_idx = np.where(has_stop, np.argmax(hit_stop, axis=1), H + 1)
+                pct = {
+                    "p_target_first_pct": round(float(np.mean((first_target_idx < first_stop_idx) & has_target)) * 100, 1),
+                    "p_stop_first_pct": round(float(np.mean((first_stop_idx < first_target_idx) & has_stop)) * 100, 1),
+                    "p_neither_pct": round(float(np.mean(~has_target & ~has_stop)) * 100, 1),
+                    "p_reach_target_pct": round(float(has_target.mean()) * 100, 1),
+                    "p_reach_stop_pct": round(float(has_stop.mean()) * 100, 1),
+                }
 
             # Barrier touch probabilities
             touch_probs = {}
@@ -233,11 +231,7 @@ class MonteCarloPlugin(BaseAnalyticsPlugin):
                 "p25": round(float(np.percentile(end_prices, 25)), 2),
                 "p75": round(float(np.percentile(end_prices, 75)), 2),
                 "p95": round(float(np.percentile(end_prices, 95)), 2),
-                "p_target_first_pct": round(p_target_first * 100, 1),
-                "p_stop_first_pct": round(p_stop_first * 100, 1),
-                "p_neither_pct": round(p_neither * 100, 1),
-                "p_reach_target_pct": round(float(has_target.mean()) * 100, 1),
-                "p_reach_stop_pct": round(float(has_stop.mean()) * 100, 1),
+                **pct,
                 "barrier_touches": touch_probs,
             }
 
@@ -269,9 +263,11 @@ class MonteCarloPlugin(BaseAnalyticsPlugin):
         else:
             md_lines.append(f"- Volatility Regime: **{vrp_regime}**")
 
+        lv = f"Target 1: ${pine_target1:.2f}, Stop: ${pine_stop:.2f}" if has_levels else "no valid Pine stop/target"
         md_lines.extend([
             "",
-            f"**3. Monte Carlo Path & Touch Probabilities (20,000 Paths, Target 1: ${pine_target1:.2f}, Stop: ${pine_stop:.2f}):**",
+            f"**3. Monte Carlo Path & Touch Probabilities (20,000 Paths, zero drift, HV20 {hv20:.1f}%, {lv}):**",
+            "- P(Target First) adds little over 1/(1+R:R): calibration skill ~2% over the base rate.",
             "| Horizon | Median Price | 5th – 95th Price Cone | P(Target First) | P(Stop First) | P(Neither) | Key Touch Probabilities |",
             "|---|---|---|---|---|---|---|",
         ])
@@ -279,9 +275,10 @@ class MonteCarloPlugin(BaseAnalyticsPlugin):
         for H in horizons:
             r = mc_results[H]
             touch_str = ", ".join([f"{k}: {v}%" for k, v in r["barrier_touches"].items()]) or "None"
+            p = lambda k: "n/a" if r[k] is None else f"{r[k]}%"
             md_lines.append(
                 f"| **{H} Days** | ${r['median']:.2f} | [${r['p05']:.2f} – ${r['p95']:.2f}] | "
-                f"**{r['p_target_first_pct']}%** | **{r['p_stop_first_pct']}%** | {r['p_neither_pct']}% | {touch_str} |"
+                f"**{p('p_target_first_pct')}** | **{p('p_stop_first_pct')}** | {p('p_neither_pct')} | {touch_str} |"
             )
 
         return {

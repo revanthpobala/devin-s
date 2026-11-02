@@ -83,20 +83,59 @@ def setup_events(opps: Iterable[Dict[str, Any]], date: str,
     return out
 
 
-def digest_event(date: str, opps: Iterable[Dict[str, Any]], risk: Dict[str, Any], backend_alive: bool) -> Optional[Dict[str, Any]]:
+def _order_line(o: Dict[str, Any]) -> str:
+    size = {1.5: "1.5x size", 1.0: "full size", 0.5: "half size"}.get(o.get("size_mult"), f"{o.get('size_mult')}x")
+    how = "BUY now ~" if o.get("type") == "buy now" else "BUY limit "
+    return (f"[{o['ticker']}] {how}{o['entry']:.2f} x {o['shares']} · stop {float(o['stop']):.2f} · T1 {float(o['target']):.2f} · "
+            f"R:R {o['rr']:.2f} · {size} · risk ${o['risk']:,.0f}")
+
+
+def position_line(ticker: str, rec: Dict[str, Any], price: Optional[float], days_to_earnings: Optional[int] = None) -> str:
+    entry, stop, target = _num(rec.get("entry_price")), _num(rec.get("stop")), _num(rec.get("target"))
+    if price is None or entry is None or stop is None or entry <= stop:
+        return f"[{ticker}] no live price or no stop: cannot be risk-checked"
+    r_now = (price - entry) / (entry - stop)
+    parts = [f"[{ticker}] {price:.2f}", f"stop {stop:.2f} ({100 * (price - stop) / price:.1f}% away)",
+             f"{r_now:+.2f}R", f"T1 {target:.2f}" if target else "no T1"]
+    if price <= stop:
+        parts.append("STOP BREACHED")
+    if days_to_earnings is not None and 0 <= days_to_earnings <= 7:
+        parts.append(f"earnings in {days_to_earnings}d")
+    return " · ".join(parts)
+
+
+def digest_event(date: str, opps: Iterable[Dict[str, Any]], risk: Dict[str, Any], backend_alive: bool,
+                 orders: Optional[List[Dict[str, Any]]] = None, scanner_lines: Optional[List[str]] = None,
+                 position_lines: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """Morning action sheet: orders with shares and dollar risk, open positions against their stops, risk limits."""
     if not risk or risk.get("loading") or "book" not in risk:
         return None
     states = [o.get("opportunity_state") for o in opps]
     take, armed = states.count("TAKE_NOW"), states.count("ARMED")
+    orders, scanner_lines, position_lines = orders or [], scanner_lines or [], position_lines or []
     dial = (risk.get("regime_dial") or {}).get("multiplier")
-    lines = [f"Take now {take}, armed {armed}. Size dial {dial}x ({(risk.get('regime_dial') or {}).get('why')}).",
+    new_risk = sum(float(o.get("risk") or 0) for o in orders)
+    book = float(risk.get("book") or 0)
+    lines = [f"Size dial {dial}x ({(risk.get('regime_dial') or {}).get('why')}). "
              f"Open risk {risk.get('open_risk_pct')}% of {risk.get('risk_cap_pct')}% cap, {risk.get('tracked')}/{risk.get('position_cap')} positions, "
-             f"beta-weighted exposure {risk.get('beta_weighted_pct')}% of book.",
-             f"Research backend {'running' if backend_alive else 'NOT running'}."]
+             f"beta-weighted exposure {risk.get('beta_weighted_pct')}% of book."]
+    if orders:
+        after = (float(risk.get("open_risk_pct") or 0) + 100 * new_risk / book) if book else None
+        lines.append(f"ORDERS ({len(orders)}, new risk ${new_risk:,.0f}" + (f", open risk after {after:.1f}%)" if after is not None else ")"))
+        lines += [_order_line(o) for o in orders]
+    lines += scanner_lines
+    if position_lines:
+        lines.append("POSITIONS")
+        lines += position_lines
     lines += [f"Limit: {f}" for f in risk.get("flags", [])]
-    return {"kind": "DIGEST", "severity": "WARN" if risk.get("flags") else "INFO", "ticker": None, "key": f"DIGEST:{date}",
-            "title": f"Morning digest: {take} take-now, {armed} armed, risk {risk.get('open_risk_pct')}% of book",
-            "body": " ".join(lines)}
+    lines.append(f"Research backend {'running' if backend_alive else 'NOT running'}.")
+    n = len(orders) + len(scanner_lines)
+    ev = {"kind": "DIGEST", "severity": "WARN" if risk.get("flags") else "INFO", "ticker": None, "key": f"DIGEST:{date}",
+          "title": f"Action sheet: {n} orders · {take} take-now, {armed} armed, risk {risk.get('open_risk_pct')}% of book",
+          "body": "\n".join(lines)}
+    if n:
+        ev["push"] = "ENTRY"
+    return ev
 
 
 def trust_event(report: Dict[str, Any], date: str) -> Optional[Dict[str, Any]]:
@@ -277,6 +316,22 @@ def portfolio_events(positions: Iterable[Dict[str, Any]], total_day_pct: Optiona
     return out
 
 
+def drift_events(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Watch line for each earnings-drift signal. UNMEASURED lane, so it never carries a push or an order."""
+    out = []
+    for r in rows:
+        t, day = str(r.get("ticker") or "").upper(), str(r.get("date") or "")[:10]
+        stop = _num(r.get("stop"))
+        if not (t and day and stop):
+            continue
+        out.append({
+            "kind": "CATALYST", "severity": "INFO", "ticker": t, "key": f"DRIFT:{t}:{day}",
+            "title": f"CATALYST: EARNINGS_DRIFT {t}, entry next open, stop {stop:.2f}",
+            "body": "UNMEASURED lane: post-earnings drift after an 8-K 2.02 gap that held. Watch only; exit at 21 bars or stop.",
+        })
+    return out
+
+
 def rsi2_events(rows: Iterable[Dict[str, Any]], now_et: Any) -> List[Dict[str, Any]]:
     """One order per RSI2 ENTER signal, live until the next session's open, the only time it can be taken."""
     from src.tracking.rsi2_scan import entry_open_passed, MAX_HOLD_BARS, next_open_day
@@ -295,12 +350,20 @@ def rsi2_events(rows: Iterable[Dict[str, Any]], now_et: Any) -> List[Dict[str, A
             n -= last.weekday() < 5
         er = str(r.get("next_earnings") or "")[:10]
         er_in = bool(er) and str(opens) <= er <= str(last)
+        spot = _num(r.get("spot_at_signal"))
+        fill_line = ""
+        if spot:
+            from src.tracking.rsi2_scan import fill_odds
+
+            gap = ceil / spot - 1
+            fill_line = f"Ceiling is {100 * gap:+.1f}% vs the {spot:.2f} close; about {fill_odds(gap):.0f}% of RSI2 signals open that low."
         out.append({
             "kind": "ORDER", "severity": "WARN", "ticker": t, "key": f"RSI2:{t}:{day}", "push": "ENTRY",
             "title": ("EARNINGS IN HOLD · " if er_in else "") + f"BUY {t} at the {opens} open, only if it opens at or below ${ceil:.2f}",
             "body": "\n".join(x for x in (
                 f"{t} BUY 100 MARKET-ON-OPEN {opens}. Skip if the open is above {ceil:.2f} or at/below the stop.",
                 f"Stop {stop:.2f} · target {target:.2f} · risk at the ceiling ${100 * (ceil - stop):,.0f}",
+                fill_line,
                 f"Exit at the next open after a daily close above EMA5, or at the open after {MAX_HOLD_BARS} bars.",
                 f"Earnings {er} falls inside the {MAX_HOLD_BARS}-bar hold (ends {last}): a gap can jump the stop. Skip or size down." if er_in else "",
                 f"RSI2 lane [MEASURED]: {win:.0f}% win, {ev_r:+.3f}R per trade in this QQQ band. A base rate, not a forecast."

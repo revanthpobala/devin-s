@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 PENDING_DAYS = 10
 MAX_HOLD_DAYS = 30
 LOOK_COOLDOWN_S = 1800
-FEE = 0.0005
+FEE = 0.0
 THESIS_CHARS = 2500
 
 SYSTEM = (

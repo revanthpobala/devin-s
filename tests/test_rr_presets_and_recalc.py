@@ -59,7 +59,7 @@ def test_presets_step_monotonically():
 def test_preset_blurbs_carry_the_measured_tradeoff():
     """Raising the floor buys expectancy at the cost of hit rate. The button has to say so."""
     blurbs = {p["name"]: p["blurb"] for p in rc.as_ui_payload()["presets"]}
-    assert "34%" in blurbs["2_0"] and "-0.017R" in blurbs["1_0"]
+    assert "33% win" in blurbs["2_0"] and "44% win" in blurbs["1_0"]
 
 
 def test_active_preset_is_none_for_custom_settings():

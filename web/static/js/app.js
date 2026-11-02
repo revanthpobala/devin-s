@@ -5,6 +5,7 @@ window.addEventListener('pageshow', (e) => { if (e.persisted) window.location.re
 
 window.App = {
   _deskPath(desk) {
+    if (desk === 'rulelab') return '/journal';
     return desk === 'swing' ? '/radar' : `/${desk}`;
   },
 
@@ -53,19 +54,19 @@ window.App = {
 
     window.AppState.currentDesk = desk;
     
-    const allDesks = ['today', 'swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'journal', 'record', 'logs'];
+    const allDesks = ['today', 'swing', 'alerts', 'watchlist', 'trades', 'portfolio', 'intraday', 'journal', 'record', 'rulelab', 'logs'];
     allDesks.forEach(d => {
       const pane = document.getElementById(`desk-pane-${d}`);
       if (pane) pane.style.display = (d === desk) ? 'flex' : 'none';
       const btn = document.getElementById(`btn-desk-${d}`);
       if (btn) btn.className = `desk-nav-btn ${d === desk ? 'active' : ''}`;
       const navItem = document.getElementById(`nav-item-${d}`);
-      if (navItem) navItem.className = `nav-item ${d === desk || (d === 'journal' && desk === 'record') ? 'active' : ''}`;
+      if (navItem) navItem.className = `nav-item ${d === desk || (d === 'journal' && (desk === 'record' || desk === 'rulelab')) ? 'active' : ''}`;
     });
 
     const ledgerBtn = document.getElementById('btn-desk-ledger');
     if (ledgerBtn) {
-      if (desk === 'journal' || desk === 'record') {
+      if (desk === 'journal' || desk === 'record' || desk === 'rulelab') {
         ledgerBtn.className = 'desk-nav-btn active';
       } else {
         ledgerBtn.className = 'desk-nav-btn';
@@ -74,7 +75,7 @@ window.App = {
 
     const uConsole = document.getElementById('universal-console-station');
     if (uConsole) {
-      if (desk === 'today' || desk === 'journal' || desk === 'record') {
+      if (desk === 'today' || desk === 'journal' || desk === 'record' || desk === 'rulelab') {
         uConsole.style.display = 'none';
       } else {
         uConsole.style.display = 'block';
@@ -87,6 +88,8 @@ window.App = {
       window.AppDesk.loadJournal();
     } else if (desk === 'record' && window.AppDesk) {
       window.AppDesk.loadRecord();
+    } else if (desk === 'rulelab' && window.AppDesk) {
+      window.AppDesk.loadRuleLab();
     } else if (desk === 'swing' && window.AppSwing) {
       window.AppSwing.refreshResearchQueue();
     } else if (desk === 'alerts' && window.AppAlerts) {

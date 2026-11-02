@@ -221,7 +221,7 @@ def test_research_ticker_trades_page(client):
     response = client.get("/research/CAT/trades")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
-    assert "Suggested Trades" in response.text
+    assert "Prior Trades" in response.text or "Suggested Trades" in response.text
 
 
 def test_api_research_ticker_trades(client):

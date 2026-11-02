@@ -1,8 +1,8 @@
 """
-Suggestion Scorer — honest 21-bar R scoring with fees.
+Suggestion Scorer — honest 21-bar R scoring.
 
 Walks bars starting from the bar AFTER the signal, exits after 21 trading
-days, charges 10bps round trip, reports R = (exit - fill) / (fill - stop).
+days, charges ROUND_TRIP_FEES_BPS, reports R = (exit - fill) / (fill - stop).
 Reuses the conventions in data-windows/scripts/honest_entry_replay.py:
 next open, stop checked first, skip gaps through the stop.
 """
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 SCORER_VERSION = 2
 MAX_HOLDING_BARS = 21
-ROUND_TRIP_FEES_BPS = 10  # 10bps = 0.10%
+ROUND_TRIP_FEES_BPS = 0  # commission-free brokers
 
 
 def _load_suggestions(
@@ -42,7 +42,7 @@ def _load_suggestions(
                 WHERE (verdict IS NULL OR verdict IN ('ENTER', 'STALK'))
                   AND (kind IS NULL OR kind = 'NEW')
                   AND (entry_low IS NOT NULL AND stop IS NOT NULL AND target_1 IS NOT NULL)
-                  AND (gate_status IS NULL OR gate_status = 'PASS')
+                  AND (gate_status IS NULL OR gate_status = 'PASS' OR setup_lane = 'EARNINGS_DRIFT')
             """
             params: List[Any] = []
             if ticker:
@@ -103,8 +103,9 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
     # 9. RSI2 detection by setup_lane == 'RSI2' only; pass opening_ceiling = min(stop + 2*ATR, stop/(1-0.05), target)
     setup_lane = row.get("setup_lane") or ""
     is_rsi2 = (setup_lane == "RSI2")
-    holding_bars = 10 if is_rsi2 else MAX_HOLDING_BARS
-    e_type = "NEXT_OPEN" if is_rsi2 else entry_type
+    is_drift = (setup_lane == "EARNINGS_DRIFT")  # PEAD: next-open entry, no target, 21-bar time exit
+    holding_bars = 10 if is_rsi2 else 21 if is_drift else MAX_HOLDING_BARS
+    e_type = "NEXT_OPEN" if (is_rsi2 or is_drift) else entry_type
     strat_id = "RSI2" if is_rsi2 else None
 
     opening_ceiling = None
@@ -226,14 +227,14 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
         exit_price = float(bars.iloc[-1].get("Close", bars.iloc[-1].get("close", fill_price)))
     exit_reason = eval_res.get("exit_reason") or eval_res.get("status") or "MAX_HOLDING_EXPIRED"
 
-    # Compute gross R, fee (Cost 0.0005*(fill+exit)/risk), and net R
+    # Compute gross R, fee, and net R
     # Filled trade that gaps through the stop gets real R at the open
     if side == "LONG":
         gross_r = (exit_price - fill_price) / risk
     else:
         gross_r = (fill_price - exit_price) / risk
 
-    cost_r = (0.0005 * (fill_price + exit_price)) / risk
+    cost_r = (ROUND_TRIP_FEES_BPS / 2e4 * (fill_price + exit_price)) / risk
     r_net = gross_r - cost_r
 
     # Compute MAE as worst adverse excursion between fill and exit divided by risk
@@ -276,6 +277,10 @@ def score_suggestion(row: Dict[str, Any]) -> Dict[str, Any]:
 def evaluate_all_suggestions(force: bool = False) -> Dict[str, Any]:
     """Score all unscored suggestions. If force=True, re-scores all suggestions."""
     rows = _load_suggestions(scored=None if force else False)
+    if ROUND_TRIP_FEES_BPS == 0:
+        with _db_lock, _get_connection() as conn:
+            conn.execute("UPDATE suggestions SET r_net = gross_r WHERE gross_r IS NOT NULL AND r_net IS NOT NULL AND r_net != gross_r")
+            conn.commit()
     scored_count = 0
     errors = []
 
@@ -385,8 +390,11 @@ def _compute_stats() -> Dict[str, Any]:
             }
 
 
-def get_main_record_stats(min_date: str = "2026-09-23") -> Dict[str, Any]:
-    """Compute stats for main record: source=judge, gate PASS, kind NEW, the 5 lanes, date >= min_date."""
+def get_main_record_stats(min_date: Optional[str] = None) -> Dict[str, Any]:
+    """Compute stats for main record: source=judge, gate PASS, kind NEW, the 5 lanes, date >= min_date (default RECORD_EPOCH)."""
+    if min_date is None:
+        from src import config
+        min_date = config.RECORD_EPOCH
     with _db_lock:
         try:
             with _get_connection() as conn:
@@ -467,7 +475,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Re-score suggestions in DB")
     parser.add_argument("--force", action="store_true", help="Force re-score all suggestions")
-    parser.add_argument("--date", type=str, default="2026-09-23", help="Min date for get_main_record_stats")
+    parser.add_argument("--date", type=str, default=None, help="Min date for get_main_record_stats (default RECORD_EPOCH)")
     args = parser.parse_args()
 
     print(f"Scoring suggestions (SCORER_VERSION={SCORER_VERSION}, force={args.force})...")
@@ -476,7 +484,7 @@ if __name__ == "__main__":
     if res.get("stats"):
         print("Scoring overall stats:", json.dumps(res["stats"], indent=2))
 
-    print(f"\n--- Main Record Stats (date >= {args.date}) ---")
+    print(f"\n--- Main Record Stats (date >= {args.date or 'RECORD_EPOCH'}) ---")
     main_stats = get_main_record_stats(min_date=args.date)
     if main_stats:
         print(json.dumps(main_stats, indent=2))

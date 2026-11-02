@@ -16,8 +16,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.tracking import notification_center as nc
-from src.tracking.notifier_rules import (closed_positions, digest_event, portfolio_events, position_events, rsi2_events,
-                                         setup_events, trust_event, watch_alert_events)
+from src.tracking.notifier_rules import (closed_positions, digest_event, drift_events, portfolio_events, position_events,
+                                         rsi2_events, setup_events, trust_event, watch_alert_events)
 
 logger = logging.getLogger("notifier")
 NO_PRICE_CYCLES = 3
@@ -212,13 +212,49 @@ def start_agent(date: str) -> None:
 
 def check_digest(date: str) -> None:
     from src.tracking import backend_control as bc
+    from src.tracking.notifier_rules import position_line
     from src.tracking.risk_snapshot import get_snapshot
     from src.ui.services.opportunity_service import collect_active_deep_research_opportunities
 
     now_mt = datetime.now(ZoneInfo("America/Denver"))
     if now_mt.weekday() >= 5 or not 7 <= now_mt.hour < 12 or nc.get_meta("digest_date") == date:
         return
-    ev = digest_event(date, collect_active_deep_research_opportunities(3), get_snapshot(), bc.alive())
+    risk = get_snapshot()
+    if not risk or risk.get("loading") or "book" not in risk:
+        return
+    orders, scanner, positions = [], [], []
+    try:
+        from src.ui.services.deploy_planner import build_deploy_plan
+
+        orders = [o for t in build_deploy_plan().get("tranches", []) for o in t.get("orders", [])]
+    except Exception as e:
+        logger.warning("action sheet: deploy plan failed: %s", e)
+    try:
+        from src.tracking.watch_manager import _get_connection
+
+        with _get_connection() as conn:
+            for t, src, hi, stop, tgt in conn.execute(
+                    "SELECT ticker, source, entry_high, stop, target_1 FROM suggestions WHERE source IN ('rsi2_scan', 'earnings_drift') "
+                    "AND verdict = 'ENTER' AND gate_status = 'PASS' AND scored_at IS NULL AND date >= date(?, '-3 days') ORDER BY ticker", (date,)):
+                lane = "RSI2 open at or below" if src == "rsi2_scan" else "EARNINGS DRIFT near"
+                scanner.append(f"[{t}] {lane} {hi:.2f} · stop {stop:.2f}" + (f" · T1 {tgt:.2f}" if tgt else ""))
+    except Exception as e:
+        logger.warning("action sheet: scanner rows failed: %s", e)
+    try:
+        from src.clients.quote_router import quote_router
+        from src.tracking.position_state import list_open
+        from src.ui.services.action_engine import _days_to_earnings
+
+        for t, rec in sorted(list_open().items()):
+            try:
+                q = quote_router.get_watchlist_quote(t)
+                px = float(q.last_price) if q and q.last_price else None
+            except Exception:
+                px = None
+            positions.append(position_line(t, rec, px, _days_to_earnings(t)))
+    except Exception as e:
+        logger.warning("action sheet: positions failed: %s", e)
+    ev = digest_event(date, collect_active_deep_research_opportunities(3), risk, bc.alive(), orders, scanner, positions)
     if ev:
         _emit(ev)
         nc.set_meta("digest_date", date)
@@ -263,7 +299,7 @@ def check_rsi2(date: str) -> None:
     with _get_connection() as conn:
         conn.row_factory = sqlite3.Row
         rows = [dict(r) for r in conn.execute(
-            "SELECT ticker, date, entry_high, stop, target_1, lane_prior_win, lane_prior_ev FROM suggestions "
+            "SELECT ticker, date, entry_high, stop, target_1, spot_at_signal, lane_prior_win, lane_prior_ev FROM suggestions "
             "WHERE source = 'rsi2_scan' AND verdict = 'ENTER' AND gate_status = 'PASS' AND date >= date(?, '-5 days')", (date,))]
     held = (held_tickers() or set()) | {r[0] for r in sqlite3.connect(str(_db_path())).execute(
         "SELECT ticker FROM watch_targets WHERE status = 'IN_TRADE'")} if rows else set()
@@ -276,6 +312,18 @@ def check_rsi2(date: str) -> None:
         except Exception:
             r["next_earnings"] = ""
     for ev in rsi2_events(rows, datetime.now(ZoneInfo("America/New_York"))):
+        _emit(ev)
+
+
+def check_drift(date: str) -> None:
+    from src.tracking.watch_manager import _get_connection
+
+    with _get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT ticker, date, stop FROM suggestions WHERE source = 'earnings_drift' AND scored_at IS NULL "
+            "AND date >= date(?, '-5 days')", (date,))]
+    for ev in drift_events(rows):
         _emit(ev)
 
 
@@ -335,7 +383,7 @@ def check_portfolio(date: str) -> None:
 def run_cycle() -> None:
     date = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
     for name, fn in (("positions", check_positions), ("portfolio", lambda: check_portfolio(date)),
-                     ("levels", check_watch_alerts), ("setups", lambda: check_setups(date)), ("rsi2", lambda: check_rsi2(date)),
+                     ("levels", check_watch_alerts), ("setups", lambda: check_setups(date)), ("rsi2", lambda: check_rsi2(date)), ("drift", lambda: check_drift(date)),
                      ("catalysts", lambda: check_catalysts(date)), ("macro", lambda: check_macro(date)), ("spreads", lambda: check_spreads(date)), ("movers", lambda: check_movers(date)), ("agent", lambda: start_agent(date)), ("digest", lambda: check_digest(date)), ("trust", lambda: check_trust(date))):
         t0 = time.time()
         try:

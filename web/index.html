@@ -53,7 +53,7 @@
         <span class="nav-icon">💼</span>
         <span class="nav-label">Portfolio</span>
       </a>
-      <a href="/intraday" class="nav-item" id="nav-item-intraday" onclick="event.preventDefault(); App.navigateTo('intraday')">
+      <a href="/intraday" class="nav-item" id="nav-item-intraday" style="display:none" onclick="event.preventDefault(); App.navigateTo('intraday')">
         <span class="nav-icon">⚡</span>
         <span class="nav-label">0DTE</span>
       </a>
@@ -180,7 +180,7 @@
         <button class="desk-nav-btn" id="btn-desk-portfolio" onclick="App.switchDesk('portfolio')">
           <span>💼</span> Portfolio
         </button>
-        <button class="desk-nav-btn" id="btn-desk-intraday" onclick="App.switchDesk('intraday')">
+        <button class="desk-nav-btn" id="btn-desk-intraday" style="display:none" onclick="App.switchDesk('intraday')">
           <span>⚡</span> 0DTE Desk
         </button>
         <button class="desk-nav-btn" id="btn-desk-watchlist" onclick="App.switchDesk('watchlist')">
@@ -2329,6 +2329,7 @@
               <button class="tab-btn" id="tab-arb-btn" onclick="AppSwing.switchDossierTab('arb')">⚖️ Senior PM Arbitration</button>
               <button class="tab-btn" id="tab-sum-btn" onclick="AppSwing.switchDossierTab('sum')">📊 Model A (Synthesis)</button>
               <button class="tab-btn" id="tab-ind-btn" onclick="AppSwing.switchDossierTab('ind')">🧭 Model B (Independent)</button>
+              <button class="tab-btn" id="tab-trades-btn" onclick="AppSwing.switchDossierTab('trades')">💼 Prior Trades (<span id="modal-trades-count">0</span>)</button>
               <button class="tab-btn" id="tab-history-btn" onclick="AppSwing.switchDossierTab('history')">📜 History & Drift (<span id="modal-hist-count">0</span>)</button>
               <button class="tab-btn" id="tab-chart-btn" onclick="AppSwing.switchDossierTab('chart')">📸 Scraped Charts</button>
               <button class="tab-btn" id="tab-tv-btn" onclick="AppSwing.switchDossierTab('tv')">📈 Live TradingView</button>
@@ -2638,7 +2639,7 @@
         </div>
 
         <div class="pnl-kpi-card ai-avoided">
-          <div class="pnl-kpi-title"><span>🛡️ Losses Avoided (AI Filter)</span></div>
+          <div class="pnl-kpi-title"><span>🛡️ Vetoed Losers (one side only; see Net Edge)</span></div>
           <div class="pnl-kpi-value" id="pnl-kpi-avoided" style="color:#38bdf8;">$0.00</div>
           <div class="pnl-kpi-sub" id="pnl-kpi-avoided-sub">0 losing alerts vetoed by AI</div>
         </div>
@@ -2926,9 +2927,9 @@
   <script src="/static/js/logs.js?v=88"></script>
   <script src="/static/js/alerts.js?v=90"></script>
   <script src="/static/js/chat.js?v=91"></script>
-  <script src="/static/js/desk.js?v=99"></script>
+  <script src="/static/js/desk.js?v=100"></script>
   <script src="/static/js/tv_hover.js?v=88"></script>
-  <script src="/static/js/app.js?v=89"></script>
+  <script src="/static/js/app.js?v=90"></script>
 <script src="/static/js/notifications.js?v=4"></script>
 </body>
 </html>

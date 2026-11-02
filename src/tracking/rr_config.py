@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # key -> (default, min, max)
 SPEC: Dict[str, tuple] = {
-    "rr_market_min": (1.5, 1.0, 10.0),   # needs-you gate AND the ENTRY push gate. Bands, in zone & fade off: 1.0-1.5 +0.00R, 1.5-2.0 +0.02R (era 1 negative), 2-3 +0.08R, >=3 +0.17R
+    "rr_market_min": (1.5, 1.0, 10.0),   # needs-you gate AND the ENTRY push gate. Zero-cost bands, in zone & fade off: 1.0-1.25 +0.035R, 1.25-1.5 +0.063R (era 1 negative), 1.5-2.0 +0.072R, 2.0+ +0.148R
     "rr_hi_rr": (3.0, 2.0, 25.0),        # the HI-RR / teal tag
 }
 
@@ -57,28 +57,28 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "label": "1:1",
         "rr_market_min": 1.0,
         "rr_hi_rr": 3.0,
-        "blurb": "permissive · research mode (negative prior -0.017R)",
-        "below_measured_floor": True,
+        "blurb": "1.0-2.0 half size · zero cost, hold to stop/T1: +0.065R, 44% win, all eras positive; 1.0-1.25 only +0.035R",
+        "below_measured_floor": False,
     },
     "1_25": {
         "label": "1:1.25",
         "rr_market_min": 1.25,
         "rr_hi_rr": 3.0,
-        "blurb": "permissive · below measured floor (-0.013R)",
+        "blurb": "1.25-1.5 +0.063R at zero cost but 2006-11 negative",
         "below_measured_floor": True,
     },
     "1_5": {
         "label": "1:1.5",
         "rr_market_min": 1.5,
         "rr_hi_rr": 3.0,
-        "blurb": "default · 1.5-2.0 is yellow: 41% win but only +0.02R, era-unstable; green from 2.0 (+0.08R)",
-        "below_measured_floor": True,
+        "blurb": "default · 1.5-2.0 half size: +0.072R, 41% win, all eras positive at zero cost; green from 2.0",
+        "below_measured_floor": False,
     },
     "2_0": {
         "label": "1:2",
         "rr_market_min": 2.0,
         "rr_hi_rr": 3.0,
-        "blurb": "measured default · PB 34% win / +0.089R edge",
+        "blurb": "full size only · 2.0+ is +0.148R at zero cost, 33% win, all eras positive",
         "below_measured_floor": False,
     },
 }
@@ -260,8 +260,8 @@ GREEN_RR = 2.0   # measured lane: in-zone R:R >= 2.0 is +0.089R, stable in all f
 
 
 def tier(rr: Optional[float]) -> Optional[str]:
-    """green: at or above 2.0 and the floor (+0.08R or better). yellow: meets the floor, under 2.0 (marginal, +0.02R,
-    unstable). orange: 1.0 up to the floor (no edge, +0.00R). None under 1.0 or unknown."""
+    """green: at or above 2.0 and the floor (full size). yellow: meets the floor, under 2.0 (half size). orange: 1.0 up
+    to the floor. None under 1.0 or unknown. Zero-cost replay, Pine quick_exit_stalk_study.py: 2.0+ +0.148R, 1.0-2.0 +0.065R."""
     if rr is None:
         return None
     floor = min_rr()
@@ -303,8 +303,8 @@ def as_ui_payload() -> Dict[str, Any]:
         },
         "hints": {
             "rr_market_min": (
-                "Default 2.0, the measured at-market floor. Lowering this puts unmeasured setups "
-                "back in the work queue -- it does not make them better."
+                "Rows from this floor up to 2.0 trade at half size; 2.0 and up at full size. "
+                "Under 1.0 nothing is actionable."
             ),
             "rr_hi_rr": "Tags a row HI-RR once at-market R:R clears this. Must stay above the floor above.",
         },

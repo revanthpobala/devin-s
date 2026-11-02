@@ -1685,6 +1685,7 @@ window.AppSwing = {
     const histCountEl = document.getElementById('modal-hist-count');
     const dates = (data && data.available_dates) ? data.available_dates : [actualDate];
     if (histCountEl) histCountEl.innerText = dates.length;
+    this.updateModalTradesCount(chat.ticker);
 
     if (dateSelect) {
       dateSelect.innerHTML = dates.map(d => {
@@ -2515,6 +2516,276 @@ window.AppSwing = {
     }
   },
 
+  _tradesModalCache: {},
+  _tradesModalFilter: 'all',
+
+  async updateModalTradesCount(ticker) {
+    if (!ticker) return;
+    try {
+      const res = await fetch(`/api/research/${encodeURIComponent(ticker)}/trades`);
+      if (res.ok) {
+        const data = await res.json();
+        this._tradesModalCache[ticker] = data;
+        const countEl = document.getElementById('modal-trades-count');
+        if (countEl) countEl.innerText = data.total_trades || 0;
+      }
+    } catch (e) {}
+  },
+
+  _filterModalTrades(trades, filter) {
+    if (!trades || !Array.isArray(trades)) return [];
+    if (filter === 'schwab') {
+      return trades.filter(t => t.source === 'Schwab Broker');
+    } else if (filter === 'options') {
+      return trades.filter(t => t.asset_type === 'OPTION' || String(t.symbol || '').includes(' '));
+    } else if (filter === 'equity') {
+      return trades.filter(t => (t.asset_type === 'EQUITY' || !t.asset_type) && !String(t.symbol || '').includes(' '));
+    } else if (filter === 'ai') {
+      return trades.filter(t => t.source !== 'Schwab Broker');
+    }
+    return trades;
+  },
+
+  _buildModalTradeRow(t) {
+    const esc = (s) => (s === null || s === undefined) ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const isShort = (t.side === 'SHORT' || (t.instruction && t.instruction.includes('SELL')));
+    const sideText = t.instruction || (isShort ? 'SHORT' : 'LONG');
+    const sideBadge = isShort
+      ? `<span class="pill red" style="font-size:9.5px; padding:2px 6px; font-weight:800;">${esc(sideText)}</span>`
+      : `<span class="pill green" style="font-size:9.5px; padding:2px 6px; font-weight:800;">${esc(sideText)}</span>`;
+
+    const st = String(t.status || 'FILLED').toUpperCase();
+    let stBadge = '<span class="pill green" style="font-size:9.5px; padding:2px 7px; font-weight:800;">✓ FILLED</span>';
+    if (st === 'WIN') {
+      stBadge = '<span class="pill green" style="font-size:9.5px; padding:2px 7px; font-weight:800; box-shadow:0 0 6px rgba(16,185,129,0.3);">🏆 WIN</span>';
+    } else if (st === 'LOSS') {
+      stBadge = '<span class="pill red" style="font-size:9.5px; padding:2px 7px; font-weight:800;">🛑 LOSS</span>';
+    } else if (st === 'CLOSED') {
+      stBadge = '<span class="pill" style="font-size:9.5px; padding:2px 6px; font-weight:700;">✓ CLOSED</span>';
+    }
+
+    const isSchwab = (t.source === 'Schwab Broker');
+    const isOption = (t.asset_type === 'OPTION' || String(t.symbol || '').includes(' '));
+    const assetBadge = isOption
+      ? '<span class="pill purple" style="font-size:9px; padding:1px 5px; font-weight:700;">OPTION</span>'
+      : (isSchwab ? '<span class="pill cyan" style="font-size:9px; padding:1px 5px; font-weight:700;">EQUITY</span>' : '<span class="pill emerald" style="font-size:9px; padding:1px 5px; font-weight:700;">SWING</span>');
+
+    let notionalOrPnlHtml = '<span style="color:var(--text-muted);">--</span>';
+    if (t.r_net !== undefined && t.r_net !== null) {
+      const rVal = Number(t.r_net);
+      const rCol = rVal >= 0 ? '#10b981' : '#f43f5e';
+      notionalOrPnlHtml = `<span style="font-weight:800; font-family:var(--font-mono); font-size:12px; color:${rCol};">${rVal >= 0 ? '+' : ''}${rVal.toFixed(2)}R</span>`;
+      if (t.gross_r !== undefined && t.gross_r !== null && t.gross_r !== t.r_net) {
+        notionalOrPnlHtml += `<div style="font-size:9px; color:var(--text-muted);">Gross: ${Number(t.gross_r).toFixed(2)}R</div>`;
+      }
+    } else if (t.pnl_dollars !== undefined && t.pnl_dollars !== null) {
+      const dVal = Number(t.pnl_dollars);
+      notionalOrPnlHtml = `<div style="font-weight:700; font-family:var(--font-mono); font-size:12px; color:var(--text-main);">$${Math.abs(dVal).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</div><div style="font-size:9px; color:var(--text-muted);">${t.exit_price ? 'Realized P&amp;L' : 'Notional'}</div>`;
+    }
+
+    let fillQtyHtml = '--';
+    if (t.fill_price !== undefined && t.fill_price !== null) {
+      const qtyStr = t.quantity ? `${t.quantity} ${isOption ? 'ctc' : 'shs'} @ ` : '';
+      fillQtyHtml = `
+        <div style="font-weight:800; color:var(--text-main); font-family:var(--font-mono); font-size:12px;">${qtyStr}$${Number(t.fill_price).toFixed(2)}</div>
+        <div style="font-size:10px; color:var(--text-muted); font-family:var(--font-mono);">${esc(t.fill_date || t.date || '')}</div>
+      `;
+    }
+
+    const exitHtml = (t.exit_price !== undefined && t.exit_price !== null)
+      ? `<div style="font-weight:800; color:var(--text-main); font-family:var(--font-mono); font-size:12px;">$${Number(t.exit_price).toFixed(2)}</div><div style="font-size:10px; color:var(--text-muted); font-family:var(--font-mono);">${esc(t.exit_date || '')}</div>`
+      : '<span style="color:var(--text-muted);">Filled / Settled</span>';
+
+    return `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:10px 12px;">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span style="color:var(--text-bright, #fff); font-size:12px; font-weight:800;">${esc(t.name)}</span>
+            <span class="pill" style="font-size:8.5px; padding:1px 5px; color:var(--text-muted);">${esc(t.source)}</span>
+            ${t.account ? `<span class="pill" style="font-size:8.5px; padding:1px 5px; color:var(--cyan); font-family:var(--font-mono);">${esc(t.account)}</span>` : ''}
+          </div>
+          <div style="font-size:10.5px; color:var(--text-muted); margin-top:3px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span>📅 ${esc(t.fill_date || t.date || '')}</span>
+            ${t.order_type ? `<span>· Order: <strong>${esc(t.order_type)}</strong></span>` : ''}
+            ${t.entry_type ? `<span>· Setup: <strong>${esc(t.entry_type)}</strong></span>` : ''}
+          </div>
+        </td>
+        <td style="text-align:center; padding:10px 6px;">${assetBadge}</td>
+        <td style="text-align:center; padding:10px 6px;">${sideBadge}</td>
+        <td style="text-align:center; padding:10px 6px;">${stBadge}</td>
+        <td style="padding:10px 8px;">${fillQtyHtml}</td>
+        <td style="padding:10px 8px;">${exitHtml}</td>
+        <td style="text-align:right; padding:10px 10px;">${notionalOrPnlHtml}</td>
+        <td style="font-size:11px; color:var(--text-muted); padding:10px 10px; max-width:240px;">
+          <div style="color:var(--text-main); font-weight:600; overflow:hidden; text-overflow:ellipsis;">${esc(t.notes || t.exit_reason || '--')}</div>
+          ${t.bars_held ? `<div style="font-size:9.5px; color:var(--text-muted); margin-top:2px;">Held: ${t.bars_held} bars</div>` : ''}
+        </td>
+      </tr>
+    `;
+  },
+
+  setModalTradesFilter(filterName) {
+    this._tradesModalFilter = filterName;
+    const ticker = (window.AppState.currentReportData && window.AppState.currentReportData.ticker) || '';
+    const data = this._tradesModalCache[ticker];
+    if (!data) return;
+
+    ['all', 'schwab', 'options', 'equity', 'ai'].forEach(f => {
+      const btn = document.getElementById(`modal-filter-trades-${f}-btn`);
+      if (btn) {
+        const isActive = (f === filterName);
+        btn.style.background = isActive ? 'var(--cyan)' : 'transparent';
+        btn.style.color = isActive ? '#000' : 'var(--text-muted)';
+      }
+    });
+
+    const filtered = this._filterModalTrades(data.trades || [], filterName);
+    const tbody = document.getElementById('modal-trades-table-body');
+    const countPill = document.getElementById('modal-trades-filtered-count');
+    if (countPill) countPill.innerText = `${filtered.length} Fills`;
+
+    if (tbody) {
+      if (filtered.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="8" style="padding:30px; text-align:center; color:var(--text-muted);">
+              <div style="font-size:13px; font-weight:700;">No filled &amp; closed trades found for filter: "${filterName.toUpperCase()}"</div>
+              <button class="btn secondary" onclick="AppSwing.setModalTradesFilter('all')" style="margin-top:8px; font-size:11px; padding:4px 10px; cursor:pointer;">View All Fills</button>
+            </td>
+          </tr>
+        `;
+      } else {
+        tbody.innerHTML = filtered.map(t => this._buildModalTradeRow(t)).join('');
+      }
+    }
+  },
+
+  async renderTradesTab(ticker, forceRefresh = false) {
+    const el = document.getElementById('modal-body');
+    if (!el) return;
+    const esc = (s) => (s === null || s === undefined) ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    el.innerHTML = `<div style="padding:40px; text-align:center; color:var(--text-muted);">⏳ Loading filled &amp; closed trades for <strong>$${esc(ticker)}</strong>...</div>`;
+    try {
+      const url = `/api/research/${encodeURIComponent(ticker)}/trades${forceRefresh ? '?refresh=true' : ''}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      this._tradesModalCache[ticker] = data;
+      const trades = data.trades || [];
+      const summary = data.summary || {};
+
+      const countEl = document.getElementById('modal-trades-count');
+      if (countEl) countEl.innerText = trades.length;
+
+      const schwabRecords = this._filterModalTrades(trades, 'schwab');
+      const optionsRecords = this._filterModalTrades(trades, 'options');
+      const equityRecords = this._filterModalTrades(trades, 'equity');
+      const aiRecords = this._filterModalTrades(trades, 'ai');
+
+      if (trades.length === 0) {
+        el.innerHTML = `
+          <div style="padding:50px 20px; text-align:center; color:var(--text-muted);">
+            <div style="font-size:32px; margin-bottom:12px;">💼</div>
+            <div style="font-size:15px; font-weight:800; color:var(--text-main); margin-bottom:6px;">No Filled &amp; Closed Trades for $${esc(ticker)}</div>
+            <div style="font-size:12px; max-width:440px; margin:0 auto 16px; line-height:1.5;">No filled Schwab broker executions or completed research trades found for $${esc(ticker)}.</div>
+            <div style="display:flex; justify-content:center; gap:10px;">
+              <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:12px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.renderTradesTab('${esc(ticker)}', true)">🔄 Sync Schwab Orders</button>
+              <button class="btn secondary" style="font-size:12px; padding:6px 14px; cursor:pointer;" onclick="AppSwing.switchDossierTab('plan')">🎯 View Trade Plan</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const activeFilter = this._tradesModalFilter || 'all';
+      const displayTrades = this._filterModalTrades(trades, activeFilter);
+      const tableRows = displayTrades.map(t => this._buildModalTradeRow(t)).join('');
+
+      el.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:14px; padding:12px 14px;">
+          <!-- Performance & Broker Scorecard -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px;">
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Filled &amp; Closed Fills</div>
+              <div style="font-size:18px; font-weight:900; color:var(--cyan); font-family:var(--font-mono);">${trades.length}</div>
+              <div style="font-size:9.5px; color:var(--text-muted);">Completed Trades</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Schwab Executions</div>
+              <div style="font-size:18px; font-weight:900; color:var(--emerald); font-family:var(--font-mono);">${schwabRecords.length}</div>
+              <div style="font-size:9.5px; color:var(--text-muted);">Linked Accounts</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Options Fills</div>
+              <div style="font-size:18px; font-weight:900; color:#a78bfa; font-family:var(--font-mono);">${optionsRecords.length}</div>
+              <div style="font-size:9.5px; color:var(--text-muted);">Spreads &amp; Calls/Puts</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Equity Fills</div>
+              <div style="font-size:18px; font-weight:900; color:var(--text-bright, #fff); font-family:var(--font-mono);">${equityRecords.length}</div>
+              <div style="font-size:9.5px; color:var(--text-muted);">Shares Executed</div>
+            </div>
+            <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Suggestion Win Rate</div>
+              <div style="font-size:18px; font-weight:900; color:${(summary.win_rate_pct || 0) >= 50 ? 'var(--emerald)' : 'var(--amber)'}; font-family:var(--font-mono);">${summary.win_rate_pct || 0}%</div>
+              <div style="font-size:9.5px; color:var(--text-muted);">${summary.wins || 0}W / ${summary.losses || 0}L (${summary.closed_trades || 0} closed)</div>
+            </div>
+          </div>
+
+          <!-- Ledger Table with Filter Bar -->
+          <div style="background:var(--bg-surface); border:1px solid var(--border); border-radius:8px; overflow:hidden;">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 14px; background:var(--bg-subtle); border-bottom:1px solid var(--border);">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:13px; font-weight:800; color:var(--cyan); font-family:var(--font-heading);">💼 Filled &amp; Closed Trades for $${esc(ticker)}</span>
+                <span class="pill" id="modal-trades-filtered-count" style="font-size:10px; font-weight:700;">${displayTrades.length} Fills</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <!-- Filter Buttons -->
+                <div style="display:inline-flex; background:var(--bg-surface); border:1px solid var(--border); border-radius:6px; padding:2px; gap:2px;">
+                  <button id="modal-filter-trades-all-btn" onclick="AppSwing.setModalTradesFilter('all')" style="font-size:11px; padding:3px 9px; border-radius:4px; font-weight:700; cursor:pointer; border:none; transition:all 0.15s ease; background:${activeFilter === 'all' ? 'var(--cyan)' : 'transparent'}; color:${activeFilter === 'all' ? '#000' : 'var(--text-muted)'};">All (${trades.length})</button>
+                  <button id="modal-filter-trades-schwab-btn" onclick="AppSwing.setModalTradesFilter('schwab')" style="font-size:11px; padding:3px 9px; border-radius:4px; font-weight:700; cursor:pointer; border:none; transition:all 0.15s ease; background:${activeFilter === 'schwab' ? 'var(--cyan)' : 'transparent'}; color:${activeFilter === 'schwab' ? '#000' : 'var(--text-muted)'};">Schwab Fills (${schwabRecords.length})</button>
+                  <button id="modal-filter-trades-options-btn" onclick="AppSwing.setModalTradesFilter('options')" style="font-size:11px; padding:3px 9px; border-radius:4px; font-weight:700; cursor:pointer; border:none; transition:all 0.15s ease; background:${activeFilter === 'options' ? 'var(--cyan)' : 'transparent'}; color:${activeFilter === 'options' ? '#000' : 'var(--text-muted)'};">Options (${optionsRecords.length})</button>
+                  <button id="modal-filter-trades-equity-btn" onclick="AppSwing.setModalTradesFilter('equity')" style="font-size:11px; padding:3px 9px; border-radius:4px; font-weight:700; cursor:pointer; border:none; transition:all 0.15s ease; background:${activeFilter === 'equity' ? 'var(--cyan)' : 'transparent'}; color:${activeFilter === 'equity' ? '#000' : 'var(--text-muted)'};">Equity (${equityRecords.length})</button>
+                  ${aiRecords.length > 0 ? `<button id="modal-filter-trades-ai-btn" onclick="AppSwing.setModalTradesFilter('ai')" style="font-size:11px; padding:3px 9px; border-radius:4px; font-weight:700; cursor:pointer; border:none; transition:all 0.15s ease; background:${activeFilter === 'ai' ? 'var(--cyan)' : 'transparent'}; color:${activeFilter === 'ai' ? '#000' : 'var(--text-muted)'};">AI Closed (${aiRecords.length})</button>` : ''}
+                </div>
+                <button class="btn secondary" onclick="AppSwing.renderTradesTab('${esc(ticker)}', true)" style="font-size:11px; padding:3px 10px; cursor:pointer;" title="Sync fresh fills from Schwab API">🔄 Refresh Fills</button>
+              </div>
+            </div>
+
+            <div style="overflow-x:auto;">
+              <table class="data-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                  <tr style="background:var(--bg-subtle); border-bottom:1px solid var(--border); font-size:10px; text-transform:uppercase; color:var(--text-muted);">
+                    <th style="text-align:left; padding:8px 12px;">Order / Setup &amp; Details</th>
+                    <th style="text-align:center; padding:8px 6px;">Asset</th>
+                    <th style="text-align:center; padding:8px 6px;">Instruction</th>
+                    <th style="text-align:center; padding:8px 6px;">Status</th>
+                    <th style="text-align:left; padding:8px 8px;">Fill Price &amp; Time</th>
+                    <th style="text-align:left; padding:8px 8px;">Exit</th>
+                    <th style="text-align:right; padding:8px 10px;">Notional / P&amp;L</th>
+                    <th style="text-align:left; padding:8px 10px;">Notes &amp; Execution Details</th>
+                  </tr>
+                </thead>
+                <tbody id="modal-trades-table-body">
+                  ${tableRows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    } catch (e) {
+      el.innerHTML = `
+        <div style="padding:40px; text-align:center; color:var(--text-muted);">
+          <div style="font-size:28px; margin-bottom:10px;">⚠️</div>
+          <div style="font-size:14px; font-weight:700; color:var(--text-main); margin-bottom:6px;">Failed to Load Trade History</div>
+          <div style="font-size:11px; margin-bottom:14px;">${esc(e.message)}</div>
+          <button class="btn" style="background:var(--cyan); color:#000; font-weight:700; font-size:11px; padding:4px 12px; cursor:pointer;" onclick="AppSwing.renderTradesTab('${esc(ticker)}', true)">Retry Sync</button>
+        </div>
+      `;
+    }
+  },
+
   switchReportDate(newDate) {
     const data = window.AppState.currentReportData;
     const ticker = data ? data.ticker : 'AAPL';
@@ -2866,7 +3137,7 @@ window.AppSwing = {
       const activeChat = window.AppState.activeChats.find(c => c.ticker === window.AppState.activeChatTicker);
       if (activeChat) activeChat.activeTab = tab;
     }
-    ['plan', 'local', 'arb', 'sum', 'ind', 'history', 'chart', 'tv', 'flow', 'dp', 'pnl'].forEach(t => {
+    ['plan', 'local', 'arb', 'sum', 'ind', 'trades', 'history', 'chart', 'tv', 'flow', 'dp', 'pnl'].forEach(t => {
       const btn = document.getElementById(`tab-${t}-btn`);
       if (btn) btn.className = `tab-btn ${t === tab ? 'active' : ''}`;
     });
@@ -2878,6 +3149,9 @@ window.AppSwing = {
     if (tab === 'plan') {
       this.togglePositionsPane(false);
       this.renderSuggestedPositionsFullTab(data, bodyEl);
+    } else if (tab === 'trades') {
+      this.togglePositionsPane(false);
+      this.renderTradesTab(data.ticker);
     } else if (tab === 'local') {
       const localContent = data.local_dossier_md || (data.arbitration_md && data.arbitration_md.includes('LOCAL RESEARCH DOSSIER') ? data.arbitration_md : null);
       if (localContent) {

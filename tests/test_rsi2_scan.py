@@ -64,6 +64,20 @@ def test_run_writes_only_signals_on_the_last_market_bar(monkeypatch):
     assert sugg[0]["verdict"] == "ENTER" and sugg[0]["entry_type"] == "NEXT_OPEN" and sugg[0]["setup_lane"] == "RSI2"
 
 
+def test_run_marks_unreachable_ceiling_stalk(monkeypatch):
+    from src.tracking import suggestions_ledger
+
+    sugg = []
+    monkeypatch.setattr(suggestions_ledger, "append_suggestion", lambda d: sugg.append(d) or 7)
+    monkeypatch.setattr(rs, "_open_names", lambda *a: set())
+    wide = [{**b, "high": b["close"] + 8, "low": b["close"] - 8} for b in _bars(_dip())]
+    bars = {"AAA": _dated(wide), "QQQ": _dated(_bars([100.0] * 260 + [92.0]))}
+    rs.run(bars, write=True, now_et=datetime(2026, 10, 24, 17, 0, tzinfo=ET))
+    assert sugg[0]["entry_low"] < 0.99 * sugg[0]["spot_at_signal"]
+    assert sugg[0]["verdict"] == "STALK" and "unreachable" in sugg[0]["notes"]
+    assert rs.fill_odds(0.0) == 44.3 and rs.fill_odds(-0.2) == 0.1
+
+
 def test_run_writes_nothing_after_the_next_open(monkeypatch):
     from src.tracking import suggestions_ledger
 

@@ -4,13 +4,13 @@
 2. **Price: report the bar close AND the pre-fetched live quote (section 1a).** If the live price has moved past an initial level, re-derive the tactical plan from the live price.
 3. **Multi-Perspective Synthesis Over Mechanical Vetoes:**
    - Code 20 (REVERSAL BUY) is the sole active indicator reversal trigger (Codes 1 and 2 are retired).
-   - Codes 8 and 10 are **Staging & Base-Building States**. While mechanical momentum has not auto-fired yet, **you MAY present an UNMEASURED Floor Defense take-or-pass (Plan A), Bull Put Credit Spread (Plan B), or Deep ITM LEAPS** when price is defended by an indisputable floor (Pin Bars, Put Wall, 20 EMA, Gap Retest) and powered by verified Fundamental Catalysts (Pillar 3). Anchor the tactical stop tightly beneath the defended floor.
+   - Codes 8 and 10 are **Staging & Base-Building States**. While mechanical momentum has not auto-fired yet, **you MAY present an UNMEASURED Floor Defense take-or-pass (Plan A), Bull Put Credit Spread (Plan B), or Deep ITM LEAPS** when price is defended by an indisputable floor (Pin Bars, Put Wall, 20 EMA, Gap Retest) and powered by verified Fundamental Catalysts (Pillar 3). Place the stop beneath the defended floor and at least 0.7 ATR from entry; if that leaves R:R below 2, it is not a trade at this price.
    - Codes 11–18 forbid fresh direct entries due to exhaustion/parabolic danger.
 4. **Do not recompute what is already computed.** Win Prob, Expected Value, and Data Window fields are deterministic ground truths. Quote them literally.
 5. **Name the Pillars in your Calibration Disclosure:**
    - If taking an indicator-based entry (Code 20), cite its measured interval (+0.038R, 4/4 eras, win 49.5%).
    - If taking a **Floor Defense Setup (during Code 8/10)**, label it UNMEASURED (it is not the measured gate: in zone, R:R at market >= 2.0, PB funnel, fade off), never as PRIME or high conviction, and explicitly disclose that the trade is carried by Pillar 2 (Floor Defense / Rejection Wicks) + Pillar 3 (Fundamental Catalysts), anchored to the local structural stop.
-   - Always emit the complete **Multi-Regime Action Plan (Plan A, Plan B, Plan C, Plan D)**.
+   - Always emit the complete **Multi-Regime Action Plan (Plan A, Plan B, Plan C, Plan D)**. Any plan may read NO TRADE with its reason; never fill a plan just to complete the table.
 6. **Emit the full OUTPUT FORMAT** from the system prompt, in order, with the headers verbatim.
 7. **DRAW THE ASCII ART.** You MUST explicitly draw the ASCII diagram in THE SETUP section showing Target, Resistance, Live Spot, Local Base Floor, and Local Stop. Do not skip it.
 8. **Options Horizon & Structure Evaluation in Plan B (Tactical vs. Multi-Quarter / LEAPS):**

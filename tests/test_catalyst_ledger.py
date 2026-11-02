@@ -62,3 +62,16 @@ def test_index_move_alerts_at_lower_threshold():
     book = {"equity": {}, "short_calls": []}
     ev = cl.mover_events("2026-10-14", {"QQQ": -2.0, "XYZ": -2.0}, {"QQQ": 1.0, "XYZ": 1.0}, book, [], {})
     assert [e["ticker"] for e in ev] == ["QQQ"] and ev[0]["title"].startswith("MARKET QQQ") and ev[0]["severity"] == "WARN"
+
+
+def test_log_movers_writes_row_from_injected_bars(tmp_path, monkeypatch):
+    import sqlite3
+
+    from src.tracking import zone_ledger
+
+    monkeypatch.setattr(cl, "db_path", lambda: tmp_path / "catalyst_ledger.db")
+    monkeypatch.setattr(zone_ledger, "load_plans", lambda today: {})
+    bars = {"UP1": _bars([100, 100, 100, 100, 100, 118], [100, 100, 100, 100, 100, 117]), "FLAT": _bars([100] * 6)}
+    assert cl.log_movers("2026-10-30", ["UP1", "FLAT", "NOBARS"], bars_for=lambda t: bars.get(t, [])) == 1
+    rows = sqlite3.connect(tmp_path / "catalyst_ledger.db").execute("SELECT ticker, dir, move_pct, gap_driven FROM mover").fetchall()
+    assert rows == [("UP1", "UP", 18.0, 1)]

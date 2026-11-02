@@ -60,6 +60,13 @@ def _record_research_completed(ticker: str, date_str: str, dw_dict: Dict[str, An
         logger.debug(f"[{ticker}] Failed recording last_researched: {e_rec}")
 
 
+def prose_veto_fact(text: str) -> str:
+    """The JSON is written before the FOR/AGAINST trial, so a veto the trial reaches only shows in the prose."""
+    m = re.search(r"Final Verdict:\**\s*\**[^\n]*?veto fact(?: if any)?:?\s*\**\s*([^\n]+)", text or "", re.I)
+    fact = re.sub(r"[*_`]", "", m.group(1)).strip(" .:-") if m else ""
+    return "" if fact.lower() in ("", "none", "n/a", "na", "no veto", "no veto fact") else fact
+
+
 def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> str:
     prior_plan_section = ""
     if prior_plan_outcome_block:
@@ -71,6 +78,14 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
             "levels — never conclusions from the spot price alone. Judge your binding levels against what those "
             "levels have already done, and keep any still-relevant trigger armed rather than dropping it.\n\n"
         )
+    try:
+        from src.logic.postmortem import recent_card_block
+
+        _pm = recent_card_block(ticker)
+        if _pm:
+            prior_plan_section += _pm + "\n\n"
+    except Exception:
+        pass
     try:
         from src.tracking.book_scorecard import scorecard_text
 
@@ -87,6 +102,9 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "- REPORT A: Proprietary Quantitative Engine (Bible rules, Code 8 / Zone R:R, Titanium levels)\n"
         "- REPORT B: Independent Macro & Volume Profile Study (Macro attribution, 12 MAs, VRVP POC, IV/HV Forensics)\n\n"
         "Your job is to cross-examine both reports with a strict FOR vs AGAINST trial, settle their disagreements, and issue the FINAL binding trading directive.\n\n"
+        "WEIGH ALL THREE. The Pine engine describes what price HAS done; the reports and the news describe what is coming. "
+        "Neither outranks the other, and a valid Pine plan is geometry, not permission. When either report gives a "
+        "concrete forward-looking reason against the trade, you must answer that fact, not restate the Pine state.\n\n"
         "PINE LEVELS BIND. When the ground truth shows a valid Pine plan, its entry zone, stop and target_1 "
         "are the binding geometry and the code overwrites whatever you write with them. Copy them into shares_plan. "
         "You may add target_2 only above the Pine target. Never tighten the stop: a stop inside one normal day's range is the "
@@ -112,6 +130,11 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "- ENTER (Limit @ Floor): state is ACTIONABLE and you have no concrete veto.\n"
         "- ARMED: state is ARMED (a resting limit within reach) and you have no concrete veto. Say which price fills it.\n"
         "- ARMED also when state is NO TRADE today but a scenario is live: the scenarios are the plan.\n"
+        "- WATCH (EVENT RISK): veto EVENT_RISK. A specific, dated, forward-looking fact from either report that turns "
+        "holding through the window into a coin flip: a short report, investigation or lawsuit; a binary event "
+        "(earnings, ruling, FDA) paired with an adverse fact; a sector or theme de-rating this name is leading down on "
+        "distribution volume. Name the fact and its date. The code layers the entry: no market starter before the "
+        "event, limits in the zone and below, sized so a 2x-implied-move gap stays inside the gap-loss cap.\n"
         "- CASH_SKIP: only with veto HARD_FUNDAMENTAL (the business story is broken: guidance cut, fraud, accounting, "
         "pending deal, delisting). Name the fact. A missing setup, a stretched chart or earnings in the window is not a "
         "hard veto; it is a scenario.\n"
@@ -123,8 +146,9 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "```json:watch_levels\n"
         "{\n"
         f'  "ticker": "{ticker}",\n'
-        '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|ARMED|WATCH|CASH_SKIP",\n'
-        '  "veto": "NONE|HARD_FUNDAMENTAL",\n'
+        '  "verdict": "ENTER (Limit @ Floor)|ENTER (Breakout)|ARMED|WATCH|WATCH (EVENT RISK)|CASH_SKIP",\n'
+        '  "veto": "NONE|EVENT_RISK|HARD_FUNDAMENTAL",\n'
+        '  "veto_fact": "the dated fact behind a veto, else empty",\n'
         '  "side": "LONG|SHORT",\n'
         '  "scenarios": [\n'
         '    {"kind": "PULLBACK|BREAKOUT|POST_EARNINGS", "trigger": 0.0, "zone_low": 0.0, "stop": 0.0, "target": 0.0,\n'
@@ -212,7 +236,7 @@ def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> 
         "     - STRIKES ONLY: the system re-prices both legs from the live chain (mid) and overwrites target_debit, target_credit, max_loss and max_profit, so do not invent them. A bull call's short strike must be <= Target 1; a bull put's short strike must be below the tactical stop. If either rule or a liquid chain quote is missing, set structure = 'NONE'.\n"
         "  2. Secular Trend LEAPS (6-12 Months, deep ITM 0.75-0.85 delta to participate in secular move with defined capital and low theta decay).\n"
         "  3. Floor Income / Capital Efficiency (Covered Call against existing long shares/LEAPS, or Cash-Secured Put strictly below invalidation floor).\n"
-        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ARMED / CASH_SKIP / WATCH]**, plus the veto fact if any\n\n"
+        "* **Final Verdict:** **[ENTER (Limit @ Floor) / ARMED / CASH_SKIP / WATCH / WATCH (EVENT RISK)]**, plus the veto fact if any\n\n"
         "## 🎯 FINAL ACTIONABLE DIRECTIVES\n"
         "* **Equity (Shares):** [Pine zone, Pine stop, Pine target, optional Target 2, R:R at market]\n"
         "* **Options Directives (Tiered Menu):**\n"
@@ -433,6 +457,9 @@ def run_arbitration(
         watch_data.setdefault("ticker", ticker)
         watch_data.setdefault("date", date_str)
         watch_data["judge_verdict"] = str(watch_data.get("verdict") or "").strip().upper() or None
+        _vf = prose_veto_fact(clean_judge)
+        if _vf and str(watch_data.get("veto") or "NONE").upper() == "NONE":
+            watch_data["veto"], watch_data["veto_fact"] = "EVENT_RISK", _vf
         triage_lane = setup_lane
         if not triage_lane or triage_lane in ("WATCH_SHADOW", "UNKNOWN", "DEFAULT", "STANDARD"):
             triage_lane = "JUDGE"
@@ -532,20 +559,27 @@ def run_arbitration(
                 except Exception:
                     _ed = None
                 _sp_l = watch_data.setdefault("shares_plan", {})
-                _im = None
-                for _k in ("Exp Move Pct 21b", "implied_move_pct", "iv_expected_move_pct"):
-                    _v = dw_dict.get(_k) if isinstance(dw_dict, dict) else None
-                    if _v not in (None, "", "N/A"):
-                        try:
-                            _im = float(_v)
-                            break
-                        except (TypeError, ValueError):
-                            pass
+                from src.logic import earnings_move
+
+                _m = re.search(
+                    r"Options implied move: ([\d.]+)%", earnings_fact_block or "",
+                )
+                _im = float(_m.group(1)) if _m else None
+                _gap = earnings_move.gap_pct(ticker, _im)
+                if _gap is None:
+                    # No own-history forecast or options quote: the HV-based 21-bar move is a weak proxy, but some cap beats none.
+                    try:
+                        _em21 = float(dw_dict.get("Exp Move Pct 21b")) if isinstance(dw_dict, dict) else 0.0
+                    except (TypeError, ValueError):
+                        _em21 = 0.0
+                    _gap = round(2 * _em21, 2) if _em21 > 0 else None
                 _layers = build_layers(
                     spot_num, _sp_l.get("entry_zone_low"), _sp_l.get("entry_zone_high"),
                     _sp_l.get("tactical_stop"), _sp_l.get("target_1"), watch_data.get("atr14"),
                     _tr.DEFAULT_RISK_BUDGET_USD, earnings_days=_ed, earnings_block_days=EARNINGS_BLOCK_DAYS,
-                    implied_move_pct=_im, equity_usd=_tr.ACCOUNT_EQUITY_USD,
+                    implied_move_pct=_im, gap_pct=_gap,
+                    equity_usd=_tr.ACCOUNT_EQUITY_USD,
+                    event_risk=str(watch_data.get("veto") or "").upper() == "EVENT_RISK",
                 )
                 if _layers:
                     # Held name: size the layers as the gap to the per-ticker target position
@@ -583,10 +617,24 @@ def run_arbitration(
         # Code caps the verdict if triage is no_setup or actionable gate fails
         from src.logic.actionable_gate import is_actionable, gate_inputs_from_datawindow
         gate_in = gate_inputs_from_datawindow(dw_dict)
+        if str(plan.get("side") or "LONG").upper() == "LONG" and not rsi2_order:
+            from src.tracking.trade_rules import one_r_target
+
+            _sp1 = watch_data.setdefault("shares_plan", {})
+            _t1r = one_r_target(gate_in.get("long_rr_at_market"), spot_num, _sp1.get("tactical_stop"), _sp1.get("target_1"))
+            if _t1r:
+                _note = (f"T1 raised from {_sp1.get('target_1')} to 1R {_t1r} (Pine R:R at market "
+                         f"{gate_in['long_rr_at_market']:.2f}); 1R lane, half size")
+                for _d in (_sp1, plan):
+                    _d["target_1"], _d["one_r_target"] = _t1r, True
+                watch_data.setdefault("repair_notes", []).append(_note)
+                logger.info(f"[{ticker}] {_note}")
         gate_ok, gate_reasons = is_actionable(gate_in, plan)
         is_no_setup = str(setup_lane or "").strip().lower() in ("no_setup", "none", "") and triage_lane != "LLM_DISCRETIONARY"
 
         verdict = str(watch_data.get("verdict", "")).strip()
+        if str(watch_data.get("veto") or "").upper() == "EVENT_RISK" and "CASH_SKIP" not in verdict.upper():
+            verdict = watch_data["verdict"] = "WATCH (EVENT RISK)"
         if verdict.upper() == "ARMED":
             # ARMED is the judge's word; STALK stays the stored token every ledger query filters on.
             verdict = "STALK"

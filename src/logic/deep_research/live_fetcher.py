@@ -144,7 +144,7 @@ def fetch_live_context(
         from src.logic.prefetch_facts import build_earnings_packet, format_earnings_packet
 
         spot = float(dw_dict.get("close") or dw_dict.get("Close") or 0) or None
-        ctx.earnings_fact_block += "\n\n" + format_earnings_packet(build_earnings_packet(ticker, spot))
+        ctx.earnings_fact_block += "\n\n" + format_earnings_packet(build_earnings_packet(ticker, spot, dw=dw_dict))
     except Exception as e_pkt:
         logger.warning(f"[{ticker}] earnings packet skipped: {e_pkt}")
 

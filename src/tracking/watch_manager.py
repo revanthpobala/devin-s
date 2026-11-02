@@ -942,6 +942,7 @@ def backfill_watch_targets_gate_inputs() -> int:
 
 def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
     """Automatically ensure all active PASS suggestions from the screener/cascade are registered in watch_targets
+    (never the source='rule' triage baseline, which is written before deep research and is a control arm only)
 
     so the background WatchAlerts daemon continuously pulls live data, distances, and trigger states for them.
     """
@@ -958,11 +959,11 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                        s.signal_pack, s.fade, s.action_long, s.ext_z, s.atr_at_signal, s.rr_at_market_at_signal,
                        s.verdict, s.setup_lane, s.source{bt_cols}
                 FROM suggestions s
-                WHERE s.gate_status = 'PASS'
+                WHERE s.gate_status = 'PASS' AND COALESCE(s.source, '') != 'rule'
                   AND s.date >= date('now', '-' || ? || ' days')
                   AND s.id = (
                       SELECT MAX(s2.id) FROM suggestions s2
-                      WHERE s2.gate_status = 'PASS' AND LOWER(s2.ticker) = LOWER(s.ticker)
+                      WHERE s2.gate_status = 'PASS' AND COALESCE(s2.source, '') != 'rule' AND LOWER(s2.ticker) = LOWER(s.ticker)
                         AND s2.date >= date('now', '-' || ? || ' days')
                   )
                 ORDER BY s.id DESC
@@ -970,6 +971,11 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                 (lookback_days, lookback_days),
             )
             suggestions = [dict(r) for r in cursor.fetchall()]
+            newer = "excluded.date > COALESCE(watch_targets.date, '')"
+            revived = (
+                f"(watch_targets.status = 'EXPIRED' AND {newer}) OR (watch_targets.status = 'INVALIDATED' AND {newer} "
+                "AND (watch_targets.last_price IS NULL OR watch_targets.last_price > excluded.tactical_stop))"
+            )
 
             for s in suggestions:
                 t = s["ticker"].upper().strip()
@@ -989,7 +995,7 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                     e_low = round(float(stop_val) + 0.01, 4)
 
                 cursor.execute(
-                    """
+                    f"""
                     INSERT INTO watch_targets (
                         ticker, date, verdict, side, entry_zone_low, entry_zone_high, tactical_stop,
                         target_1, target_2, status, updated_at,
@@ -1008,9 +1014,9 @@ def sync_active_suggestions_to_watch_targets(lookback_days: int = 21) -> int:
                             WHEN watch_targets.status = 'INVALIDATED' AND excluded.date > COALESCE(watch_targets.date, '') AND (watch_targets.last_price IS NULL OR watch_targets.last_price > excluded.tactical_stop) THEN 'STALKING'
                             ELSE watch_targets.status 
                         END,
-                        created_date = CASE WHEN watch_targets.status = 'EXPIRED' AND excluded.date > COALESCE(watch_targets.date, '') THEN excluded.date ELSE watch_targets.created_date END,
-                        expires_on = CASE WHEN watch_targets.status = 'EXPIRED' AND excluded.date > COALESCE(watch_targets.date, '') THEN NULL ELSE watch_targets.expires_on END,
-                        is_active = CASE WHEN watch_targets.status = 'EXPIRED' AND excluded.date > COALESCE(watch_targets.date, '') THEN 1 ELSE watch_targets.is_active END,
+                        created_date = CASE WHEN {revived} THEN excluded.date ELSE watch_targets.created_date END,
+                        expires_on = CASE WHEN {revived} THEN NULL ELSE watch_targets.expires_on END,
+                        is_active = CASE WHEN {revived} THEN 1 ELSE watch_targets.is_active END,
                         date = CASE WHEN excluded.date > COALESCE(watch_targets.date, '') THEN excluded.date ELSE watch_targets.date END,
                         signal_pack = COALESCE(excluded.signal_pack, watch_targets.signal_pack),
                         fade = COALESCE(excluded.fade, watch_targets.fade),
@@ -1109,7 +1115,24 @@ def sweep_expired_watch_targets(days: int = 21, as_of_date: Optional[str] = None
                         ),
                     )
                     expired_count += 1
-            if expired_count > 0:
+            # Terminal rows keep their status but leave the live ledger once their window passes;
+            # update_target_live_state sets a terminal status without clearing is_active.
+            cutoff = today_dt
+            for _ in range(days):
+                cutoff -= timedelta(days=1)
+                while cutoff.weekday() >= 5:
+                    cutoff -= timedelta(days=1)
+            cursor.execute(
+                """
+                UPDATE watch_targets SET is_active = 0, is_actionable_now = 0, updated_at = ?
+                WHERE is_active = 1 AND status IN (
+                    'TARGET_HIT', 'COMPLETED', 'INVALIDATED', 'STOP_BREACHED', 'STOPPED', 'EXPIRED', 'REJECTED_BY_GATE')
+                  AND COALESCE(NULLIF(created_date, ''), date) <= ?
+                """,
+                (now, cutoff.isoformat()),
+            )
+            deactivated = cursor.rowcount
+            if expired_count > 0 or deactivated > 0:
                 conn.commit()
                 try:
                     from src.ui.routes.watchlist import _WATCH_TARGETS_CACHE

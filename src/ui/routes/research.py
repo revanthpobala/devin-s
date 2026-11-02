@@ -1891,12 +1891,13 @@ def get_latest_chart_image(ticker: str, chart_type: str):
 
 
 @router.get("/api/research/{ticker}/trades")
-def get_ticker_trades_endpoint(ticker: str):
+def get_ticker_trades_endpoint(ticker: str, refresh: bool = False):
     """
     Returns all trades taken under this ticker by name from:
     1. suggestions (user-taken or filled swing trades)
     2. positions (alert ingestor live/closed positions)
-    3. schwab_positions (live Schwab broker executions)
+    3. schwab_positions (live Schwab broker open holdings)
+    4. schwab_trades_history (live Schwab broker prior orders, fills, & option executions)
     """
     sym = validate_ticker(ticker)
     trades = []
@@ -1916,25 +1917,23 @@ def get_ticker_trades_endpoint(ticker: str):
                 ).fetchall()
                 for r in rows:
                     f_price = _val(r, "your_fill") if _val(r, "your_fill") is not None else _val(r, "fill_price")
-                    gate_st = _val(r, "gate_status") or "PASS"
                     exit_d = _val(r, "exit_date")
                     exit_p = _val(r, "exit_price")
                     r_net = _val(r, "r_net")
                     gross_r = _val(r, "gross_r")
 
-                    if exit_d or exit_p:
-                        if r_net is not None and float(r_net) > 0:
-                            status = "WIN"
-                        elif r_net is not None and float(r_net) < 0:
-                            status = "LOSS"
-                        else:
-                            status = "CLOSED"
-                    elif f_price:
-                        status = "ACTIVE"
-                    elif gate_st == "PASS":
-                        status = "PENDING"
+                    # Only filled and closed suggestions
+                    if not f_price or float(f_price) <= 0:
+                        continue
+                    if not exit_d and not exit_p:
+                        continue
+
+                    if r_net is not None and float(r_net) > 0:
+                        status = "WIN"
+                    elif r_net is not None and float(r_net) < 0:
+                        status = "LOSS"
                     else:
-                        status = gate_st
+                        status = "CLOSED"
 
                     trades.append({
                         "id": f"sugg_{r['id']}",
@@ -1943,7 +1942,7 @@ def get_ticker_trades_endpoint(ticker: str):
                         "side": _val(r, "side") or "LONG",
                         "date": _val(r, "date"),
                         "status": status,
-                        "gate_status": gate_st,
+                        "gate_status": _val(r, "gate_status") or "PASS",
                         "gate_reasons": _val(r, "gate_reasons"),
                         "entry_type": _val(r, "entry_type") or "LIMIT",
                         "entry_low": _val(r, "entry_low"),
@@ -1969,7 +1968,7 @@ def get_ticker_trades_endpoint(ticker: str):
     except Exception as e:
         logger.warning(f"Error querying suggestions for ticker trades {sym}: {e}")
 
-    # 2. positions from trading_alerts.db
+    # 2. positions from trading_alerts.db (only filled & closed)
     try:
         alerts_db = config.alerts_db_path()
         if alerts_db.exists():
@@ -1983,20 +1982,30 @@ def get_ticker_trades_endpoint(ticker: str):
                         (sym,)
                     ).fetchall()
                     for r in rows:
+                        entry_p = _val(r, "entry_price")
+                        exit_p = _val(r, "exit_price")
+                        closed_at = _val(r, "closed_at")
+                        st = (_val(r, "status") or "").upper()
+                        # Only filled and closed positions
+                        if not entry_p or float(entry_p) <= 0:
+                            continue
+                        if st != "CLOSED" and not exit_p and not closed_at:
+                            continue
+
                         strat = _val(r, "strategy") or _val(r, "strategy_id") or "Alert Ingestor Trade"
                         trades.append({
                             "id": _val(r, "trade_id") or f"pos_{sym}_{_val(r, 'opened_at')}",
                             "name": strat,
                             "source": "Alert Ingestor",
                             "side": _val(r, "side") or "LONG",
-                            "status": _val(r, "status") or "CLOSED",
+                            "status": "CLOSED",
                             "fill_date": _val(r, "opened_at"),
-                            "fill_price": _val(r, "entry_price"),
+                            "fill_price": entry_p,
                             "stop_loss": _val(r, "stop"),
                             "target_1": _val(r, "target"),
                             "target_2": None,
-                            "exit_date": _val(r, "closed_at"),
-                            "exit_price": _val(r, "exit_price"),
+                            "exit_date": closed_at,
+                            "exit_price": exit_p,
                             "exit_reason": _val(r, "exit_reason"),
                             "quantity": _val(r, "quantity"),
                             "pnl_dollars": _val(r, "realized_broker_pnl"),
@@ -2005,50 +2014,27 @@ def get_ticker_trades_endpoint(ticker: str):
     except Exception as e:
         logger.warning(f"Error querying positions for ticker trades {sym}: {e}")
 
-    # 3. schwab_positions from schwab_portfolio.db
+    # 3. schwab_positions omitted because only filled and closed trades are requested
+
+    # 4. Schwab live trade orders and settled transactions history
+    schwab_trades_count = 0
     try:
-        schwab_db = config.BASE_DIR / "data" / "schwab_portfolio.db"
-        if schwab_db.exists():
-            with sqlite3.connect(str(schwab_db), timeout=5.0) as sconn:
-                sconn.row_factory = sqlite3.Row
-                c = sconn.cursor()
-                table_check = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schwab_positions'").fetchone()
-                if table_check:
-                    rows = c.execute(
-                        "SELECT * FROM schwab_positions WHERE UPPER(symbol) = ? OR UPPER(underlying_symbol) = ? ORDER BY id DESC",
-                        (sym, sym)
-                    ).fetchall()
-                    for r in rows:
-                        desc = _val(r, "description") or _val(r, "symbol")
-                        asset_type = _val(r, "asset_type", "")
-                        name_str = f"Schwab {asset_type} - {desc}".strip()
-                        qty = _val(r, "quantity", 0) or 0
-                        trades.append({
-                            "id": f"schwab_{r['id']}",
-                            "name": name_str,
-                            "source": "Schwab Broker",
-                            "side": "LONG" if qty >= 0 else "SHORT",
-                            "status": "OPEN",
-                            "fill_date": (_val(r, "last_synced") or "")[:10],
-                            "fill_price": _val(r, "average_price"),
-                            "stop_loss": None,
-                            "target_1": None,
-                            "target_2": None,
-                            "exit_date": None,
-                            "exit_price": None,
-                            "exit_reason": None,
-                            "quantity": qty,
-                            "pnl_dollars": _val(r, "unrealized_profit_loss"),
-                            "notes": f"Market Value: ${_val(r, 'market_value', '')}, Cost Basis: ${_val(r, 'cost_basis', '')}",
-                        })
-    except Exception as e:
-        logger.warning(f"Error querying schwab positions for ticker trades {sym}: {e}")
+        from src.clients.schwab_client import get_schwab_trades_history
+        schwab_history = get_schwab_trades_history(sym, days=60, force_refresh=refresh)
+        for st in schwab_history:
+            trades.append(st)
+            schwab_trades_count += 1
+    except Exception as e_schwab:
+        logger.warning(f"Error fetching Schwab trade history for {sym}: {e_schwab}")
+
+    # Sort all trades descending by date/time
+    trades.sort(key=lambda x: str(x.get("fill_date") or x.get("date") or ""), reverse=True)
 
     total = len(trades)
-    closed = sum(1 for t in trades if t.get("exit_price") is not None or t.get("status") in ["WIN", "LOSS", "CLOSED"])
+    closed = sum(1 for t in trades if t.get("exit_price") is not None or t.get("status") in ["WIN", "LOSS", "CLOSED", "FILLED"])
     wins = sum(1 for t in trades if (t.get("r_net") is not None and float(t["r_net"]) > 0) or t.get("status") == "WIN")
     losses = sum(1 for t in trades if (t.get("r_net") is not None and float(t["r_net"]) < 0) or t.get("status") == "LOSS")
-    active = sum(1 for t in trades if t.get("status") in ["ACTIVE", "FILLED", "OPEN"])
+    active = sum(1 for t in trades if t.get("status") in ["ACTIVE", "OPEN", "WORKING"])
     pending = sum(1 for t in trades if t.get("status") == "PENDING")
 
     valid_r = [float(t["r_net"]) for t in trades if t.get("r_net") is not None]
@@ -2056,8 +2042,21 @@ def get_ticker_trades_endpoint(ticker: str):
     avg_r = (total_r / len(valid_r)) if valid_r else 0.0
     win_rate = (wins / closed * 100.0) if closed > 0 else 0.0
 
+    options_trades_count = sum(1 for t in trades if t.get("asset_type") == "OPTION" or " " in str(t.get("symbol") or ""))
+    equity_trades_count = sum(1 for t in trades if (t.get("asset_type") == "EQUITY" or not t.get("asset_type")) and " " not in str(t.get("symbol") or ""))
+    schwab_orders_count = sum(1 for t in trades if t.get("source") == "Schwab Broker")
+    suggestions_count = sum(1 for t in trades if t.get("source") in ["Swing Suggestion", "Swing Research"])
+    alerts_count = sum(1 for t in trades if t.get("source") == "Alert Ingestor")
+
     summary = {
-        "total_suggestions": total,
+        "total_trades": total,
+        "schwab_trades_count": schwab_trades_count,
+        "schwab_orders_count": schwab_orders_count,
+        "options_trades_count": options_trades_count,
+        "equity_trades_count": equity_trades_count,
+        "suggestions_count": suggestions_count,
+        "total_suggestions": suggestions_count,
+        "alerts_count": alerts_count,
         "closed_trades": closed,
         "wins": wins,
         "losses": losses,

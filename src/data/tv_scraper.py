@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -46,6 +47,15 @@ ZOOM_OUT_TIMES = 3
 # so the live pull never has to go deeper.
 DEFAULT_LOOKBACK_DAYS = 90
 SETTLE_SECONDS = 6.0     # let the new range load and the indicator recompute
+_US_TICKER = re.compile(r"^[A-Z]{1,5}([.-][A-Z])?$")
+_NOT_EQUITY = {"SPX", "NDX", "DJI", "VIX", "RUT", "COMP"}
+
+
+def tv_symbol(symbol: str) -> str:
+    """Exchange-qualified chart symbol. A bare ticker lets TradingView pick a listing: HAL opened a 4725 chart (real
+    close 34.84), DOW an index, PPL and EG other listings. BATS is the feed the full_v4_av2 corpus was scraped on."""
+    s = (symbol or "").strip().upper()
+    return f"BATS:{s}" if _US_TICKER.match(s) and s not in _NOT_EQUITY else s
 
 
 def profile_tv_session_state(profile_dir: Path) -> str:
@@ -328,7 +338,7 @@ class TVScraper:
 
             page = context.new_page()
             sep = "&" if "?" in self.chart_url else "?"
-            url = f"{self.chart_url}{sep}symbol={safe_symbol}&interval=D"
+            url = f"{self.chart_url}{sep}symbol={tv_symbol(safe_symbol)}&interval=D"
             logger.info(f"Navigating to normal chart: {url}")
             try:
                 page.goto(url, wait_until="commit", timeout=30000)
@@ -413,7 +423,7 @@ class TVScraper:
 
             page = context.new_page()
             sep = "&" if "?" in self.chart_url else "?"
-            url = f"{self.chart_url}{sep}symbol={symbol}&interval=D"
+            url = f"{self.chart_url}{sep}symbol={tv_symbol(symbol)}&interval=D"
             logger.info(f"Navigating to {url}")
             try:
                 page.goto(url, wait_until="commit", timeout=30000)
@@ -734,7 +744,7 @@ class TVScraper:
 
             # ── 3. Plain Chart Screenshot (Clean Naked Price Action) ─────────────
             sep_plain = "&" if "?" in self.plain_chart_url else "?"
-            plain_url = f"{self.plain_chart_url}{sep_plain}symbol={symbol}&interval=D"
+            plain_url = f"{self.plain_chart_url}{sep_plain}symbol={tv_symbol(symbol)}&interval=D"
             logger.info(f"Navigating to Plain Chart layout: {plain_url}")
             try:
                 try:

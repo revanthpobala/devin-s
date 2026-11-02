@@ -173,6 +173,28 @@ def test_digest_waits_for_risk_and_reports_limits():
     ev = digest_event("2026-10-13", opps, risk, False)
     assert ev["severity"] == "WARN" and "1 take-now, 2 armed" in ev["title"]
     assert "NOT running" in ev["body"] and "GOOGL is 36.0%" in ev["body"]
+    assert "push" not in ev
+
+
+def test_action_sheet_lists_orders_and_positions():
+    from src.tracking.notifier_rules import digest_event, position_line
+
+    risk = {"book": 100000, "open_risk_pct": 1.0, "risk_cap_pct": 5.0, "tracked": 1, "position_cap": 10, "beta_weighted_pct": 60.0,
+            "regime_dial": {"multiplier": 1.0, "why": "SPY trend up"}, "flags": []}
+    orders = [{"ticker": "AAA", "type": "limit buy", "entry": 50.0, "stop": 48.0, "target": 55.0, "rr": 2.5, "size_mult": 1.0,
+               "shares": 250, "risk": 500.0},
+              {"ticker": "BBB", "type": "buy now", "entry": 20.0, "stop": 19.0, "target": 21.4, "rr": 1.4, "size_mult": 0.5,
+               "shares": 250, "risk": 250.0}]
+    pos = [position_line("UBER", {"entry_price": 65.86, "stop": 64.53, "target": 68.53}, 66.52, 3),
+           position_line("XYZ", {"entry_price": 10.0, "stop": 9.0}, 8.9)]
+    ev = digest_event("2026-11-02", [], risk, True, orders, ["[CCC] RSI2 open at or below 40.00 · stop 38.00"], pos)
+    body = ev["body"].split("\n")
+    assert ev["push"] == "ENTRY" and "Action sheet: 3 orders" in ev["title"]
+    assert "ORDERS (2, new risk $750, open risk after 1.8%)" in body
+    assert "[AAA] BUY limit 50.00 x 250 · stop 48.00 · T1 55.00 · R:R 2.50 · full size · risk $500" in body
+    assert "half size" in body[3] and body[3].startswith("[BBB] BUY now ~20.00")
+    assert "[UBER] 66.52 · stop 64.53 (3.0% away) · +0.50R · T1 68.53 · earnings in 3d" in body
+    assert "STOP BREACHED" in body[-2] and "no T1" in body[-2]
 
 
 def test_funnel_and_readiness_separate_fills_from_misses():

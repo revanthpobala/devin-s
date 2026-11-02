@@ -617,3 +617,20 @@ Measured Oct 2026: inferred buy%, block direction and volume clusters have no er
 
 ## Net dealer GEX — descriptive only (`src/data/gex.py`)
 Snapshots append to `data/gex_ledger.jsonl` (one per ticker per 30 min; `GEX_NO_LEDGER` disables) for later scoring. `options_skew_gex_plugin` now takes flip/regime from here (None/UNKNOWN when unavailable). Calls +, puts − (assumed dealer sign), BS gamma from each contract's IV, flip = spot where net GEX crosses zero (±10%). Scopes: 0-1 DTE and ≤45 DTE. Source Schwab chain, yfinance fallback. Unmeasured; context line in the 0DTE prompt, never a gate. `format_gex_block` uses it; old OI walls remain as fallback, relabelled.
+
+---
+
+## Event-driven discovery (Nov 1 2026)
+
+Catalyst-based candidate sources, each pre-registered before its first run. Gate (all required, primary trigger only): mean rel > 0 in all 4 eras (2006-11, 12-16, 17-21, 22-26), mean rel > 0 in both ticker-hash halves, median rel >= 0, n >= 500, fire rate < 5% of name-days, mean rel - 0.10% > 0. Rel = 21-bar hold return minus the mean of all names entering on the same date.
+
+| Study | Script | Result | Action |
+|---|---|---|---|
+| Post-earnings drift (8-K 2.02) | `scripts/research/pead_study.py` | PASS. n=1,144, 225 names, mean rel +0.71%, median +0.21%, eras +1.16/+0.40/+0.88/+0.49% | Wired as `src/tracking/earnings_drift_scan.py`, lane `EARNINGS_DRIFT`, UNMEASURED |
+| Insider cluster buys (Form 345 P) | `scripts/research/insider_cluster_study.py` | FAIL. n=1,364, mean +0.59%, median -0.19%, era 2012-16 -0.26% | Not wired |
+
+Caveats on the PEAD pass: the measured universe is today's surviving names (survivorship inflates it), the variant without the hold condition does better (+0.90% mean, n=2,110), and the gap-down negative control has a positive mean (+0.19%). Variant (b), gap plus EPS surprise, is NOT_RUN because full-history EPS surprise is not available free. The live universe is the screener constituents, not the measured 544 names. Parity check: the live bar test reproduces 1,134 of the 1,144 study events.
+
+Other notes: 8-K timing is unknown, so pre-market releases are missed by design. Form 345 quarters 2026q2-q4 are not published on the SEC mirror, so the insider sample ends 2026q1. Local `sec_edgar_client` certifi TLS context fails on this Mac; the studies use the system trust store with only the SEC User-Agent header, because the client's Host header makes www.sec.gov return 404.
+
+Mover table fix (`catalyst_ledger.log_movers`): one Alpaca batch for the wider screener universe, Schwab per-name only when the batch is empty, and a warning with the count of names with no bars. The empty table most likely came from bar failures logged at debug level (the server log has no per-name reason).

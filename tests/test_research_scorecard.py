@@ -11,20 +11,31 @@ def test_market_limit_layer_on_a_runaway():
     after = [b("2026-10-27", 54.0, 55.0, 53.6, 54.8), b("2026-10-28", 55.0, 60.0, 54.9, 59.5),
              b("2026-10-29", 59.6, 63.5, 59.0, 63.0)]
     stop, t1 = 51.04, 63.12
-    assert rs.score_market(after, stop, t1) == (t1 - 54.0) / (54.0 - stop)
+    assert rs.score_market(after, stop, t1) == rs._net(54.0, t1, stop)
     assert rs.score_limit(after, 53.37, stop, t1) is None
     lay = build_layers(53.82, 52.40, 53.37, 51.04, 63.12, atr=2.5, risk_budget_usd=500)
     res = rs.score_layers(after, lay)
     assert res["fills"] == 1                     # starter only (cap 54.07 >= open 54.0)
     starter = lay["tranches"][0]
     full = sum(t["shares"] * (t["price"] - stop) for t in lay["tranches"])
-    assert abs(res["r"] - starter["shares"] * (t1 - 54.0) / full) < 1e-9
+    assert abs(res["r"] - starter["shares"] * (t1 * (1 - rs.FEE) - 54.0 * (1 + rs.FEE)) / full) < 1e-9
 
 
 def test_stop_first_on_a_shared_bar_and_limit_fill():
     after = [b("2026-10-27", 54.0, 54.2, 53.0, 53.2), b("2026-10-28", 53.1, 70.0, 50.0, 52.0)]
-    assert rs.score_limit(after, 53.37, 51.04, 63.12) == -1.0   # filled at 53.37, then stop and T1 same bar
-    assert rs.score_market(after, 51.04, 63.12) == -1.0
+    assert rs.score_limit(after, 53.37, 51.04, 63.12) == rs._net(53.37, 51.04, 51.04)   # stop and T1 same bar
+    assert rs.score_market(after, 51.04, 63.12) == rs._net(54.0, 51.04, 51.04)
+    assert rs._net(54.0, 51.04, 51.04) == -1.0
+
+
+def test_gap_through_stop_exits_at_the_open():
+    after = [b("2026-10-27", 54.0, 54.5, 53.5, 54.2), b("2026-10-28", 49.0, 50.0, 48.0, 49.5)]
+    assert rs.score_market(after, 51.04, 63.12) == rs._net(54.0, 49.0, 51.04)
+    lay = build_layers(53.82, 52.40, 53.37, 51.04, 63.12, atr=2.5, risk_budget_usd=500)
+    res = rs.score_layers(after, lay)
+    full = sum(t["shares"] * (t["price"] - 51.04) for t in lay["tranches"])
+    sh = lay["tranches"][0]["shares"]
+    assert res["fills"] == 1 and abs(res["r"] - sh * (49.0 * (1 - rs.FEE) - 54.0 * (1 + rs.FEE)) / full) < 1e-9
 
 
 def test_unfilled_layers_cancel_when_plan_ends():

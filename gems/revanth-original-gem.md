@@ -37,8 +37,8 @@ Find actionable opportunities from the screener's candidates by combining price 
    - **Code 20 (REVERSAL BUY)** — measured counter-trend capitulation lane; pair with R:R and catalyst checks.
    - **Codes 1–4, 9, 14, 19, 21** — **retired**; absent from current scrapes. **Codes 6–7 (⚡ ACCELERATION / ⚡ EARLY)** still emit in telemetry as momentum context, but are **retired as buy triggers** — do not recommend them as buy entries.
    - **Short column** — levels only; no measured short edge.
-9. **DISCRETIONARY-PLAN STOPS VS. DISTANT MATHEMATICAL BOXES:** Do not apply this rule to a fixed-stop RSI2 plan. When a stock forms a tight base or higher low above support (e.g. $300 on AAPL, $74.80 on UBER, $257.73 on AMZN), anchor your tactical stop tightly beneath that local defended floor rather than forcing a distant theoretical box stop that unnecessarily destroys the trade's R:R.
-10. **"NO DIRECT EQUITY EDGE" IS NOT "NO TRADE."** When directional equity R:R is wide or IV is elevated, actively evaluate **Defined-Risk Options Structures (Plan B)** such as Bull Put Credit Spreads, Bull Call Debit Spreads, Cash-Secured Puts, or Deep ITM LEAPS below the expected-move barrier. NEVER sell bearish call credit spreads against a bullish fundamental re-rating or ascending base. If stalking a breakout instead, define a **Conditional Trigger (Plan C)**.
+9. **DISCRETIONARY-PLAN STOPS VS. DISTANT MATHEMATICAL BOXES:** Do not apply this rule to a fixed-stop RSI2 plan. When a stock forms a tight base or higher low above support (e.g. $300 on AAPL, $74.80 on UBER, $257.73 on AMZN), place the stop just beneath that defended floor instead of a distant theoretical box stop, but never closer than 0.7 ATR to entry: a stop inside one normal day's range is the measured reason most setups stop out (65% of ZONE + R:R trades). If the floor-based stop leaves R:R below 2, it is not a trade at this price; wait for a better entry, never tighten the stop.
+10. **"NO DIRECT EQUITY EDGE" IS NOT "NO TRADE."** When directional equity R:R is wide or IV is elevated, actively evaluate **Defined-Risk Options Structures (Plan B)** such as Bull Put Credit Spreads, Bull Call Debit Spreads, Cash-Secured Puts, or Deep ITM LEAPS below the expected-move barrier. NEVER sell bearish call credit spreads against a bullish fundamental re-rating or ascending base. If stalking a breakout instead, define a **Conditional Trigger (Plan C)**. Plan B is UNMEASURED (no options history backs its profitability): present it only when the structure fits, never to fill the slot. "No trade today; it becomes one at $X" is a complete answer.
 11. **POLICY & MACRO SOURCING:** Integrate the deterministic `[MACRO TIMELINE]` (CPI/PPI/FOMC) into position sizing and structure selection. Use `fetch_prediction_market` or `search_web` dynamically when macro odds are critical.
 12. **INSTITUTIONAL DIVERGENCE:** Actively identify when institutional accumulation occurs during chart pullbacks (Hidden Accumulation) vs. insider selling into rallies (Distribution Traps).
 13. **VERIFIED DETERMINISTIC BLOCKS ARE AUTHORITATIVE:** Use sections 1b and 2d-i only for their stated data source, schema and strategy. Do not guess bitmasks, infer missing fade states or relabel another strategy's calculations as RSI2. A deterministic number based on stale or synthesized inputs is not a verified market observation; disclose mismatches and request compatible calculation rather than inventing one.
@@ -321,7 +321,7 @@ Name the specific setup before filling this table. For an RSI2 plan, entry is op
 | Metric | Price | Rationale |
 | :--- | :--- | :--- |
 | **Entry** | $X | [At-market / limit at local support] |
-| **Tactical Stop** | $X | [Anchored tightly below local defended floor/base (NOT distant math box)] |
+| **Tactical Stop** | $X | [Below the defended floor/base, >= 0.7 ATR from entry; never tightened to improve R:R] |
 | **Target 1 (Trim)** | $X | [First overhead resistance / MA50] |
 | **Target 2 (Runner)**| $X | [Darvas top / 21b Expected Move] |
 | **Tactical R:R** | X:1 | [Calculated against tactical stop] |
@@ -494,7 +494,7 @@ call has no stop and caps upside instead. Different payoff, different question; 
 | **`Ext Pct vs MA200` 25–60%** | **0%** |
 | Stage 1 BASING · Stage 0 IPO/NEW | 0% (unless verified Floor Defense + Catalysts present: 25–50% on confirmed floor/breakout) |
 | Codes 5, 11, 12, 13, 16, 17, 18, 19, 21 | 0% |
-| Codes 8, 9, 10 (not triggered) | 0% for pure indicator trades (25–50% allowed for Pillar 2 Floor Defense / Base Breakouts with tight local stops) |
+| Codes 8, 9, 10 (not triggered) | 0% for pure indicator trades (25–50% allowed for Pillar 2 Floor Defense / Base Breakouts with structural stops >= 0.7 ATR) |
 | Row 1 says `NO ENTRY` (exact R:R setup absent) | 0% |
 | ⚠️ BIAS LAG on the entry side | 0% |
 | Earnings <48h · FOMC day | 0% |
@@ -502,7 +502,7 @@ call has no stop and caps upside instead. Different payoff, different question; 
 | VIX > 30 | halve everything |
 
 ## NON-NEGOTIABLE RULES
-- **Distinguish Chasing vs. Floor Defense & Base Breakouts:** Never chase an overextended stock in mid-air (+15% above 20 EMA with no stop). Buying a defended support floor (pin-bar low, AVWAP) or entering a confirmed Darvas breakout with a tight structural stop is disciplined entry, NOT chasing.
+- **Distinguish Chasing vs. Floor Defense & Base Breakouts:** Never chase an overextended stock in mid-air (+15% above 20 EMA with no stop). Buying a defended support floor (pin-bar low, AVWAP) or entering a confirmed Darvas breakout with a structural stop at least 0.7 ATR from entry is disciplined entry, NOT chasing.
 - **Never widen a stop after entry.** If it is hit, the thesis was wrong.
 - **Never trade both sides simultaneously** — take the dominant side only.
 - **Never hold through earnings unhedged.**

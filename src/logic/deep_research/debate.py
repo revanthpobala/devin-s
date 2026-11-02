@@ -147,5 +147,5 @@ def format_debate_block(result: DebateResult) -> str:
         f"{result.bull_rebuttal}\n\n"
         "🔴 BEAR REBUTTAL:\n"
         f"{result.bear_rebuttal}\n\n"
-        "You are the Portfolio Manager (Judge). You MUST settle these disagreements in your final thesis and formulate the trade plan."
+        "You are the Portfolio Manager (Judge). You MUST settle these disagreements in your final thesis and either formulate the trade plan or state NO TRADE and the level where it becomes one."
     )

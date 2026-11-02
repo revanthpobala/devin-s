@@ -486,7 +486,9 @@ def scrape_tv_options_finder_tool(
         try:
             from playwright.sync_api import sync_playwright
             profile_dir = config.BASE_DIR / "tv_chrome_profile_1"
-            chart_url = f"https://www.tradingview.com/chart/jPAQSlZC/?symbol={ticker.upper()}"
+            from src.data.tv_scraper import tv_symbol
+
+            chart_url = f"https://www.tradingview.com/chart/jPAQSlZC/?symbol={tv_symbol(ticker)}"
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=str(profile_dir),

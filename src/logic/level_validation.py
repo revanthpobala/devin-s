@@ -300,6 +300,8 @@ def _pine_drift(
         "target_1": ("target_1",),
     }
 
+    if plan.get("one_r_target"):
+        pine_map.pop("target_1")
     for plan_key, pine_keys in pine_map.items():
         llm_keys = llm_field_to_pine_keys[plan_key]
         pine_val = _dw_num(dw, *pine_keys)
@@ -616,12 +618,14 @@ def validate_levels(
     rr_gate_value = rr_at_zone if rr_at_zone is not None else rr_at_market
 
     # Planned R:R floor to T1 (non-measured lanes)
-    if has_shares_entry and not is_measured_lane:
+    if has_shares_entry and not is_measured_lane and not plan.get("one_r_target"):
+        from src.tracking.rr_config import min_rr as _floor
+        planned_floor = min(LEVEL_RR_FLOOR, _floor())
         mid_entry = _zone_midpoint(entry_low, entry_high) if (entry_low and entry_high) else entry_high
         rr = _planned_rr(entry_low, mid_entry, stop, target_1, side)
-        if rr < LEVEL_RR_FLOOR:
+        if rr < planned_floor:
             reasons.append(
-                f"planned R:R {rr:.4f} to T1 below floor {LEVEL_RR_FLOOR}"
+                f"planned R:R {rr:.4f} to T1 below floor {planned_floor}"
             )
 
     # At-market R:R floor applies to ALL lanes (including measured lanes)
