@@ -64,6 +64,8 @@ class ArtifactCache:
         Pass ttl_seconds=None to bypass TTL check (indefinite persistence).
         Pass ttl_seconds=-1 to use default TTL from DEFAULT_TTLS.
         """
+        if os.getenv("FORCE_REDO_MODELS"):
+            return None
         file_path = self._get_file_path(date_str, ticker, artifact_type)
         if not file_path.exists():
             return None

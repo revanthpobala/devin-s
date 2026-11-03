@@ -75,15 +75,25 @@ def apply_pine_levels(watch_data: Dict[str, Any], dw: Dict[str, Any]) -> str:
     return "pine"
 
 
+def rsi2_order_live(dw: Dict[str, Any]) -> bool:
+    """Pending only on its own signal bar. Pine advances the engine on confirmed bars, so a scrape before the
+    post-market close shows the prior bar's PENDING after the next open already filled or skipped it."""
+    try:
+        pack = int(round(float(dw.get("RSI2 Events Pack"))))
+        state, armed = (pack >> 10) & 7, bool(pack & 2)
+    except (TypeError, ValueError):
+        try:
+            state, armed = int(float(dw.get("_rsi2_state_code") or 0)), bool(dw.get("_rsi2_armed_event"))
+        except (TypeError, ValueError):
+            return False
+    return state == 2 and armed
+
+
 def apply_rsi2_order(watch_data: Dict[str, Any], dw: Dict[str, Any]) -> bool:
     """RSI2 lane: Pine's pending open-only order is the plan. The judge may veto it (CASH_SKIP) but not re-level it."""
-    try:
-        state = int(float(dw.get("_rsi2_state_code") or 0))
-    except (TypeError, ValueError):
-        state = 0
     stop, t1 = _f(dw, "RSI2 Fixed Stop", "rsi2_fixed_stop"), _f(dw, "RSI2 Fixed Target", "rsi2_fixed_target")
     ceil = _f(dw, "RSI2 Entry Or Opening Ceiling", "rsi2_entry_ceiling")
-    if state != 2 or not (stop and t1 and ceil) or not stop < ceil < t1:
+    if not rsi2_order_live(dw) or not (stop and t1 and ceil) or not stop < ceil < t1:
         return False
     sp = watch_data.get("shares_plan") or {}
     watch_data["llm_levels"] = {k: sp.get(k) for k in ("entry_zone_low", "entry_zone_high", "tactical_stop", "target_1", "target_2")}

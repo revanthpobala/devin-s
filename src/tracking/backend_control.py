@@ -79,6 +79,7 @@ def start_process() -> Dict[str, Any]:
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
             [sys.executable, "run_backend.py"],
@@ -87,6 +88,7 @@ def start_process() -> Dict[str, Any]:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             creationflags=flags,
+            env=env,
         )
     return {"status": "started", "pid": proc.pid}
 

@@ -556,6 +556,8 @@ def run_research_worker(
         # the same user-data-dir.
         env = os.environ.copy()
         env["RESEARCH_JOB_ID"] = job_id
+        if force:
+            env["FORCE_REDO_MODELS"] = "1"
         current_subproc = subprocess.Popen(
             cmd,
             cwd=str(config.BASE_DIR),

@@ -59,6 +59,9 @@ def trade_state(price: Any, zone_low: Any, zone_high: Any, stop: Any, target: An
         limit = min(limit, hi)
     if not a or limit <= st:
         return out("NO_TRADE", f"NO TRADE · R:R {rr:.1f}", f"R:R {rr:.2f} at market; no usable limit")
+    if limit >= px:
+        why = "fade active" if faded else ("price below the Pine zone" if lo and px < lo else "no Pine zone")
+        return out("NO_TRADE", f"NO TRADE · R:R {rr:.1f}", f"{why}; R:R {rr:.2f} at market is outside the measured in-zone rule")
     k = max(0.0, (px - limit) / a)
     odds = fill_odds_10d(k)
     if k > MAX_ARM_ATR:

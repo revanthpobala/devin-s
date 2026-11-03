@@ -306,6 +306,17 @@ def init_alert_db():
                 if col_name not in pos_cols:
                     cursor.execute(f"ALTER TABLE positions ADD COLUMN {col_name} {col_type};")
 
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ignored_emails (
+                    email_id TEXT PRIMARY KEY,
+                    subject TEXT,
+                    reason TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+
             conn.commit()
 
 
@@ -366,7 +377,7 @@ def is_alert_processed(
 
 
 def get_processed_email_ids(email_ids: List[str]) -> set[str]:
-    """Return the subset of email_ids that are already recorded in the SQLite database.
+    """Return the subset of email_ids that are already recorded in the SQLite database (alerts or ignored_emails).
     
     Fast vectorized query using IN clause with index on email_id. Runs in <1ms.
     """
@@ -384,11 +395,48 @@ def get_processed_email_ids(email_ids: List[str]) -> set[str]:
             for i in range(0, len(clean_ids), chunk_size):
                 chunk = clean_ids[i:i + chunk_size]
                 placeholders = ",".join("?" for _ in chunk)
-                cursor.execute(f"SELECT email_id FROM alerts WHERE email_id IN ({placeholders})", chunk)
+                cursor.execute(
+                    f"SELECT email_id FROM alerts WHERE email_id IN ({placeholders}) "
+                    f"UNION "
+                    f"SELECT email_id FROM ignored_emails WHERE email_id IN ({placeholders})",
+                    chunk + chunk,
+                )
                 for row in cursor.fetchall():
                     if row[0]:
                         found.add(str(row[0]).strip())
             return found
+
+
+def record_ignored_email(
+    email_id: str,
+    subject: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> bool:
+    """Record a non-alert or skipped email into SQLite so it is not re-fetched.
+
+    Returns True if successfully inserted, or False if already existed.
+    """
+    clean_id = str(email_id or "").strip()
+    if not clean_id:
+        return False
+
+    created_at = get_eastern_now().isoformat(timespec="seconds")
+    with _db_lock:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO ignored_emails (email_id, subject, reason, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (clean_id, str(subject or "")[:255], str(reason or "")[:100], created_at),
+                )
+                conn.commit()
+                logger.info(f"[alert_db] Recorded ignored email {clean_id} (reason: {reason}).")
+                return True
+            except sqlite3.IntegrityError:
+                return False
 
 
 def record_alert(alert: Dict[str, Any], raw_payload: Optional[str] = None) -> bool:

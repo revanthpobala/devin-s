@@ -236,8 +236,29 @@ def ingest_alert_fast(alert: dict, gmail: Optional[GmailClient] = None) -> bool:
     alert_price = alert.get("alert_price")
     email_id = alert.get("email_id")
 
-    if not symbol or strategy not in ["Intraday", "Daily", "RSI2"]:
-        logger.info(f"Skipping alert for {symbol} as strategy is {strategy}.")
+    if not symbol:
+        logger.info(f"Skipping email {email_id} ({alert.get('subject')}) — no valid ticker symbol found.")
+        if email_id:
+            try:
+                from src.tracking.alert_db import record_ignored_email
+                record_ignored_email(email_id, subject=alert.get("subject"), reason="no_ticker_symbol")
+            except Exception:
+                pass
+        if email_id and gmail:
+            try:
+                gmail.mark_as_read(email_id)
+            except Exception:
+                pass
+        return False
+
+    if strategy not in ["Intraday", "Daily", "RSI2"]:
+        logger.info(f"Skipping alert for {symbol} as strategy '{strategy}' is not in [Intraday, Daily, RSI2].")
+        if email_id:
+            try:
+                from src.tracking.alert_db import record_ignored_email
+                record_ignored_email(email_id, subject=alert.get("subject"), reason=f"unsupported_strategy_{strategy}")
+            except Exception:
+                pass
         if email_id and gmail:
             try:
                 gmail.mark_as_read(email_id)

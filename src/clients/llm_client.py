@@ -2236,7 +2236,7 @@ def _build_client_and_model(use_openrouter: bool, model: str | None = None):
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_key,
-            timeout=180,
+            timeout=int(os.getenv("OPENROUTER_TIMEOUT", "600")),
             default_headers={"HTTP-Referer": "http://localhost", "X-Title": "Swing Triage"},
         )
         return client, resolved_model, "openrouter"
@@ -2274,6 +2274,7 @@ def query_local_llm(
     messages: list | None = None,
     max_tool_batches: int | None = None,
     stats_out: dict | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """
     Run inference via local FastAPI Unsloth server, Meta AI, NVIDIA NIM (free), or OpenRouter,
@@ -2334,6 +2335,8 @@ def query_local_llm(
         # will otherwise burn the token budget on chain-of-thought and return an
         # empty `content` with finish_reason='length'. Disable thinking for direct
         # summarization / extraction tasks. NVIDIA models ignore this extra_body.
+        if provider == "openrouter" and reasoning_effort:
+            kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": reasoning_effort}
         if provider == "local":
             extra_body = kwargs.setdefault("extra_body", {})
             extra_body["cache_prompt"] = True

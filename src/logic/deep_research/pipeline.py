@@ -589,6 +589,13 @@ def run_deep_research(
             )
             continue
 
+        contract_mode = os.getenv("RESEARCH_ENGINE", "contract").strip().lower() != "legacy"
+        resolved_lane = (triage_record.get("setup_lane") if isinstance(triage_record, dict) else None) or "RR_SETUP"
+        from datetime import datetime as _dt
+        from src.logic.deep_research.deterministic import choose_side, run_contract
+
+        doc_side = choose_side(dw_dict, resolved_lane)
+        captured_at = _dt.fromtimestamp(paths["dw_json"].stat().st_mtime) if paths["dw_json"].exists() else _dt.now()
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
 
         # 3. Format deterministic blocks
@@ -791,14 +798,17 @@ def run_deep_research(
             reports_dir = config.BASE_DIR / "reports" / date_str
             reports_dir.mkdir(parents=True, exist_ok=True)
 
-            existing_sum = reports_dir / f"{ticker}_summary.md"
-            existing_ind = reports_dir / f"{ticker}_independent.md"
+            existing_sum = out_path if contract_mode else reports_dir / f"{ticker}_summary.md"
+            existing_ind = (tdir / f"{ticker}_independent_thesis.md") if contract_mode else reports_dir / f"{ticker}_independent.md"
             existing_arb = reports_dir / f"{ticker}_arbitration.md"
             has_valid_dual = (
                 existing_sum.exists() and existing_sum.stat().st_size > 1000
                 and (skip_b or (existing_ind.exists() and existing_ind.stat().st_size > 1000))
             )
-            needs_arb_only = has_valid_dual and (not existing_arb.exists() or existing_arb.stat().st_size < 500)
+            needs_arb_only = has_valid_dual and (contract_mode or not existing_arb.exists() or existing_arb.stat().st_size < 500)
+            if has_valid_dual and paths["dw_json"].exists() and existing_sum.stat().st_mtime < paths["dw_json"].stat().st_mtime:
+                logger.info(f"[{ticker}] Model A/B predate the current Data Window scrape; re-running them instead of reusing.")
+                has_valid_dual = needs_arb_only = False
 
             if needs_arb_only and not os.getenv("FORCE_REDO_MODELS"):
                 logger.info(
@@ -876,23 +886,38 @@ def run_deep_research(
             # Stage 5: ARBITRATION
             # ------------------------------------------------------------------
             t_arb_start = time.time()
-            run_arbitration(
-                ticker=ticker, date_str=date_str,
-                clean_response=clean_response, clean_ind_response=clean_ind_response,
-                f_parsed=f_parsed, dw_dict=dw_dict,
-                live_quote_block=ctx.live_quote_block,
-                earnings_fact_block=ctx.earnings_fact_block,
-                alerts_list=alerts_list, macro_news=macro_news,
-                macro_grounded_block=ctx.macro_grounded_block,
-                active_pos_block=active_pos_block,
-                tdir=tdir, raw_dir=raw_dir, reports_dir=reports_dir,
-                kind=kind,
-                setup_lane=resolved_lane,
-                triage_reason=triage_reason,
-                lane_prior_win=lane_prior_win,
-                lane_prior_ev=lane_prior_ev,
-                prior_plan_outcome_block=prior_plan_outcome_block,
-            )
+            if contract_mode:
+                sources = [
+                    ("Live quote", ctx.live_quote_block), ("Options / GEX", ctx.gex_block),
+                    ("Earnings packet", ctx.earnings_fact_block), ("Fundamentals", ctx.av_block),
+                    ("Institutional", ctx.institutional_block), ("Fresh news", ctx.fresh_news),
+                    ("News dossier", news_dossier), ("Grounded search", ctx.grounded_block),
+                    ("Macro", macro_news), ("Macro grounded", ctx.macro_grounded_block),
+                    ("Prefetched facts", preloaded_block), ("Prior plan outcome", prior_plan_outcome_block),
+                ]
+                run_contract(ticker, date_str, dw_dict, side=doc_side, setup_lane=resolved_lane, kind=kind,
+                             captured_at=captured_at, inputs_md=f"REPORT A\n{clean_response}\n\nREPORT B\n{clean_ind_response}",
+                             sources=sources, position_block=active_pos_block, tdir=tdir, raw_dir=raw_dir,
+                             reports_dir=reports_dir, csv_path=paths["dw_csv"], lane_prior_win=lane_prior_win,
+                             lane_prior_ev=lane_prior_ev, report_a=clean_response, report_b=clean_ind_response)
+            else:
+                run_arbitration(
+                    ticker=ticker, date_str=date_str,
+                    clean_response=clean_response, clean_ind_response=clean_ind_response,
+                    f_parsed=f_parsed, dw_dict=dw_dict,
+                    live_quote_block=ctx.live_quote_block,
+                    earnings_fact_block=ctx.earnings_fact_block,
+                    alerts_list=alerts_list, macro_news=macro_news,
+                    macro_grounded_block=ctx.macro_grounded_block,
+                    active_pos_block=active_pos_block,
+                    tdir=tdir, raw_dir=raw_dir, reports_dir=reports_dir,
+                    kind=kind,
+                    setup_lane=resolved_lane,
+                    triage_reason=triage_reason,
+                    lane_prior_win=lane_prior_win,
+                    lane_prior_ev=lane_prior_ev,
+                    prior_plan_outcome_block=prior_plan_outcome_block,
+                )
             arb_sec = round(time.time() - t_arb_start, 3)
             record_research_timing(
                 ticker=ticker, target_date=date_str, stage="ARBITRATION",

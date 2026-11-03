@@ -680,7 +680,7 @@ def _assess_side(side: str, f: Dict[str, Optional[float]]) -> Dict[str, Any]:
     ev_side = "long" if ((f["buy"] or 0.0) >= (f["sell"] or 0.0)) else "short"
 
     # Mode selection
-    if side == "long" and (f.get("rsi2_setup_event") or f.get("rsi2_armed_event") or f.get("rsi2_state_code") == 2):
+    if side == "long" and (f.get("rsi2_setup_event") or f.get("rsi2_armed_event")):
         mode = "RSI2_LONG"
     elif rev_ok or act_code == 20:
         mode = "REVERSION_" + side.upper()
@@ -921,7 +921,6 @@ def run_data_window_filter(
         W.get("mode") == "RSI2_LONG"
         or f.get("rsi2_setup_event")
         or f.get("rsi2_armed_event")
-        or (f.get("rsi2_state_code") == 2 and W["side"] == "long")
     )
 
     if act_code == 18:

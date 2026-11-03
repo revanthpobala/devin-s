@@ -394,7 +394,17 @@ def earnings_days_for(ticker: str, date_str: Optional[str] = None, dw: Optional[
     dw_days = _dw_num(dw or {}, "earnings_days", "days_to_earnings", "bars_to_earnings")
     if dw_days > 0 and (days is None or dw_days < days):
         days = int(dw_days)
+    if days == 0 and earnings_reported_on(dw, signal_d.isoformat()):
+        return None
     return days
+
+
+def earnings_reported_on(dw: Optional[Dict[str, Any]], day: str) -> Optional[str]:
+    """The date when the Data Window already carries reported EPS for `day` (a before-open report inside the bar)."""
+    for ev in (dw or {}).get("_earnings_reaction_events") or []:
+        if isinstance(ev, dict) and ev.get("eps_reported") is not None and str(ev.get("date"))[:10] == str(day)[:10]:
+            return str(day)[:10]
+    return None
 
 
 def validate_levels(

@@ -62,9 +62,11 @@ def _record_research_completed(ticker: str, date_str: str, dw_dict: Dict[str, An
 
 def prose_veto_fact(text: str) -> str:
     """The JSON is written before the FOR/AGAINST trial, so a veto the trial reaches only shows in the prose."""
-    m = re.search(r"Final Verdict:\**\s*\**[^\n]*?veto fact(?: if any)?:?\s*\**\s*([^\n]+)", text or "", re.I)
-    fact = re.sub(r"[*_`]", "", m.group(1)).strip(" .:-") if m else ""
-    return "" if fact.lower() in ("", "none", "n/a", "na", "no veto", "no veto fact") else fact
+    m = re.search(r"Final Verdict:\**[ \t]*\**[^\n]*?veto fact(?: if any)?:?[ \t]*\**[ \t]*([^\n]*)", text or "", re.I)
+    fact = re.sub(r"[*_`]", "", m.group(1)).strip(" .:-()") if m else ""
+    if not fact or fact.startswith("#") or re.match(r"(none|n/?a|no\b)", fact, re.I):
+        return ""
+    return fact
 
 
 def _build_judge_sys_prompt(ticker: str, prior_plan_outcome_block: str = "") -> str:

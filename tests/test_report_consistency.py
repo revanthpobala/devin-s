@@ -34,7 +34,7 @@ def test_stamp_replaces_previous_block(tmp_path):
 
 
 def test_rsi2_order_overrides_judge_levels_and_validates():
-    dw = {"_rsi2_state_code": 2, "RSI2 Fixed Stop": "316.79", "RSI2 Fixed Target": "359.41",
+    dw = {"_rsi2_state_code": 2, "_rsi2_armed_event": True, "RSI2 Fixed Stop": "316.79", "RSI2 Fixed Target": "359.41",
           "RSI2 Entry Or Opening Ceiling": "331", "RSI2 ATR14": 7.1029, "close": "331"}
     wd = {"shares_plan": {"entry_zone_low": 321.33, "entry_zone_high": 323.1, "tactical_stop": 317.77, "target_1": 359.67}}
     assert apply_rsi2_order(wd, dw)

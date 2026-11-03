@@ -215,6 +215,10 @@ def test_prose_veto_fact_is_read_when_json_says_none():
     assert "Culper" in prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact: **Earnings Nov 12 (8d) and live Culper short report.**")
     assert prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact if any: none") == ""
     assert prose_veto_fact("* **Final Verdict:** **ARMED**") == ""
+    # 2026-11-02 misfires: next line, "(None)", "(None - ...)" were read as vetoes (QQQ, GOOGL, LRCX, MRVL, ABNB, HPE)
+    assert prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact if any\n\n## \U0001F3AF FINAL ACTIONABLE DIRECTIVES") == ""
+    assert prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact if any (None)") == ""
+    assert prose_veto_fact("* **Final Verdict:** **ARMED**, plus the veto fact if any (None - no hard fundamental break)") == ""
 
 
 def test_event_risk_is_limits_only_and_gap_capped():
