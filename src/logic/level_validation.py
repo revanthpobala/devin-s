@@ -331,6 +331,28 @@ def _pine_drift(
     return drifts
 
 
+def _signal_bar_low(ticker: str, date_str: str) -> float:
+    """Low of the last daily bar on or before date_str; 0.0 when unavailable."""
+    if not ticker:
+        return 0.0
+    try:
+        from datetime import datetime, timedelta
+        from src.tracking.execution_validator import get_bars_since_date
+
+        d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+        bars = get_bars_since_date(ticker, (d - timedelta(days=7)).strftime("%Y-%m-%d"))
+        if bars is None or len(bars) == 0:
+            return 0.0
+        sub = bars[[str(x)[:10] <= d.isoformat() for x in bars.index]]
+        if len(sub) == 0:
+            return 0.0
+        row = sub.iloc[-1]
+        return float(row.get("Low", row.get("low", 0.0)) or 0.0)
+    except Exception as e:
+        logger.debug(f"Signal bar low unavailable for {ticker}: {e}")
+        return 0.0
+
+
 def _compute_atr14_from_bars(ticker: str, date_str: str) -> float:
     """Compute 14-period ATR from historical daily bars up to date_str."""
     if not ticker:
@@ -376,9 +398,15 @@ def _compute_atr14_from_bars(ticker: str, date_str: str) -> float:
 
 
 
-def earnings_days_for(ticker: str, date_str: Optional[str] = None, dw: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    """Trading days to the next earnings from date_str (today if absent); None when unknown."""
+AFTER_CLOSE_PRINT_DONE_ET = (16, 30)
+
+
+def earnings_days_for(ticker: str, date_str: Optional[str] = None, dw: Optional[Dict[str, Any]] = None,
+                      now_et: Optional[Any] = None) -> Optional[int]:
+    """Trading days to the next earnings from date_str (today if absent); None when unknown or when a print dated
+    today is already out (Data Window carries the EPS, or it is past 16:30 ET and any after-close report has landed)."""
     from datetime import date, datetime
+    from zoneinfo import ZoneInfo
 
     signal_d = None
     if date_str:
@@ -396,6 +424,10 @@ def earnings_days_for(ticker: str, date_str: Optional[str] = None, dw: Optional[
         days = int(dw_days)
     if days == 0 and earnings_reported_on(dw, signal_d.isoformat()):
         return None
+    if days == 0:
+        now = now_et or datetime.now(ZoneInfo("America/New_York"))
+        if signal_d == now.date() and (now.hour, now.minute) >= AFTER_CLOSE_PRINT_DONE_ET:
+            return None
     return days
 
 
@@ -458,6 +490,11 @@ def validate_levels(
         atr = _compute_atr14_from_bars(ticker, date_str)
     if atr <= 0:
         reasons.append("missing ATR14 — hard fail")
+
+    # ── 2b. Signal bar already traded through the stop: the plan is dead on arrival ──
+    signal_low = _signal_bar_low(ticker, date_str)
+    if stop > 0 and signal_low > 0 and signal_low <= stop:
+        reasons.append(f"signal bar low {signal_low:.2f} at or through stop {stop:.2f}")
 
     # ── 1. Level ordering & geometry ───────────────────────────
     spot = _dw_num(dw, "close", "Close", "spot", "last", "price")

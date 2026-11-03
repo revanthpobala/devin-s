@@ -188,6 +188,35 @@ def get_earnings_history(symbol: str) -> list:
     return data[:4]  # Return last 4 quarters
 
 
+def get_basic_financials(symbol: str) -> dict:
+    """Finnhub /stock/metric (free tier): growth, margins, valuation, leverage."""
+    key = _fh_key()
+    if not key: return {}
+    data = _cached_get(f"https://finnhub.io/api/v1/stock/metric?symbol={symbol}&metric=all&token={key}", ttl=21600)
+    m = data.get("metric") if isinstance(data, dict) else None
+    return m if isinstance(m, dict) else {}
+
+
+_FUNDAMENTAL_FIELDS = (
+    ("Revenue Growth TTM YoY %", "revenueGrowthTTMYoy"), ("Revenue Growth Quarterly YoY %", "revenueGrowthQuarterlyYoy"),
+    ("EPS Growth TTM YoY %", "epsGrowthTTMYoy"), ("EPS Growth Quarterly YoY %", "epsGrowthQuarterlyYoy"),
+    ("Gross Margin TTM %", "grossMarginTTM"), ("Operating Margin TTM %", "operatingMarginTTM"),
+    ("Net Profit Margin TTM %", "netProfitMarginTTM"), ("ROE TTM %", "roeTTM"),
+    ("PE TTM", "peTTM"), ("Forward PE", "forwardPE"), ("Price/Sales TTM", "psTTM"), ("Price/Book", "pbQuarterly"),
+    ("Current Ratio", "currentRatioQuarterly"), ("Debt/Equity", "totalDebt/totalEquityQuarterly"),
+    ("Market Cap (USD M)", "marketCapitalization"), ("Beta", "beta"),
+    ("Dividend Yield %", "dividendYieldIndicatedAnnual"), ("52W High", "52WeekHigh"), ("52W Low", "52WeekLow"),
+)
+
+
+def format_finnhub_fundamentals_block(symbol: str) -> str:
+    m = get_basic_financials(symbol)
+    rows = [f"{label}: {m[k]:.2f}" for label, k in _FUNDAMENTAL_FIELDS if isinstance(m.get(k), (int, float))]
+    if not rows:
+        return ""
+    return f"--- PER-TICKER FUNDAMENTALS ({symbol} Finnhub) ---\n" + " | ".join(rows) + "\n\n"
+
+
 def format_finnhub_institutional_block(symbol: str) -> str:
     """Compile analyst ratings, insider sentiment, and earnings surprises into a string block."""
     lines = []

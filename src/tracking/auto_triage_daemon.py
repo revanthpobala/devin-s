@@ -556,12 +556,6 @@ class AutoTriageDaemon(threading.Thread):
                         logger.warning(f"[AutoTriageDaemon] Error updating attempt count for {msg_id}: {e_db}")
 
             _top_up_idle_deep_slots()
-            try:
-                from src.logic.order_ticket import maybe_run_preopen
-
-                maybe_run_preopen()
-            except Exception as e_pre:
-                logger.debug(f"preopen note: {e_pre}")
             self.last_run_time = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
             logger.info(f"✅ [AutoTriageDaemon] Batch complete: {batch_count} alert(s) triaged.")
         except Exception as err:

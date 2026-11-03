@@ -122,6 +122,9 @@ def evaluate(ticker: str, price: float, today: str, zones: List[Dict[str, Any]],
     """Events for one ticker at one price. Mutates `st` (the ticker's persisted state)."""
     touches: List[Dict[str, Any]] = st.setdefault("touches", [])
     rebounded: Dict[str, str] = st.setdefault("rebounded", {})
+    gapped: Dict[str, str] = st.setdefault("gapped", {})
+    prev_px = st.get("prev_px")
+    st["prev_px"] = price
     events: List[Dict[str, Any]] = []
     newest_zone = max(zones, key=lambda z: z["newest"]) if zones else None
 
@@ -136,6 +139,7 @@ def evaluate(ticker: str, price: float, today: str, zones: List[Dict[str, Any]],
         rr_txt = (f"R:R at market {rr:.2f} to T1 ${z['t1']:.2f} (floor {rr_config.min_rr():.1f}: "
                   f"{'meets' if rr >= rr_config.min_rr() else 'below'})") if rr is not None else "R:R at market n/a"
         top_tol = z["high"] * (1 + TOUCH_TOL_PCT / 100.0)
+        zkey = f"{z['low']:.2f}-{z['high']:.2f}"
 
         if price > stop and _in_band(price, z):
             if not any(t["d"] == today and _in_band(t["p"], z) for t in touches):
@@ -146,14 +150,20 @@ def evaluate(ticker: str, price: float, today: str, zones: List[Dict[str, Any]],
             why = ("Actionable only if you want it: R:R meets the floor." if ok else
                    f"No room: stop only {risk_pct:.1f}% away, R:R not meaningful." if risk_pct < MIN_RISK_PCT else
                    "Not actionable: R:R at market is below the floor.")
-            events.append({"type": "ZONE_TOUCH" if ok else "ZONE_TOUCH_LOW_RR", "price": price, "n": n, "message": (
+            events.append({"type": "ZONE_TOUCH" if ok else "ZONE_TOUCH_LOW_RR", "price": price, "n": n, "plan_date": z["newest"], "message": (
                 f"[{ticker}] Touch #{n} of tracked zone {band} ({named}) at ${price:.2f}; stop ${stop:.2f} ({risk_pct:.1f}% away). "
                 f"{rr_txt}. {why} UNMEASURED: near-zone entries measured no worse than in-zone, the R:R decides.{newer}")})
+        elif (prev_px is not None and prev_px > z["high"] and stop < price < z["low"] * (1 - TOUCH_BELOW_PCT / 100.0)
+              and gapped.get(zkey) != today):
+            gapped[zkey] = today
+            events.append({"type": "ZONE_TOUCH", "price": price, "n": _touch_count(touches, z), "plan_date": z["newest"], "message": (
+                f"[{ticker}] Gapped through tracked zone {band} ({named}) from ${prev_px:.2f} to ${price:.2f}, above stop ${stop:.2f}, "
+                f"never touched. {rr_txt}. The R:R at market decides.{newer}")})
         elif top_tol < price <= z["high"] * (1 + APPROACH_PCT / 100.0):
             rr_top = _rr(z["high"], stop, z["t1"])
             if rr_top is None or rr_top < rr_config.min_rr() or 100 * (z["high"] - stop) / z["high"] < MIN_RISK_PCT:
                 continue
-            events.append({"type": "ZONE_APPROACH", "price": price, "n": 0, "message": (
+            events.append({"type": "ZONE_APPROACH", "price": price, "n": 0, "plan_date": z["newest"], "message": (
                 f"[{ticker}] ${price:.2f} is {100 * (price / z['high'] - 1):.1f}% above tracked zone {band} ({named}). "
                 f"If it fills at the zone top ${z['high']:.2f}: R:R {rr_top:.2f} to T1 ${z['t1']:.2f}, stop ${stop:.2f} (floor {rr_config.min_rr():.1f}: meets). "
                 f"At market now: {rr_txt}.{newer}")})
@@ -162,11 +172,10 @@ def evaluate(ticker: str, price: float, today: str, zones: List[Dict[str, Any]],
             hit = [t for t in touches if t["d"] >= cutoff and _in_band(t["p"], z)]
             if hit:
                 last = max(hit, key=lambda t: t["d"])
-                key = f"{z['low']:.2f}-{z['high']:.2f}"
-                if rebounded.get(key) != last["d"]:
-                    rebounded[key] = last["d"]
+                if rebounded.get(zkey) != last["d"]:
+                    rebounded[zkey] = last["d"]
                     low_px = min(t["p"] for t in hit)
-                    events.append({"type": "ZONE_REBOUND", "price": price, "n": _touch_count(touches, z), "message": (
+                    events.append({"type": "ZONE_REBOUND", "price": price, "n": _touch_count(touches, z), "plan_date": z["newest"], "message": (
                         f"[{ticker}] Rebounded off tracked zone {band} ({named}): ${low_px:.2f} on {last['d']} -> ${price:.2f} "
                         f"({100 * (price / low_px - 1):+.1f}%), {_touch_count(touches, z)} touch day(s). "
                         f"The zone entry was missed; do not chase, re-check R:R at market.{newer}")})
@@ -219,7 +228,7 @@ def run_cycle(prices: Dict[str, float], today: str, emit: Callable[[str, str, st
             if ev["type"] in seen:
                 continue
             seen.add(ev["type"])
-            if emit(tk, ev["type"], ev["message"], ev["price"]):
+            if emit(tk, ev["type"], ev["message"], ev["price"], ev.get("plan_date")):
                 fired += 1
     _save_state(state)
     return fired

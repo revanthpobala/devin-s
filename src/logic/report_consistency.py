@@ -65,7 +65,55 @@ def check(text: str, watch_data: Dict[str, Any], dw: Dict[str, Any], spot: float
         k, exp = _f(o.get("short_strike")), str(o.get("expiration") or "")[:10]
         if k and em and spot and er and exp and er <= exp and k < spot * (1 + em / 100):
             issues.append(f"covered call ${k:g} is inside the 21-bar expected move (${spot * (1 + em / 100):.2f}) with earnings {er} before expiry {exp}")
+    issues += _spread_issues(text, watch_data, dw, spot)
     return list(dict.fromkeys(issues))
+
+
+def _value_after(text: str, label: str) -> List[float]:
+    """Numbers bound to `label` with no other words between them, so 'Max Loss: Max Profit $652' does not read as Max Loss $652."""
+    return [float(m.group(1).replace(",", "")) for m in re.finditer(label + r"[^\n$\d|A-Za-z]{0,25}" + _NUM, text, re.I)]
+
+
+_SPREAD_NAME = re.compile(r"bull[ _](?:put|call)|bear[ _](?:put|call)|credit spread|debit spread", re.I)
+_CREDIT_NAME = re.compile(r"bull[ _]put|bear[ _]call|credit spread", re.I)
+_DEBIT_NAME = re.compile(r"bull[ _]call|bear[ _]put|debit spread", re.I)
+_SPREADS = ("BULL_PUT_SPREAD", "BULL_CALL_SPREAD", "BEAR_PUT_SPREAD", "BEAR_CALL_SPREAD")
+
+
+def _spread_issues(text: str, watch_data: Dict[str, Any], dw: Dict[str, Any], spot: float) -> List[str]:
+    """Prose spread numbers must match the stored options plan (which the code guards); IV Rank must match the Data Window."""
+    o = watch_data.get("options_plan") or {}
+    struct = str(o.get("structure") or "NONE").upper()
+    mp = _value_after(text, r"\bmax[ -]?profit\b")
+    ml = _value_after(text, r"\bmax[ -]?loss\b")
+    issues: List[str] = []
+    if struct not in _SPREADS:
+        if (mp or ml) and _SPREAD_NAME.search(text):
+            issues.append(f"report quotes spread max profit/loss {', '.join(f'${v:g}' for v in mp + ml)} but options plan is {struct} (demoted or never valid); the spread is not actionable")
+    else:
+        other = _DEBIT_NAME if struct in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD") else _CREDIT_NAME
+        named = sorted({m.group(0).lower() for m in other.finditer(text)})
+        if named:
+            issues.append(f"report names {', '.join(named)} but stored structure is {struct}")
+        for name, vals, stored in (("max profit", mp, _f(o.get("max_profit"))), ("max loss", ml, _f(o.get("max_loss")))):
+            bad = sorted({v for v in vals if stored > 0 and abs(v - stored) > max(1.0, 0.01 * stored)})
+            if bad:
+                issues.append(f"report {name} {', '.join(f'${v:g}' for v in bad)}; stored {name} is ${stored:g}")
+        em = _f(dw.get("Exp Move Pct 21b"))
+        if spot > 0 and em > 0:
+            from src.logic.strike_validator import validate_strike_geometry
+
+            _ok, defects = validate_strike_geometry(
+                strategy_type=struct, spot_price=spot, exp_move_pct_21b=em,
+                long_strike=_f(o.get("long_strike")) or None, short_strike=_f(o.get("short_strike")) or None,
+                max_profit=_f(o.get("max_profit")) or None, max_loss=_f(o.get("max_loss")) or None)
+            issues += defects
+    iv = dw.get("Energy IV Rank Pct") if dw else None
+    if iv is not None:
+        for v in _labelled(text, r"\bIV\s*Rank\b", 0.0, 100.0):
+            if abs(v - _f(iv)) > 2.0:
+                issues.append(f"report IV Rank {v:g}%; Data Window IV Rank is {_f(iv):.1f}%")
+    return issues
 
 
 _NON_ACTIONABLE_VERDICTS = ("STALK", "WATCH", "HOLD", "MANAGE", "CASH_SKIP", "NO_LEVELS", "AVOID", "REJECT")

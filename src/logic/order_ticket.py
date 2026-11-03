@@ -1,14 +1,19 @@
 """Executable ticket from a gated long plan: repair to the rulebook, build, persist and notify, then the pre-open GO / STAND DOWN check."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import re
+import time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from src import config
-from src.tracking import trade_rules
+from src.tracking import rr_config, trade_rules
 
 logger = logging.getLogger(__name__)
 
@@ -453,25 +458,144 @@ def persist_and_notify(ticket: Dict[str, Any]) -> None:
         logger.warning(f"[{tk}] ticket notify failed: {e}")
 
 
-def _latest_watch_levels(ticker: str, today: str) -> Optional[Dict[str, Any]]:
+def _watch_paths(ticker: str, d: str) -> List[Path]:
     """Persisted plans live in data/raw/<date>/<T>/; gate-rejected display copies in reports/<date>/."""
-    reports, raw = config.BASE_DIR / "reports", config.BASE_DIR / "data" / "raw"
     safe = ticker.replace(":", "_")
+    return [config.BASE_DIR / "data" / "raw" / d / safe / f"{safe}_watch_levels.json",
+            config.BASE_DIR / "reports" / d / f"{safe}_watch_levels.json"]
+
+
+def _plan_on_disk(ticker: str, today: str, plan_date: Optional[str] = None) -> Optional[Tuple[str, Path]]:
+    """(date, file) of the plan on `plan_date`, else the newest plan up to `today`."""
+    if plan_date:
+        return next(((plan_date, fp) for fp in _watch_paths(ticker, plan_date) if fp.exists()), None)
+    reports, raw = config.BASE_DIR / "reports", config.BASE_DIR / "data" / "raw"
     days = {p.name for root in (reports, raw) if root.exists() for p in root.iterdir() if p.is_dir() and p.name <= today}
     for d in sorted(days, reverse=True)[:30]:
-        for fp in (raw / d / safe / f"{safe}_watch_levels.json", reports / d / f"{safe}_watch_levels.json"):
-            if fp.exists():
-                try:
-                    return json.loads(fp.read_text(encoding="utf-8"))
-                except Exception:
-                    return None
+        hit = next(((d, fp) for fp in _watch_paths(ticker, d) if fp.exists()), None)
+        if hit:
+            return hit
     return None
 
 
-def act_on_touch(ticker: str, price: float, today: str, mode: str = "touch", wd: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    """A zone touch (mode 'touch') or approach (mode 'approach') becomes one of: TICKET, RESEARCH (stale dossier, MID queued), NO TRADE."""
+def _latest_watch_levels(ticker: str, today: str) -> Optional[Dict[str, Any]]:
+    hit = _plan_on_disk(ticker, today)
+    if not hit:
+        return None
+    try:
+        return json.loads(hit[1].read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _watch_levels_on(ticker: str, d: str) -> Optional[Dict[str, Any]]:
+    hit = _plan_on_disk(ticker, d, plan_date=d)
+    try:
+        return json.loads(hit[1].read_text(encoding="utf-8")) if hit else None
+    except Exception:
+        return None
+
+
+def void_plan(ticker: str, today: str, cls: str, why: str, last: float, plan_date: Optional[str] = None) -> None:
+    """Void the plan everywhere a touch can read it: plan files (raw + reports), tickets of its day and today, watch DB row.
+    plan_date: the plan that was checked; today's ticket and the watch DB row follow only the newest plan."""
+    ticker, reason = ticker.upper(), f"{cls}: {why}"
+    newest = _plan_on_disk(ticker, today)
+    hit = (_plan_on_disk(ticker, today, plan_date) if plan_date else None) or newest
+    if hit:
+        d = hit[0]
+        for fp in _watch_paths(ticker, d):
+            if fp.exists():
+                try:
+                    w = json.loads(fp.read_text(encoding="utf-8"))
+                    if not w.get("void"):
+                        fp.write_text(json.dumps({**w, "void": reason}, indent=2), encoding="utf-8")
+                except Exception as e:
+                    logger.warning(f"[{ticker}] plan void failed: {e}")
+        void_ticket(ticker, d, reason)
+    if hit and newest and hit[0] != newest[0]:
+        return
+    void_ticket(ticker, today, reason)
+    try:
+        from src.tracking.watch_manager import update_target_live_state
+
+        update_target_live_state(ticker, last, "STOP_BREACHED" if cls == "VOID_STOP" else "INVALIDATED")
+    except Exception as e:
+        logger.warning(f"[{ticker}] watch DB void failed: {e}")
+
+
+def _void_on_disk(ticker: str, today: str, plan_date: Optional[str] = None) -> Optional[str]:
+    hit = _plan_on_disk(ticker, today, plan_date)
+    try:
+        return (json.loads(hit[1].read_text(encoding="utf-8")) or {}).get("void") if hit else None
+    except Exception:
+        return None
+
+
+def _ticket_today(ticker: str, today: str) -> bool:
+    """A live (non-void) ticket already exists for this ticker today: idempotency key for pre-open and touch."""
+    d = config.BASE_DIR / "reports" / today
+    for kind in ("ticket", "measured_ticket"):
+        fp = d / f"{ticker}_{kind}.json"
+        if fp.exists():
+            try:
+                if not json.loads(fp.read_text(encoding="utf-8")).get("void"):
+                    return True
+            except Exception:
+                return True
+    return False
+
+
+CONFIRM_BARS_OFF_LOW = 2
+
+
+def confirm_from_bars(bars: List[Dict[str, Any]], zone_lo: float, zone_hi: float) -> Tuple[str, str]:
+    """CONFIRMED, WAIT or FAILED from today's completed 5m bars (oldest first).
+    Confirmed: after the first bar that reached the zone top, the lowest bar since is the pivot; at least
+    CONFIRM_BARS_OFF_LOW bars have closed after it and the last close is above the pivot bar's high.
+    Failed: a 5m close below the zone low after the touch (price accepted below the zone)."""
+    touch = next((i for i, b in enumerate(bars) if b["low"] <= zone_hi), None)
+    if touch is None:
+        return "WAIT", f"no completed 5m bar has reached the zone top {zone_hi:.2f}"
+    after = bars[touch:]
+    if zone_lo > 0:
+        bad = next((b for b in after if b["close"] < zone_lo), None)
+        if bad:
+            return "FAILED", f"5m close {bad['close']:.2f} below zone low {zone_lo:.2f}: accepted below the zone"
+    k = min(range(len(after)), key=lambda i: after[i]["low"])
+    pivot, later = after[k], after[k + 1:]
+    if len(later) < CONFIRM_BARS_OFF_LOW:
+        return "WAIT", f"low {pivot['low']:.2f} is {len(later)} bar(s) old, need {CONFIRM_BARS_OFF_LOW} closed bars off it"
+    if later[-1]["close"] <= pivot["high"]:
+        return "WAIT", f"last 5m close {later[-1]['close']:.2f} not above the low bar's high {pivot['high']:.2f}"
+    return "CONFIRMED", f"held {pivot['low']:.2f}, last 5m close {later[-1]['close']:.2f} above the low bar's high {pivot['high']:.2f}"
+
+
+def confirm_touch(ticker: str, today: str, zone_lo: float, zone_hi: float, now_ts: Optional[float] = None) -> Tuple[str, str]:
+    """NO_DATA when confirmation cannot be measured (disabled, no bars, fetch error): the touch then stands as before."""
+    if os.getenv("TOUCH_CONFIRM", "1") == "0":
+        return "NO_DATA", "confirmation disabled"
+    try:
+        from src.clients.schwab_client import get_intraday_candles
+        from src.tracking.candle_service import _normalize_intraday
+
+        raw = _normalize_intraday(get_intraday_candles(ticker, frequency=5, lookback_bars=100))
+    except Exception as e:
+        return "NO_DATA", f"5m bars unavailable ({type(e).__name__})"
+    cut = now_ts if now_ts is not None else time.time()
+    bars = [b for b in raw if b["date"] == today and b["session"] == "RTH" and b["datetime"] and b["datetime"] / 1000 + 300 <= cut]
+    if not bars:
+        return "NO_DATA", "no completed 5m bars today"
+    return confirm_from_bars(bars, zone_lo, zone_hi)
+
+
+def act_on_touch(ticker: str, price: float, today: str, mode: str = "touch", wd: Optional[Dict[str, Any]] = None,
+                 plan_date: Optional[str] = None) -> Dict[str, str]:
+    """A zone touch (mode 'touch') or approach (mode 'approach') becomes one of: TICKET, RESEARCH (stale dossier, MID queued), NO TRADE.
+    plan_date: the plan that named the zone; without it the newest stored plan is used."""
     ticker = ticker.upper()
-    wd = dict(wd or _latest_watch_levels(ticker, today) or {})
+    base = _watch_levels_on(ticker, plan_date) if plan_date else None
+    wd = dict(base or wd or _latest_watch_levels(ticker, today) or {})
     if not wd.get("shares_plan") and wd.get("raw_json"):
         try:
             raw = wd["raw_json"]
@@ -480,9 +604,36 @@ def act_on_touch(ticker: str, price: float, today: str, mode: str = "touch", wd:
             pass
     if not wd.get("shares_plan"):
         return {"action": "NO TRADE", "text": f"{ticker}: no stored plan"}
+    void = wd.get("void") or _void_on_disk(ticker, today, plan_date)
+    if void:
+        return {"action": "NO TRADE", "text": f"{ticker}: plan voided ({void})"}
     why_not = ticket_blocker(ticker, wd, today, skip_superseded=wd.get("levels_source") in MEASURED_SOURCES)
     if why_not:
         return {"action": "NO TRADE", "text": f"{ticker}: no ticket, {why_not}"}
+    if _ticket_today(ticker, today):
+        return {"action": "NO TRADE", "text": f"{ticker}: ticket already issued today"}
+    atr = _f(wd.get("atr14"))
+    if not atr:
+        try:
+            from src.logic.level_validation import _compute_atr14_from_bars
+
+            atr = wd["atr14"] = _compute_atr14_from_bars(ticker, today)
+        except Exception:
+            pass
+    plan = plan_levels(wd)
+    if not plan:
+        return {"action": "NO TRADE", "text": f"{ticker}: stored levels invalid"}
+    q = _quotes([ticker]).get(ticker) or {}
+    c = classify_plan(plan, price, q.get("low", 0.0), q.get("date", today), today, atr, is_etf(ticker), datetime.now(ET),
+                      cap_risk=wd.get("levels_source") in MEASURED_SOURCES)
+    if c["cls"].startswith("VOID"):
+        _void_and_notify(ticker, today, c, price, plan_date)
+        return {"action": "NO TRADE", "text": f"{ticker}: plan voided ({c['cls']}): {c['why']}"}
+    if c["cls"] == "STALE":
+        return {"action": "NO TRADE", "text": f"{ticker}: {c['why']}"}
+    blocked = _veto_gate(ticker, str(wd.get("date") or today), today, price)
+    if blocked:
+        return {"action": "NO TRADE", "text": f"{ticker}: {blocked}"}
     from src.tracking.auto_triage_daemon import enqueue_touch_mid, needs_fresh_research
 
     stale, why = needs_fresh_research(ticker, today)
@@ -493,17 +644,22 @@ def act_on_touch(ticker: str, price: float, today: str, mode: str = "touch", wd:
             return {"action": "NO TRADE", "text": f"{ticker}: dossier stale ({why})"}
         enqueue_touch_mid(ticker, today)
         return {"action": "RESEARCH", "text": f"{ticker} at {price:.2f} in its zone; dossier stale ({why}), priority MID research queued, ticket follows"}
+    sp = wd.get("shares_plan") or {}
+    zone_hi = _f(sp.get("entry_zone_high"))
+    state, why_c = "NO_DATA", ""
+    if mode == "touch" and 0 < zone_hi and price <= zone_hi:
+        state, why_c = confirm_touch(ticker, today, _f(sp.get("entry_zone_low")), zone_hi)
+        if state == "FAILED":
+            return {"action": "NO TRADE", "text": f"{ticker}: zone failed today, {why_c}"}
+        if state == "WAIT":
+            return {"action": "NO TRADE", "text": f"{ticker} at {price:.2f} in its zone; waiting for confirmation: {why_c}"}
     wd["actionable"] = 1
-    if not _f(wd.get("atr14")):
-        try:
-            from src.logic.level_validation import _compute_atr14_from_bars
-
-            wd["atr14"] = _compute_atr14_from_bars(ticker, today)
-        except Exception:
-            pass
     tk = build_ticket(wd, price, today)
     if not tk:
         return {"action": "NO TRADE", "text": f"{ticker}: plan no longer builds a valid ticket at {price:.2f}"}
+    if state == "CONFIRMED":
+        persist_and_notify(tk)
+        return {"action": "TICKET", "text": f"confirmed ({why_c}). " + ticket_text(tk)}
     persist_ticket(tk)
     return {"action": "TICKET", "text": ticket_text(tk)}
 
@@ -641,48 +797,283 @@ def open_tickets(days: int = 14) -> List[Dict[str, Any]]:
     return [t for t in latest.values() if t]
 
 
-def run_preopen(price_fn=None, max_measured: int = 3) -> List[Dict[str, Any]]:
-    """GO / STAND DOWN per open ticket. Measured tickets: top `max_measured` by R:R at market, labelled PAPER."""
+PREOPEN_WINDOWS = {"0800": ((8, 0), (8, 59)), "0925": ((9, 25), (9, 35))}
+RISK_CAP_PCT = {"stock": 0.05, "etf": 0.03}
+RISK_CAP_ATR = 2.0
+# NYSE full-day closures. Extend before each new year.
+NYSE_HOLIDAYS = {
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+    "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
+    "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+}
+VETO_SYSTEM = (
+    "You are a veto-only reviewer of a long swing plan. Reply with one line: OK, or VETO followed by a short reason "
+    "and the exact sentence copied in double quotes from the news that proves it. Veto only a hard, dated fact that "
+    "breaks the long thesis (guidance cut, downgrade, fraud, halt, lost major contract). Otherwise OK. Never invent facts."
+)
+
+
+def is_trading_day(d: date) -> bool:
+    return d.weekday() < 5 and d.isoformat() not in NYSE_HOLIDAYS
+
+
+def is_etf(ticker: str) -> bool:
+    from src.tracking.entry_risk_alerts import ETFS
+
+    return ticker.upper() in ETFS
+
+
+def plan_levels(wd: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Stop, T1, fill limit and chase cap of a stored long plan, the same numbers build_ticket would use."""
+    sp = wd.get("shares_plan") or {}
+    stop, t1 = _f(sp.get("tactical_stop")), _f(sp.get("target_1"))
+    if not (stop > 0 and t1 > stop):
+        return None
+    hi = _f(sp.get("entry_zone_high"))
+    entry_max = _f(sp.get("entry_max")) or trade_rules.entry_max_for_rr(t1, stop)
+    return {"stop": stop, "target_1": t1, "limit": min(hi, entry_max) if hi > 0 else entry_max, "entry_max": entry_max}
+
+
+def classify_plan(plan: Dict[str, Any], last: float, day_low: float, quote_date: str, today: str, atr: float,
+                  etf: bool, now_et: datetime, cap_risk: bool = False) -> Dict[str, Any]:
+    """Code-only re-check of a stored long plan against one quote. cls: STALE, VOID_STOP, VOID_TARGET, VOID_RISK,
+    STAND_ASIDE, RESTING or FILL. The day low counts only in the regular session, when it is today's low.
+    cap_risk: apply the 5% (3% ETF) and 2 ATR risk caps at the fill. Only Pine-sourced plans; rulebook LLM plans carry dollar risk as information."""
+    stop, t1 = _f(plan.get("stop")), _f(plan.get("target_1"))
+    limit, cap, last = _f(plan.get("limit")), _f(plan.get("entry_max")), _f(last)
+
+    def out(cls: str, why: str, fill: Optional[float] = None) -> Dict[str, Any]:
+        return {"cls": cls, "why": why, "fill": fill}
+
+    if quote_date != today or last <= 0:
+        return out("STALE", f"quote dated {quote_date or 'none'}, not today {today}")
+    regular = (9, 30) <= (now_et.hour, now_et.minute) < (16, 0)
+    if last <= stop:
+        return out("VOID_STOP", f"{last:.2f} at or through stop {stop:.2f}")
+    if regular and 0 < _f(day_low) <= stop:
+        return out("VOID_STOP", f"today's low {_f(day_low):.2f} traded through stop {stop:.2f}")
+    if t1 > 0 and last >= t1:
+        return out("VOID_TARGET", f"{last:.2f} at or above target {t1:.2f}")
+    if cap > 0 and last > cap:
+        return out("STAND_ASIDE", f"{last:.2f} above chase cap {cap:.2f}")
+    fill = min(last, limit) if limit > 0 else last
+    risk = fill - stop
+    if cap_risk and (risk > RISK_CAP_PCT["etf" if etf else "stock"] * fill or (atr > 0 and risk > RISK_CAP_ATR * atr)):
+        return out("VOID_RISK", f"risk {risk:.2f} at fill {fill:.2f} over cap", fill)
+    if limit > 0 and last > limit:
+        return out("RESTING", f"{last:.2f} above limit {limit:.2f}, limit rests", fill)
+    rr = (t1 - fill) / risk if risk > 0 else 0.0
+    if rr < rr_config.min_rr():
+        return out("STAND_ASIDE", f"R:R at fill {rr:.2f} below floor {rr_config.min_rr():.1f}", fill)
+    return out("FILL", f"fills at {fill:.2f}, R:R {rr:.2f}", fill)
+
+
+def _quotes(syms: List[str]) -> Dict[str, Dict[str, Any]]:
+    from src.clients.quote_router import quote_router
+
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        batch = quote_router.get_watchlist_quotes_batch(list(syms)) or {}
+    except Exception as e:
+        logger.warning(f"quote batch failed: {e}")
+        return out
+    for k, q in batch.items():
+        if q and q.last_price > 0:
+            out[k.upper()] = {"last": float(q.last_price), "low": float(q.low or 0.0),
+                              "date": datetime.fromtimestamp(q.timestamp, ET).strftime("%Y-%m-%d")}
+    return out
+
+
+def _notify_risk(ticker: str, today: str, tag: str, body: str) -> None:
+    try:
+        from src.tracking.notify import notify
+
+        notify("RISK", f"{ticker} pre-open {tag}", body, dedupe_key=f"preopen:{ticker}:{today}:{tag}")
+    except Exception as e:
+        logger.warning(f"[{ticker}] risk notify failed: {e}")
+
+
+def _void_and_notify(ticker: str, today: str, c: Dict[str, Any], last: float, plan_date: Optional[str] = None) -> None:
+    void_plan(ticker, today, c["cls"], c["why"], last, plan_date)
+    _notify_risk(ticker, today, c["cls"], c["why"])
+
+
+def _load_json(fp: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_json(fp: Path, obj: Dict[str, Any]) -> None:
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    tmp = fp.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj), encoding="utf-8")
+    os.replace(tmp, fp)
+
+
+def _norm(s: str) -> str:
+    return " ".join(s.lower().split())
+
+
+def _veto_llm(ticker: str, plan_date: str, news: str) -> List[str]:
+    from src.clients.llm_client import query_local_llm
+
+    raw = query_local_llm(system_prompt=VETO_SYSTEM, user_prompt=f"Ticker {ticker}. Plan dated {plan_date}.\nNEWS:\n{news}",
+                          use_openrouter=True, model=os.getenv("CHAT_MODEL") or None, use_tools=False, max_tokens=600,
+                          reasoning_effort=os.getenv("JUDGE_REASONING", "high")) or ""
+    line = next((l.strip() for l in raw.splitlines() if l.strip()), "")
+    up = line.upper()
+    if up.startswith("OK"):
+        return ["OK", ""]
+    if not up.startswith("VETO"):
+        return ["UNTRACED", f"unparseable judge reply: {line[:200]}"]
+    m = re.search(r'"([^"]{10,})"', line)
+    if m and _norm(m.group(1)) in _norm(news):
+        return ["VETO", line[:300]]
+    return ["UNTRACED", line[:300]]
+
+
+def _veto_verdict(ticker: str, plan_date: str, today: str) -> Optional[Tuple[str, str]]:
+    """None when news is clear. ('VETO', text) only when the quoted news sentence is verbatim in the news; ('UNTRACED', text) otherwise."""
+    from src.clients.news_client import get_fresh_news
+
+    try:
+        days = max(1, min(10, (date.fromisoformat(today) - date.fromisoformat(str(plan_date)[:10])).days + 1))
+        news = get_fresh_news(ticker, str(plan_date)[:10], days=days) or ""
+    except Exception as e:
+        return ("UNTRACED", f"news unavailable: {e}")
+    if not news.strip():
+        return None
+    key = hashlib.sha1(f"{ticker}|{today}|{news}".encode("utf-8")).hexdigest()
+    fp = config.BASE_DIR / "data" / "veto_cache.json"
+    cache = _load_json(fp)
+    if key not in cache:
+        try:
+            cache[key] = _veto_llm(ticker, str(plan_date)[:10], news)
+        except Exception as e:
+            return ("UNTRACED", f"judge unavailable: {e}")
+        _save_json(fp, dict(list(cache.items())[-1000:]))
+    cls, text = cache[key]
+    return None if cls == "OK" else (cls, text)
+
+
+def _veto_gate(ticker: str, plan_date: str, today: str, last: float) -> Optional[str]:
+    """None when clear. Traced news VETO voids the plan; untraced VETO or judge failure blocks the ticket (fail closed)."""
+    v = _veto_verdict(ticker, plan_date, today)
+    if v is None:
+        return None
+    cls, text = v
+    if cls == "VETO":
+        void_plan(ticker, today, "VETO", f"news: {text}", last, str(plan_date)[:10])
+        _notify_risk(ticker, today, "VETO", text)
+        return f"news veto, plan voided: {text}"
+    _notify_risk(ticker, today, "UNVERIFIED_VETO", text)
+    return f"unverified news veto, no ticket: {text}"
+
+
+def _armed_tickers(today: str) -> List[str]:
+    """Tickers with a stored plan (raw or reports) in the zone-ledger lookback."""
+    from src.tracking.zone_ledger import LOOKBACK_DAYS
+
+    cutoff = (date.fromisoformat(today) - timedelta(days=LOOKBACK_DAYS)).isoformat()
+    out = set()
+    for root, pat in ((config.BASE_DIR / "data" / "raw", "*/*_watch_levels.json"), (config.BASE_DIR / "reports", "*_watch_levels.json")):
+        if not root.exists():
+            continue
+        for d in root.iterdir():
+            if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name) and cutoff <= d.name <= today:
+                out.update(fp.name[: -len("_watch_levels.json")].upper() for fp in d.glob(pat))
+    return sorted(out)
+
+
+def run_preopen(quote_fn=None, max_measured: int = 3, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Code re-check against the live quote. Open tickets: VOID on a breach, else GO / RESTING / STAND DOWN (measured tickets labelled PAPER).
+    Armed plans with no ticket today: VOID on a breach, ticket at FILL."""
     from src.tracking.notify import notify
 
-    if price_fn is None:
-        from src.clients.price_client import get_current_prices_batch
-
-        price_fn = lambda syms: get_current_prices_batch(syms, context="surveillance") or {}
+    now = now or datetime.now(ET)
+    today = now.strftime("%Y-%m-%d")
     tickets = open_tickets()
     measured = sorted((t for t in tickets if t.get("levels_source") == "pine_alert"),
                       key=lambda t: float(t.get("rr_at_market") or 0), reverse=True)[:max_measured]
     tickets = measured + [t for t in tickets if t.get("levels_source") != "pine_alert"]
-    if not tickets:
+    names = {t["ticker"] for t in tickets}
+    armed = [tk for tk in _armed_tickers(today) if tk not in names]
+    syms = list(dict.fromkeys([t["ticker"] for t in tickets] + armed))
+    if not syms:
         return []
-    prices = price_fn([t["ticker"] for t in tickets])
-    out = []
+    quotes = (quote_fn or _quotes)(syms) or {}
+    out: List[Dict[str, Any]] = []
     for t in tickets:
-        px = prices.get(t["ticker"])
-        if not px:
+        tk = t["ticker"]
+        q = quotes.get(tk)
+        if not q:
             continue
-        res = {"ticker": t["ticker"], **evaluate_ticket(t, float(px)), "paper": bool(t.get("paper"))}
-        res["news"] = _news_delta(t["ticker"], t["date"])
+        last = q["last"]
+        if t.get("entry_method") != "NEXT_OPEN":
+            plan = {"stop": t["stop"], "target_1": t["target_1"], "limit": t["limit_price"], "entry_max": t["max_chase_price"]}
+            c = classify_plan(plan, last, q.get("low", 0.0), q.get("date", today), today, _f(t.get("atr14")), is_etf(tk), now,
+                              cap_risk=t.get("levels_source") in MEASURED_SOURCES)
+            if c["cls"].startswith("VOID"):
+                _void_and_notify(tk, today, c, last)
+                out.append({"ticker": tk, "verdict": "VOID", "why": c["why"], "paper": bool(t.get("paper"))})
+                continue
+            if c["cls"] == "STALE":
+                continue
+        res = {"ticker": tk, **evaluate_ticket(t, last), "paper": bool(t.get("paper"))}
+        if res["verdict"] == "GO":
+            blocked = _veto_gate(tk, str(t.get("plan_date") or t["date"]), today, last)
+            if blocked:
+                res.update(verdict="STAND DOWN", why=blocked)
+        res["news"] = _news_delta(tk, t["date"])
         out.append(res)
         label = ("PAPER " if res["paper"] else "") + res["verdict"]
         body = f"{label}: {res['why']} | R:R now {res['rr_now']}" + (f" | news: {res['news'][0]}" if res["news"] else "")
-        notify("ENTRY" if res["verdict"] == "GO" else "RISK", f"{t['ticker']} pre-open {label}", body,
-               dedupe_key=f"preopen:{t['ticker']}:{datetime.now(ET):%Y-%m-%d}:{res['verdict']}")
+        notify("ENTRY" if res["verdict"] == "GO" else "RISK", f"{tk} pre-open {label}", body,
+               dedupe_key=f"preopen:{tk}:{today}:{res['verdict']}")
+    held = held_symbols()
+    for tk in armed:
+        q, hit = quotes.get(tk), _plan_on_disk(tk, today)
+        wd = _load_json(hit[1]) if hit else {}
+        if not q or plan_levels(wd) is None or ticket_blocker(tk, wd, today, held):
+            continue
+        plan_date = hit[0]
+        c = classify_plan(plan_levels(wd), q["last"], q.get("low", 0.0), q.get("date", today), today,
+                          _f(wd.get("atr14")), is_etf(tk), now, cap_risk=wd.get("levels_source") in MEASURED_SOURCES)
+        if c["cls"].startswith("VOID"):
+            _void_and_notify(tk, today, c, q["last"], plan_date)
+            continue
+        if c["cls"] != "FILL" or not wd.get("actionable") or _ticket_today(tk, today):
+            continue
+        if _veto_gate(tk, plan_date, today, q["last"]):
+            continue
+        ticket = build_ticket(wd, q["last"], today)
+        if ticket:
+            persist_and_notify(ticket)
+            out.append({"ticker": tk, "verdict": "TICKET", "why": c["why"], "paper": False})
     return out
 
 
-_last_run: Optional[str] = None
+def _preopen_state_fp() -> Path:
+    return config.BASE_DIR / "data" / "preopen_state.json"
 
 
-def maybe_run_preopen() -> None:
-    """Once per weekday between 09:25 and 09:35 ET."""
-    global _last_run
-    now = datetime.now(ET)
+def maybe_run_preopen(now: Optional[datetime] = None) -> None:
+    """Pre-open windows 08:00-08:59 and 09:25-09:35 ET, each run once per trading day. Called from the watch loop."""
+    now = now or datetime.now(ET)
     day = now.strftime("%Y-%m-%d")
-    if now.weekday() >= 5 or _last_run == day or not (now.replace(hour=9, minute=25, second=0) <= now <= now.replace(hour=9, minute=35, second=0)):
+    if not is_trading_day(now.date()):
         return
-    _last_run = day
+    win = next((k for k, (a, b) in PREOPEN_WINDOWS.items() if a <= (now.hour, now.minute) <= b), None)
+    if not win:
+        return
+    done = _load_json(_preopen_state_fp()).get(day, [])
+    if win in done:
+        return
     try:
-        run_preopen()
+        run_preopen(now=now)
     except Exception as e:
         logger.warning(f"preopen run failed: {e}")
+        return
+    _save_json(_preopen_state_fp(), {day: done + [win]})

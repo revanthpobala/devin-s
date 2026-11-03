@@ -180,3 +180,35 @@ def test_annotate_marks_only_untraceable_dollar_prices():
     text = "stop $90.00, target $115, invented $132.40, revenue $3.7 billion, raised to $3,715 million"
     out, n = c.annotate(text, allowed)
     assert n == 1 and "$132.40 ⚠️" in out and "$90.00 ⚠️" not in out and "$115 ⚠️" not in out
+
+
+def test_humanize_swaps_level_names_for_prices_and_tags_for_source_names():
+    from src.logic.deep_research.deterministic import humanize
+
+    reg = {"PINE_TARGET": {"price": 517.35}, "ATR_FLOOR_STOP": {"price": 437.57}, "KEY_SUPPORT_1": {"price": 483.9}}
+    secs = [("Code facts and level ladder", ""), ("Fresh news", ""), ("Judge research (fetch_sec_filings {})", "")]
+    out = humanize("Stop ATR_FLOOR_STOP [L:ATR_FLOOR_STOP], target PINE_TARGET [L:PINE_TARGET], KEY_SUPPORT_1 holds, "
+                   "RSI2 and UNKNOWN_NAME stay. Beat [S1][S2] and flow 1.29 [DW:x] [L:PINE_TARGET].", reg, secs)
+    assert out == ("Stop ATR-floor stop $437.57, target Pine target $517.35, key support 1 $483.90 holds, "
+                   "RSI2 and UNKNOWN_NAME stay. Beat (Fresh news, Judge research) and flow 1.29 (Data Window).")
+    assert "[" not in out
+
+
+
+def test_render_leads_with_plain_decision_and_flags_spent_target():
+    lv = {"entry_low": {"level": "PINE_ZONE_LOW", "price": 459.04, "source": "Pine"},
+          "entry_high": {"level": "PINE_ZONE_HIGH", "price": 464.16, "source": "Pine"},
+          "stop": {"level": "ATR_FLOOR_STOP", "price": 437.57, "source": "code"},
+          "target_1": {"level": "PINE_TARGET", "price": 517.35, "source": "Pine"}}
+    facts = {"bar_date": "2026-11-03", "close": 483.9, "live": 521.05, "atr": 24.0, "forming": False}
+    watch = {"verdict": "CASH_SKIP", "veto": "EVENT_RISK", "veto_fact": "earnings tonight",
+             "adversary_reason": "the plan ignores the post-earnings gap [S1]"}
+    md = c.render("AMD", "2026-11-03", "LONG", watch, {"levels": lv, "entry_kind": "ZONE"}, ["adversarial pass: FAIL"], "FAIL",
+                  facts, {"thesis": ["trend intact"]}, display=({}, [("Live quote", ""), ("Fresh news", "")]))
+    head = md.split("## ⚖️ THE JUDGE'S FINAL RULING")[0]
+    assert "## 🧭 DECISION: NO TRADE" in head
+    assert "already past target 1 ($517.35)" in head
+    assert "independent reviewer rejected the plan: the plan ignores the post-earnings gap (Fresh news)" in head
+    assert "Buy zone:** $459.04 – $464.16" in head and "[L:" not in md and "ATR_FLOOR_STOP" not in md
+    assert md.index("## ⚖️ THE JUDGE'S FINAL RULING") < md.index("## 🔒 Audit trail")
+    assert c.adversary_reason("FAIL: guidance cut [S3].") == "guidance cut [S3]."

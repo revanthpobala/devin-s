@@ -75,6 +75,12 @@ def format_av_block(ticker: str) -> str:
         block += f"EPS: {data.get('EPS')} | PEG Ratio: {data.get('PEGRatio')}\n"
         block += f"Analyst Target Price: {data.get('AnalystTargetPrice')} (High/Low: {data.get('52WeekHigh')} / {data.get('52WeekLow')})\n"
         block += f"Short Ratio: {data.get('ShortRatio')} | Beta: {data.get('Beta')}\n"
+        block += f"Revenue TTM: {data.get('RevenueTTM')} | Quarterly Revenue Growth YoY: {data.get('QuarterlyRevenueGrowthYOY')} | Quarterly Earnings Growth YoY: {data.get('QuarterlyEarningsGrowthYOY')}\n"
+        block += f"Gross Profit TTM: {data.get('GrossProfitTTM')} | EBITDA: {data.get('EBITDA')} | Profit Margin: {data.get('ProfitMargin')} | Operating Margin TTM: {data.get('OperatingMarginTTM')}\n"
+        block += f"ROE TTM: {data.get('ReturnOnEquityTTM')} | ROA TTM: {data.get('ReturnOnAssetsTTM')} | Price/Sales TTM: {data.get('PriceToSalesRatioTTM')} | Price/Book: {data.get('PriceToBookRatio')} | EV/EBITDA: {data.get('EVToEBITDA')}\n"
+        block += f"Dividend Yield: {data.get('DividendYield')} | Trailing PE: {data.get('TrailingPE')} | Percent Insiders: {data.get('PercentInsiders')} | Percent Institutions: {data.get('PercentInstitutions')}\n"
+        block += f"Analyst Ratings (StrongBuy/Buy/Hold/Sell/StrongSell): {data.get('AnalystRatingStrongBuy')}/{data.get('AnalystRatingBuy')}/{data.get('AnalystRatingHold')}/{data.get('AnalystRatingSell')}/{data.get('AnalystRatingStrongSell')}\n"
+        block += f"Latest Quarter: {data.get('LatestQuarter')} | Fiscal Year End: {data.get('FiscalYearEnd')}\n"
         return block + "\n"
 
     except Exception as e:

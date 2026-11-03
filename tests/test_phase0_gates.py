@@ -126,3 +126,16 @@ def test_replay_rejected_plans_snapshot():
             ok, _ = validate_levels(plan, dw, "LONG", ticker=t, date_str=d)
         passed += bool(ok)
     assert len(seen) > 0
+
+
+def test_same_day_earnings_count_as_released_after_1630_et_only():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    et = ZoneInfo("America/New_York")
+    with patch("src.clients.earnings_client.get_next_earnings_days", return_value=0):
+        assert lv.earnings_days_for("AMD", "2026-11-03", {}, now_et=datetime(2026, 11, 3, 15, 0, tzinfo=et)) == 0
+        assert lv.earnings_days_for("AMD", "2026-11-03", {}, now_et=datetime(2026, 11, 3, 16, 29, tzinfo=et)) == 0
+        assert lv.earnings_days_for("AMD", "2026-11-03", {}, now_et=datetime(2026, 11, 3, 16, 31, tzinfo=et)) is None
+        assert lv.earnings_days_for("AMD", "2026-11-02", {}, now_et=datetime(2026, 11, 3, 16, 31, tzinfo=et)) == 0
+

@@ -125,6 +125,11 @@ def schema_template():
 
 
 @pytest.fixture(autouse=True)
+def no_touch_confirm(monkeypatch):
+    monkeypatch.setenv("TOUCH_CONFIRM", "0")
+
+
+@pytest.fixture(autouse=True)
 def isolated_databases(request, tmp_path):
     """Give every test its own copy of each shared database.
 

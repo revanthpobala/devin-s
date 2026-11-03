@@ -1560,11 +1560,11 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
             qb = quote_router.get_watchlist_quotes_batch(syms)
             return {k: qd.last_price for k, qd in qb.items() if qd and qd.last_price > 0}
 
-        def _emit_zone(tk: str, typ: str, msg: str, px: float) -> bool:
+        def _emit_zone(tk: str, typ: str, msg: str, px: float, plan_date: Optional[str] = None) -> bool:
             if typ in ("ZONE_TOUCH", "ZONE_APPROACH"):
                 from src.logic.order_ticket import act_on_touch
 
-                act = act_on_touch(tk, px, get_eastern_now().strftime("%Y-%m-%d"), "touch" if typ == "ZONE_TOUCH" else "approach")
+                act = act_on_touch(tk, px, get_eastern_now().strftime("%Y-%m-%d"), "touch" if typ == "ZONE_TOUCH" else "approach", plan_date=plan_date)
                 if act["action"] == "NO TRADE" and typ == "ZONE_APPROACH":
                     return False
                 msg = msg + (" | " if act["action"] == "NO TRADE" else " -> ") + act["text"]
@@ -1603,6 +1603,12 @@ def run_watch_loop(poll_interval: int = 60, sync_sheets: bool = True):
                 evaluate_watch_cycle(sync_sheets=sync_sheets)
             except Exception as e:
                 logger.error(f"Error in watch cycle: {e}", exc_info=True)
+            try:
+                from src.logic.order_ticket import maybe_run_preopen
+
+                maybe_run_preopen()
+            except Exception as e_pre:
+                logger.error(f"pre-open check failed: {e_pre}", exc_info=True)
             # Carry the thesis paper positions forward on live quotes and resolve any
             # thesis that has now played out (target hit / stop hit / expiry).
             try:

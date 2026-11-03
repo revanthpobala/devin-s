@@ -155,6 +155,7 @@ def fetch_live_context(
         fut_news = executor.submit(_fetch_safe, pull_fresh_news, ticker, date_str)
         fut_av = executor.submit(_fetch_safe, alphavantage_client.format_av_block, ticker)
         fut_inst = executor.submit(_fetch_safe, finnhub_client.format_finnhub_institutional_block, ticker)
+        fut_fund = executor.submit(_fetch_safe, finnhub_client.format_finnhub_fundamentals_block, ticker)
         fut_dp = executor.submit(_fetch_safe, darkpool.format_darkpool_block, ticker)
         fut_ground = executor.submit(
             _fetch_safe,
@@ -170,7 +171,8 @@ def fetch_live_context(
         )
 
         ctx.fresh_news = fut_news.result() or "No fresh news could be retrieved via live search."
-        ctx.av_block = fut_av.result() or ""
+        av_txt = fut_av.result() or ""
+        ctx.av_block = (av_txt if "PE Ratio:" in av_txt else "") + (fut_fund.result() or "") or av_txt
         ctx.institutional_block = fut_inst.result() or ""
         ctx.darkpool_block = fut_dp.result() or ""
         ctx.grounded_block = fut_ground.result() or ""

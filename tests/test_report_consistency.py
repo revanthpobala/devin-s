@@ -48,3 +48,29 @@ def test_rsi2_order_overrides_judge_levels_and_validates():
 def test_rsi2_order_needs_pending_state():
     assert not apply_rsi2_order({"shares_plan": {}}, {"_rsi2_state_code": 0, "RSI2 Fixed Stop": "1", "RSI2 Fixed Target": "3",
                                                       "RSI2 Entry Or Opening Ceiling": "2"})
+
+
+def test_demoted_spread_numbers_in_prose_are_flagged():
+    wd = {**WD, "options_plan": {"structure": "NONE", "actionable": False}}
+    text = "Plan B: Dec 11 $315P / $305P Bull Put Spread. Max Profit $652 | Max Loss $348."
+    issues = rc.check(text, wd, {}, 331.86)
+    assert any("not actionable" in i for i in issues)
+
+
+def test_spread_prose_must_match_stored_max_profit_loss():
+    wd = {**WD, "options_plan": {"structure": "BULL_PUT_SPREAD", "max_profit": 348.0, "max_loss": 652.0,
+                                 "short_strike": 315.0, "long_strike": 305.0, "expiration": "2026-12-11"}}
+    assert rc.check("Bull Put Spread: Max Profit $348 | Max Loss $652.", wd, {"Exp Move Pct 21b": 4.0}, 331.86) == []
+    assert any("max profit" in i for i in rc.check("Bull Put Spread: Max Profit $652 | Max Loss $348.", wd, {"Exp Move Pct 21b": 4.0}, 331.86))
+
+
+def test_iv_rank_must_match_data_window():
+    issues = rc.check("IV Rank 31.5% (cheap vol).", WD, {"Energy IV Rank Pct": 29.37}, 331.86)
+    assert any("IV Rank" in i for i in issues)
+    assert rc.check("IV Rank 29.4%.", WD, {"Energy IV Rank Pct": 29.37}, 331.86) == []
+
+
+def test_adjacent_max_labels_bind_to_their_own_value():
+    wd = {**WD, "options_plan": {"structure": "BULL_PUT_SPREAD", "max_profit": 348.0, "max_loss": 652.0,
+                                 "short_strike": 315.0, "long_strike": 305.0, "expiration": "2026-12-11"}}
+    assert rc.check("**Max Profit & Max Loss:** Max Profit $348 | Max Loss $652.", wd, {"Exp Move Pct 21b": 4.0}, 331.86) == []
