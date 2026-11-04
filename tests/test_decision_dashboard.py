@@ -238,7 +238,7 @@ def test_none_broker_position_is_not_a_position():
     assert dec["code"] != "HOLD"
     rep = c.build_report_obj("AMD", "2026-11-03", "LONG", {"verdict": "ARMED"}, _res(), [], "PASS",
                              {"close": 96.0, "bar_date": "2026-11-03", "position": none_block}, {}, {}, [])
-    assert rep["position"] is False
+    assert rep["position"] is None
 
 
 def test_judge_ruling_matches_decision_label_when_fails():
