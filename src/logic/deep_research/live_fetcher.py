@@ -16,6 +16,8 @@ class LiveContext:
     av_block: str = ""
     institutional_block: str = ""
     grounded_block: str = ""
+    grounded_sections: list = None
+    grounded_citations: list = None
     macro_grounded_block: str = ""
     live_quote_block: str = ""
     gex_block: str = ""
@@ -23,6 +25,9 @@ class LiveContext:
     market_sentiment_block: str = ""
     social_block: str = ""
     earnings_fact_block: str = ""
+    market_events_sections: list = None
+    market_tape: dict = None
+    market_tape_block: str = ""
 
 
 def _fetch_safe(fn, *args, **kwargs):
@@ -113,6 +118,30 @@ def _load_or_fetch_gex(ticker: str, gex_path: Path, tdir: Path, date_str: str) -
         return ""
 
 
+def _grounded_pack(ticker: str, raw_dir: Path) -> list:
+    """Targeted grounded questions, disk-cached per (ticker, date)."""
+    from src.logic.deep_research import grounded_pack
+
+    return grounded_pack.fetch_grounded_pack(ticker, Path(raw_dir) / ticker.replace(":", "_"))
+
+
+def _market_events(date_str: str, raw_dir: Path) -> dict:
+    """One shared market-events scan per date, disk-cached under raw/_MARKET."""
+    from src.logic.deep_research import market_events
+
+    return market_events.fetch_market_events(date_str, Path(raw_dir))
+
+
+def _market_tape(ticker: str, raw_dir: Path) -> dict:
+    """Code-computed cross-asset tape: TAPE basket + ticker + sector ETF, cached bars."""
+    from src.logic.deep_research import market_events
+    from src.logic.deep_research.quant_facts import _cache_dir, _sector_etf
+
+    cache = _cache_dir(Path(raw_dir))
+    _, etf = _sector_etf(ticker, cache)
+    return market_events.market_tape(ticker, cache, sector_etf=etf)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -157,12 +186,9 @@ def fetch_live_context(
         fut_inst = executor.submit(_fetch_safe, finnhub_client.format_finnhub_institutional_block, ticker)
         fut_fund = executor.submit(_fetch_safe, finnhub_client.format_finnhub_fundamentals_block, ticker)
         fut_dp = executor.submit(_fetch_safe, darkpool.format_darkpool_block, ticker)
-        fut_ground = executor.submit(
-            _fetch_safe,
-            google_grounding_client.format_grounded_block,
-            ticker,
-            f"{ticker} stock latest news, analyst rating changes, and earnings outlook this week",
-        )
+        fut_ground = executor.submit(_fetch_safe, _grounded_pack, ticker, raw_dir)
+        fut_events = executor.submit(_fetch_safe, _market_events, date_str, raw_dir)
+        fut_tape = executor.submit(_fetch_safe, _market_tape, ticker, raw_dir)
         fut_macro_ground = executor.submit(
             _fetch_safe,
             google_grounding_client.format_grounded_block,
@@ -175,8 +201,27 @@ def fetch_live_context(
         ctx.av_block = (av_txt if "PE Ratio:" in av_txt else "") + (fut_fund.result() or "") or av_txt
         ctx.institutional_block = fut_inst.result() or ""
         ctx.darkpool_block = fut_dp.result() or ""
-        ctx.grounded_block = fut_ground.result() or ""
+        pack = fut_ground.result() or []
+        if isinstance(pack, dict):  # cache-hit marker path returns the list; anything else -> no pack
+            pack = []
+        from src.logic.deep_research import grounded_pack as _gp
+
+        ctx.grounded_sections = _gp.pack_sections(pack)
+        ctx.grounded_citations = _gp.pack_citations(pack)
+        ctx.grounded_block = _gp.pack_block(ticker, pack)
         ctx.macro_grounded_block = fut_macro_ground.result() or ""
+
+        event_item = fut_events.result() or {}
+        ctx.market_events_sections = _gp.pack_sections([event_item]) if event_item.get("text") else []
+        _seen = {c.get("url") for c in ctx.grounded_citations}
+        ctx.grounded_citations += [{"title": str(c.get("title") or c.get("url")),
+                                    "url": c["url"], "topic": event_item.get("title") or "Market events"}
+                                   for c in (event_item.get("citations") or [])
+                                   if c.get("url") and c["url"] not in _seen]
+        from src.logic.deep_research import market_events as _me
+
+        ctx.market_tape = fut_tape.result() or {}
+        ctx.market_tape_block = _me.tape_section(ctx.market_tape)
 
     # Quote + GEX (disk-cached, sequential — both hit the same options API)
     ctx.live_quote_block = _load_or_fetch_quote(ticker, paths["quote"], tdir, date_str)

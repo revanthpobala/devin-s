@@ -270,5 +270,39 @@ def test_api_research_timings(client):
     assert isinstance(data["timings"], list)
 
 
+def test_api_research_run_tier_support(client, monkeypatch):
+    """Verify /api/research/run handles tiers (LITE, MID, FULL) and shortcut modes."""
+    import src.ui.routes.research as res_mod
+    monkeypatch.setattr(res_mod, "run_research_worker", lambda *args, **kwargs: None)
+
+    # 1. Explicit LITE tier
+    res = client.post("/api/research/run", json={"ticker": "TESTL", "mode": "full", "tier": "LITE", "force": True})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["tier"] == "LITE"
+    assert data["ticker"] == "TESTL"
+
+    # 2. Shortcut mode lite_only -> deep_only + LITE
+    res = client.post("/api/research/run", json={"ticker": "TESTO", "mode": "lite_only", "force": True})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["tier"] == "LITE"
+    assert data["mode"] == "deep_only"
+
+    # 3. Shortcut mode mid_only -> deep_only + MID
+    res = client.post("/api/research/run", json={"ticker": "TESTM", "mode": "mid_only", "force": True})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["tier"] == "MID"
+    assert data["mode"] == "deep_only"
+
+    # 4. Shortcut mode deep_full -> deep_only + FULL
+    res = client.post("/api/research/run", json={"ticker": "TESTF", "mode": "deep_full", "force": True})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["tier"] == "FULL"
+    assert data["mode"] == "deep_only"
+
+
 
 

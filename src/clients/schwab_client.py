@@ -542,77 +542,163 @@ def get_unusual_options_flow_data(ticker: str, force_refresh: bool = False) -> d
     spot_price = float(data.get("underlyingPrice", 0.0))
     anomalies = []
 
+    import zoneinfo
+    et_tz = zoneinfo.ZoneInfo("America/New_York")
+
     for side, exp_map in [("CALL", data.get("callExpDateMap", {})), ("PUT", data.get("putExpDateMap", {}))]:
         for exp_str, strikes in exp_map.items():
             exp_date = exp_str.split(":")[0]
             for strike, contracts in strikes.items():
                 for c in contracts:
-                    vol = c.get("totalVolume", 0)
-                    oi = c.get("openInterest", 0)
-                    if vol >= 500 and vol > (oi * 1.5):
-                        bid = round(float(c.get("bid", 0.0)), 2)
-                        ask = round(float(c.get("ask", 0.0)), 2)
-                        mid = round((bid + ask) / 2.0, 2)
-                        days = c.get("daysToExpiration", 0)
-                        strike_val = float(strike)
-                        vol_to_oi = round(vol / max(oi, 1), 1)
-                        prem = int(vol * mid * 100)
-                        anomalies.append({
-                            "type": side,
-                            "strike": strike_val,
-                            "expiry": exp_date,
-                            "dte": days,
-                            "volume": vol,
-                            "open_interest": oi,
-                            "vol_to_oi": vol_to_oi,
-                            "delta": round(float(c.get("delta", 0.0)), 3),
-                            "bid": bid,
-                            "ask": ask,
-                            "mid": mid,
-                            "notional_premium": prem,
-                            "in_the_money": bool(c.get("inTheMoney", False)),
-                            "distance_from_spot_pct": round(((strike_val - spot_price) / spot_price) * 100, 1) if spot_price else 0.0
-                        })
+                    vol = int(c.get("totalVolume", 0))
+                    oi = int(c.get("openInterest", 0))
+                    last_size = int(c.get("lastSize", 0))
+                    bid = round(float(c.get("bid", 0.0)), 2)
+                    ask = round(float(c.get("ask", 0.0)), 2)
+                    last_px = round(float(c.get("last", 0.0)), 2)
+                    mid = round((bid + ask) / 2.0, 2) if (bid + ask) > 0 else last_px
+                    eff_px = last_px if last_px > 0 else mid
+                    size = last_size if last_size > 0 else vol
 
-    anomalies.sort(key=lambda x: x["volume"], reverse=True)
+                    # Zero session volume with a last-trade print is a stale quote, not flow: nothing to compare to open interest.
+                    if vol == 0 or eff_px <= 0:
+                        continue
 
-    calls = [a for a in anomalies if a["type"] == "CALL"]
-    puts = [a for a in anomalies if a["type"] == "PUT"]
+                    prem = int(size * eff_px * 100)
+                    # Cheddar Flow institutional filter: require non-trivial volume or premium
+                    if prem < 2500 and vol < 20 and size < 20 and not (oi > 0 and vol > oi):
+                        continue
 
-    call_vol = sum(a["volume"] for a in calls)
-    put_vol = sum(a["volume"] for a in puts)
-    call_prem = sum(a["notional_premium"] for a in calls)
-    put_prem = sum(a["notional_premium"] for a in puts)
+                    days = c.get("daysToExpiration", 0)
+                    strike_val = float(strike)
+                    vol_to_oi = round(vol / max(oi, 1), 1)
 
-    if not anomalies:
+                    ts = c.get("tradeTimeInLong", 0) or c.get("quoteTimeInLong", 0)
+                    if ts:
+                        try:
+                            dt = datetime.fromtimestamp(ts / 1000, et_tz)
+                            time_str = dt.strftime("%I:%M:%S %p")
+                        except Exception:
+                            time_str = "--"
+                    else:
+                        time_str = "--"
+
+                    # 1. SIDE CLASSIFICATION (NBBO compare)
+                    if ask > 0 and eff_px > ask:
+                        side_tag = "Above"
+                        bs = "BUY"
+                    elif ask > 0 and abs(eff_px - ask) <= 0.02:
+                        side_tag = "Ask"
+                        bs = "BUY"
+                    elif bid > 0 and eff_px < bid:
+                        side_tag = "Below"
+                        bs = "SELL"
+                    elif bid > 0 and abs(eff_px - bid) <= 0.02:
+                        side_tag = "Bid"
+                        bs = "SELL"
+                    else:
+                        side_tag = "Mid"
+                        bs = "BUY" if eff_px >= mid else "SELL"
+
+                    # 2. TYPE CLASSIFICATION (Sweep, Block, Split)
+                    if size >= 500 or prem >= 100_000:
+                        order_type = "Block"
+                    elif (oi > 0 and vol > oi) or size >= 100:
+                        order_type = "Sweep"
+                    else:
+                        order_type = "Split"
+
+                    # 3. CHEDDAR FLOW HIGHLIGHT RULES
+                    is_unusual_purple = bool(oi > 0 and vol > oi)
+                    is_whale_orange = bool(prem >= 1_000_000 and bs == "BUY")
+
+                    anomalies.append({
+                        "time": time_str,
+                        "timestamp_epoch": ts,
+                        "expiry": exp_date,
+                        "ticker": sym,
+                        "strike": strike_val,
+                        "c_p": "Call" if side == "CALL" else "Put",
+                        "type": side,
+                        "spot": spot_price,
+                        "side": side_tag,
+                        "price": eff_px,
+                        "b_s": bs,
+                        "order_type": order_type,
+                        "size": size,
+                        "premium": prem,
+                        "is_unusual_purple": is_unusual_purple,
+                        "is_whale_orange": is_whale_orange,
+                        "dte": days,
+                        "volume": vol,
+                        "open_interest": oi,
+                        "vol_to_oi": vol_to_oi,
+                        "delta": round(float(c.get("delta", 0.0)), 3),
+                        "bid": bid,
+                        "ask": ask,
+                        "mid": mid,
+                        "notional_premium": prem,
+                        "in_the_money": bool(c.get("inTheMoney", False)),
+                        "distance_from_spot_pct": round(((strike_val - spot_price) / spot_price) * 100, 1) if spot_price else 0.0
+                    })
+
+    # Sort Cheddar Flow live tape: newest timestamps first, then highest premium
+    anomalies.sort(key=lambda x: (x.get("timestamp_epoch") or 0, x.get("premium") or 0), reverse=True)
+
+    # The list stays a tape of every qualifying print; counts and sentiment use only real sweeps and blocks.
+    unusual = [a for a in anomalies if a["order_type"] in ("Sweep", "Block")]
+    calls = [a for a in unusual if a["c_p"] == "Call"]
+    puts = [a for a in unusual if a["c_p"] == "Put"]
+
+    call_vol = sum(a["size"] for a in calls)
+    put_vol = sum(a["size"] for a in puts)
+    call_prem = sum(a["premium"] for a in calls)
+    put_prem = sum(a["premium"] for a in puts)
+
+    bullish_prem = sum(a["premium"] for a in unusual if (a["c_p"] == "Call" and a["b_s"] == "BUY") or (a["c_p"] == "Put" and a["b_s"] == "SELL"))
+    bearish_prem = sum(a["premium"] for a in unusual if (a["c_p"] == "Put" and a["b_s"] == "BUY") or (a["c_p"] == "Call" and a["b_s"] == "SELL"))
+    total_prem_dir = bullish_prem + bearish_prem
+    sentiment_ratio = round(bullish_prem / total_prem_dir, 3) if total_prem_dir > 0 else 0.50
+
+    if not unusual:
         sentiment = "NEUTRAL"
+        flow_sentiment = "Neutral"
         sentiment_label = "No Unusual Institutional Sweeps (Normal Baseline)"
-    elif call_prem > put_prem * 1.5:
+    elif sentiment_ratio >= 0.58:
         sentiment = "BULLISH_SWEEPS"
+        flow_sentiment = "Bullish"
         sentiment_label = "Bullish Institutional Call Accumulation"
-    elif put_prem > call_prem * 1.5:
+    elif sentiment_ratio <= 0.42:
         sentiment = "BEARISH_SWEEPS"
+        flow_sentiment = "Bearish"
         sentiment_label = "Bearish Institutional Put Hedging"
     else:
         sentiment = "MIXED"
+        flow_sentiment = "Neutral"
         sentiment_label = "Balanced / Mixed Institutional Flow"
+
+    put_to_call = round(put_vol / max(call_vol, 1), 3)
 
     result = {
         "ticker": sym,
         "status": "ok",
         "underlying_price": spot_price,
-        "total_anomalies_count": len(anomalies),
+        "total_anomalies_count": len(unusual),
+        "tape_count": len(anomalies),
         "call_sweeps_count": len(calls),
         "put_sweeps_count": len(puts),
         "total_call_volume": call_vol,
         "total_put_volume": put_vol,
         "total_call_premium": call_prem,
         "total_put_premium": put_prem,
-        "put_call_volume_ratio": round(put_vol / max(call_vol, 1), 2),
+        "put_call_volume_ratio": put_to_call,
         "put_call_premium_ratio": round(put_prem / max(call_prem, 1), 2),
         "sentiment": sentiment,
+        "flow_sentiment": flow_sentiment,
+        "sentiment_score": sentiment_ratio,
+        "put_to_call": put_to_call,
         "sentiment_label": sentiment_label,
-        "anomalies": anomalies[:35],
+        "anomalies": anomalies[:150],
         "cached_at": datetime.now().strftime("%I:%M:%S %p")
     }
 

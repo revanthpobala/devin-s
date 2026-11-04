@@ -445,16 +445,21 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
         stop = float(shares_plan.get("tactical_stop") or 0.0)
         target_1 = float(shares_plan.get("target_1") or 0.0)
         target_2 = float(shares_plan.get("target_2") or 0.0)
-        geometry_reasons = check_geometry(
-            side=side,
-            entry_type=entry_type,
-            entry_low=entry_low,
-            entry_high=entry_high,
-            breakout_level=float(breakout_level or 0.0),
-            stop=stop,
-            t1=target_1,
-            t2=target_2,
-        )
+        if entry_type == "NO_ENTRY" and str(data.get("kind") or "").upper() == "MANAGE":
+            # A held position stores protective levels, not an entry: real stop below a real target.
+            geometry_reasons = ([] if (stop > 0 and target_1 > stop and (not target_2 or target_2 > target_1))
+                                else ["manage plan needs stop > 0, target_1 > stop, target_2 > target_1"])
+        else:
+            geometry_reasons = check_geometry(
+                side=side,
+                entry_type=entry_type,
+                entry_low=entry_low,
+                entry_high=entry_high,
+                breakout_level=float(breakout_level or 0.0),
+                stop=stop,
+                t1=target_1,
+                t2=target_2,
+            )
     except Exception as e:
         logger.debug(f"[WATCH_GATE] {ticker} geometry pre-check raised: {e}")
         geometry_reasons.append(f"geometry pre-check exception: {e}")

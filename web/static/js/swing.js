@@ -20,7 +20,29 @@ window.AppSwing = {
     }
   },
 
-  async launchResearch(dateOverride = null, forceOverride = null, tickerOverride = null) {
+  onModeSelectChange(val) {
+    const tierSelect = document.getElementById('tier-select');
+    if (!tierSelect) return;
+    if (val === 'lite_only') {
+      tierSelect.value = 'LITE';
+    } else if (val === 'mid_only') {
+      tierSelect.value = 'MID';
+    } else if (val === 'deep_full') {
+      tierSelect.value = 'FULL';
+    }
+  },
+
+  onTierSelectChange(val) {
+    const modeSelect = document.getElementById('mode-select');
+    if (!modeSelect) return;
+    if (modeSelect.value === 'lite_only' || modeSelect.value === 'mid_only' || modeSelect.value === 'deep_full') {
+      if (val === 'LITE') modeSelect.value = 'lite_only';
+      else if (val === 'MID') modeSelect.value = 'mid_only';
+      else if (val === 'FULL') modeSelect.value = 'deep_full';
+    }
+  },
+
+  async launchResearch(dateOverride = null, forceOverride = null, tickerOverride = null, tierOverride = null) {
     let rawInput = (tickerOverride || '').trim();
     if (!rawInput) {
       const tickerInput = document.getElementById('ticker-input');
@@ -40,7 +62,24 @@ window.AppSwing = {
 
     const targetDate = dateOverride || null;
     const modeSelect = document.getElementById('mode-select');
-    const mode = modeSelect ? modeSelect.value : 'full';
+    let mode = modeSelect ? modeSelect.value : 'full';
+
+    const tierSelect = document.getElementById('tier-select');
+    let tier = (tierOverride !== null && tierOverride !== undefined)
+      ? tierOverride
+      : (tierSelect ? tierSelect.value : 'MID');
+
+    if (mode === 'lite_only') {
+      mode = 'deep_only';
+      tier = 'LITE';
+    } else if (mode === 'mid_only') {
+      mode = 'deep_only';
+      tier = 'MID';
+    } else if (mode === 'deep_full') {
+      mode = 'deep_only';
+      tier = 'FULL';
+    }
+
     const forceCheckbox = document.getElementById('research-force-checkbox');
     const force = (forceOverride !== null && forceOverride !== undefined) 
       ? forceOverride 
@@ -54,10 +93,11 @@ window.AppSwing = {
 
       for (const t of tickers) {
         if (window.AppUtils && AppUtils.showToast && tickers.length === 1) {
-          AppUtils.showToast(`🚀 Launching ${mode} research for $${t}...`, 'info');
+          const tierLabel = tier === 'FULL' ? 'Full Deep' : (tier === 'LITE' ? 'Lite' : 'Mid');
+          AppUtils.showToast(`🚀 Launching ${tierLabel} [${mode}] research for $${t}...`, 'info');
         }
 
-        const res = await window.AppApi.triggerResearch(t, mode, targetDate, force);
+        const res = await window.AppApi.triggerResearch(t, mode, targetDate, force, tier);
         lastRes = res;
         if (res && res.status === 'started') startedCount++;
         else if (res && res.status === 'queued') queuedCount++;
@@ -88,15 +128,16 @@ window.AppSwing = {
           }
         } else if (lastRes && lastRes.status === 'skipped') {
           const skipMsg = lastRes.message || `${t} already researched for ${lastRes.target_date || targetDate || 'today'}`;
+          const tierLabel = tier === 'FULL' ? 'Full Deep' : (tier === 'LITE' ? 'Lite' : 'Mid');
           const shouldForce = confirm(
             `⚡ ${t} already has a research report for ${lastRes.target_date || targetDate || 'today'}.\n\n` +
-            `Do you want to FORCE a fresh Deep Research pass now with live market data?`
+            `Do you want to FORCE a fresh ${tierLabel} Research pass now with live market data?`
           );
           if (shouldForce) {
             if (window.AppUtils && AppUtils.showToast) {
-              AppUtils.showToast(`🚀 Forcing fresh deep research for $${t}...`, 'info');
+              AppUtils.showToast(`🚀 Forcing fresh ${tierLabel} research for $${t}...`, 'info');
             }
-            return await this.launchResearch(targetDate, true, t);
+            return await this.launchResearch(targetDate, true, t, tier);
           } else {
             if (window.AppUtils && AppUtils.showToast) {
               AppUtils.showToast(`ℹ️ ${skipMsg}. Opening dossier...`, 'info');
@@ -916,11 +957,13 @@ window.AppSwing = {
     }
   },
 
-  async runResearchAction(ticker, mode, date) {
+  async runResearchAction(ticker, mode, date, tier = null) {
     this.setTicker(ticker);
     const modeSelect = document.getElementById('mode-select');
     if (modeSelect) modeSelect.value = mode || 'full';
-    await this.launchResearch(date);
+    const tierSelect = document.getElementById('tier-select');
+    if (tierSelect && tier) tierSelect.value = tier;
+    await this.launchResearch(date, null, null, tier);
     setTimeout(() => this.refreshResearchQueue(), 3000);
   },
 
@@ -3750,154 +3793,177 @@ window.AppSwing = {
     const callVolK = ((data.total_call_volume || 0) / 1000).toFixed(1);
     const putVolK = ((data.total_put_volume || 0) / 1000).toFixed(1);
 
-    const isBullish = data.sentiment === 'BULLISH_SWEEPS';
-    const isBearish = data.sentiment === 'BEARISH_SWEEPS';
-    const sentColor = isBullish ? '#059669' : (isBearish ? '#dc2626' : '#d97706');
-    const sentBg = isBullish ? '#ecfdf5' : (isBearish ? '#fef2f2' : '#fffbeb');
-    const sentBorder = isBullish ? '#a7f3d0' : (isBearish ? '#fecaca' : '#fde68a');
+    const sentStr = data.flow_sentiment || (data.sentiment === 'BULLISH_SWEEPS' ? 'Bullish' : (data.sentiment === 'BEARISH_SWEEPS' ? 'Bearish' : 'Neutral'));
+    const isBullish = sentStr === 'Bullish';
+    const isBearish = sentStr === 'Bearish';
+    const sentColor = isBullish ? '#10b981' : (isBearish ? '#f43f5e' : '#f59e0b');
+    const sentScorePct = Math.round((data.sentiment_score != null ? data.sentiment_score : (isBullish ? 0.72 : (isBearish ? 0.28 : 0.50))) * 100);
+    const putToCall = data.put_to_call != null ? Number(data.put_to_call).toFixed(3) : (data.put_call_volume_ratio != null ? Number(data.put_call_volume_ratio).toFixed(3) : '0.838');
+    const callPct = Math.round(100 / (1 + Number(putToCall)));
+    const putPct = 100 - callPct;
 
     const filter = this._optionsFlowFilter || 'ALL';
     let filteredList = data.anomalies || [];
-    if (filter === 'CALL') filteredList = filteredList.filter(a => a.type === 'CALL');
-    if (filter === 'PUT') filteredList = filteredList.filter(a => a.type === 'PUT');
+    if (filter === 'CALL') filteredList = filteredList.filter(a => a.c_p === 'Call' || a.type === 'CALL');
+    if (filter === 'PUT') filteredList = filteredList.filter(a => a.c_p === 'Put' || a.type === 'PUT');
+    if (filter === 'SWEEP') filteredList = filteredList.filter(a => a.order_type === 'Sweep');
+    if (filter === 'BLOCK') filteredList = filteredList.filter(a => a.order_type === 'Block');
+    if (filter === 'PURPLE') filteredList = filteredList.filter(a => a.is_unusual_purple);
+    if (filter === 'WHALE') filteredList = filteredList.filter(a => a.is_whale_orange || (a.premium || a.notional_premium) >= 1e6);
 
     const rows = filteredList.map(a => {
-      const isCall = a.type === 'CALL';
-      const typeClass = isCall ? 'pill green' : 'pill red';
-      const premStr = a.notional_premium >= 1e6
-        ? `$${(a.notional_premium / 1e6).toFixed(2)}M`
-        : `$${Math.round(a.notional_premium / 1000)}k`;
+      const isCall = a.c_p === 'Call' || a.type === 'CALL';
+      const isPurple = a.is_unusual_purple;
+      const isWhale = a.is_whale_orange || (a.premium || a.notional_premium) >= 1e6;
+      
+      let rowStyle = 'border-bottom:1px solid rgba(255,255,255,0.04); transition:background 0.15s;';
+      if (isWhale) {
+        rowStyle += 'background:rgba(249,115,22,0.18); border-left:3px solid #f97316;';
+      } else if (isPurple) {
+        rowStyle += 'background:rgba(124,58,237,0.18); border-left:3px solid #a855f7;';
+      }
 
-      const oiSpikeBadge = a.vol_to_oi >= 10
-        ? `<span class="pill amber" style="font-size:9.5px; padding:1px 5px; font-weight:800;">${a.vol_to_oi}x OI 🔥</span>`
-        : `<span style="font-weight:700; color:var(--text-main); font-size:12px;">${a.vol_to_oi}x</span>`;
+      const pVal = a.premium || a.notional_premium || 0;
+      const premStr = pVal >= 1e6
+        ? `$${(pVal / 1e6).toFixed(2)}M`
+        : `$${(pVal / 1000).toFixed(1)}k`;
 
-      const distBadge = a.distance_from_spot_pct
-        ? `<span style="font-size:11px; color:var(--text-muted); font-family:'JetBrains Mono',monospace;">${a.distance_from_spot_pct > 0 ? '+' : ''}${a.distance_from_spot_pct}%</span>`
-        : '';
+      const typeBadge = a.order_type === 'Sweep'
+        ? '<span class="pill amber" style="font-size:9px; padding:1px 5px; font-weight:800;">Sweep</span>'
+        : (a.order_type === 'Block'
+          ? '<span class="pill cyan" style="font-size:9px; padding:1px 5px; font-weight:800;">Block</span>'
+          : '<span class="pill purple" style="font-size:9px; padding:1px 5px; font-weight:800;">Split</span>');
+
+      const bsBadge = a.b_s === 'BUY'
+        ? '<span style="color:#10b981; font-weight:900; font-family:\'JetBrains Mono\',monospace; font-size:11px;">BUY</span>'
+        : '<span style="color:#f43f5e; font-weight:900; font-family:\'JetBrains Mono\',monospace; font-size:11px;">SELL</span>';
+
+      const sideColor = a.side === 'Ask' || a.side === 'Above' ? '#10b981' : (a.side === 'Bid' || a.side === 'Below' ? '#f43f5e' : '#94a3b8');
 
       return `
-        <tr>
-          <td><span class="${typeClass}" style="font-weight:800; font-size:11px; padding:2px 8px;">${a.type}</span></td>
-          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:13px; color:var(--text-main);">
-            $${Number(a.strike).toFixed(1)} ${distBadge}
-          </td>
-          <td style="font-family:'JetBrains Mono',monospace; font-weight:600; font-size:12px;">${a.expiry}</td>
-          <td style="font-size:12px; color:var(--text-muted);">${a.dte}d</td>
-          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; color:var(--text-main); font-size:13px;">
-            ${Number(a.volume).toLocaleString()}
-          </td>
-          <td style="font-family:'JetBrains Mono',monospace; color:var(--text-muted); font-size:12px;">
-            ${Number(a.open_interest).toLocaleString()}
-          </td>
-          <td>${oiSpikeBadge}</td>
-          <td style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text-muted);">${a.delta}</td>
-          <td style="font-family:'JetBrains Mono',monospace; font-weight:700; font-size:12.5px;">$${Number(a.mid).toFixed(2)}</td>
-          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; color:${isCall ? '#059669' : '#dc2626'}; font-size:13px;">
-            ${premStr}
-          </td>
+        <tr style="${rowStyle}">
+          <td style="font-family:'JetBrains Mono',monospace; font-size:11px; color:#cbd5e1; white-space:nowrap;">${a.time || '--'}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:600; color:#e2e8f0; white-space:nowrap;">${a.expiry}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:11.5px; color:#10b981;">${a.ticker || sym}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:12.5px; color:#fff;">${Number(a.strike).toFixed(0)}</td>
+          <td style="font-weight:800; font-size:11.5px; color:${isCall ? '#10b981' : '#f43f5e'};">${isCall ? 'Call' : 'Put'}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#94a3b8;">${a.spot ? '$' + Number(a.spot).toFixed(2) : spot}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; color:${sideColor};">${a.side || 'Mid'}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-weight:700; font-size:12px; color:#f8fafc;">$${Number(a.price || a.mid || 0).toFixed(2)}</td>
+          <td>${bsBadge}</td>
+          <td>${typeBadge}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:12px; color:#fff;">${Number(a.size || a.volume || 0).toLocaleString()}</td>
+          <td style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:12.5px; color:${isCall ? '#10b981' : '#f43f5e'}; text-align:right;">${premStr}</td>
         </tr>
       `;
     }).join('');
 
     bodyEl.innerHTML = `
-      <div style="display:flex; flex-direction:column; gap:16px; padding:4px;">
+      <div style="display:flex; flex-direction:column; gap:14px; padding:4px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#0f172a; border-radius:10px; color:#f8fafc;">
         
-        <!-- Header Banner -->
-        <div style="background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; padding:16px 20px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
-          <div>
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
-              <span style="font-size:18px;">🔥</span>
-              <span style="font-family:'Outfit',sans-serif; font-size:16px; font-weight:800; color:var(--text-main);">Schwab Institutional Options Flow (${sym})</span>
-              <span class="pill green" style="font-size:9.5px; padding:1px 6px;">Live API Feed</span>
-            </div>
-            <div style="font-size:12px; color:var(--text-muted); display:flex; align-items:center; gap:12px;">
-              <span>Spot Price: <strong style="color:var(--text-main);">${spot}</strong></span>
-              <span>•</span>
-              <span>Updated: ${data.cached_at || 'Live'}</span>
-              <span>•</span>
-              <span>Threshold: Vol &gt; 1.5× OI &amp; Vol &ge; 500</span>
+        <!-- Cheddar Flow Top Analytics Bar -->
+        <div style="background:rgba(30,41,59,0.7); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px 18px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+          
+          <!-- Flow Sentiment Meter -->
+          <div style="display:flex; flex-direction:column; gap:4px; min-width:180px;">
+            <div style="font-size:10px; font-weight:700; letter-spacing:0.8px; color:#94a3b8; text-transform:uppercase;">Flow sentiment</div>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="font-size:17px; font-weight:900; color:${sentColor}; letter-spacing:0.3px;">${sentStr}</span>
+              <div style="width:110px; height:8px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; position:relative;">
+                <div style="position:absolute; left:0; top:0; height:100%; width:${sentScorePct}%; background:${sentColor}; border-radius:4px; box-shadow:0 0 10px ${sentColor};"></div>
+              </div>
             </div>
           </div>
+
+          <!-- Put to Call Ratio -->
+          <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
+            <div style="font-size:10px; font-weight:700; letter-spacing:0.8px; color:#94a3b8; text-transform:uppercase;">Put to call</div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:17px; font-weight:900; font-family:'JetBrains Mono',monospace; color:#f8fafc;">${putToCall}</span>
+              <div style="display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:50%; border:2.5px solid ${sentColor}; font-size:10.5px; font-weight:800; font-family:'JetBrains Mono',monospace; color:${sentColor};">
+                ${Number(putToCall).toFixed(2)}
+              </div>
+            </div>
+          </div>
+
+          <!-- Call / Put Share Ratio -->
+          <div style="display:flex; flex-direction:column; gap:4px; min-width:180px;">
+            <div style="font-size:10px; font-weight:700; letter-spacing:0.8px; color:#94a3b8; text-transform:uppercase;">Volume Distribution</div>
+            <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-family:'JetBrains Mono',monospace; font-weight:700;">
+              <span style="color:#10b981;">Calls: ${callPct}% ($${callPremM}M)</span>
+              <span style="color:#64748b;">|</span>
+              <span style="color:#f43f5e;">Puts: ${putPct}% ($${putPremM}M)</span>
+            </div>
+          </div>
+
+          <!-- Legend / Action Controls -->
           <div style="display:flex; align-items:center; gap:8px;">
-            <span style="padding:4px 12px; border-radius:6px; font-size:12px; font-weight:800; color:${sentColor}; background:${sentBg}; border:1px solid ${sentBorder};">
-              ${data.sentiment_label}
+            <span class="pill" style="font-size:9.5px; font-weight:800; padding:3px 8px; background:rgba(124,58,237,0.25); color:#c084fc; border:1px solid rgba(168,85,247,0.4);">
+              🟣 Unusual (Vol &gt; OI)
             </span>
-            <button class="btn secondary" onclick="AppSwing.renderOptionsFlowTab('${sym}', true)" style="font-weight:700; font-size:11.5px; padding:5px 12px;">
-              🔄 Refresh Flow
+            <span class="pill" style="font-size:9.5px; font-weight:800; padding:3px 8px; background:rgba(249,115,22,0.25); color:#fdba74; border:1px solid rgba(249,115,22,0.4);">
+              🟠 $1M+ Whale
+            </span>
+            <button class="btn secondary" onclick="AppSwing.renderOptionsFlowTab('${sym}', true)" style="font-weight:700; font-size:11px; padding:4px 10px; border-radius:6px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.15); color:#fff; cursor:pointer;" title="Bypass cache & query fresh chain">
+              🔄 Refresh
             </button>
           </div>
         </div>
 
-        <!-- 4 KPI Summary Metric Cards -->
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">
-          <div class="stat-card" style="padding:14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px;">
-            <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">TOTAL SWEEPS DETECTED</div>
-            <div style="font-size:22px; font-weight:800; color:var(--text-main); font-family:'Outfit',sans-serif;">${totalAnomalies}</div>
-            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${data.call_sweeps_count} Calls • ${data.put_sweeps_count} Puts</div>
+        <!-- Cheddar Flow Filter Chips Bar -->
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:0 2px;">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <button class="btn secondary ${filter === 'ALL' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('ALL')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px;">
+              ALL (${totalAnomalies})
+            </button>
+            <button class="btn secondary ${filter === 'CALL' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('CALL')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px; color:#10b981;">
+              CALLS (${data.call_sweeps_count || 0})
+            </button>
+            <button class="btn secondary ${filter === 'PUT' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('PUT')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px; color:#f43f5e;">
+              PUTS (${data.put_sweeps_count || 0})
+            </button>
+            <button class="btn secondary ${filter === 'SWEEP' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('SWEEP')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px; color:#f59e0b;">
+              ⚡ SWEEPS
+            </button>
+            <button class="btn secondary ${filter === 'BLOCK' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('BLOCK')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px; color:#06b6d4;">
+              🧱 BLOCKS
+            </button>
+            <button class="btn secondary ${filter === 'PURPLE' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('PURPLE')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px; color:#c084fc;">
+              🟣 UNUSUAL (VOL &gt; OI)
+            </button>
+            <button class="btn secondary ${filter === 'WHALE' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('WHALE')" style="padding:3px 10px; font-size:11px; font-weight:800; border-radius:6px; color:#fb923c;">
+              🟠 $1M+ WHALES
+            </button>
           </div>
-
-          <div class="stat-card" style="padding:14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px;">
-            <div style="font-size:11px; font-weight:700; color:#059669; margin-bottom:4px;">CALL SWEEPS VOLUME</div>
-            <div style="font-size:22px; font-weight:800; color:#059669; font-family:'Outfit',sans-serif;">${callVolK}k <span style="font-size:13px; font-weight:600;">contracts</span></div>
-            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Est. Premium: <strong>$${callPremM}M</strong></div>
-          </div>
-
-          <div class="stat-card" style="padding:14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px;">
-            <div style="font-size:11px; font-weight:700; color:#dc2626; margin-bottom:4px;">PUT SWEEPS VOLUME</div>
-            <div style="font-size:22px; font-weight:800; color:#dc2626; font-family:'Outfit',sans-serif;">${putVolK}k <span style="font-size:13px; font-weight:600;">contracts</span></div>
-            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Est. Premium: <strong>$${putPremM}M</strong></div>
-          </div>
-
-          <div class="stat-card" style="padding:14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px;">
-            <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:4px;">PUT / CALL FLOW RATIO</div>
-            <div style="font-size:22px; font-weight:800; color:var(--text-main); font-family:'Outfit',sans-serif;">${data.put_call_volume_ratio}x</div>
-            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Premium Ratio: <strong>${data.put_call_premium_ratio}x</strong></div>
+          <div style="font-size:11px; font-family:'JetBrains Mono',monospace; color:#94a3b8;">
+            Spot: <b style="color:#fff;">${spot}</b> · Updated ${data.cached_at || 'Live'}
           </div>
         </div>
 
-        <!-- Filter Buttons & Controls -->
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
-          <div style="display:flex; align-items:center; gap:6px;">
-            <button class="btn secondary ${filter === 'ALL' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('ALL')" style="padding:4px 12px; font-size:11.5px; font-weight:700;">
-              All Sweeps (${totalAnomalies})
-            </button>
-            <button class="btn secondary ${filter === 'CALL' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('CALL')" style="padding:4px 12px; font-size:11.5px; font-weight:700; color:#059669;">
-              Calls (${data.call_sweeps_count})
-            </button>
-            <button class="btn secondary ${filter === 'PUT' ? 'active' : ''}" onclick="AppSwing.setOptionsFlowFilter('PUT')" style="padding:4px 12px; font-size:11.5px; font-weight:700; color:#dc2626;">
-              Puts (${data.put_sweeps_count})
-            </button>
-          </div>
-          <div style="font-size:11.5px; color:var(--text-muted);">
-            Showing top institutional block orders sorted by daily volume
-          </div>
-        </div>
-
-        <!-- Institutional Flow Table -->
-        <div class="watchlist-table-wrap" style="border:1px solid var(--border); border-radius:8px; overflow:hidden;">
-          <table class="watchlist-table">
-            <thead>
-              <tr>
-                <th style="width:70px;">TYPE</th>
-                <th style="width:140px;">STRIKE</th>
-                <th style="width:110px;">EXPIRATION</th>
-                <th style="width:60px;">DTE</th>
-                <th style="width:110px;">VOLUME</th>
-                <th style="width:100px;">OPEN INT</th>
-                <th style="width:100px;">VOL / OI</th>
-                <th style="width:70px;">DELTA</th>
-                <th style="width:90px;">MID PRICE</th>
-                <th style="width:120px;">EST. NOTIONAL</th>
+        <!-- Cheddar Flow Live Tape Table -->
+        <div style="background:#090d16; border:1px solid rgba(255,255,255,0.08); border-radius:8px; overflow:hidden; max-height:540px; overflow-y:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left;">
+            <thead style="position:sticky; top:0; background:#111827; border-bottom:1px solid rgba(255,255,255,0.1); z-index:2;">
+              <tr style="color:#94a3b8; font-size:10.5px; font-weight:800; letter-spacing:0.6px; text-transform:uppercase;">
+                <th style="padding:8px 10px;">TIME</th>
+                <th style="padding:8px 10px;">EXPIRY</th>
+                <th style="padding:8px 8px;">TICK</th>
+                <th style="padding:8px 10px;">STRIKE</th>
+                <th style="padding:8px 8px;">C/P</th>
+                <th style="padding:8px 10px;">SPOT</th>
+                <th style="padding:8px 10px;">SIDE</th>
+                <th style="padding:8px 10px;">PRICE</th>
+                <th style="padding:8px 8px;">B/S</th>
+                <th style="padding:8px 10px;">TYPE</th>
+                <th style="padding:8px 10px;">SIZE</th>
+                <th style="padding:8px 12px; text-align:right;">PREMIUM</th>
               </tr>
             </thead>
             <tbody>
-              ${rows || `<tr><td colspan="10" style="text-align:center; padding:32px 16px; color:var(--text-muted); font-size:13px;">
-                <div style="font-size:24px; margin-bottom:8px;">🏖️</div>
-                <strong style="color:var(--text-main); font-size:14px;">No Unusual Institutional Sweeps Detected</strong>
-                <p style="margin-top:6px; font-size:12px; color:var(--text-muted); max-width:480px; margin-left:auto; margin-right:auto;">
-                  Daily options volume across all 90-day strikes on <strong>${sym}</strong> is currently within the normal baseline (under 1.5× Open Interest or under 500 contracts). Smart money has not initiated large directional block positioning today.
-                </p>
+              ${rows || `<tr><td colspan="12" style="text-align:center; padding:36px 16px; color:#94a3b8;">
+                <div style="font-size:26px; margin-bottom:8px;">🏖️</div>
+                <strong style="color:#fff; font-size:14px;">No Options Flow Matching Filter</strong>
+                <p style="margin-top:4px; font-size:12px; color:#64748b;">Try switching the filter to ALL or clicking Refresh to fetch fresh chain data.</p>
               </td></tr>`}
             </tbody>
           </table>

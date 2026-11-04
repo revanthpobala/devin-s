@@ -175,8 +175,8 @@ def build_live_market_context(symbol: str) -> Dict[str, Any]:
                     r_dt = datetime.strptime(str(report_date_str)[:10], "%Y-%m-%d").date()
                     today_dt = datetime.now().date()
                     days_away = (r_dt - today_dt).days
-                    import pandas as pd
-                    b_days_away = max(0, len(pd.bdate_range(start=today_dt, end=r_dt)) - 1)
+                    from src.utils.market_calendar import trading_days_between
+                    b_days_away = trading_days_between(today_dt, r_dt)
                 except Exception:
                     pass
 

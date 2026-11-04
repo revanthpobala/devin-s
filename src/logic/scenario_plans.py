@@ -129,7 +129,9 @@ def normalize(s: Dict[str, Any], spot: float, atr: float, em_pct: float, today: 
         return round(pine_stop, 2) if 0 < pine_stop < c else c
 
     if not stop or stop > _stop_cap(fill):
-        notes.append(f"stop {stop or 'missing'} widened to {_stop_cap(fill)} ({STOP_ATR_MIN:g} ATR below the fill or the Pine stop)")
+        cap = _stop_cap(fill)
+        notes.append(f"stop {stop or 'missing'} is {(fill - stop) / atr:.2f} ATR below the fill {fill}, under the {STOP_ATR_MIN:g} ATR minimum; moved to {cap}" if stop
+                     else f"stop missing; set to {cap} ({STOP_ATR_MIN:g} ATR below the fill {fill})")
         stop = _stop_cap(fill)
     floor = _rr_floor()
     if entry == "LIMIT" and stop < zlo and (tgt - trig) / (trig - stop) < floor:

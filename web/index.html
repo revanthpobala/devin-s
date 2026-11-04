@@ -250,12 +250,20 @@
             </div>
 
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <input type="text" id="ticker-input" class="input-ticker" placeholder="TICKER" maxlength="6" value="WMT" style="width:110px; height:32px; font-size:13px; text-transform:uppercase;">
-              <select id="mode-select" class="select-mode" style="height:32px; font-size:12px; padding:0 8px;">
-                <option value="full">Full Pipeline (Scrape + Deep + Alerts)</option>
+              <input type="text" id="ticker-input" class="input-ticker" placeholder="TICKER" maxlength="6" value="WMT" style="width:105px; height:32px; font-size:13px; text-transform:uppercase;">
+              <select id="mode-select" class="select-mode" style="height:32px; font-size:12px; padding:0 8px;" onchange="AppSwing.onModeSelectChange(this.value)">
+                <option value="full">Full Pipeline (Scrape + Research + Alerts)</option>
                 <option value="scrape_deep">Scrape + Deep Research</option>
-                <option value="deep_only">Deep Research Only</option>
+                <option value="deep_only">Research Only (Selected Tier)</option>
+                <option value="lite_only">🌱 Lite Research Only (Fast 1-Pass)</option>
+                <option value="mid_only">⚡ Mid Research Only (Dual Model)</option>
+                <option value="deep_full">🔥 Full Deep Research (Debate + Arb)</option>
                 <option value="scrape_only">Scrape Only (TV Chart + DW)</option>
+              </select>
+              <select id="tier-select" class="select-mode" style="height:32px; font-size:12px; padding:0 8px; font-weight:600;" title="Research Intensity Tier: Lite, Mid, or Full Deep" onchange="AppSwing.onTierSelectChange(this.value)">
+                <option value="MID" selected>⚡ Mid Tier (Standard)</option>
+                <option value="LITE">🌱 Lite Tier (Fast 1-Pass)</option>
+                <option value="FULL">🔥 Full / Deep (Debate + Arb)</option>
               </select>
               <label style="display:inline-flex; align-items:center; gap:4px; font-size:11.5px; font-weight:700; color:var(--text-muted); cursor:pointer;" title="Force fresh deep research even if already run today">
                 <input type="checkbox" id="research-force-checkbox" style="cursor:pointer; accent-color:var(--cyan);"> Force

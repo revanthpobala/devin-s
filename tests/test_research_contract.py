@@ -206,8 +206,8 @@ def test_render_leads_with_plain_decision_and_flags_spent_target():
     md = c.render("AMD", "2026-11-03", "LONG", watch, {"levels": lv, "entry_kind": "ZONE"}, ["adversarial pass: FAIL"], "FAIL",
                   facts, {"thesis": ["trend intact"]}, display=({}, [("Live quote", ""), ("Fresh news", "")]))
     head = md.split("## ⚖️ THE JUDGE'S FINAL RULING")[0]
-    assert "## 🧭 DECISION: NO TRADE" in head
-    assert "already past target 1 ($517.35)" in head
+    assert "## 🧭 DECISION: AVOID" in head
+    assert "already reached target 1 ($517.35)" in head
     assert "independent reviewer rejected the plan: the plan ignores the post-earnings gap (Fresh news)" in head
     assert "Buy zone:** $459.04 – $464.16" in head and "[L:" not in md and "ATR_FLOOR_STOP" not in md
     assert md.index("## ⚖️ THE JUDGE'S FINAL RULING") < md.index("## 🔒 Audit trail")

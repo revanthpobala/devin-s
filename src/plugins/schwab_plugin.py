@@ -97,29 +97,36 @@ class SchwabPlugin(BaseAnalyticsPlugin):
         return results
 
 
-def format_active_position_block(ticker: str) -> str:
+def format_active_position_block(ticker: str, pos: dict | None = None) -> str:
     """Format active broker position into a prominent prompt block for Deep Research & Senior PM."""
     try:
-        from src.clients.schwab_client import get_active_position_for_ticker
+        if pos is None:
+            from src.clients.schwab_client import get_active_position_for_ticker
 
-        pos = get_active_position_for_ticker(ticker)
+            pos = get_active_position_for_ticker(ticker)
         if not pos or not pos.get("has_position"):
             return "- USER ACTIVE BROKER POSITION: NONE (No current holdings in Schwab or tracked portfolio; evaluate as fresh prospective trade)."
 
+        def _fnum(v, d=0.0):
+            try:
+                return float(v or d)
+            except (TypeError, ValueError):
+                return d
+
         source = pos.get("source", "SCHWAB")
-        qty = pos.get("quantity", 0)
+        qty = _fnum(pos.get("quantity"))
         side = pos.get("side", "LONG")
-        avg_px = pos.get("average_price", 0.0)
-        curr_px = pos.get("last_price") or pos.get("current_price", 0.0)
-        mv = pos.get("market_value", 0.0)
-        pnl = pos.get("day_pnl", 0.0)
-        pnl_pct = pos.get("day_pnl_pct", 0.0)
+        avg_px = _fnum(pos.get("average_price"))
+        curr_px = _fnum(pos.get("last_price") or pos.get("current_price"))
+        mv = _fnum(pos.get("market_value"))
+        pnl = _fnum(pos.get("day_pnl"))
+        pnl_pct = _fnum(pos.get("day_pnl_pct"))
         acct = pos.get("account", "N/A")
         asset_type = pos.get("asset_type", "EQUITY")
 
         accts = pos.get("accounts") or []
-        split = "; ".join(f"{a['account']}: {a['quantity']:g} @ ${float(a.get('average_price') or 0):,.2f}" for a in accts)
-        opts = "; ".join(f"{o['quantity']:+g} {o['symbol'].strip()} (${float(o.get('market_value') or 0):,.0f})" for o in pos.get("options") or [])
+        split = "; ".join(f"{a['account']}: {_fnum(a.get('quantity')):g} @ ${_fnum(a.get('average_price')):,.2f}" for a in accts)
+        opts = "; ".join(f"{_fnum(o.get('quantity')):+g} {str(o.get('symbol') or '').strip()} (${_fnum(o.get('market_value')):,.0f})" for o in pos.get("options") or [])
         cc = (f"{int(qty // 100)} covered-call contract(s) possible" if asset_type == "EQUITY" and qty >= 100 else "under 100 shares: no covered calls")
         return (
             f"--- USER ACTIVE BROKER POSITION ({source}) ---\n"

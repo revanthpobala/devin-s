@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from src import config
 from src.tracking import rr_config, trade_rules
+from src.utils.market_calendar import NYSE_HOLIDAYS, is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -800,21 +801,11 @@ def open_tickets(days: int = 14) -> List[Dict[str, Any]]:
 PREOPEN_WINDOWS = {"0800": ((8, 0), (8, 59)), "0925": ((9, 25), (9, 35))}
 RISK_CAP_PCT = {"stock": 0.05, "etf": 0.03}
 RISK_CAP_ATR = 2.0
-# NYSE full-day closures. Extend before each new year.
-NYSE_HOLIDAYS = {
-    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
-    "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
-    "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
-}
 VETO_SYSTEM = (
     "You are a veto-only reviewer of a long swing plan. Reply with one line: OK, or VETO followed by a short reason "
     "and the exact sentence copied in double quotes from the news that proves it. Veto only a hard, dated fact that "
     "breaks the long thesis (guidance cut, downgrade, fraud, halt, lost major contract). Otherwise OK. Never invent facts."
 )
-
-
-def is_trading_day(d: date) -> bool:
-    return d.weekday() < 5 and d.isoformat() not in NYSE_HOLIDAYS
 
 
 def is_etf(ticker: str) -> bool:

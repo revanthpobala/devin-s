@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=55">
   <link rel="stylesheet" href="/static/css/components.css?v=55">
   <link rel="stylesheet" href="/static/css/layout.css?v=55">
+  <link rel="stylesheet" href="/static/css/research_report.css?v=1">
   
   <style>
     :root {
@@ -1701,6 +1702,7 @@
     <div class="dossier-pane">
       <div class="tab-bar">
         <div class="tab-list">
+          <button class="tab-btn" id="tab-dec-btn" onclick="switchTab('dec')">🧭 Decision</button>
           <button class="tab-btn active" id="tab-arb-btn" onclick="switchTab('arb')">⚖️ PM Arbitration</button>
           <button class="tab-btn" id="tab-sum-btn" onclick="switchTab('sum')">📊 Model A (Synthesis)</button>
           <button class="tab-btn" id="tab-ind-btn" onclick="switchTab('ind')">🧭 Model B (Independent)</button>
@@ -2081,7 +2083,9 @@
 
         // Determine default tab if not explicitly requested
         if (!State.explicitTab) {
-          if (!data.has_deep_research && data.has_local_dossier) {
+          if (data.has_report_json) {
+            State.activeTab = 'dec';
+          } else if (!data.has_deep_research && data.has_local_dossier) {
             State.activeTab = 'local';
           } else if (data.has_deep_research) {
             State.activeTab = 'arb';
@@ -2460,6 +2464,12 @@
 
       if (tab === 'trades') {
         renderTradesTab(bodyEl, State.ticker);
+        return;
+      }
+      if (tab === 'dec') {
+        if (window.ResearchDecision) {
+          window.ResearchDecision.render(bodyEl, State.ticker, State.date);
+        }
         return;
       }
 
@@ -4699,7 +4709,8 @@
   <!-- Open Source TradingView Lightweight Charts (Apache 2.0) -->
   <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
   <!-- Deep Research Suggested Trade Level & P&L Visualizer -->
-  <script src="/static/js/trade_level_graph.js?v=3"></script>
+  <script src="/static/js/trade_level_graph.js?v=4"></script>
+  <script src="/static/js/research_report.js?v=1"></script>
   <!-- Universal TradingView Live Chart Hover Engine -->
   <script src="/static/js/tv_hover.js?v=5"></script>
   <!-- Floating Edge Tab to Expand/Unhide Copilot when Collapsed -->

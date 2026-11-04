@@ -413,9 +413,9 @@ def run_deep_research(
 
     gem_text = original_gem_path.read_text(encoding="utf-8")
     response_text = response_path.read_text(encoding="utf-8")
-    from src.logic.deep_research.bible_slice import slim_bible
+    from src.logic.deep_research.bible_slice import route_bible
 
-    bible_text = slim_bible(bible_path.read_text(encoding="utf-8"))
+    bible_raw = bible_path.read_text(encoding="utf-8")
     ponytail_text = ponytail_path.read_text(encoding="utf-8") if ponytail_path.exists() else ""
     independent_gem_text = independent_gem_path.read_text(encoding="utf-8") if independent_gem_path.exists() else ""
     independent_response_text = independent_response_path.read_text(encoding="utf-8") if independent_response_path.exists() else ""
@@ -425,13 +425,14 @@ def run_deep_research(
     if example_path.exists():
         few_shot_example = example_path.read_text(encoding="utf-8")
 
-    system_prompt = (
-        f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n"
-        f"{gem_text}\n\n"
-        f"--- REVANTH BIBLE (Rules & Framework) ---\n{bible_text}\n\n"
-        f"--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}\n\n"
-        f"{response_text}"
-    )
+    def _model_a_system_prompt(dw: dict) -> str:
+        return (
+            f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n"
+            f"{gem_text}\n\n"
+            f"--- REVANTH BIBLE (Rules & Framework) ---\n{route_bible(bible_raw, dw)}\n\n"
+            f"--- STRICT EXAMPLE OF THE EXACT FORMAT, ASCII ART, AND DEPTH YOU MUST OUTPUT ---\n{few_shot_example}\n\n"
+            f"{response_text}"
+        )
     system_prompt_independent = (
         f"--- PONYTAIL FINANCE (Occam's Razor & PM Discipline) ---\n{ponytail_text}\n\n"
         f"{independent_gem_text}\n\n"
@@ -594,9 +595,28 @@ def run_deep_research(
         from datetime import datetime as _dt
         from src.logic.deep_research.deterministic import choose_side, run_contract
 
-        doc_side = choose_side(dw_dict, resolved_lane)
+        doc_side = choose_side(dw_dict, resolved_lane, held=(kind == "MANAGE"))
         captured_at = _dt.fromtimestamp(paths["dw_json"].stat().st_mtime) if paths["dw_json"].exists() else _dt.now()
         flags = (triage_record.get("flags") if isinstance(triage_record, dict) else None) or []
+
+        # No long plan and nothing held: the contract can only write the NO TRADE stub,
+        # so skip the live fetch, debate and Models A/B entirely.
+        if contract_mode and doc_side is None:
+            logger.info(f"[{ticker}] no long plan and not held: skipping Models A/B (NO TRADE)")
+            t_stub_start = time.time()
+            reports_dir = config.BASE_DIR / "reports" / date_str
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            run_contract(ticker, date_str, dw_dict, side=None, setup_lane=resolved_lane, kind=kind,
+                         captured_at=captured_at, inputs_md="", sources=[], position_block="",
+                         tdir=tdir, raw_dir=raw_dir, reports_dir=reports_dir, csv_path=paths["dw_csv"])
+            stub_sec = round(time.time() - t_stub_start, 3)
+            record_research_timing(ticker=ticker, target_date=date_str, stage="ARBITRATION",
+                                   seconds=stub_sec, tier=chosen_tier, job_id=job_id,
+                                   details="NO TRADE stub: no long plan, not held")
+            record_research_timing(ticker=ticker, target_date=date_str, stage="TOTAL",
+                                   seconds=round(time.time() - t_ticker_start, 3), tier=chosen_tier, job_id=job_id,
+                                   details="NO TRADE stub (Models A/B skipped)")
+            continue
 
         # 3. Format deterministic blocks
         flags_block = format_flags_block(flags)
@@ -673,7 +693,12 @@ def run_deep_research(
                 preloaded_block += "\n\n" + _pf
         except Exception as e_pf:
             logger.debug(f"[{ticker}] prefetch facts skipped: {e_pf}")
-        active_pos_block = format_active_position_block(ticker)
+        try:
+            from src.clients.schwab_client import get_active_position_for_ticker
+            active_pos = get_active_position_for_ticker(ticker)
+        except Exception:
+            active_pos = None
+        active_pos_block = format_active_position_block(ticker, active_pos)
 
         prefetch_sec = round(time.time() - t_prefetch_start, 3)
         record_research_timing(ticker=ticker, target_date=date_str, stage="PREFETCH", seconds=prefetch_sec, tier=chosen_tier, job_id=job_id)
@@ -719,6 +744,8 @@ def run_deep_research(
             logger.debug(f"[{ticker}] prior plan outcome unavailable: {e_ppo}")
 
         # 10. Assemble prompts
+        system_prompt = _model_a_system_prompt(dw_dict)
+        logger.info(f"[{ticker}] Model A system prompt: {len(system_prompt):,} chars (~{len(system_prompt) // 4:,} tokens)")
         user_prompt = build_user_prompt(
             ticker=ticker, date_str=date_str, data_window_str=data_window_str,
             live_quote_block=ctx.live_quote_block, unmasked_recency_block=unmasked_recency_block,
@@ -788,8 +815,9 @@ def run_deep_research(
         # ------------------------------------------------------------------
         try:
             mid_tool_limit = int(os.getenv("MID_MAX_TOOL_ROUNDS", "4"))
-            max_tools_a = 1 if chosen_tier == "LITE" else (mid_tool_limit if chosen_tier == "MID" else 8)
-            max_tools_b = 1 if chosen_tier == "LITE" else (mid_tool_limit if chosen_tier == "MID" else 8)
+            full_tool_limit = int(os.getenv("FULL_MAX_TOOL_ROUNDS", "4"))
+            max_tools_a = 1 if chosen_tier == "LITE" else (mid_tool_limit if chosen_tier == "MID" else full_tool_limit)
+            max_tools_b = 1 if chosen_tier == "LITE" else (mid_tool_limit if chosen_tier == "MID" else full_tool_limit)
 
             stats_a = {}
             stats_b = {}
@@ -891,15 +919,20 @@ def run_deep_research(
                     ("Live quote", ctx.live_quote_block), ("Options / GEX", ctx.gex_block),
                     ("Earnings packet", ctx.earnings_fact_block), ("Fundamentals", ctx.av_block),
                     ("Institutional", ctx.institutional_block), ("Fresh news", ctx.fresh_news),
-                    ("News dossier", news_dossier), ("Grounded search", ctx.grounded_block),
+                    ("News dossier", news_dossier),
+                    *(ctx.grounded_sections or [("Grounded search", ctx.grounded_block)]),
                     ("Macro", macro_news), ("Macro grounded", ctx.macro_grounded_block),
                     ("Prefetched facts", preloaded_block), ("Prior plan outcome", prior_plan_outcome_block),
+                    *(ctx.market_events_sections or []),
+                    ("Market tape (code)", ctx.market_tape_block),
                 ]
                 run_contract(ticker, date_str, dw_dict, side=doc_side, setup_lane=resolved_lane, kind=kind,
                              captured_at=captured_at, inputs_md=f"REPORT A\n{clean_response}\n\nREPORT B\n{clean_ind_response}",
                              sources=sources, position_block=active_pos_block, tdir=tdir, raw_dir=raw_dir,
                              reports_dir=reports_dir, csv_path=paths["dw_csv"], lane_prior_win=lane_prior_win,
-                             lane_prior_ev=lane_prior_ev, report_a=clean_response, report_b=clean_ind_response)
+                             lane_prior_ev=lane_prior_ev, report_a=clean_response, report_b=clean_ind_response,
+                             source_links=ctx.grounded_citations or [], market_tape=ctx.market_tape,
+                             position=active_pos)
             else:
                 run_arbitration(
                     ticker=ticker, date_str=date_str,

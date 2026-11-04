@@ -178,9 +178,9 @@ def resolve_next_earnings_date(ticker: str) -> tuple[Optional[date], str]:
 
 
 def _bdays_between(start: date, end: date) -> int:
-    import pandas as pd
+    from src.utils.market_calendar import trading_days_between
 
-    return max(len(pd.bdate_range(start=start, end=end)) - 1, 0)
+    return trading_days_between(start, end)
 
 
 
@@ -228,8 +228,9 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
                     future_dates.sort()
                     if future_dates:
                         next_earn_str = future_dates[0]
-                        b_range = pd.bdate_range(start=ref_str, end=next_earn_str)
-                        b_days = len(b_range) - 1
+                        from src.utils.market_calendar import trading_days_between
+
+                        b_days = trading_days_between(ref_date, _to_date(next_earn_str))
                         return b_days, None
             cal = t.calendar
             dates = None
@@ -272,11 +273,11 @@ def get_next_earnings_days(ticker: str, as_of_date: Optional[Any] = None) -> int
                     nxt_date = None
 
             if nxt_date:
-                ref_str = ref_date.strftime("%Y-%m-%d")
-                nxt_str = nxt_date.strftime("%Y-%m-%d")
-                b_range = pd.bdate_range(start=ref_str, end=nxt_str)
-                b_days = len(b_range) - 1
-                return b_days if b_days >= 0 else None
+                from src.utils.market_calendar import trading_days_between
+
+                if nxt_date < ref_date:
+                    return None   # stale past date — not "earnings today"
+                return trading_days_between(ref_date, nxt_date)
     except Exception as e:
         logger.warning(f"[{ticker}] earnings date lookup failed: {e}")
         return None

@@ -236,9 +236,33 @@ def shifted_chain(chain, spot_now: float, spot_at: float, today: date, entry_day
     return [e for e in exps if date.fromisoformat(e) > entry_day], f
 
 
+def _covered_call(calls, exp: str, spot: float, t1: float, shares: float, em_pct: float, atr: float,
+                  today: date, earnings: Optional[str]) -> Dict[str, Any]:
+    """Code-chosen covered call for a held name: first chain strike at or above target_1, 30-60 DTE."""
+    strikes = sorted(float(k) for k in calls["strike"].unique())
+    k = next((k for k in strikes if k >= t1), None)
+    if k is None:
+        return {"structure": "NONE", "summary": f"no call strike at or above target {t1:.2f} for {exp}"}
+    mid = _mid(calls[calls["strike"] == k].iloc[0])
+    if not mid:
+        return {"structure": "NONE", "summary": f"no liquid call at strike {k:g} for {exp}"}
+    from src.logic.scenario_plans import daily_sigma, touch_odds
+
+    days = max((date.fromisoformat(exp) - today).days, 1)
+    p, _ = touch_odds(spot, k, daily_sigma(spot, em_pct, atr), max(1, round(days * 5 / 7)))
+    contracts = int(shares // 100)
+    out = {"structure": "COVERED_CALL", "expiration": exp, "short_strike": k, "long_strike": None,
+           "mid_credit": round(mid, 2), "contracts": contracts, "touch_pct": p}
+    out["summary"] = (f"sell {contracts}x {exp} {k:g} call, credit {mid:.2f} (${mid * contracts * 100:,.0f})"
+                      + (f", ~{p}% touch odds by expiry" if p is not None else "")
+                      + f" — income, caps upside above {k:g}{_flag(exp, earnings)} · {TAG}")
+    return out
+
+
 def build_options_menu(ticker: str, spot: float, plan: Dict[str, Any], em_pct: float = 0.0,
                        earnings: Optional[str] = None, today: Optional[date] = None, chain=None,
-                       tactical_lo: int = 28) -> Dict[str, Any]:
+                       tactical_lo: int = 28, kind: Optional[str] = None, held_qty: float = 0.0,
+                       atr: float = 0.0) -> Dict[str, Any]:
     """chain = (expiries, fetch(exp)->(calls_df, puts_df)[, source]). Defaults to broker routing, then yfinance."""
     today = today or date.today()
     if chain is None:
@@ -262,18 +286,45 @@ def build_options_menu(ticker: str, spot: float, plan: Dict[str, Any], em_pct: f
                 menu[key] = _tier3(puts, exp, spot, lv["stop"], today, earnings)
         except Exception as e:
             menu[key] = {"structure": "NONE", "summary": f"chain error {exp}: {type(e).__name__}"}
+    if str(kind or "").upper() == "MANAGE" and held_qty >= 100:
+        exp = _pick_exp(exps, today, 30, 60, 45, fetch, spot)
+        if not exp:
+            menu["covered_call"] = {"structure": "NONE", "summary": "no expiry in 30-60 DTE"}
+        else:
+            try:
+                menu["covered_call"] = _covered_call(fetch(exp)[0], exp, spot, lv["t1"], held_qty,
+                                                     em_pct, atr, today, earnings)
+            except Exception as e:
+                menu["covered_call"] = {"structure": "NONE", "summary": f"chain error {exp}: {type(e).__name__}"}
     return menu
 
 
 def attach_options_menu(watch_data: Dict[str, Any], ticker: str, spot: float, em_pct: float = 0.0,
-                        earnings: Optional[str] = None) -> None:
+                        earnings: Optional[str] = None, kind: Optional[str] = None,
+                        position: Optional[Dict[str, Any]] = None) -> None:
     """Overwrite watch_data['options_menu'] with chain-built tiers. LONG only; never sets actionable."""
     if str(watch_data.get("side") or "LONG").upper() != "LONG" or spot <= 0:
         return
+    # A covered call is income on a position you keep; on an EXIT verdict it contradicts the ruling.
+    cc_kind = kind if str(watch_data.get("verdict") or "").upper() != "EXIT" else None
+    held_qty = _f((position or {}).get("quantity"))
+    if str(cc_kind or "").upper() == "MANAGE" and held_qty <= 0:
+        try:
+            from src.tracking.position_targets import held_shares
+
+            held_qty = _f(held_shares(ticker))
+        except Exception:
+            pass
     try:
-        menu = build_options_menu(ticker, spot, watch_data.get("shares_plan") or {}, em_pct, earnings)
+        menu = build_options_menu(ticker, spot, watch_data.get("shares_plan") or {}, em_pct, earnings,
+                                  kind=cc_kind, held_qty=held_qty, atr=_f(watch_data.get("atr14")) or 0.0)
     except Exception as e:
         logger.warning(f"[{ticker}] options menu skipped: {e}")
         return
-    if any(menu[k].get("structure") not in (None, "NONE") for k in ("tactical_spread", "leaps", "income_or_csp")):
+    legs = [f"{_f(o.get('quantity')):+g} {str(o.get('symbol') or '').strip()}"
+            for o in (position or {}).get("options") or [] if _f(o.get("quantity"))]
+    if legs:
+        menu["existing_legs"] = legs
+    if legs or any(menu[k].get("structure") not in (None, "NONE")
+                   for k in ("tactical_spread", "leaps", "income_or_csp", "covered_call")):
         watch_data["options_menu"] = menu

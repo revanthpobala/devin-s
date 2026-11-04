@@ -217,6 +217,7 @@ def test_touch_fresh_dossier_gives_ticket(monkeypatch):
     monkeypatch.setattr(order_ticket, "_expiries", lambda t: ["2026-11-06"])
     monkeypatch.setattr(order_ticket, "_calls", lambda t, e: _calls_df([(100, 4.4, 4.6), (104, 2.4, 2.6)]))
     monkeypatch.setattr(order_ticket, "_quotes", lambda s: {"TST": {"last": 100.5, "low": 100.0, "date": "2026-10-16"}})
+    monkeypatch.setattr("src.clients.news_client.get_fresh_news", lambda *a, **k: "")
     r = order_ticket.act_on_touch("TST", 100.5, "2026-10-16", wd=_wd())
     assert r["action"] == "TICKET" and "SHARES+SPREAD" in r["text"] and "by 2026-10-30" in r["text"]
 
@@ -226,6 +227,7 @@ def test_touch_stale_queues_one_mid_and_approach_stays_quiet(monkeypatch):
     monkeypatch.setattr("src.tracking.auto_triage_daemon.needs_fresh_research", lambda *a, **k: (True, "plan 6 sessions old"))
     monkeypatch.setattr("src.tracking.auto_triage_daemon.enqueue_touch_mid", lambda t, d: calls.append(t) or True)
     monkeypatch.setattr(order_ticket, "_quotes", lambda s: {"TST": {"last": 100.5, "low": 100.0, "date": "2026-10-16"}})
+    monkeypatch.setattr("src.clients.news_client.get_fresh_news", lambda *a, **k: "")
     r = order_ticket.act_on_touch("TST", 100.5, "2026-10-16", wd=_wd())
     assert r["action"] == "RESEARCH" and calls == ["TST"]
     assert order_ticket.act_on_touch("TST", 101.5, "2026-10-16", mode="approach", wd=_wd())["action"] == "NO TRADE" and calls == ["TST"]

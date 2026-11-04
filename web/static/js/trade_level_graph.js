@@ -740,55 +740,25 @@
         });
       }
 
-      // Generate realistic daily bars leading to current spot
-      const bars = this._generateHistoricalBars(plan);
-      candleSeries.setData(bars);
-      chart.timeScale().fitContent();
+      // Real daily bars from the candle endpoint — never synthetic.
+      fetch(`/api/research/${encodeURIComponent(plan.ticker)}/candles?limit=120`)
+        .then(r => (r.ok ? r.json() : Promise.reject(new Error(`candles ${r.status}`))))
+        .then(d => {
+          const seen = new Set();
+          const bars = (d.candles || [])
+            .filter(b => b && b.time && b.close && !seen.has(b.time) && seen.add(b.time))
+            .sort((a, b) => (a.time < b.time ? -1 : 1))
+            .map(b => ({ time: b.time, open: +b.open, high: +b.high, low: +b.low, close: +b.close }));
+          if (!bars.length) throw new Error('no candles');
+          // Live price is drawn by the LIVE price line above — never written into a real bar.
+          candleSeries.setData(bars);
+          chart.timeScale().fitContent();
+        })
+        .catch(() => {
+          chartEl.innerHTML = `<div style="height:100%; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-weight:600;">No price history available for ${plan.ticker}.</div>`;
+        });
 
       chartEl._lwChart = chart;
-    },
-
-    _generateHistoricalBars(plan) {
-      const bars = [];
-      const endPrice = plan.livePrice || plan.spotPrice || plan.entryPrice;
-      const atr = Math.max(endPrice * 0.015, (plan.riskPerShare || endPrice * 0.03) * 0.7);
-      const totalBars = 35;
-      const now = new Date();
-
-      let curClose = endPrice - (atr * 2.5);
-      for (let i = totalBars; i >= 0; i--) {
-        const d = new Date(now.getTime() - (i * 24 * 60 * 60 * 1000));
-        // Skip weekends
-        if (d.getDay() === 0 || d.getDay() === 6) continue;
-
-        const dateStr = d.toISOString().split('T')[0];
-        const progress = 1 - (i / totalBars);
-        const targetLevel = (endPrice * progress) + (curClose * (1 - progress));
-        const noise = (Math.sin(i * 1.3) * atr * 0.8) + ((Math.random() - 0.48) * atr * 0.5);
-        const close = Math.max(plan.stop * 0.99, targetLevel + noise);
-        const open = curClose;
-        const high = Math.max(open, close) + (Math.random() * atr * 0.5);
-        const low = Math.min(open, close) - (Math.random() * atr * 0.5);
-
-        bars.push({
-          time: dateStr,
-          open: parseFloat(open.toFixed(2)),
-          high: parseFloat(high.toFixed(2)),
-          low: parseFloat(low.toFixed(2)),
-          close: parseFloat(close.toFixed(2)),
-        });
-        curClose = close;
-      }
-
-      // Ensure last bar closes exactly at current live spot
-      if (bars.length > 0 && plan.livePrice) {
-        const last = bars[bars.length - 1];
-        last.close = plan.livePrice;
-        last.high = Math.max(last.high, plan.livePrice);
-        last.low = Math.min(last.low, plan.livePrice);
-      }
-
-      return bars;
     },
 
     // -------------------------------------------------------------------------

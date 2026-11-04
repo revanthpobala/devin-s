@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+import contextlib
 import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -55,49 +57,152 @@ def _wait_for_spare_slot(max_wait_s: float = 90.0) -> None:
         time.sleep(1.0 + random.random())
 
 
+# llama-server with -kvu shares ONE KV cache across all slots: when the in-flight requests together pass -c,
+# the server fails every one of them with "Context size has been exceeded". Research jobs run in separate
+# processes, so the in-flight token total is kept in a file ledger. 0 disables the gate.
+_KV_BUDGET = int(os.getenv("LLM_LOCAL_KV_BUDGET", "240000"))
+_KV_LEDGER = os.path.join(tempfile.gettempdir(), "devin_llm_kv_ledger.json")
+_KV_HOLD_S = float(os.getenv("LLM_REQUEST_TIMEOUT_SEC", "2400")) + 120
+
+
+def _pid_alive(pid) -> bool:
+    """A reservation whose owning process died (killed job) must not hold budget until it expires."""
+    try:
+        import psutil
+
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        return True
+
+
+@contextlib.contextmanager
+def _ledger_lock():
+    lock = _KV_LEDGER + ".lock"
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock) > 10:
+                    os.remove(lock)
+            except OSError:
+                pass
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
+def _ledger_update(fn):
+    with _ledger_lock():
+        try:
+            with open(_KV_LEDGER, encoding="utf-8") as f:
+                ledger = json.load(f)
+        except (OSError, ValueError):
+            ledger = {}
+        now = time.time()
+        ledger = {k: v for k, v in ledger.items()
+                  if isinstance(v, list) and len(v) == 3 and v[1] > now and _pid_alive(v[2])}
+        result = fn(ledger)
+        tmp = f"{_KV_LEDGER}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(ledger, f)
+        os.replace(tmp, _KV_LEDGER)
+        return result
+
+
+def _estimate_request_tokens(kwargs: dict) -> int:
+    chars = _message_text_chars(kwargs.get("messages") or [])
+    if kwargs.get("tools"):
+        chars += len(json.dumps(kwargs["tools"]))
+    return int(chars / 3.5) + int(kwargs.get("max_tokens") or 0)
+
+
+@contextlib.contextmanager
+def _kv_reservation(tokens: int):
+    if _KV_BUDGET <= 0:
+        yield
+        return
+    key = f"{os.getpid()}-{threading.get_ident()}-{time.time_ns()}"
+    tokens = min(tokens, _KV_BUDGET)
+
+    def _try(ledger):
+        if ledger and sum(v[0] for v in ledger.values()) + tokens > _KV_BUDGET:
+            return False
+        ledger[key] = [tokens, time.time() + _KV_HOLD_S, os.getpid()]
+        return True
+
+    t0 = time.time()
+    while not _ledger_update(_try):
+        if time.time() - t0 < 2.5:
+            logger.info(f"[local] waiting for KV budget: need ~{tokens:,} of {_KV_BUDGET:,} tokens")
+        time.sleep(2.0)
+    if time.time() - t0 > 5:
+        logger.info(f"[local] KV budget granted after {time.time() - t0:.0f}s (~{tokens:,} tokens)")
+    try:
+        yield
+    finally:
+        _ledger_update(lambda ledger: ledger.pop(key, None))
+
+
+def _consume_stream(stream_response):
+    collected_chunks = []
+    finish_reason = None
+    for chunk in stream_response:
+        if chunk.choices and len(chunk.choices) > 0:
+            delta = chunk.choices[0].delta
+            if hasattr(delta, "content") and delta.content:
+                collected_chunks.append(delta.content)
+            if chunk.choices[0].finish_reason:
+                finish_reason = chunk.choices[0].finish_reason
+    full_content = "".join(collected_chunks)
+
+    class _DummyMessage:
+        def __init__(self, content):
+            self.content = content
+            self.tool_calls = None
+
+    class _DummyChoice:
+        def __init__(self, content, finish_reason):
+            self.message = _DummyMessage(content)
+            self.finish_reason = finish_reason
+
+    class _DummyResponse:
+        def __init__(self, content, finish_reason):
+            self.choices = [_DummyChoice(content, finish_reason)]
+
+    return _DummyResponse(full_content, finish_reason)
+
+
 def _create_completion(client, provider: str, **kwargs):
     """
     Wrap chat.completions.create with an optional non-blocking retry mechanism
     or a strict block to prevent thread pool starvation during heavy local inference.
     """
-    if provider == "local":
-        if kwargs.get("stream"):
-            # Consume stream inside semaphore block so concurrency limit is strictly held for generation duration
-            with _local_llm_semaphore:
-                _wait_for_spare_slot()
-                stream_response = client.chat.completions.create(**kwargs)
-                collected_chunks = []
-                finish_reason = None
-                for chunk in stream_response:
-                    if chunk.choices and len(chunk.choices) > 0:
-                        delta = chunk.choices[0].delta
-                        if hasattr(delta, "content") and delta.content:
-                            collected_chunks.append(delta.content)
-                        if chunk.choices[0].finish_reason:
-                            finish_reason = chunk.choices[0].finish_reason
-                full_content = "".join(collected_chunks)
+    if provider != "local":
+        return client.chat.completions.create(**kwargs)
 
-                class _DummyMessage:
-                    def __init__(self, content):
-                        self.content = content
-                        self.tool_calls = None
-
-                class _DummyChoice:
-                    def __init__(self, content, finish_reason):
-                        self.message = _DummyMessage(content)
-                        self.finish_reason = finish_reason
-
-                class _DummyResponse:
-                    def __init__(self, content, finish_reason):
-                        self.choices = [_DummyChoice(content, finish_reason)]
-
-                return _DummyResponse(full_content, finish_reason)
-
+    attempts = 4
+    for attempt in range(attempts):
+        # Stream is consumed inside the semaphore and reservation so both are held for the whole generation.
         with _local_llm_semaphore:
             _wait_for_spare_slot()
-            return client.chat.completions.create(**kwargs)
-
-    return client.chat.completions.create(**kwargs)
+            with _kv_reservation(_estimate_request_tokens(kwargs)):
+                try:
+                    resp = client.chat.completions.create(**kwargs)
+                    return _consume_stream(resp) if kwargs.get("stream") else resp
+                except Exception as e:
+                    if "context size has been exceeded" not in str(e).lower() or attempt == attempts - 1:
+                        raise
+        wait_s = 15 * (attempt + 1)
+        logger.warning(f"[local] KV cache full (another request overflowed it); retrying in {wait_s}s")
+        time.sleep(wait_s)
 
 
 class _DummyFunction:
@@ -180,6 +285,16 @@ def _stop_tool_calls(kwargs: dict, provider: str) -> None:
 
 
 _IMAGE_CHAR_EQUIV = 5000  # ~1.2k vision tokens per 1280px chart
+
+
+def _tool_call_key(tool_call) -> str:
+    fn = getattr(tool_call, "function", None)
+    args = getattr(fn, "arguments", "") or ""
+    try:
+        args = json.dumps(json.loads(args), sort_keys=True)
+    except (TypeError, ValueError):
+        pass
+    return f"{getattr(fn, 'name', '')}:{args}"
 
 
 def _message_text_chars(messages: list) -> int:
@@ -2407,6 +2522,7 @@ def query_local_llm(
         MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "50"))
         tool_call_count = 0
         total_individual_tool_calls = 0
+        seen_tool_calls: set = set()
 
         # Per-request output timeout (seconds): kill a single hung completion instead of
         # blocking the whole run for an unbounded time. A healthy local-GPU generation from a
@@ -2521,10 +2637,29 @@ def query_local_llm(
                         "content": tool_result_str,
                     }
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(effective_tool_calls))) as executor:
-                    futures = [executor.submit(_process_tool_call, tc) for tc in effective_tool_calls]
-                    for future in futures:
-                        messages.append(future.result())
+                tool_msgs: dict = {}
+                fresh_calls = []
+                for tc in effective_tool_calls:
+                    key = _tool_call_key(tc)
+                    if key in seen_tool_calls:
+                        tool_msgs[id(tc)] = {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": getattr(getattr(tc, "function", None), "name", "unknown"),
+                            "content": "Duplicate call: the identical result is already earlier in this conversation. Use it; do not call this again.",
+                        }
+                    else:
+                        seen_tool_calls.add(key)
+                        fresh_calls.append(tc)
+                if fresh_calls:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(fresh_calls)) as executor:
+                        for tc, msg in zip(fresh_calls, executor.map(_process_tool_call, fresh_calls)):
+                            tool_msgs[id(tc)] = msg
+                for tc in effective_tool_calls:
+                    messages.append(tool_msgs[id(tc)])
+                if not fresh_calls:
+                    logger.info(f"All {len(effective_tool_calls)} tool call(s) were repeats; forcing final answer.")
+                    max_tool_batches = 0
 
                 tool_call_count += 1
                 total_individual_tool_calls += len(effective_tool_calls)

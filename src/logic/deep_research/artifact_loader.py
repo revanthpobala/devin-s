@@ -198,6 +198,18 @@ def load_data_window(ticker: str, dw_path: Path) -> dict:
         except Exception as e:
             logger.debug(f"[{ticker}] derive_datawindow_fields notice: {e}")
 
+    # The scrape's own `atr14` is a simple 14-bar average (TSLA 14.99); the stop floor is gated on Wilder ATR (13.40).
+    # One definition everywhere, or the two models and the gate disagree about the same stop.
+    wilder = dw_dict.get("RSI2 ATR14")
+    if isinstance(wilder, (int, float)) and wilder > 0:
+        dw_dict["atr14"] = wilder
+        try:
+            px = float(dw_dict.get("close"))
+        except (TypeError, ValueError):
+            px = 0.0
+        if px > 0 and dw_dict.get("atr14_pct") is not None:
+            dw_dict["atr14_pct"] = round(100 * wilder / px, 2)
+
     _DW_CACHE[cache_key] = dict(dw_dict)
     return dw_dict
 

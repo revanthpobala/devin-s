@@ -56,6 +56,11 @@ logger = logging.getLogger("ui_server")
 router = APIRouter(tags=["research"])
 
 _REPORT_BUNDLE_CACHE: Dict[str, tuple[float, dict]] = {}
+
+
+def _chart_date(path) -> str:
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", str(path)) if path else None
+    return m.group(1) if m else "latest"
 _REPORT_CACHE_TTL = 300  # 5 minutes TTL
 
 TICKER_REGEX = re.compile(r"^[A-Z0-9]{1,6}(?:[./-][A-Z0-9]{1,2})?$")
@@ -1638,12 +1643,80 @@ def get_report_bundle(date: str, ticker: str):
         "watch_levels": watch_levels,
         "has_zoom_chart": zoom_path is not None,
         "has_plain_chart": plain_path is not None,
-        "zoom_chart_url": f"/api/charts/{re.search(r'(\d{4}-\d{2}-\d{2})', str(zoom_path)).group(1) if (zoom_path and re.search(r'(\d{4}-\d{2}-\d{2})', str(zoom_path))) else 'latest'}/{ticker_u}/zoom" if zoom_path else None,
-        "plain_chart_url": f"/api/charts/{re.search(r'(\d{4}-\d{2}-\d{2})', str(plain_path)).group(1) if (plain_path and re.search(r'(\d{4}-\d{2}-\d{2})', str(plain_path))) else 'latest'}/{ticker_u}/plain" if plain_path else None,
+        "has_report_json": (rep_root / target_date / f"{ticker_u.replace(':', '_')}_report.json").exists(),
+        "zoom_chart_url": f"/api/charts/{_chart_date(zoom_path)}/{ticker_u}/zoom" if zoom_path else None,
+        "plain_chart_url": f"/api/charts/{_chart_date(plain_path)}/{ticker_u}/plain" if plain_path else None,
     }
 
     _REPORT_BUNDLE_CACHE[cache_key] = (now_ts, result_payload)
     return result_payload
+
+
+@router.get("/api/research/{ticker}/report-json")
+def get_report_json(ticker: str, date: Optional[str] = None):
+    """The structured contract report object that feeds the Decision tab ({T}_report.json)."""
+    ticker_u = validate_ticker(ticker)
+    safe = ticker_u.replace(":", "_")
+    rep_root = config.BASE_DIR / "reports"
+    if date and re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        candidates = [rep_root / date / f"{safe}_report.json"]
+    else:
+        candidates = sorted(rep_root.glob(f"202*/{safe}_report.json"), reverse=True) if rep_root.exists() else []
+    path = next((p for p in candidates if p.exists()), None)
+    if not path:
+        raise HTTPException(status_code=404, detail="no structured report json for this ticker")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"report json unreadable: {e}")
+
+
+@router.get("/api/research/{ticker}/candles")
+def get_research_candles(ticker: str, date: Optional[str] = None, limit: int = 260):
+    """Real daily OHLCV bars for the trade-level chart — never synthetic.
+
+    The Data Window CSV is authoritative for the tail (it is what the report's
+    levels were computed from, raw unadjusted prices); the yfinance cache fills
+    history behind it. Either may serve alone."""
+    ticker_u = validate_ticker(ticker)
+    dw_bars: list = []
+    dw_src = ""
+    safe = ticker_u.replace(":", "_")
+    raw_root = config.BASE_DIR / "data" / "raw"
+    if date and re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        cands = [raw_root / date / ticker_u / f"{safe}_datawindow.csv"]
+    else:
+        cands = sorted(raw_root.glob(f"202*/{ticker_u}/{safe}_datawindow.csv"), reverse=True) if raw_root.exists() else []
+    csv_path = next((p for p in cands if p.exists()), None)
+    if csv_path:
+        try:
+            from src.logic.deep_research import quant_facts as _qf
+
+            dw_bars = _qf._parse_csv_bars(csv_path)
+            dw_src = f"datawindow {csv_path.parent.parent.name}"
+        except Exception as e:
+            logger.debug(f"[{ticker_u}] datawindow csv parse failed: {e}")
+    yf_bars: list = []
+    yf_src = ""
+    try:
+        from src.logic.deep_research import quant_facts as _qf
+
+        yf_bars, yf_src = _qf.daily_bars(ticker_u, _qf._cache_dir(None))
+    except Exception as e:
+        logger.debug(f"[{ticker_u}] candle cache fetch failed: {e}")
+    if dw_bars and yf_bars:
+        lo, hi = str(dw_bars[0]["time"]), str(dw_bars[-1]["time"])
+        bars = ([b for b in yf_bars if str(b["time"]) < lo] + dw_bars
+                + [b for b in yf_bars if str(b["time"]) > hi])
+        src = f"{dw_src} + {yf_src} around it"
+    elif dw_bars:
+        bars, src = dw_bars, dw_src
+    else:
+        bars, src = yf_bars, yf_src or "none"
+    candles = [{"time": b["time"], "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b.get("volume") or 0}
+               for b in bars if b.get("close")][-max(1, min(limit, 2000)):]
+    return {"ticker": ticker_u, "source": src, "candles": candles}
 
 
 @router.get("/api/quote/{ticker}")
@@ -2362,14 +2435,25 @@ def trigger_research(req: ResearchRequest):
         if not re.match(r'^\d{4}-\d{2}-\d{2}$', req.date.strip()):
             raise HTTPException(status_code=400, detail=f"Invalid date format: {req.date}")
 
+    req_mode = str(req.mode or "full").lower().strip()
     req_tier = str(req.tier or "MID").upper().strip()
+    if req_mode == "lite_only":
+        req_mode = "deep_only"
+        req_tier = "LITE"
+    elif req_mode == "mid_only":
+        req_mode = "deep_only"
+        req_tier = "MID"
+    elif req_mode == "deep_full":
+        req_mode = "deep_only"
+        req_tier = "FULL"
+
     if req_tier not in ("LITE", "MID", "FULL"):
         req_tier = "MID"
 
     if len(tickers) > 1:
         results = []
         for t in tickers:
-            sub_req = ResearchRequest(ticker=t, mode=req.mode, date=req.date, force=req.force, tier=req_tier)
+            sub_req = ResearchRequest(ticker=t, mode=req_mode, date=req.date, force=req.force, tier=req_tier)
             results.append(trigger_research(sub_req))
         started = sum(1 for r in results if r.get("status") == "started")
         queued = sum(1 for r in results if r.get("status") == "queued")
@@ -2419,7 +2503,7 @@ def trigger_research(req: ResearchRequest):
                     "status": "running",
                     "job_id": jid,
                     "ticker": ticker_u,
-                    "mode": existing["mode"] if "mode" in existing.keys() else req.mode,
+                    "mode": existing["mode"] if "mode" in existing.keys() else req_mode,
                     "tier": existing["tier"] if "tier" in existing.keys() else req_tier,
                 }
             elif existing["status"] == "QUEUED":
@@ -2433,7 +2517,7 @@ def trigger_research(req: ResearchRequest):
 
     target_date = req.date.strip() if (req.date and req.date.strip()) else datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
-    if not req.force and req.mode in ("full", "deep_only"):
+    if not req.force and req_mode in ("full", "deep_only"):
         report_file = config.BASE_DIR / "reports" / target_date / f"{ticker_u}_summary.md"
         arbitration_file = config.BASE_DIR / "reports" / target_date / f"{ticker_u}_arbitration.md"
         if report_file.exists() and arbitration_file.exists():
@@ -2442,13 +2526,13 @@ def trigger_research(req: ResearchRequest):
                 "status": "skipped",
                 "job_id": None,
                 "ticker": ticker_u,
-                "mode": req.mode,
+                "mode": req_mode,
                 "tier": req_tier,
                 "target_date": target_date,
                 "message": f"{ticker_u} already researched for {target_date}",
             }
 
-    if not req.force and req.mode in ("full", "deep_only"):
+    if not req.force and req_mode in ("full", "deep_only"):
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
         with get_db() as conn:
             gated = conn.cursor().execute(
@@ -2461,7 +2545,7 @@ def trigger_research(req: ResearchRequest):
                 "status": "skipped",
                 "job_id": None,
                 "ticker": ticker_u,
-                "mode": req.mode,
+                "mode": req_mode,
                 "tier": req_tier,
                 "target_date": target_date,
                 "message": f"{ticker_u} failed the triage gate for {target_date} within 12h; use force to re-run",
@@ -2470,7 +2554,7 @@ def trigger_research(req: ResearchRequest):
     job_id = existing_queued_jid or f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ticker_u}"
     log_file = str(LOGS_DIR / f"{job_id}.log")
 
-    is_local_job = (req.mode == "local_only")
+    is_local_job = (req_mode == "local_only")
     active_local_count = get_active_local_research_count()
     active_deep_count = get_active_deep_research_count()
     total_slots_available = max(0, LLM_SLOTS - chat_reserve_count() - active_deep_count - active_local_count)
@@ -2508,12 +2592,12 @@ def trigger_research(req: ResearchRequest):
                         UPDATE active_research_jobs
                         SET mode = ?, pid = ?, stage = ?, status = 'RUNNING', started_at = ?, log_file = ?, target_date = ?, stage_detail = ?, tier = ?
                         WHERE job_id = ?
-                    """, (req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier, job_id))
+                    """, (req_mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier, job_id))
                 else:
                     conn.cursor().execute("""
                         INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
                         VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)
-                    """, (job_id, ticker_u, req.mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier))
+                    """, (job_id, ticker_u, req_mode, os.getpid(), start_stage, datetime.now(timezone.utc).isoformat(), log_file, target_date, start_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             # Duplicate active job for this ticker — return the existing one
@@ -2523,10 +2607,10 @@ def trigger_research(req: ResearchRequest):
                     (ticker_u,),
                 ).fetchone()
             if row:
-                return {"status": "running", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode, "tier": req_tier}
+                return {"status": "running", "job_id": row["job_id"], "ticker": ticker_u, "mode": req_mode, "tier": req_tier}
             raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
-        worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req.mode, target_date, req.force, req_tier), daemon=True)
+        worker_thread = threading.Thread(target=run_research_worker, args=(job_id, ticker_u, req_mode, target_date, req.force, req_tier), daemon=True)
         ACTIVE_RESEARCH_WORKERS[job_id] = worker_thread
         worker_thread.start()
         append_log(f"🚀 Started research [{req_tier}] for {ticker_u} in open slot ({q_label}: {active_slot_count + 1}/{max_slots}).")
@@ -2534,7 +2618,7 @@ def trigger_research(req: ResearchRequest):
             "status": "started",
             "job_id": job_id,
             "ticker": ticker_u,
-            "mode": req.mode,
+            "mode": req_mode,
             "tier": req_tier,
             "stage": start_stage,
             "log_file": log_file,
@@ -2551,12 +2635,12 @@ def trigger_research(req: ResearchRequest):
                         UPDATE active_research_jobs
                         SET mode = ?, stage = 'QUEUED', status = 'QUEUED', started_at = ?, log_file = ?, target_date = ?, stage_detail = ?, tier = ?
                         WHERE job_id = ?
-                    """, (req.mode, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier, job_id))
+                    """, (req_mode, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier, job_id))
                 else:
                     conn.cursor().execute("""
                         INSERT INTO active_research_jobs (job_id, ticker, mode, pid, stage, status, started_at, log_file, target_date, stage_detail, tier)
                         VALUES (?, ?, ?, ?, 'QUEUED', 'QUEUED', ?, ?, ?, ?, ?)
-                    """, (job_id, ticker_u, req.mode, None, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier))
+                    """, (job_id, ticker_u, req_mode, None, datetime.now(timezone.utc).isoformat(), log_file, target_date, q_detail, req_tier))
                 conn.commit()
         except sqlite3.IntegrityError:
             with get_db() as conn:
@@ -2565,7 +2649,7 @@ def trigger_research(req: ResearchRequest):
                     (ticker_u,),
                 ).fetchone()
             if row:
-                return {"status": "queued", "job_id": row["job_id"], "ticker": ticker_u, "mode": req.mode, "tier": req_tier}
+                return {"status": "queued", "job_id": row["job_id"], "ticker": ticker_u, "mode": req_mode, "tier": req_tier}
             raise HTTPException(status_code=409, detail="Duplicate job conflict for ticker")
 
         q_label = "Local Queue" if is_local_job else "Deep Queue"
@@ -2574,7 +2658,7 @@ def trigger_research(req: ResearchRequest):
             "status": "queued",
             "job_id": job_id,
             "ticker": ticker_u,
-            "mode": req.mode,
+            "mode": req_mode,
             "tier": req_tier,
             "stage": "QUEUED",
             "log_file": log_file,
