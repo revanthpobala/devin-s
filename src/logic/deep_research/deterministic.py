@@ -2038,16 +2038,21 @@ def _run_contract(ticker: str, date_str: str, dw: Dict[str, Any], *, side: Optio
         _write([tdir / f"{safe}_watch_levels.json", raw_dir / safe / f"{safe}_watch_levels.json"], json.dumps(watch, indent=2))
         from src.tracking.watch_manager import upsert_watch_target
 
-        watch["suggestion_id"] = append_suggestion({
-            "ticker": ticker, "date": date_str, "source": "contract", "side": SIDE_LONG, "entry_type": sp["entry_type"],
-            "entry_low": sp["entry_zone_low"], "entry_high": sp["entry_zone_high"], "breakout_level": sp["breakout_level"],
-            "stop": sp["tactical_stop"], "target_1": sp["target_1"], "target_2": sp["target_2"],
-            "planned_rr": res.get("rr_at_entry"), "verdict": watch["verdict"], "judge_verdict": res.get("verdict"),
-            "shares_plan": sp, "gate_status": "PASS", "setup_lane": setup_lane, "kind": kind, "atr_at_signal": atr,
-            "spot_at_signal": spot or None, "rr_at_market_at_signal": res.get("rr_at_market"),
-            "lane_prior_win": lane_prior_win, "lane_prior_ev": lane_prior_ev, "_datawindow": dw,
-            "notes": f"contract: {watch['verdict']} ({watch['levels_source']})",
-        })
+        if manage_v:
+            watch["suggestion_id"] = None
+        else:
+            watch["suggestion_id"] = append_suggestion({
+                "ticker": ticker, "date": date_str, "source": "contract", "side": SIDE_LONG,
+                "entry_type": sp["entry_type"],
+                "entry_low": sp["entry_zone_low"], "entry_high": sp["entry_zone_high"],
+                "breakout_level": sp["breakout_level"],
+                "stop": sp["tactical_stop"], "target_1": sp["target_1"], "target_2": sp["target_2"],
+                "planned_rr": res.get("rr_at_entry"), "verdict": watch["verdict"], "judge_verdict": res.get("verdict"),
+                "shares_plan": sp, "gate_status": "PASS", "setup_lane": setup_lane, "kind": kind, "atr_at_signal": atr,
+                "spot_at_signal": spot or None, "rr_at_market_at_signal": res.get("rr_at_market"),
+                "lane_prior_win": lane_prior_win, "lane_prior_ev": lane_prior_ev, "_datawindow": dw,
+                "notes": f"contract: {watch['verdict']} ({watch['levels_source']})",
+            })
         try:
             from src.logic.order_ticket import MEASURED_SOURCES, build_ticket, persist_and_notify
 

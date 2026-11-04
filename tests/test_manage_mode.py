@@ -1,5 +1,6 @@
 """Manage mode: a held name gets a code-validated HOLD/TRIM/EXIT against protective levels, not entry geometry."""
-from datetime import date
+import json
+from datetime import date, datetime
 
 from src.logic.deep_research import deterministic as c
 
@@ -156,3 +157,25 @@ def test_report_json_exports_the_structured_position():
                              {"levels": _LV, "verdict": "ARMED"}, [], "PASS",
                              {"close": 100.0, "bar_date": "2026-11-02", "position": "POSITION: NONE"}, {}, {}, [])
     assert rep["position"] is None
+
+
+# --- suggestion ledger -----------------------------------------------------------
+
+def test_manage_verdicts_stay_out_of_the_suggestion_ledger(tmp_path, monkeypatch):
+    """A HOLD/TRIM/EXIT manages a position, it never fills — so it must not pad the suggestion stats."""
+    calls = []
+    monkeypatch.setattr("src.tracking.suggestions_ledger.append_suggestion",
+                        lambda p: calls.append(p) or len(calls))
+    monkeypatch.setattr(c, "_writer", lambda *a, **k: json.dumps(_mobj()))
+    monkeypatch.setattr(c, "_llm", lambda *a, **k: "PASS")
+    monkeypatch.setattr("src.logic.options_menu.attach_options_menu", lambda *a, **k: None)
+    monkeypatch.setattr("src.logic.scenario_plans.cancel_unfilled", lambda *a, **k: None)
+    monkeypatch.setattr("src.logic.order_ticket.void_ticket", lambda *a, **k: None)
+    monkeypatch.setattr("src.clients.earnings_client.resolve_next_earnings_date", lambda t: (None, None))
+    watch = c._run_contract("AMZN", "2026-11-02", {**DW, "RSI2 ATR14": ATR}, side="LONG",
+                            setup_lane="RR_SETUP", kind="MANAGE",
+                            captured_at=datetime(2026, 11, 3, 9, 0), inputs_md="", sources=[],
+                            position_block="", tdir=tmp_path, raw_dir=tmp_path / "raw",
+                            reports_dir=tmp_path / "reports", position=POS)
+    assert watch["verdict"] == "HOLD" and watch["suggestion_id"] is None
+    assert calls == []
