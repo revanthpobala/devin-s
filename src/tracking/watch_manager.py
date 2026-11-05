@@ -696,7 +696,7 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                     invalidation.get("price_level"),
                     invalidation.get("condition", "DAILY_CLOSE_BELOW"),
                     invalidation.get("rationale", ""),
-                    data.get("status", "WATCH"),
+                    data.get("status") or "STALKING",
                     now,
                     raw_json_str,
                     data.get("suggestion_id"),
@@ -1165,7 +1165,7 @@ def get_active_watch_targets() -> List[Dict[str, Any]]:
                 cursor.execute(
                     """
                     SELECT * FROM watch_targets 
-                    WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY')
+                    WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY', 'WATCH')
                       AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
                     ORDER BY date DESC,
                              CASE status WHEN 'IN_TRADE' THEN 1 WHEN 'IN_ZONE' THEN 2 ELSE 3 END,
@@ -1178,7 +1178,7 @@ def get_active_watch_targets() -> List[Dict[str, Any]]:
                     cursor.execute(
                         """
                         SELECT * FROM watch_targets 
-                        WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY')
+                        WHERE status IN ('STALKING', 'IN_ZONE', 'IN_TRADE', 'TESTING_SUPPORT', 'MISSED_RUNAWAY', 'WATCH')
                           AND (verdict IS NULL OR verdict != 'REJECTED_BY_GATE')
                         ORDER BY date DESC,
                                  CASE status WHEN 'IN_TRADE' THEN 1 WHEN 'IN_ZONE' THEN 2 ELSE 3 END,

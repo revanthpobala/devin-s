@@ -1224,18 +1224,18 @@ def evaluate_watch_cycle(sync_sheets: bool = True) -> List[Dict[str, Any]]:
         if inv_price and inv_price > 0:
             if side == "LONG":
                 if live_price <= inv_price:
-                    # Invalidation requires market close: intraday wicks are testing floor
-                    if not is_after_close:
+                    # Invalidation requires market close: intraday wicks within 2% are testing floor
+                    if not is_after_close and live_price >= (inv_price * 0.98):
                         is_testing_floor = True
-                    elif "CLOSE" in inv_cond and live_price > (inv_price * 0.99):
+                    elif "CLOSE" in inv_cond and live_price > (inv_price * 0.99) and not is_after_close:
                         is_testing_floor = True
                     else:
                         is_stop_breached = True
             elif side == "SHORT":
                 if live_price >= inv_price:
-                    if not is_after_close:
+                    if not is_after_close and live_price <= (inv_price * 1.02):
                         is_testing_floor = True
-                    elif "CLOSE" in inv_cond and live_price < (inv_price * 1.01):
+                    elif "CLOSE" in inv_cond and live_price < (inv_price * 1.01) and not is_after_close:
                         is_testing_floor = True
                     else:
                         is_stop_breached = True

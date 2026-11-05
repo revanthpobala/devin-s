@@ -228,7 +228,7 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
                     return cl.get_quotes(c)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     fut = pool.submit(_do_get_quotes, client, chunk)
-                    resp = fut.result(timeout=2.0)
+                    resp = fut.result(timeout=6.0)
             except Exception as ex_call:
                 logger.warning(f"Schwab batch get_quotes attempt failed for {chunk}: {ex_call!r}")
                 if any(k in str(ex_call) for k in ("invalid_grant", "Refresh token is invalid", "unsupported_token_type")):

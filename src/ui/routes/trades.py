@@ -143,6 +143,8 @@ def _action_core(side, status, last, low, high, stop, t1, taken, filled, hit_tar
         return {"label": "MISSED", "group": "DEAD", "tone": "red", "why": f"Ran past T1 ${t1:.2f} with no fill: do not chase.", "rr_live": None}
     if status in _DEAD_WHY:
         return {"label": "DEAD", "group": "DEAD", "tone": "red", "why": _DEAD_WHY[status].capitalize() + ".", "rr_live": None}
+    if stop and last and ((side == "LONG" and last <= stop) or (side == "SHORT" and last >= stop)):
+        return {"label": "DEAD", "group": "DEAD", "tone": "red", "why": f"Price ${last:.2f} breached the ${stop:.2f} stop before entry: thesis invalidated.", "rr_live": None}
     in_zone = bool(low and high and last and low <= last <= high)
     floor = rr_config.min_rr()
     tier = rr_config.tier(rr_now)
@@ -238,6 +240,16 @@ def get_suggested_trades_endpoint():
         from src.tracking import agent_trader
         agent_rows = agent_trader.by_plan()
         company_names = get_company_names_dict()
+
+        missing_syms = [dict(r)["ticker"] for r in rows if dict(r).get("ticker") and not dict(r).get("last_price")]
+        live_quotes = {}
+        if missing_syms:
+            try:
+                from src.clients.quote_router import quote_router
+                live_quotes = quote_router.get_watchlist_quotes_batch(missing_syms)
+            except Exception as e_q:
+                logger.debug(f"Failed fetching missing quotes for suggested trades: {e_q}")
+
         for r in rows:
             t = dict(r)
             sym = (t.get("ticker") or "").upper()
@@ -266,6 +278,13 @@ def get_suggested_trades_endpoint():
             status_str = (t.get("status") or "STALKING").upper()
 
             last_price = t.get("last_price")
+            if (not last_price or last_price <= 0) and sym in live_quotes and live_quotes[sym] and live_quotes[sym].last_price > 0:
+                last_price = live_quotes[sym].last_price
+                try:
+                    from src.tracking.watch_manager import update_target_live_state
+                    update_target_live_state(sym, last_price)
+                except Exception:
+                    pass
             t["last_price"] = last_price
 
             entry_mid = None
@@ -382,7 +401,7 @@ def get_suggested_trades_endpoint():
                     hit_target = True
 
             hit_stop = False
-            if stop_loss and last_price and is_filled:
+            if stop_loss and last_price:
                 if side == "LONG" and last_price <= stop_loss:
                     hit_stop = True
                 elif side == "SHORT" and last_price >= stop_loss:
@@ -401,6 +420,12 @@ def get_suggested_trades_endpoint():
                 elif status_str == "IN_ZONE":
                     status_str = "STALKING"
             t["status"] = status_str
+            if last_price and (r["last_price"] is None or status_str != (r["status"] or "")):
+                try:
+                    from src.tracking.watch_manager import update_target_live_state
+                    update_target_live_state(sym, last_price, status=status_str, distance_to_entry_pct=t.get("distance_to_entry_pct"))
+                except Exception:
+                    pass
 
             is_terminated = status_str in (
                 "TARGET_HIT", "COMPLETED", "INVALIDATED", "STOP_BREACHED",
