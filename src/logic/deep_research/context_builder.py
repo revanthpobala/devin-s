@@ -289,7 +289,7 @@ def sanitize_dw_for_independent(dw: dict) -> str:
             return True
         return False
 
-    return json.dumps({k: v for k, v in dw.items() if not is_proprietary(k)}, indent=2)
+    return json.dumps({k: v for k, v in dw.items() if not is_proprietary(k)}, separators=(",", ":"))
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +393,7 @@ def build_user_prompt(
     stale: bool = False,
     prior_plan_outcome_block: str = "",
     darkpool_block: str = "",
+    sec_block: str = "",
 ) -> str:
     prior_plan_section = (
         f"""
@@ -449,6 +450,8 @@ Data Window below; never conclude a level was untriggered from the spot price al
         {institutional_block}
         {grounded_block}
 
+        {sec_block}
+
         --- 2c-ii. MACRO GROUNDING (Google Search) ---
         {macro_grounded_block}
 
@@ -484,71 +487,22 @@ Data Window below; never conclude a level was untriggered from the spot price al
 
         --- 2g. QUANTITATIVE SANDBOX & 1-YEAR HISTORICAL DATA DICTIONARY (`df` & `dw`) ---
         The quantitative sandbox (`execute_python_code`) automatically pre-loads:
-        - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`)
+        - `df`: 300 daily bars x 85 columns (CSV File: `{csv_path}`) — column semantics per the Revanth Bible in the system prompt:
+          OHLCV/RVOL `time open high low close Volume` `RVOL Vs Avg` `Z Volume` | MAs `Sprint Line EMA` `Hull Baseline HMA` `MA 20 Fast` `MA 50 Mid` `MA 200 Slow` `Weinstein MA 150` `Golden Cross` `Death Cross` |
+          scores/stages `Buy Score` `Sell Score` `Buy Sigma Evidence` `Sell Sigma Evidence` `Stage 1 Base 2 Up 3 Top 4 Down` `Stage Age Bars` `Action Long Code` `Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz` |
+          zones/RR `Long Entry Zone Bot` `Long Entry Zone Top` `Long Stop Loss` `Long Target` `Long Target T1 Waypoint` `Short Entry Zone Bot` `Short Entry Zone Top` `Short Stop Loss` `Short Target` `Long RR At Market` `RR To Target` `Entry At Market 0No 1L 2S 3Both` `Long Ignition Fresh Breakout` |
+          extension/momentum `Ext Pct vs MA200` `Exhaustion Gradient` `Ext Z Self Relative` `Z Velocity` `Z RSI` `Z Elasticity` `Trend Bars Up` |
+          VP/AVWAP `Darvas Box Top` `VP POC` `VP VAH` `VP VAL` `VP HVN Above` `VP HVN Below` `AVWAP Support` `AVWAP Resistance` |
+          vol/energy `HV20 Ann Pct` `Energy IV30 Ann Pct` `Energy IV Rank Pct` `Energy IV HV Spread` `Energy State 3 Exp 2 Warm 1 Sqz 0 Dorm` `Exp Move Pct 21b` `ADX 14` `DMI DI Plus` `DMI DI Minus` |
+          masks `Signal Pack` (bit 32 = PB-funnel gate) `Reversal Pattern Mask` `Bear Warning Mask` `Weak Level Mask` `MTF Long Short Pack`
         - `dw`: Latest closed bar dictionary (JSON File: `{dw_path}`)
         - `np`, `pd`, `scipy`, `stats`, `math`, `json`, `datetime`
-        
-        📊 COLUMN HEADERS & DEFINITIONS IN `df`:
-        1. OHLCV & Volume:
-           - `time` (bar date), `open`, `high`, `low`, `close`, `Volume`
-           - `RVOL Vs Avg` (Relative Volume vs 20-day baseline; >1.5 = institutional surge)
-           - `Z Volume` (Normalized volume Z-score)
-        2. Moving Averages & Trend Anchors:
-           - `Sprint Line EMA` (Fast 8 EMA), `Hull Baseline HMA` (Hull moving average baseline)
-           - `MA 20 Fast`, `MA 50 Mid`, `MA 200 Slow`
-           - `Weinstein MA 150` (150-day SMA, Stan Weinstein Stage Analysis baseline)
-           - `Golden Cross`, `Death Cross` (50/200 MA cross flags: 1/0)
-        3. Multi-Factor Scores & Market Stages:
-           - `Buy Score` (0-100 composite score), `Sell Score` (0-100)
-           - `Buy Sigma Evidence`, `Sell Sigma Evidence` (Statistical sigma evidence for directional bias)
-           - `Stage 1 Base 2 Up 3 Top 4 Down` (1=Base/Accumulation, 2=Advancing Uptrend, 3=Top/Distribution, 4=Declining Downtrend, 5=Recovery)
-           - `Stage Age Bars` (Number of bars elapsed in current stage)
-           - `Action Long Code` (8=Watch, 10=Wait, 16=Blow-off Exhaustion, 20=Reversal, etc.)
-           - `Regime 0 Hlt 1 Ext 2 Clmx 3 Dist 4 Dn 5 Ign 6 Sqz` (0=Healthy, 1=Extended, 2=Climax, 3=Distribution, 4=Down, 5=Ignition, 6=Squeeze)
-        4. Trade Geometry & Structural Zones:
-           - `Long Entry Zone Bot`, `Long Entry Zone Top` (Bounding box of low-risk buyer defense)
-           - `Long Stop Loss`, `Long Target`, `Long Target T1 Waypoint`
-           - `Short Entry Zone Bot`, `Short Entry Zone Top`, `Short Stop Loss`, `Short Target`
-           - `Long RR At Market` (Current at-market Reward-to-Risk ratio), `RR To Target` (Zone R:R)
-           - `Entry At Market 0No 1L 2S 3Both` (0=No market entry, 1=Long at market OK)
-           - `Long Ignition Fresh Breakout` (Flag: 1 if fresh breakout ignition bar)
-        5. Extension, Momentum & Z-Scores:
-           - `Ext Pct vs MA200` ((Close - MA200)/MA200 * 100)
-           - `Exhaustion Gradient` (Slope of overextension), `Ext Z Self Relative` (Z-score vs distribution)
-           - `Z Velocity` (>2.0 indicates blow-off velocity), `Z RSI`, `Z Elasticity`
-           - `Trend Bars Up` (Consecutive bars closing higher)
-        6. Volume Profile & Anchored VWAPs:
-           - `Darvas Box Top` (Upper boundary of recent consolidation base)
-           - `VP POC` (Point of Control), `VP VAH` (Value Area High), `VP VAL` (Value Area Low)
-           - `VP HVN Above`, `VP HVN Below` (High Volume Nodes)
-           - `AVWAP Support`, `AVWAP Resistance` (Anchored VWAP from key swing pivots)
-        7. Volatility, Implied Energy & Options State:
-           - `HV20 Ann Pct` (20-day annualized Historical Realized Volatility)
-           - `Energy IV30 Ann Pct` (30-day annualized Implied Volatility)
-           - `Energy IV Rank Pct` (IV percentile rank 0-100%)
-           - `Energy IV HV Spread` (IV minus HV; positive = IV rich / premium selling, negative = IV cheap / debit buying)
-           - `Energy State 3 Exp 2 Warm 1 Sqz 0 Dorm` (3=Expansion, 2=Warming, 1=Squeeze, 0=Dormant)
-           - `Exp Move Pct 21b` (21-bar Expected Move percentage)
-           - `ADX 14`, `DMI DI Plus`, `DMI DI Minus`
-        8. Bitmasks & Signal Packs:
-           - `Signal Pack` (bit 1 strongBuy · 2 strongSell · 4 NOT-fade (INVERTED: bit clear = fade/DO-NOT-CHASE gate ACTIVE) · 8 isTopping · 16 isBottoming · 32 PB funnel). Bit 32 is the PB-funnel gate: PB set is +0.089R / +0.193R era-stable across the two R:R tiers, no-PB is era-unstable, and R:R 2-3 with PB beats R:R >= 3 without PB. Decode it, do not rank on the raw integer.
-           - `Reversal Pattern Mask`, `Bear Warning Mask`, `Weak Level Mask`
-           - `MTF Long Short Pack` (Multi-Timeframe alignment)
 
-        You have access to LIVE TOOLS for fundamental discovery, pattern recognition, and quantitative execution:
-        - `detect_candlestick_patterns` to scan the 1-year OHLCV dataset for high-conviction Pin Bars (rejection wicks), Gap Retests, Inside Day compressions, and Engulfing patterns.
-        - `fetch_finnhub_news` and `fetch_alpaca_news` for the latest ticker-specific news.
-        - `search_web` for broader macro or catalyst context.
-        - `fetch_options_chain` for real-time Greeks, multi-horizon strikes (both short-dated and LEAPS with min_dte=120, max_dte=365+), and exact contract quotes.
-        - `run_quantitative_plugin` to run specialized analytics ('monte_carlo', 'candlestick_patterns', 'order_flow', 'earnings_history', 'squeeze_expansion', 'htf_confluence', or 'all').
-        - `fetch_prior_research` to retrieve our most recent prior research report from reports/<date>/<ticker>_summary.md within the last 14 days. Use this to audit active stalk states, track thesis evolution, and check whether prior limit orders or triggers have played out.
-        - `execute_python_code`: NOTE: 20,000-path Monte Carlo simulations, IV/HV volatility risk premium, and core moving average extensions are ALREADY pre-computed on the host CPU in Section 2g. Use these deterministic numbers directly. Only call `execute_python_code` if you formulate a bespoke, non-standard quantitative hypothesis tailored to this specific ticker and market regime (e.g., custom setup backtesting on `df`, custom options payoff math, or multi-factor regression). Do NOT rewrite boilerplate Monte Carlo simulations that are already computed.
-
-        --- PRIOR RESEARCH & PATTERN SYNTHESIS WORKFLOW ---
-        When `fetch_prior_research` is called alongside `detect_candlestick_patterns`:
-        1. **Context & Thesis Tracking:** Audit whether the macro thesis or business catalyst has evolved.
-        2. **Fresh Price Structure:** Evaluate current price action and candlestick patterns directly on the latest daily chart.
-        3. **No Prior Level Anchoring:** Do NOT feed or anchor to prior LLM levels. All tactical levels must be derived strictly and independently from the current Pine Data Window and live market structure.
+        LIVE TOOLS: `detect_candlestick_patterns` (1y OHLCV patterns), `fetch_finnhub_news`, `fetch_alpaca_news`,
+        `search_web`, `fetch_options_chain` (Greeks, short-dated + LEAPS strikes, real contract quotes),
+        `run_quantitative_plugin` ('monte_carlo','candlestick_patterns','order_flow','earnings_history','squeeze_expansion','htf_confluence','all'),
+        `fetch_prior_research` (most recent prior report, last 14 days — audit thesis drift and stalk states; never copy or anchor to its levels: all tactical levels come strictly from the CURRENT Pine Data Window),
+        `execute_python_code` (bespoke quant only — Monte Carlo, IV/HV and MA extensions in 2g are already pre-computed; use them directly).
 
         Form your OWN independent verdict from the Data Window, chart, news, and the LIVE data you pull - do not 
         assume any prior read is correct. Act as Senior Quantitative Portfolio Manager and EMIT a single-pass, high-conviction trade thesis:
@@ -580,6 +534,7 @@ def build_independent_user_prompt(
     earnings_fact_block: str,
     csv_path: Path,
     dw_path: Path,
+    sec_block: str = "",
 ) -> str:
     return f"""
         RESEARCH DATE: {date_str}   (SYSTEM/TODAY: {datetime.now().strftime("%Y-%m-%d")})
@@ -606,6 +561,8 @@ def build_independent_user_prompt(
         {av_block}
         {institutional_block}
         {grounded_block}
+
+        {sec_block}
 
         --- 2c-ii. MACRO GROUNDING ---
         {macro_grounded_block}

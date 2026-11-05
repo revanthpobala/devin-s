@@ -2451,7 +2451,8 @@ def query_local_llm(
         # empty `content` with finish_reason='length'. Disable thinking for direct
         # summarization / extraction tasks. NVIDIA models ignore this extra_body.
         if provider == "openrouter" and reasoning_effort:
-            kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": reasoning_effort}
+            kwargs.setdefault("extra_body", {})["reasoning"] = (
+                {"enabled": False} if reasoning_effort == "none" else {"effort": reasoning_effort})
         if provider == "local":
             extra_body = kwargs.setdefault("extra_body", {})
             extra_body["cache_prompt"] = True

@@ -126,17 +126,24 @@ def _alpaca_underlying_last(ticker: str) -> Optional[float]:
 
 
 _GRID_SINK: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar("options_grid_sink", default=None)
+_GRID_CACHE: Dict[Tuple[str, int, int], Tuple[float, Optional[dict]]] = {}
+_GRID_CACHE_TTL = 1800  # one grid fetch per research job and ticker (jobs run well under 30 min)
 
 
 def fetch_chain_grid(ticker: str, min_dte: int = 20, max_dte: int = 800) -> Optional[dict]:
     """Structured chain via the normal routing (Schwab, Tastytrade, Alpaca): {'grid': {(exp, strike): row}, 'spot', 'source'}.
     None when no broker source answers (yfinance has no grid; callers fall back to it themselves)."""
+    key = (str(ticker).upper(), int(min_dte), int(max_dte))
+    hit = _GRID_CACHE.get(key)
+    if hit and time.time() - hit[0] < _GRID_CACHE_TTL:
+        return hit[1]
     sink: dict = {}
     tok = _GRID_SINK.set(sink)
     try:
         intent = {"direction": "BOTH", "strike_low": 0.0, "strike_high": 1e9, "min_dte": min_dte, "max_dte": max_dte}
         for fetch in (_fetch_schwab_chain, _fetch_tastytrade_chain, _fetch_alpaca_chain):
             if fetch(ticker, intent) and sink.get("grid"):
+                _GRID_CACHE[key] = (time.time(), sink)
                 return sink
             sink.clear()
     finally:
@@ -730,7 +737,7 @@ def fetch_options_chain_tool(
     cache_k = f"{ticker}_{direction}_{min_dte}_{max_dte}_{strike_low}_{strike_high}_{expiration}"
     if cache_k in _CHAIN_MEM_CACHE:
         cached_ts, cached_table = _CHAIN_MEM_CACHE[cache_k]
-        if time.time() - cached_ts < 120:
+        if time.time() - cached_ts < 900:
             logger.info(f"[{ticker}] Options chain retrieved from fast memory cache (0ms)")
             return cached_table
 

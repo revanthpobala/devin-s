@@ -263,6 +263,7 @@ def get_suggested_trades_endpoint():
             target_1 = t.get("target_1")
             target_2 = t.get("target_2")
             side = (t.get("side") or "LONG").upper()
+            status_str = (t.get("status") or "STALKING").upper()
 
             last_price = t.get("last_price")
             t["last_price"] = last_price

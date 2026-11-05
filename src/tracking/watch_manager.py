@@ -519,7 +519,8 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
         with _get_connection() as conn:
             cursor = conn.cursor()
 
-            # Check if active unexpired thesis already exists: do not overwrite for the same open thesis unless force_update or new breakout_level
+            # Check if active unexpired thesis already exists: do not overwrite an EARLIER open thesis
+            # unless force_update or new breakout_level. A same-day rerun always overwrites its own levels.
             existing = cursor.execute(
                 "SELECT date, thesis_id, expires_on, status, tactical_stop, entry_zone_low, entry_zone_high, breakout_level FROM watch_targets WHERE ticker = ?",
                 (ticker,)
@@ -529,7 +530,8 @@ def upsert_watch_target(data: Dict[str, Any]) -> None:
                 ex_thesis_id = ex_dict.get("thesis_id") or f"{ticker}_{ex_dict.get('date')}"
                 ex_expires = ex_dict.get("expires_on") or ""
                 ex_status = str(ex_dict.get("status") or "").upper()
-                if ex_status in ("IN_TRADE", "IN_ZONE", "STALKING", "WATCH"):
+                same_day = str(ex_dict.get("date") or "")[:10] == date_str[:10]
+                if ex_status in ("IN_TRADE", "IN_ZONE", "STALKING", "WATCH") and not same_day:
                     has_new_bo = float(breakout_level or 0.0) > 0 and float(ex_dict.get("breakout_level") or 0.0) <= 0
                     if not has_new_bo:
                         stop_val = float(shares_plan.get("tactical_stop") or 0.0)

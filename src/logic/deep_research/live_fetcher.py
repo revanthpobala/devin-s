@@ -17,7 +17,6 @@ class LiveContext:
     institutional_block: str = ""
     grounded_block: str = ""
     grounded_sections: list = None
-    grounded_citations: list = None
     macro_grounded_block: str = ""
     live_quote_block: str = ""
     gex_block: str = ""
@@ -28,6 +27,7 @@ class LiveContext:
     market_events_sections: list = None
     market_tape: dict = None
     market_tape_block: str = ""
+    sec_sections: list = None
 
 
 def _fetch_safe(fn, *args, **kwargs):
@@ -142,6 +142,22 @@ def _market_tape(ticker: str, raw_dir: Path) -> dict:
     return market_events.market_tape(ticker, cache, sector_etf=etf)
 
 
+def _sec_sections(ticker: str) -> list:
+    """Citable verified-feed sections: SEC XBRL actuals, the 8-K earnings release, and
+    broker fundamentals (Schwab quote + Tastytrade metrics)."""
+    from src.clients.sec_edgar_client import broker_fundamentals_section, sec_8k_section, sec_xbrl_section
+
+    out = []
+    for fn in (sec_xbrl_section, sec_8k_section, broker_fundamentals_section):
+        try:
+            s = fn(ticker)
+            if s:
+                out.append(s)
+        except Exception as e:
+            logger.debug(f"[{ticker}] {fn.__name__} failed: {e}")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -189,6 +205,7 @@ def fetch_live_context(
         fut_ground = executor.submit(_fetch_safe, _grounded_pack, ticker, raw_dir)
         fut_events = executor.submit(_fetch_safe, _market_events, date_str, raw_dir)
         fut_tape = executor.submit(_fetch_safe, _market_tape, ticker, raw_dir)
+        fut_sec = executor.submit(_fetch_safe, _sec_sections, ticker)
         fut_macro_ground = executor.submit(
             _fetch_safe,
             google_grounding_client.format_grounded_block,
@@ -207,21 +224,16 @@ def fetch_live_context(
         from src.logic.deep_research import grounded_pack as _gp
 
         ctx.grounded_sections = _gp.pack_sections(pack)
-        ctx.grounded_citations = _gp.pack_citations(pack)
         ctx.grounded_block = _gp.pack_block(ticker, pack)
         ctx.macro_grounded_block = fut_macro_ground.result() or ""
 
         event_item = fut_events.result() or {}
         ctx.market_events_sections = _gp.pack_sections([event_item]) if event_item.get("text") else []
-        _seen = {c.get("url") for c in ctx.grounded_citations}
-        ctx.grounded_citations += [{"title": str(c.get("title") or c.get("url")),
-                                    "url": c["url"], "topic": event_item.get("title") or "Market events"}
-                                   for c in (event_item.get("citations") or [])
-                                   if c.get("url") and c["url"] not in _seen]
         from src.logic.deep_research import market_events as _me
 
         ctx.market_tape = fut_tape.result() or {}
         ctx.market_tape_block = _me.tape_section(ctx.market_tape)
+        ctx.sec_sections = fut_sec.result() or []
 
     # Quote + GEX (disk-cached, sequential — both hit the same options API)
     ctx.live_quote_block = _load_or_fetch_quote(ticker, paths["quote"], tdir, date_str)

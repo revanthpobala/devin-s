@@ -493,7 +493,7 @@ class TastytradeClient:
         start_time = time.time()
 
         def _done():
-            have_any = sum(1 for s_ in syms if raw[s_].get("Quote") or raw[s_].get("Trade") or raw[s_].get("Summary"))
+            have_any = sum(1 for s_ in syms if raw[s_].get("Quote") or raw[s_].get("Trade"))
             if have_any >= len(syms):
                 return True
             if len(syms) >= 10 and have_any >= len(syms) * 0.90 and (time.time() - start_time) >= 2.0:
@@ -559,7 +559,8 @@ class TastytradeClient:
             last = _f(t.get("price"))
             prev = _f(sm.get("prevDayClosePrice"))
             mid = round((bid + ask) / 2.0, 4) if (bid and ask) else (bid or ask)
-            price = last if (last and bid and ask and bid * 0.99 <= last <= ask * 1.01) else (last or mid or prev)
+            # prevDayClosePrice is yesterday's close, never a live price.
+            price = last if (last and bid and ask and bid * 0.99 <= last <= ask * 1.01) else (last or mid)
             if not price or price <= 0:
                 continue
             out[sym] = {

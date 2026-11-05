@@ -397,13 +397,10 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
                 data["level_gate_rejected"] = not v_ok
                 data["gate_reasons"] = v_reasons
 
-                # Persist to raw folder (never overwrite existing)
+                # Persist to raw folder (date-scoped: a same-day rerun overwrites its own levels)
                 save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
-                if not save_path.exists():
-                    save_path.parent.mkdir(parents=True, exist_ok=True)
-                    save_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                else:
-                    logger.info(f"[{safe_ticker}] {save_path.name} already exists — preserving existing file without overwrite.")
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                save_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 return data
             except Exception as e:
                 logger.debug(f"[{safe_ticker}] Failed to parse embedded json block: {e}")
@@ -804,9 +801,6 @@ def extract_watch_levels_from_report(ticker: str, date_str: str) -> Optional[Dic
     result["gate_reasons"] = v_reasons
 
     save_path = raw_dir / f"{safe_ticker}_watch_levels.json"
-    if not save_path.exists():
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    else:
-        logger.info(f"[{safe_ticker}] {save_path.name} already exists — preserving existing file without overwrite.")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

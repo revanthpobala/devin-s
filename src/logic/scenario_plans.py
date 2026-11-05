@@ -293,6 +293,14 @@ def attach_scenarios(watch_data: Dict[str, Any], ticker: str, spot: float, atr: 
         else:
             rejected.append(why)
     watch_data["scenarios"], watch_data["scenarios_rejected"] = kept, rejected
+    plan_zlo, plan_stop = _f(sp.get("entry_zone_low")), _f(sp.get("tactical_stop"))
+    for sc in kept:
+        if sc["kind"] == "PULLBACK" and plan_zlo and plan_stop and abs(sc["zone_low"] - plan_zlo) <= 0.02 \
+                and abs(sc["stop"] - plan_stop) > 0.005:
+            sc.setdefault("notes", []).append(
+                f"stop {sc['stop']} moved to the plan stop {plan_stop} (the scenario uses the plan's zone)")
+            sc["stop"] = plan_stop
+            sc["rr_at_trigger"] = round((sc["target"] - sc["trigger"]) / max(sc["trigger"] - plan_stop, 1e-9), 2)
     if not kept:
         return []
     price_options(ticker, kept, spot, em_pct, earnings, today, chain)

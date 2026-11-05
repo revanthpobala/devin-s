@@ -48,7 +48,8 @@ def compute_position_shares(
     max_shares: int = 500,
 ) -> int:
     """Position sizing by dollar risk: Risk per trade is set by position size, not by squeezing the stop.
-    If the natural stop is wide, cut share count until dollar risk is the same.
+    If the natural stop is wide, cut share count until dollar risk is the same. Never above the
+    per-name notional cap, so this agrees with the layered plan's share count.
     """
     try:
         e = float(entry or 0.0)
@@ -59,7 +60,7 @@ def compute_position_shares(
     if e <= s or s <= 0 or e <= 0:
         return SHARES_PER_TRADE
     risk_per_share = max(e - s, 0.01)
-    shares = int(rb / risk_per_share)
+    shares = min(int(rb / risk_per_share), max_shares_by_notional(e))
     return max(min_shares, min(shares, max_shares))
 
 

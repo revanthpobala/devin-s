@@ -94,11 +94,4 @@ def format_grounded_block(ticker: str, question: str, model: str | None = None) 
     res_text = str(result.get("text", ""))
     if not res_text:
         return f"--- GOOGLE-GROUNDED RESEARCH ({ticker}) ---\n(unavailable)\n"
-    lines = [f"--- GOOGLE-GROUNDED RESEARCH ({ticker}) ---", res_text, ""]
-    citations = result.get("citations", [])
-    if isinstance(citations, list) and citations:
-        lines.append("Sources:")
-        for c in citations:
-            if isinstance(c, dict):
-                lines.append(f"  - {c.get('title')}: {c.get('url')}")
-    return "\n".join(lines) + "\n"
+    return f"--- GOOGLE-GROUNDED RESEARCH ({ticker}) ---\n{res_text}\n"

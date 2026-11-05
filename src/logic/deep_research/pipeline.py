@@ -621,7 +621,7 @@ def run_deep_research(
         # 3. Format deterministic blocks
         flags_block = format_flags_block(flags)
         engine_math_block = format_engine_math_block(verdict_record)
-        data_window_str = json.dumps(dw_dict, indent=2)
+        data_window_str = json.dumps(dw_dict, separators=(",", ":"))
 
         triggers_src = verdict_record
         if not (isinstance(verdict_record, dict) and verdict_record.get("triggers")) and f_parsed:
@@ -746,8 +746,12 @@ def run_deep_research(
         # 10. Assemble prompts
         system_prompt = _model_a_system_prompt(dw_dict)
         logger.info(f"[{ticker}] Model A system prompt: {len(system_prompt):,} chars (~{len(system_prompt) // 4:,} tokens)")
-        user_prompt = build_user_prompt(
-            ticker=ticker, date_str=date_str, data_window_str=data_window_str,
+        sec_block = "\n\n".join(
+            f"--- 2c-iii. {t.upper()} (verified feed — cite these for actuals) ---\n{b}"
+            for t, b in (ctx.sec_sections or [])
+        )
+        prompt_blocks = dict(
+            data_window_str=data_window_str,
             live_quote_block=ctx.live_quote_block, unmasked_recency_block=unmasked_recency_block,
             news_dossier=news_dossier, fresh_news=ctx.fresh_news, macro_news=macro_news,
             av_block=ctx.av_block, institutional_block=ctx.institutional_block,
@@ -758,10 +762,17 @@ def run_deep_research(
             earnings_fact_block=ctx.earnings_fact_block, preloaded_block=preloaded_block,
             debate_block=debate_block, daily_alerts_block=daily_alerts_block,
             pine_setup_benchmark_block=pine_benchmark_block,
-            csv_path=paths["dw_csv"], dw_path=paths["dw_json"],
-            options_block=options_block, active_pos_block=active_pos_block, stale=stale,
+            options_block=options_block, active_pos_block=active_pos_block,
             prior_plan_outcome_block=prior_plan_outcome_block,
+            sec_block=sec_block,
         )
+        user_prompt = build_user_prompt(
+            ticker=ticker, date_str=date_str, csv_path=paths["dw_csv"], dw_path=paths["dw_json"],
+            stale=stale, **prompt_blocks,
+        )
+        biggest = sorted(((len(str(v or "")), k) for k, v in prompt_blocks.items()), reverse=True)[:6]
+        logger.info(f"[{ticker}] Model A user prompt: {len(user_prompt):,} chars; largest: "
+                    + ", ".join(f"{k} {n:,}" for n, k in biggest))
 
         independent_dw_str = sanitize_dw_for_independent(dw_dict)
 
@@ -798,6 +809,7 @@ def run_deep_research(
             macro_grounded_block=ctx.macro_grounded_block,
             earnings_fact_block=ctx.earnings_fact_block,
             csv_path=ind_csv_path, dw_path=ind_json_path,
+            sec_block=sec_block,
         )
 
         # 11. Image paths
@@ -918,6 +930,7 @@ def run_deep_research(
                 sources = [
                     ("Live quote", ctx.live_quote_block), ("Options / GEX", ctx.gex_block),
                     ("Earnings packet", ctx.earnings_fact_block), ("Fundamentals", ctx.av_block),
+                    *(ctx.sec_sections or []),
                     ("Institutional", ctx.institutional_block), ("Fresh news", ctx.fresh_news),
                     ("News dossier", news_dossier),
                     *(ctx.grounded_sections or [("Grounded search", ctx.grounded_block)]),
@@ -931,7 +944,7 @@ def run_deep_research(
                              sources=sources, position_block=active_pos_block, tdir=tdir, raw_dir=raw_dir,
                              reports_dir=reports_dir, csv_path=paths["dw_csv"], lane_prior_win=lane_prior_win,
                              lane_prior_ev=lane_prior_ev, report_a=clean_response, report_b=clean_ind_response,
-                             source_links=ctx.grounded_citations or [], market_tape=ctx.market_tape,
+                             market_tape=ctx.market_tape,
                              position=active_pos)
             else:
                 run_arbitration(

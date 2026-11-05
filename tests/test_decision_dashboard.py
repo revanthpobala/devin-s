@@ -272,7 +272,7 @@ def test_rejected_line_style_helper():
         r = subprocess.run(["node", "--test", "tests/research_rejected_lines.test.js"],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
-    src = open("web/static/js/research_report.js").read()
+    src = open("web/static/js/research_report.js", encoding="utf-8").read()
     assert "planLineStyle" in src and "REJECTED" in src
 
 
@@ -307,8 +307,7 @@ def test_grounded_pack_uses_disk_cache(tmp_path, monkeypatch):
     assert len(calls) == len(gp.TOPICS) and p2[0]["text"] == "answer"
     secs = gp.pack_sections(p2)
     assert len(secs) == len(gp.TOPICS) and secs[0][0].startswith("Grounded:")
-    cites = gp.pack_citations(p2)
-    assert cites == [{"title": "t", "url": "u", "topic": p2[0]["title"]}]
+    assert secs[0][1] == "answer"
 
 
 # --- render ------------------------------------------------------------------------

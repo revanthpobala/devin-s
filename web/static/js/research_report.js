@@ -95,8 +95,16 @@ window.ResearchDecision = (() => {
     return out;
   }
 
-  function drawChart(el, rep, bars) {
-    if (!el || !window.LightweightCharts || !bars.length) { if (el) el.innerHTML = '<div class="rd-note" style="padding:18px;">No price history.</div>'; return; }
+  function drawChart(el, rep, allBars, nBars = 126) {
+    if (!el || !window.LightweightCharts) return null;
+    if (!allBars || !allBars.length) {
+      el.innerHTML = '<div class="rd-note" style="padding:18px; color:var(--text-muted, #94a3b8); display:flex; align-items:center; gap:8px;"><span>⏳</span> Loading price candles…</div>';
+      return null;
+    }
+    if (el._rd_chart) {
+      try { el._rd_chart.remove(); } catch (e) {}
+      el._rd_chart = null;
+    }
     el.innerHTML = '';
     const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
     const chart = window.LightweightCharts.createChart(el, {
@@ -106,14 +114,39 @@ window.ResearchDecision = (() => {
       grid: { vertLines: { color: 'rgba(51,72,102,0.25)' }, horzLines: { color: 'rgba(51,72,102,0.25)' } },
       timeScale: { borderColor: '#334866' }, rightPriceScale: { borderColor: '#334866' },
     });
+    el._rd_chart = chart;
+
+    if (!el._rd_ro && window.ResizeObserver) {
+      el._rd_ro = new ResizeObserver(entries => {
+        for (const entry of entries) {
+          if (entry.contentRect.width && el._rd_chart) {
+            try { el._rd_chart.applyOptions({ width: entry.contentRect.width }); } catch (e) {}
+          }
+        }
+      });
+      el._rd_ro.observe(el);
+    }
+
+    const visibleBars = (nBars && nBars > 0) ? allBars.slice(-nBars) : allBars;
+    const startIndex = allBars.length - visibleBars.length;
+
     const ser = chart.addCandlestickSeries({ upColor: '#10b981', downColor: '#f43f5e',
       borderUpColor: '#10b981', borderDownColor: '#f43f5e', wickUpColor: '#10b981', wickDownColor: '#f43f5e' });
-    ser.setData(bars);
-    const closes = bars.map(b => b.close);
+    ser.setData(visibleBars);
+
+    // Compute moving averages over all historical bars so MA50 and MA200 are continuous even on 3M/6M views
+    const allCloses = allBars.map(b => b.close);
     [[20, '#22d3ee'], [50, '#fbbf24'], [200, '#a78bfa']].forEach(([n, color]) => {
-      const ma = sma(closes, n);
+      const fullMa = sma(allCloses, n);
       const line = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-      line.setData(bars.map((b, i) => ma[i] != null ? { time: b.time, value: ma[i] } : null).filter(Boolean));
+      const lineData = [];
+      for (let i = 0; i < visibleBars.length; i++) {
+        const val = fullMa[startIndex + i];
+        if (val != null) {
+          lineData.push({ time: visibleBars[i].time, value: val });
+        }
+      }
+      line.setData(lineData);
     });
     const lv = rep.levels || {};
     const rejected = rep.audit && rep.audit.checks_passed === false;
@@ -129,6 +162,7 @@ window.ResearchDecision = (() => {
     mk((lv.stop || {}).price, '#f43f5e', 'STOP');
     mk((lv.target_1 || {}).price, '#10b981', 'T1');
     mk((lv.target_2 || {}).price, '#34d399', 'T2');
+    const closes = visibleBars.map(b => b.close);
     const ref = ((rep.as_of || {}).live || (rep.as_of || {}).close) || closes[closes.length - 1];
     Object.entries(rep.context_levels || {})
       .filter(([, v]) => v && typeof v.price === 'number')
@@ -136,17 +170,18 @@ window.ResearchDecision = (() => {
       .slice(0, 4)
       .forEach(([name, v]) => {
         const c = name.startsWith('KEY_SUPPORT') || name.endsWith('SUPPORT') || name === 'VP_VAL' ? '#64748b' : '#8b5cf6';
-        mk(v.price, c, String(v.label || name.replace(/_/g, ' ')).toUpperCase(), window.LightweightCharts.LineStyle.SparseDotted);
+        const ls = window.LightweightCharts?.LineStyle?.SparseDotted ?? 4;
+        mk(v.price, c, String(v.label || name.replace(/_/g, ' ')).toUpperCase(), ls);
       });
     const ed = (rep.earnings || {}).date;
     if (ed) {
-      const bar = bars.find(b => b.time >= ed);
+      const bar = visibleBars.find(b => b.time >= ed);
       if (bar) {
         ser.setMarkers([{ time: bar.time, position: 'belowBar', color: '#f59e0b', shape: 'circle',
                           text: `EARN ${ed}${rep.earnings.median_move != null ? ` · med move ${rep.earnings.median_move}%` : ''}` }]);
       }
       const note = el.parentElement && el.parentElement.querySelector('.rd-earnings-note');
-      if (note && ed > bars[bars.length - 1].time) {
+      if (note && visibleBars.length && ed > visibleBars[visibleBars.length - 1].time) {
         note.innerHTML = `<span class="rd-pill">earnings ${esc(ed)}${rep.earnings.median_move != null ? ` · med move ${rep.earnings.median_move}%` : ''} (off chart)</span>`;
         note.style.display = '';
       }
@@ -306,7 +341,7 @@ window.ResearchDecision = (() => {
       `<div class="rd-stat"><div class="k">${k}</div><div class="v">${v}${kbadge('computed')}</div><div class="s">${s}</div></div>`).join('');
     const inv = (lv.stop || {}).price;
     return card('Risk panel', `
-      ${drawdownSvg(bars)}
+      <div id="rd-dd">${drawdownSvg(bars)}</div>
       <div class="rd-stats" style="margin-top:10px;">${chips}</div>
       ${earningsHist(rep)}
       ${inv ? `<div class="rd-note" style="margin-top:10px;"><b>Invalidation:</b> daily close below <b>${money(inv)}</b>${kbadge('computed')}</div>` : ''}
@@ -491,35 +526,39 @@ window.ResearchDecision = (() => {
   }
 
   // ---------- render ------------------------------------------------------------
-  async function fetchBars(ticker) {
-    const r = await fetch(`/api/research/${encodeURIComponent(ticker)}/candles?limit=1000`);
+  async function fetchBars(ticker, dateStr) {
+    const q = dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? `?date=${dateStr}&limit=1000` : '?limit=1000';
+    const r = await fetch(`/api/research/${encodeURIComponent(ticker)}/candles${q}`);
     if (!r.ok) return [];
     const d = await r.json();
     const seen = new Set();
     return (d.candles || [])
-      .filter(b => b && b.time && b.close && !seen.has(b.time) && seen.add(b.time))
-      .sort((a, b) => (a.time < b.time ? -1 : 1))
-      .map(b => ({ time: b.time, open: +b.open, high: +b.high, low: +b.low, close: +b.close }));
+      .filter(b => b && b.time && Number.isFinite(+b.close) && Number.isFinite(+b.open) && Number.isFinite(+b.high) && Number.isFinite(+b.low))
+      .map(b => ({ time: String(b.time).slice(0, 10), open: +b.open, high: +b.high, low: +b.low, close: +b.close }))
+      .filter(b => !seen.has(b.time) && seen.add(b.time))
+      .sort((a, b) => (a.time < b.time ? -1 : 1));
   }
 
   async function render(el, ticker, dateStr) {
     if (!el) return;
+    const currentRenderId = `${ticker}_${dateStr || ''}_${Date.now()}`;
+    el.dataset.rdRenderId = currentRenderId;
     el.innerHTML = `<div class="empty-state-box"><div class="empty-state-icon">🧭</div>
       <div class="empty-state-title">Loading decision report…</div></div>`;
-    let rep = null, bars = [];
+    let rep = null;
     try {
       const q = dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? `?date=${dateStr}` : '';
-      const [r, b] = await Promise.all([
-        fetch(`/api/research/${encodeURIComponent(ticker)}/report-json${q}`), fetchBars(ticker)]);
+      const r = await fetch(`/api/research/${encodeURIComponent(ticker)}/report-json${q}`);
       if (r.ok) rep = await r.json();
-      bars = b;
     } catch (e) { /* fall through to empty state */ }
+    if (el.dataset.rdRenderId !== currentRenderId) return;
     if (!rep || rep.kind !== 'computed') {
       el.innerHTML = `<div class="empty-state-box"><div class="empty-state-icon">🧭</div>
         <div class="empty-state-title">No Decision Report</div>
         <div class="empty-state-desc">No structured report exists for ${String(ticker).replace(/[^A-Za-z0-9.\-:]/g, '')}. Run deep research to produce one.</div></div>`;
       return;
     }
+    let bars = [];
     el.innerHTML = `<div class="rd-wrap">
       ${hero(rep)}
       <div class="rd-grid">
@@ -540,13 +579,40 @@ window.ResearchDecision = (() => {
       </div>
     </div>`;
     const chartEl = el.querySelector('#rd-chart');
-    let chart = drawChart(chartEl, rep, bars.slice(-126));
+    drawChart(chartEl, rep, bars);
+
+    function updateBars(newBars) {
+      if (!newBars || !newBars.length) return;
+      bars = newBars;
+      const activeRangeBtn = el.querySelector('.rd-range.on');
+      const nBars = activeRangeBtn ? parseInt(activeRangeBtn.dataset.n, 10) : 126;
+      drawChart(chartEl, rep, bars, nBars);
+      const ddContainer = el.querySelector('#rd-dd');
+      if (ddContainer) {
+        ddContainer.innerHTML = drawdownSvg(bars);
+      }
+    }
+
     el.querySelectorAll('.rd-range').forEach(btn => btn.addEventListener('click', () => {
       el.querySelectorAll('.rd-range').forEach(x => x.classList.remove('on'));
       btn.classList.add('on');
-      if (chart) { try { chart.remove(); } catch (e) {} }
-      chart = drawChart(chartEl, rep, bars.slice(-parseInt(btn.dataset.n, 10)));
+      drawChart(chartEl, rep, bars, parseInt(btn.dataset.n, 10));
     }));
+
+    // Fetch bars in background so decision report renders immediately
+    fetchBars(ticker, dateStr).then(loadedBars => {
+      if (el.dataset.rdRenderId !== currentRenderId) return;
+      if (loadedBars && loadedBars.length) {
+        updateBars(loadedBars);
+      } else {
+        const noDataNote = el.querySelector('#rd-chart .rd-note');
+        if (noDataNote) noDataNote.innerHTML = 'No price history available.';
+      }
+    }).catch(() => {
+      if (el.dataset.rdRenderId !== currentRenderId) return;
+      const noDataNote = el.querySelector('#rd-chart .rd-note');
+      if (noDataNote) noDataNote.innerHTML = 'Price history unavailable.';
+    });
   }
 
   return { render };

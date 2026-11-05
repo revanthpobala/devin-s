@@ -12,9 +12,9 @@ import logging
 import os
 import ssl
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import urllib.error
 
@@ -42,6 +42,7 @@ SEC_WWW_HEADERS = {
 }
 
 CIK_MAP_PATH = config.BASE_DIR / "data" / "sec_cik_map.json"
+SEC_CACHE_DIR = config.BASE_DIR / "data" / "sec_cache"
 
 # Build a robust SSL context that trusts system + certifi roots.
 def _make_ssl_context() -> Optional[ssl.SSLContext]:
@@ -201,59 +202,12 @@ def fetch_sec_filings_data(ticker: str, form_type: str = "ALL", limit: int = 5) 
                 break
 
     # 2. Fetch XBRL financial facts
-    facts_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-    facts_data = _fetch_url_json(facts_url, headers=SEC_HEADERS)
+    facts_data = _fetch_facts_json(cik)
     quarterly_financials = []
+    shares_outstanding = None
 
     if facts_data and "facts" in facts_data:
-        us_gaap = facts_data["facts"].get("us-gaap", {})
-
-        def _get_metric_units(concept_names: list[str]) -> list:
-            for name in concept_names:
-                if name in us_gaap:
-                    units = us_gaap[name].get("units", {})
-                    if "USD" in units:
-                        return units["USD"]
-            return []
-
-        rev_units = _get_metric_units([
-            "Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax",
-            "SalesRevenueGoodsNet", "OperatingRevenue"
-        ])
-        net_inc_units = _get_metric_units(["NetIncomeLoss", "ProfitLoss"])
-        op_inc_units = _get_metric_units(["OperatingIncomeLoss"])
-        cash_units = _get_metric_units([
-            "CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"
-        ])
-        debt_units = _get_metric_units(["LongTermDebtNoncurrent", "LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"])
-
-        # Organize by (fy, fp) or end date
-        quarters = {}
-
-        def _ingest_units(units: list, metric_name: str, is_instant: bool = False):
-            # Sort by end date descending
-            sorted_units = sorted([u for u in units if u.get("form") in ("10-Q", "10-K") and u.get("val") is not None],
-                                  key=lambda x: str(x.get("end", "")), reverse=True)
-            for u in sorted_units[:12]:
-                end = u.get("end", "")
-                val = u.get("val")
-                form = u.get("form", "")
-                fp = u.get("fp", "")
-                fy = u.get("fy", "")
-                q_key = end
-                if q_key not in quarters:
-                    quarters[q_key] = {"end_date": end, "form": form, "fy": fy, "fp": fp}
-                if metric_name not in quarters[q_key]:
-                    quarters[q_key][metric_name] = val
-
-        _ingest_units(rev_units, "revenue")
-        _ingest_units(net_inc_units, "net_income")
-        _ingest_units(op_inc_units, "operating_income")
-        _ingest_units(cash_units, "cash", is_instant=True)
-        _ingest_units(debt_units, "long_term_debt", is_instant=True)
-
-        sorted_quarters = sorted(quarters.values(), key=lambda x: str(x.get("end_date", "")), reverse=True)
-        quarterly_financials = sorted_quarters[:4]
+        quarterly_financials, shares_outstanding = _xbrl_quarters(facts_data["facts"])
 
     return {
         "ticker": ticker_clean,
@@ -263,7 +217,147 @@ def fetch_sec_filings_data(ticker: str, form_type: str = "ALL", limit: int = 5) 
         "fiscal_year_end": fiscal_year_end,
         "recent_filings": recent_filings,
         "quarterly_financials": quarterly_financials,
+        "shares_outstanding": shares_outstanding,
     }
+
+
+def _fetch_facts_json(cik: str) -> Optional[dict]:
+    """companyfacts JSON, disk-cached per (cik, calendar day) — the blob is multi-MB."""
+    cache = SEC_CACHE_DIR / f"facts_{cik}_{date.today().isoformat()}.json"
+    try:
+        if cache.exists():
+            return json.loads(cache.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    data = _fetch_url_json(
+        f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json", headers=SEC_HEADERS)
+    if data:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
+    return data
+
+
+def _duration_days(u: dict) -> int:
+    try:
+        return (date.fromisoformat(str(u["end"])) - date.fromisoformat(str(u["start"]))).days
+    except (KeyError, ValueError, TypeError):
+        return 0
+
+
+def _xbrl_quarters(facts: dict) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    """Per-quarter GAAP facts. Duration metrics are filtered to single-quarter (~75-105 day)
+    periods so a 10-K's annual figure never lands in a quarterly row; instants carry no
+    start date and keep the latest filing per period end."""
+    us_gaap = facts.get("us-gaap", {})
+    dei = facts.get("dei", {})
+
+    def _units(names: list, unit: str = "USD", src: Optional[dict] = None) -> list:
+        """The listed concept with the most recent period: filers switch tags over the years (AMZN's
+        `Revenues` stops in 2017), so the first concept present can be years stale."""
+        src = us_gaap if src is None else src
+        found = [src[n]["units"][unit] for n in names if n in src and unit in (src[n].get("units") or {})]
+        return max(found, key=lambda us: max((str(u.get("end") or "") for u in us), default=""), default=[])
+
+    def _filed(u: dict) -> str:
+        return str(u.get("filed") or "")
+
+    def _quarterly(units: list, derive: bool = True) -> Dict[str, dict]:
+        """10-Q cash-flow facts are year-to-date and 10-Ks carry the year only: when a quarter has no
+        3-month fact, an additive metric is YTD(end) minus YTD(previous quarter end) of the same fiscal year."""
+        rows: Dict[str, dict] = {}
+        ytd: Dict[Tuple[str, str], dict] = {}
+        for u in sorted(units, key=_filed, reverse=True):
+            if u.get("form") not in ("10-Q", "10-K") or u.get("val") is None:
+                continue
+            d, key = _duration_days(u), (str(u.get("start") or ""), str(u.get("end") or ""))
+            if 75 <= d <= 105:
+                rows.setdefault(key[1], u)
+                ytd.setdefault(key, u)
+            elif derive and 105 < d <= 380:
+                ytd.setdefault(key, u)
+        if derive:
+            for (start, end), u in ytd.items():
+                if end in rows:
+                    continue
+                prior = [(e, v) for (s, e), v in ytd.items() if s == start and e < end]
+                if not prior:
+                    continue
+                p_end, p = max(prior, key=lambda x: x[0])
+                try:
+                    gap = (date.fromisoformat(end) - date.fromisoformat(p_end)).days
+                except ValueError:
+                    continue
+                if 75 <= gap <= 105:
+                    rows[end] = {**u, "val": u["val"] - p["val"]}
+        return rows
+
+    def _instants(units: list) -> Dict[str, dict]:
+        rows: Dict[str, dict] = {}
+        for u in sorted(units, key=lambda x: (str(x.get("end") or ""), _filed(x)), reverse=True):
+            if u.get("form") in ("10-Q", "10-K") and u.get("val") is not None and not u.get("start"):
+                rows.setdefault(str(u.get("end") or ""), u)
+        return rows
+
+    duration_metrics = {
+        "revenue": _units(["Revenues", "SalesRevenueNet",
+                           "RevenueFromContractWithCustomerExcludingAssessedTax",
+                           "SalesRevenueGoodsNet", "OperatingRevenue"]),
+        "net_income": _units(["NetIncomeLoss", "ProfitLoss"]),
+        "operating_income": _units(["OperatingIncomeLoss"]),
+        "ocf": _units(["NetCashProvidedByUsedInOperatingActivities",
+                       "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]),
+        "capex": _units(["PaymentsToAcquirePropertyPlantAndEquipment",
+                         "PaymentsToAcquireProductiveAssets",
+                         "PaymentsToAcquireOtherPropertyPlantAndEquipment"]),
+    }
+    eps_units = _units(["EarningsPerShareDiluted"], unit="USD/shares")
+    instant_metrics = {
+        "cash": _units(["CashAndCashEquivalentsAtCarryingValue",
+                        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]),
+        "long_term_debt": _units(["LongTermDebtNoncurrent", "LongTermDebt",
+                                  "LongTermDebtAndCapitalLeaseObligations"]),
+    }
+    share_units = (_units(["CommonStockSharesOutstanding", "CommonStockSharesIssued"], unit="shares")
+                   or _units(["EntityCommonStockSharesOutstanding"], unit="shares", src=dei))
+
+    quarters: Dict[str, dict] = {}
+    for metric, units in duration_metrics.items():
+        for end, u in _quarterly(units).items():
+            q = quarters.setdefault(end, {"end_date": end, "form": u.get("form", ""),
+                                          "fy": u.get("fy", ""), "fp": u.get("fp", "")})
+            q.setdefault(metric, u.get("val"))
+    for end, u in _quarterly(eps_units, derive=False).items():
+        q = quarters.setdefault(end, {"end_date": end, "form": u.get("form", ""),
+                                      "fy": u.get("fy", ""), "fp": u.get("fp", "")})
+        q.setdefault("eps_diluted", u.get("val"))
+    for metric, units in instant_metrics.items():
+        for end, u in _instants(units).items():
+            if end not in quarters:
+                continue
+            quarters[end].setdefault(metric, u.get("val"))
+
+    shares_outstanding = None
+    inst = _instants(share_units)
+    if inst:
+        shares_outstanding = inst[sorted(inst, reverse=True)[0]].get("val")
+
+    quarterly_financials = sorted(quarters.values(), key=lambda x: str(x.get("end_date", "")), reverse=True)[:4]
+    return quarterly_financials, shares_outstanding
+
+
+def _fmt_curr(val) -> str:
+    if val is None:
+        return "N/A"
+    abs_v = abs(val)
+    sign = "-" if val < 0 else ""
+    if abs_v >= 1e9:
+        return f"{sign}${abs_v / 1e9:.2f}B"
+    elif abs_v >= 1e6:
+        return f"{sign}${abs_v / 1e6:.1f}M"
+    return f"{sign}${val:,.0f}"
 
 
 def format_sec_report(ticker: str, form_type: str = "ALL", limit: int = 5) -> str:
@@ -288,54 +382,115 @@ def format_sec_report(ticker: str, form_type: str = "ALL", limit: int = 5) -> st
     lines.append("")
     lines.append("#### 💵 Official GAAP Financial Facts (Trailing 4 Quarters):")
 
-    def _fmt_curr(val) -> str:
-        if val is None:
-            return "N/A"
-        abs_v = abs(val)
-        sign = "-" if val < 0 else ""
-        if abs_v >= 1e9:
-            return f"{sign}${abs_v / 1e9:.2f}B"
-        elif abs_v >= 1e6:
-            return f"{sign}${abs_v / 1e6:.1f}M"
-        return f"{sign}${val:,.0f}"
-
     if not data["quarterly_financials"]:
         lines.append("- No XBRL quarterly financial facts available.")
     else:
-        lines.append("| Period End | Form | Revenue | Operating Income | Net Income | Cash & Equiv | Long-Term Debt |")
-        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+        lines.append("| Period End | Revenue | Op Income | Net Income | EPS Dil | OCF | Capex | Cash | LTD |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
         for q in data["quarterly_financials"]:
             lines.append(
-                f"| {q.get('end_date', 'N/A')} | {q.get('form', 'N/A')} | {_fmt_curr(q.get('revenue'))} | "
+                f"| {q.get('end_date', 'N/A')} | {_fmt_curr(q.get('revenue'))} | "
                 f"{_fmt_curr(q.get('operating_income'))} | {_fmt_curr(q.get('net_income'))} | "
+                f"{_fmt_eps(q.get('eps_diluted'))} | {_fmt_curr(q.get('ocf'))} | {_fmt_curr(q.get('capex'))} | "
                 f"{_fmt_curr(q.get('cash'))} | {_fmt_curr(q.get('long_term_debt'))} |"
             )
+    if data.get("shares_outstanding"):
+        lines.append(f"\nShares outstanding: {int(data['shares_outstanding']):,}")
 
     return "\n".join(lines)
 
 
-def fetch_earnings_press_release(ticker: str) -> str:
-    """
-    Fetches the official earnings press release (Exhibit 99.1) from the most recent
-    8-K filing with Item 2.02 (Results of Operations) on SEC EDGAR.
+def _fmt_eps(val) -> str:
+    return "N/A" if val is None else f"${float(val):.2f}"
 
-    Returns a formatted markdown block with:
-    - Filing accession number, filing date, and primary document URL
-    - Exhibit 99.1 (press release) URL
-    - Raw text excerpt (first 4000 chars) of the press release HTML
-    """
+
+def sec_xbrl_section(ticker: str) -> Optional[Tuple[str, str]]:
+    """Citable SOURCES section: single-quarter GAAP facts straight from EDGAR companyfacts."""
+    data = fetch_sec_filings_data(ticker)
+    if data.get("error") or not data.get("quarterly_financials"):
+        return None
+    rows = ["| period end | revenue | op income | net income | EPS dil | OCF | capex | cash | LTD |",
+            "|---|---|---|---|---|---|---|---|---|"]
+    for q in data["quarterly_financials"]:
+        rows.append(
+            f"| {q.get('end_date', 'N/A')} | {_fmt_curr(q.get('revenue'))} | "
+            f"{_fmt_curr(q.get('operating_income'))} | {_fmt_curr(q.get('net_income'))} | "
+            f"{_fmt_eps(q.get('eps_diluted'))} | {_fmt_curr(q.get('ocf'))} | {_fmt_curr(q.get('capex'))} | "
+            f"{_fmt_curr(q.get('cash'))} | {_fmt_curr(q.get('long_term_debt'))} |")
+    body = (f"{data['company_name']} (CIK {data['cik']}) — official GAAP figures (SEC XBRL companyfacts); "
+            "one fiscal quarter per row.\n" + "\n".join(rows))
+    if data.get("shares_outstanding"):
+        body += f"\nShares outstanding: {int(data['shares_outstanding']):,}"
+    return "SEC XBRL financials", body
+
+
+def broker_fundamentals_section(ticker: str, quote_fund: Optional[dict] = None,
+                                tt_metrics: Optional[list] = None) -> Optional[Tuple[str, str]]:
+    """Citable SOURCES section: P/E, EPS TTM, market cap from the authenticated Schwab quote and
+    beta, IV rank, next earnings date from Tastytrade market metrics."""
+    lines: List[str] = []
+    f = quote_fund or {}
+    try:
+        from src.clients.schwab_client import get_quote_fundamentals
+
+        f = f or get_quote_fundamentals(ticker) or {}
+    except Exception as e:
+        logger.debug(f"Schwab fundamentals for {ticker}: {e}")
+    pe, eps, mc, dy = f.get("pe_ratio"), f.get("eps_ttm"), f.get("market_cap"), f.get("div_yield")
+    row = []
+    if pe is not None:
+        row.append(f"P/E {float(pe):.2f}")
+    if eps is not None:
+        row.append(f"EPS TTM ${float(eps):.2f}")
+    if mc is not None:
+        row.append(f"market cap {_fmt_curr(mc)}")
+    if dy:
+        row.append(f"div yield {float(dy):.2f}%")
+    if row:
+        lines.append("Schwab quote fundamentals: " + " · ".join(row))
+    items = tt_metrics
+    if items is None:
+        try:
+            from src.clients.tastytrade_client import get_tastytrade_client
+
+            items = get_tastytrade_client().get_market_metrics(ticker)
+        except Exception as e:
+            logger.debug(f"Tastytrade metrics for {ticker}: {e}")
+            items = []
+    for m in items or []:
+        if str(m.get("symbol", "")).upper() not in ("", ticker.upper().replace("/", ".")):
+            continue
+        parts = []
+        if m.get("beta") is not None:
+            parts.append(f"beta {float(m['beta']):.2f}")
+        ivr = m.get("tos-implied-volatility-index-rank") or m.get("implied-volatility-index-rank")
+        if ivr is not None:
+            ivr_f = float(ivr)
+            parts.append(f"IV rank {ivr_f * 100:.1f}%" if ivr_f <= 1.0 else f"IV rank {ivr_f:.1f}%")
+        ed = (m.get("earnings") or {}).get("expected-report-date")
+        if ed:
+            parts.append(f"next earnings (Tastytrade) {str(ed)[:10]}")
+        if parts:
+            lines.append("Tastytrade market metrics: " + " · ".join(parts))
+        break
+    return ("Broker fundamentals (Schwab, Tastytrade)", "\n".join(lines)) if lines else None
+
+
+def _fetch_earnings_release_doc(ticker: str) -> Optional[Dict[str, Any]]:
+    """The most recent 8-K's Exhibit 99.1 press release: accession, filing date, urls and the
+    cleaned text. Cached per filing accession under data/sec_cache so each filing is fetched once."""
     import html as html_mod
     import re
 
     ticker_clean = ticker.strip().upper()
     cik = get_cik_for_ticker(ticker_clean)
     if not cik:
-        return f"❌ Could not resolve SEC CIK for {ticker_clean}."
+        return None
 
     sub_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     sub_data = _fetch_url_json(sub_url, headers=SEC_HEADERS)
     if not sub_data:
-        return f"❌ SEC EDGAR submissions unavailable for {ticker_clean} (CIK {cik})."
+        return None
 
     filings_dict = sub_data.get("filings", {}).get("recent", {})
     forms = filings_dict.get("form", [])
@@ -368,7 +523,14 @@ def fetch_earnings_press_release(ticker: str) -> str:
                 break
 
     if not target_acc:
-        return f"❌ No recent 8-K filing found on EDGAR for {ticker_clean}."
+        return None
+
+    cache = SEC_CACHE_DIR / f"ex99_{ticker_clean}_{target_acc}.json"
+    try:
+        if cache.exists():
+            return json.loads(cache.read_text(encoding="utf-8"))
+    except Exception:
+        pass
 
     cik_int = str(int(cik))
     acc_clean = target_acc.replace("-", "")
@@ -437,27 +599,66 @@ def fetch_earnings_press_release(ticker: str) -> str:
             except Exception:
                 exhibit_text = raw[:4500].decode("utf-8", errors="ignore")
 
+    doc = {"ticker": ticker_clean, "cik": cik, "accession": target_acc, "filing_date": target_date,
+           "filing_url": filing_url, "primary_url": primary_url, "exhibit_url": exhibit_url,
+           "exhibit_text": exhibit_text}
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(doc), encoding="utf-8")
+    except Exception:
+        pass
+    return doc
+
+
+def sec_8k_section(ticker: str) -> Optional[Tuple[str, str]]:
+    """Citable SOURCES section: management's own words from the latest 8-K Exhibit 99.1."""
+    doc = _fetch_earnings_release_doc(ticker)
+    if not doc or not doc.get("exhibit_text"):
+        return None
+    return ("SEC 8-K earnings release",
+            f"8-K filed {doc['filing_date']} (accession {doc['accession']}) — Exhibit 99.1 text:\n"
+            + doc["exhibit_text"])
+
+
+def fetch_earnings_press_release(ticker: str) -> str:
+    """
+    Fetches the official earnings press release (Exhibit 99.1) from the most recent
+    8-K filing with Item 2.02 (Results of Operations) on SEC EDGAR.
+
+    Returns a formatted markdown block with:
+    - Filing accession number, filing date, and primary document URL
+    - Exhibit 99.1 (press release) URL
+    - Raw text excerpt (first 4000 chars) of the press release HTML
+    """
+    ticker_clean = ticker.strip().upper()
+    doc = _fetch_earnings_release_doc(ticker_clean)
+    if not doc:
+        cik = get_cik_for_ticker(ticker_clean)
+        return (f"❌ Could not resolve SEC CIK for {ticker_clean}." if not cik else
+                f"❌ No recent 8-K filing found on EDGAR for {ticker_clean}.")
+
     lines = [
         f"### 📄 OFFICIAL EARNINGS PRESS RELEASE — {ticker_clean} (SEC EDGAR 8-K Item 2.02)",
-        f"- **CIK:** `{cik}` | **Filing Date:** {target_date}",
-        f"- **Accession:** `{target_acc}`",
-        f"- **Filing Index:** [View on EDGAR]({filing_url})",
+        f"- **CIK:** `{doc['cik']}` | **Filing Date:** {doc['filing_date']}",
+        f"- **Accession:** `{doc['accession']}`",
+        f"- **Filing Index:** [View on EDGAR]({doc['filing_url']})",
     ]
-    if primary_url:
-        lines.append(f"- **Primary Document:** [{primary_url.split('/')[-1]}]({primary_url})")
-    if exhibit_url:
-        lines.append(f"- **Exhibit 99.1 (Press Release):** [{exhibit_url.split('/')[-1]}]({exhibit_url})")
+    if doc.get("primary_url"):
+        lines.append(f"- **Primary Document:** [{doc['primary_url'].split('/')[-1]}]({doc['primary_url']})")
+    if doc.get("exhibit_url"):
+        lines.append(f"- **Exhibit 99.1 (Press Release):** [{doc['exhibit_url'].split('/')[-1]}]({doc['exhibit_url']})")
     lines.append("")
 
+    exhibit_text = doc.get("exhibit_text") or ""
     if exhibit_text:
         lines.append("#### 📰 Press Release Excerpt (Exhibit 99.1):")
         lines.append("```")
         lines.append(exhibit_text)
         lines.append("```")
-    elif exhibit_url:
-        lines.append(f"*Press release text unavailable — view directly: [{exhibit_url}]({exhibit_url})*")
+    elif doc.get("exhibit_url"):
+        lines.append(f"*Press release text unavailable — view directly: [{doc['exhibit_url']}]({doc['exhibit_url']})*")
     else:
-        lines.append(f"*Exhibit 99.1 URL not resolved from index. View filing directly: [{filing_url}]({filing_url})*")
+        lines.append(f"*Exhibit 99.1 URL not resolved from index. View filing directly: [{doc['filing_url']}]({doc['filing_url']})*")
 
     return "\n".join(lines)
 

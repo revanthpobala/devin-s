@@ -236,33 +236,71 @@ def shifted_chain(chain, spot_now: float, spot_at: float, today: date, entry_day
     return [e for e in exps if date.fromisoformat(e) > entry_day], f
 
 
-def _covered_call(calls, exp: str, spot: float, t1: float, shares: float, em_pct: float, atr: float,
-                  today: date, earnings: Optional[str]) -> Dict[str, Any]:
-    """Code-chosen covered call for a held name: first chain strike at or above target_1, 30-60 DTE."""
-    strikes = sorted(float(k) for k in calls["strike"].unique())
-    k = next((k for k in strikes if k >= t1), None)
-    if k is None:
-        return {"structure": "NONE", "summary": f"no call strike at or above target {t1:.2f} for {exp}"}
-    mid = _mid(calls[calls["strike"] == k].iloc[0])
-    if not mid:
-        return {"structure": "NONE", "summary": f"no liquid call at strike {k:g} for {exp}"}
+CC_DTE = (14, 60)
+
+
+def _cc_monthly_target() -> float:
+    import os
+
+    try:
+        return float(os.getenv("CC_MONTHLY_TARGET", "100"))
+    except ValueError:
+        return 100.0
+
+
+def _covered_call(exps: List[str], fetch, spot: float, shares: float, em_pct: float, atr: float,
+                  today: date, earnings: Optional[str], target: Optional[float] = None) -> Dict[str, Any]:
+    """Covered call sized to a monthly income goal: scan every OTM call 14-60 DTE and take the one that meets
+    the goal with the lowest odds of the shares being called away. Without a qualifying strike, the best
+    monthly income that keeps those odds at or under 50%."""
     from src.logic.scenario_plans import daily_sigma, touch_odds
 
-    days = max((date.fromisoformat(exp) - today).days, 1)
-    p, _ = touch_odds(spot, k, daily_sigma(spot, em_pct, atr), max(1, round(days * 5 / 7)))
+    target = _cc_monthly_target() if target is None else target
     contracts = int(shares // 100)
-    out = {"structure": "COVERED_CALL", "expiration": exp, "short_strike": k, "long_strike": None,
-           "mid_credit": round(mid, 2), "contracts": contracts, "touch_pct": p}
-    out["summary"] = (f"sell {contracts}x {exp} {k:g} call, credit {mid:.2f} (${mid * contracts * 100:,.0f})"
-                      + (f", ~{p}% touch odds by expiry" if p is not None else "")
-                      + f" — income, caps upside above {k:g}{_flag(exp, earnings)} · {TAG}")
+    sigma = daily_sigma(spot, em_pct, atr)
+    cands = []
+    for exp in exps:
+        days = (date.fromisoformat(exp) - today).days
+        if not CC_DTE[0] <= days <= CC_DTE[1]:
+            continue
+        try:
+            calls = fetch(exp)[0]
+        except Exception:
+            continue
+        for _, r in calls.iterrows():
+            k, mid = _f(r.get("strike")), _mid(r)
+            if k <= spot or not mid:
+                continue
+            p, _ = touch_odds(spot, k, sigma, max(1, round(days * 5 / 7)))
+            monthly = mid * contracts * 100 * 30 / days
+            cands.append({"exp": exp, "k": k, "mid": mid, "days": days, "p": 100.0 if p is None else p,
+                          "monthly": monthly, "earn": bool(_flag(exp, earnings))})
+    if not cands:
+        return {"structure": "NONE", "summary": f"no liquid OTM call {CC_DTE[0]}-{CC_DTE[1]} DTE"}
+    clean = [c for c in cands if not c["earn"]] or cands
+    hit = [c for c in clean if c["monthly"] >= target]
+    if hit:
+        best = min(hit, key=lambda c: (c["p"], -c["monthly"]))
+    else:
+        safe = [c for c in clean if c["p"] <= 50] or clean
+        best = max(safe, key=lambda c: c["monthly"])
+    credit = best["mid"] * contracts * 100
+    out = {"structure": "COVERED_CALL", "expiration": best["exp"], "short_strike": best["k"], "long_strike": None,
+           "mid_credit": round(best["mid"], 2), "contracts": contracts, "touch_pct": best["p"],
+           "credit_total": round(credit, 2), "monthly_income": round(best["monthly"], 2),
+           "monthly_target": target, "meets_target": bool(hit)}
+    goal = (f"meets the ${target:,.0f}/month goal" if hit
+            else f"short of the ${target:,.0f}/month goal — best available")
+    out["summary"] = (f"sell {contracts}x {best['exp']} {best['k']:g} call ({best['days']}d), credit {best['mid']:.2f} "
+                      f"(${credit:,.0f} ≈ ${best['monthly']:,.0f}/month, {goal}), ~{best['p']:g}% odds price touches "
+                      f"{best['k']:g} by expiry — caps upside above {best['k']:g}{_flag(best['exp'], earnings)} · {TAG}")
     return out
 
 
 def build_options_menu(ticker: str, spot: float, plan: Dict[str, Any], em_pct: float = 0.0,
                        earnings: Optional[str] = None, today: Optional[date] = None, chain=None,
                        tactical_lo: int = 28, kind: Optional[str] = None, held_qty: float = 0.0,
-                       atr: float = 0.0) -> Dict[str, Any]:
+                       atr: float = 0.0, income_only: bool = False) -> Dict[str, Any]:
     """chain = (expiries, fetch(exp)->(calls_df, puts_df)[, source]). Defaults to broker routing, then yfinance."""
     today = today or date.today()
     if chain is None:
@@ -271,7 +309,8 @@ def build_options_menu(ticker: str, spot: float, plan: Dict[str, Any], em_pct: f
     source = chain[2] if len(chain) > 2 else "custom"
     lv = _levels(plan, spot, em_pct)
     menu: Dict[str, Any] = {"levels_used": lv, "source": source}
-    for key, lo, hi, want in (("tactical_spread", tactical_lo, 50, 37), ("leaps", 150, 800, 270), ("income_or_csp", 20, 50, 33)):
+    for key, lo, hi, want in (() if income_only else
+                              (("tactical_spread", tactical_lo, 50, 37), ("leaps", 150, 800, 270), ("income_or_csp", 20, 50, 33))):
         exp = _pick_exp(exps, today, lo, hi, want, fetch, spot)
         if not exp:
             menu[key] = {"structure": "NONE", "summary": f"no expiry in {lo}-{hi} DTE"}
@@ -287,15 +326,10 @@ def build_options_menu(ticker: str, spot: float, plan: Dict[str, Any], em_pct: f
         except Exception as e:
             menu[key] = {"structure": "NONE", "summary": f"chain error {exp}: {type(e).__name__}"}
     if str(kind or "").upper() == "MANAGE" and held_qty >= 100:
-        exp = _pick_exp(exps, today, 30, 60, 45, fetch, spot)
-        if not exp:
-            menu["covered_call"] = {"structure": "NONE", "summary": "no expiry in 30-60 DTE"}
-        else:
-            try:
-                menu["covered_call"] = _covered_call(fetch(exp)[0], exp, spot, lv["t1"], held_qty,
-                                                     em_pct, atr, today, earnings)
-            except Exception as e:
-                menu["covered_call"] = {"structure": "NONE", "summary": f"chain error {exp}: {type(e).__name__}"}
+        try:
+            menu["covered_call"] = _covered_call(exps, fetch, spot, held_qty, em_pct, atr, today, earnings)
+        except Exception as e:
+            menu["covered_call"] = {"structure": "NONE", "summary": f"chain error: {type(e).__name__}"}
     return menu
 
 
@@ -308,6 +342,9 @@ def attach_options_menu(watch_data: Dict[str, Any], ticker: str, spot: float, em
     # A covered call is income on a position you keep; on an EXIT verdict it contradicts the ruling.
     cc_kind = kind if str(watch_data.get("verdict") or "").upper() != "EXIT" else None
     held_qty = _f((position or {}).get("quantity"))
+    # Debit spreads, LEAPS and cash-secured puts open new exposure: on HOLD/TRIM/EXIT the only vehicle is income on the shares held.
+    income_only = (str(kind or "").upper() == "MANAGE"
+                   and str(watch_data.get("verdict") or "").upper() in ("HOLD", "TRIM", "EXIT"))
     if str(cc_kind or "").upper() == "MANAGE" and held_qty <= 0:
         try:
             from src.tracking.position_targets import held_shares
@@ -317,7 +354,8 @@ def attach_options_menu(watch_data: Dict[str, Any], ticker: str, spot: float, em
             pass
     try:
         menu = build_options_menu(ticker, spot, watch_data.get("shares_plan") or {}, em_pct, earnings,
-                                  kind=cc_kind, held_qty=held_qty, atr=_f(watch_data.get("atr14")) or 0.0)
+                                  kind=cc_kind, held_qty=held_qty, atr=_f(watch_data.get("atr14")) or 0.0,
+                                  income_only=income_only)
     except Exception as e:
         logger.warning(f"[{ticker}] options menu skipped: {e}")
         return
@@ -325,6 +363,6 @@ def attach_options_menu(watch_data: Dict[str, Any], ticker: str, spot: float, em
             for o in (position or {}).get("options") or [] if _f(o.get("quantity"))]
     if legs:
         menu["existing_legs"] = legs
-    if legs or any(menu[k].get("structure") not in (None, "NONE")
+    if legs or any((menu.get(k) or {}).get("structure") not in (None, "NONE")
                    for k in ("tactical_spread", "leaps", "income_or_csp", "covered_call")):
         watch_data["options_menu"] = menu

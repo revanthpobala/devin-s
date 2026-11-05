@@ -85,15 +85,10 @@ def fetch_grounded_pack(ticker: str, cache_dir: Path) -> List[Dict[str, Any]]:
 
 
 def pack_sections(pack: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
-    """One (title, body) citable source section per topic; citations appended for audit."""
-    sections: List[Tuple[str, str]] = []
-    for item in pack:
-        body = str(item.get("text") or "").strip() or "(unavailable)"
-        cites = item.get("citations") or []
-        if cites:
-            body += "\n\nSources:\n" + "\n".join(f"  - {c.get('title')}: {c.get('url')}" for c in cites)
-        sections.append((f"Grounded: {item.get('title') or item.get('topic')}", body))
-    return sections
+    """One (title, body) source section per topic. Summary text only: numbers are traced to the
+    section name, and the citation URLs (opaque redirects) cost ~2/3 of the block's tokens."""
+    return [(f"Grounded: {item.get('title') or item.get('topic')}",
+             str(item.get("text") or "").strip() or "(unavailable)") for item in pack]
 
 
 def pack_block(ticker: str, pack: List[Dict[str, Any]]) -> str:
@@ -102,18 +97,3 @@ def pack_block(ticker: str, pack: List[Dict[str, Any]]) -> str:
     for title, body in pack_sections(pack):
         parts.append(f"--- GOOGLE-GROUNDED RESEARCH ({ticker}): {title} ---\n{body}\n")
     return "\n".join(parts)
-
-
-def pack_citations(pack: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Flat deduped [{title, url, topic}] for the report's numbered Sources list."""
-    out: List[Dict[str, Any]] = []
-    seen = set()
-    for item in pack:
-        for c in item.get("citations") or []:
-            url = str(c.get("url") or "").strip()
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            out.append({"title": str(c.get("title") or url), "url": url,
-                        "topic": str(item.get("title") or item.get("topic") or "")})
-    return out

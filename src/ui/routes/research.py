@@ -1688,6 +1688,9 @@ def get_research_candles(ticker: str, date: Optional[str] = None, limit: int = 2
     else:
         cands = sorted(raw_root.glob(f"202*/{ticker_u}/{safe}_datawindow.csv"), reverse=True) if raw_root.exists() else []
     csv_path = next((p for p in cands if p.exists()), None)
+    if not csv_path and date and raw_root.exists():
+        fallback_cands = sorted(raw_root.glob(f"202*/{ticker_u}/{safe}_datawindow.csv"), reverse=True)
+        csv_path = next((p for p in fallback_cands if p.exists()), None)
     if csv_path:
         try:
             from src.logic.deep_research import quant_facts as _qf
@@ -1698,21 +1701,26 @@ def get_research_candles(ticker: str, date: Optional[str] = None, limit: int = 2
             logger.debug(f"[{ticker_u}] datawindow csv parse failed: {e}")
     yf_bars: list = []
     yf_src = ""
-    try:
-        from src.logic.deep_research import quant_facts as _qf
-
-        yf_bars, yf_src = _qf.daily_bars(ticker_u, _qf._cache_dir(None))
-    except Exception as e:
-        logger.debug(f"[{ticker_u}] candle cache fetch failed: {e}")
-    if dw_bars and yf_bars:
-        lo, hi = str(dw_bars[0]["time"]), str(dw_bars[-1]["time"])
-        bars = ([b for b in yf_bars if str(b["time"]) < lo] + dw_bars
-                + [b for b in yf_bars if str(b["time"]) > hi])
-        src = f"{dw_src} + {yf_src} around it"
-    elif dw_bars:
-        bars, src = dw_bars, dw_src
+    # If dw_bars already satisfies the requested limit, serve immediately without hitting yfinance
+    if dw_bars and len(dw_bars) >= limit:
+        bars = dw_bars
+        src = dw_src
     else:
-        bars, src = yf_bars, yf_src or "none"
+        try:
+            from src.logic.deep_research import quant_facts as _qf
+
+            yf_bars, yf_src = _qf.daily_bars(ticker_u, _qf._cache_dir(None))
+        except Exception as e:
+            logger.debug(f"[{ticker_u}] candle cache fetch failed: {e}")
+        if dw_bars and yf_bars:
+            lo, hi = str(dw_bars[0]["time"]), str(dw_bars[-1]["time"])
+            bars = ([b for b in yf_bars if str(b["time"]) < lo] + dw_bars
+                    + [b for b in yf_bars if str(b["time"]) > hi])
+            src = f"{dw_src} + {yf_src} around it"
+        elif dw_bars:
+            bars, src = dw_bars, dw_src
+        else:
+            bars, src = yf_bars, yf_src or "none"
     candles = [{"time": b["time"], "open": b["open"], "high": b["high"], "low": b["low"],
                 "close": b["close"], "volume": b.get("volume") or 0}
                for b in bars if b.get("close")][-max(1, min(limit, 2000)):]

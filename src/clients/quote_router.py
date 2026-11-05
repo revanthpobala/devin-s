@@ -773,14 +773,29 @@ class QuoteRouter:
 
         return {s: q.last_price for s, q in quotes.items() if q and q.last_price > 0}
 
+    @staticmethod
+    def _quote_consistent(q: QuoteData) -> bool:
+        """A last price outside the day's own high-low is a stale or mislabelled field (e.g. yesterday's close
+        served as last). Extended-hours prints legitimately trade outside the regular range."""
+        if q.is_extended_hours or not (q.low > 0 and q.high >= q.low):
+            return True
+        return q.low * 0.998 <= q.last_price <= q.high * 1.002
+
     def format_quote_text(self, symbol: str) -> Optional[str]:
         """Format a comprehensive quote block for LLM prompts and deep research context."""
         clean_sym = self._clean_symbol(symbol)
-        q = self.get_watchlist_quote(clean_sym)
-        if not q or q.last_price <= 0:
-            q = self.get_live_execution_quote(clean_sym)
-
-        if not q or q.last_price <= 0:
+        # A research or LLM quote is a decision input, not surveillance: take the broker quote first. The
+        # surveillance route yields to the screener and falls to the lower-fidelity feeds.
+        q = None
+        for fetch in (self.get_live_execution_quote, self.get_watchlist_quote):
+            cand = fetch(clean_sym)
+            if cand and cand.last_price > 0 and self._quote_consistent(cand):
+                q = cand
+                break
+            if cand and cand.last_price > 0:
+                logger.warning(f"[{clean_sym}] {cand.source} quote {cand.last_price} outside its own day range "
+                               f"{cand.low}-{cand.high}; discarded")
+        if not q:
             return None
 
         day_range = f"{q.low:.2f} - {q.high:.2f}" if (q.low > 0 and q.high > 0) else "n/a"

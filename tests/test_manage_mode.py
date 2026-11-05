@@ -179,3 +179,81 @@ def test_manage_verdicts_stay_out_of_the_suggestion_ledger(tmp_path, monkeypatch
                             reports_dir=tmp_path / "reports", position=POS)
     assert watch["verdict"] == "HOLD" and watch["suggestion_id"] is None
     assert calls == []
+
+
+# --- covered call sized to a monthly income goal ---------------------------------
+
+def _cc_chain():
+    import pandas as pd
+
+    q = {"2026-12-04": [(260, 14.0, 14.4), (280, 4.0, 4.2), (290, 2.0, 2.1), (300, 1.1, 1.2), (310, 0.5, 0.6)],
+         "2027-02-19": [(300, 6.0, 6.4)]}
+    frames = {e: (pd.DataFrame([{"strike": k, "bid": b, "ask": a, "delta": None} for k, b, a in v]), None)
+              for e, v in q.items()}
+    return sorted(frames), lambda e: frames[e]
+
+
+def _cc(target, earnings=None):
+    from src.logic.options_menu import _covered_call
+
+    exps, fetch = _cc_chain()
+    return _covered_call(exps, fetch, 270.0, 133, 12.0, 9.0, date(2026, 11, 4), earnings, target)
+
+
+def test_cc_meets_goal_with_the_farthest_strike():
+    cc = _cc(100)
+    assert cc["meets_target"] and cc["short_strike"] == 300 and cc["contracts"] == 1
+    assert cc["monthly_income"] >= 100 and "$100/month goal" in cc["summary"]
+
+
+def test_cc_never_sells_an_in_the_money_call():
+    assert _cc(5000)["short_strike"] > 270
+
+
+def test_cc_short_of_goal_keeps_touch_odds_at_or_under_half():
+    cc = _cc(5000)
+    assert not cc["meets_target"] and cc["touch_pct"] <= 50 and "short of" in cc["summary"]
+
+
+def test_cc_out_of_window_expiry_is_ignored():
+    assert _cc(100)["expiration"] == "2026-12-04"
+
+
+# --- root causes behind the AMZN report defects ----------------------------------
+
+def test_hold_why_states_where_price_sits_not_a_generic_line():
+    d = c.decision_label({"kind": "MANAGE"}, {"verdict": "HOLD", "levels": {"stop": {"price": 92.0}, "target_1": {"price": 115.0}}},
+                         {"close": 100.0, "position_obj": POS})
+    assert d["code"] == "HOLD" and "neither the stop nor the target" not in " ".join(d["why"])
+    assert "8.0% above the protective exit $92.00" in " ".join(d["why"]) and "15.0% below" in " ".join(d["why"])
+
+
+def test_case_against_repeating_risk_figures_is_dropped():
+    o = {"risks": ["Free cash flow is an outflow of 42.4 billion [S11] on a 220 billion capex plan [S9]."],
+         "case_against": ["FCF is negative 42.4 billion [S11] against 220 billion capex [S9].",
+                          "Price is 9.31% above MA200 [DW:Ext Pct vs MA200]."]}
+    w = []
+    c._drop_repeated_case(o, w)
+    assert o["case_against"] == ["Price is 9.31% above MA200 [DW:Ext Pct vs MA200]."] and len(w) == 1
+
+
+def test_manage_verdict_carries_no_add_on_scenarios_or_new_exposure_options(monkeypatch):
+    import pandas as pd
+    from src.logic import options_menu as om
+
+    calls = []
+    monkeypatch.setattr(om, "load_chain", lambda t: (["2026-12-04"], lambda e: (pd.DataFrame(
+        [{"strike": 300, "bid": 1.1, "ask": 1.2, "delta": None}]), pd.DataFrame())), raising=True)
+    monkeypatch.setattr(om, "_tier1", lambda *a, **k: calls.append("spread") or {"structure": "NONE"})
+    wd = {"side": "LONG", "verdict": "HOLD", "shares_plan": {}}
+    om.attach_options_menu(wd, "AMZN", 270.0, 12.0, None, kind="MANAGE", position={"quantity": 133})
+    assert calls == [] and set(wd["options_menu"]) - {"levels_used", "source"} == {"covered_call"}
+
+
+def test_quote_outside_its_own_day_range_is_inconsistent():
+    from src.clients.quote_router import QuoteData, QuoteRouter
+
+    ok = QuoteData(symbol="AMZN", last_price=268.7, low=263.9, high=271.5)
+    stale = QuoteData(symbol="AMZN", last_price=250.69, low=263.9, high=271.5, source="TASTYTRADE")
+    assert QuoteRouter._quote_consistent(ok) and not QuoteRouter._quote_consistent(stale)
+    assert QuoteRouter._quote_consistent(QuoteData(symbol="X", last_price=5.0))

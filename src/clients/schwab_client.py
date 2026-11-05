@@ -275,6 +275,12 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
                     )
                     if last_px is not None and float(last_px) > 0:
                         is_extended = bool(q.get("postMarketChange") or q.get("postMarketPercentChange"))
+                        f_raw = sym_val.get("fundamental") or {}
+                        fund = {k: f_raw.get(src) for k, src in (
+                            ("pe_ratio", "peRatio"), ("eps_ttm", "eps"), ("market_cap", "marketCap"),
+                            ("div_yield", "divYield"), ("last_earnings", "lastEarningsDate"),
+                            ("shares_outstanding", "sharesOutstanding"),
+                        ) if f_raw.get(src) is not None}
                         q_dict = {
                             "symbol": sym_key,
                             "last_price": float(last_px),
@@ -292,6 +298,7 @@ def get_realtime_quotes_batch(symbols: list[str]) -> dict[str, dict]:
                             "post_market_change": float(q.get("postMarketChange") or 0.0),
                             "post_market_percent_change": float(q.get("postMarketPercentChange") or 0.0),
                             "source": "SCHWAB",
+                            "fundamental": fund,
                         }
                         _QUOTE_CACHE[sym_key] = (now_ts, q_dict)
                         results[sym_key] = q_dict
@@ -314,6 +321,12 @@ def get_realtime_quote(symbol: str) -> Optional[dict]:
         return None
     res = get_realtime_quotes_batch([sym])
     return res.get(sym)
+
+
+def get_quote_fundamentals(symbol: str) -> Optional[dict]:
+    """P/E, EPS TTM, market cap etc from the authenticated Schwab quote's `fundamental` block."""
+    q = get_realtime_quote(symbol)
+    return (q or {}).get("fundamental") or None
 
 
 def get_last_price(symbol: str) -> Optional[float]:
@@ -707,11 +720,16 @@ def get_unusual_options_flow_data(ticker: str, force_refresh: bool = False) -> d
 
 
 _SCHWAB_POSITIONS_CACHE: tuple[float, dict] = (0.0, {})
+_POSITIONS_SNAPSHOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                   "data", "schwab_positions_last.json")
+
 
 def get_schwab_positions(force_refresh: bool = False) -> dict:
     """
     Fetches real-time account balances and open positions across all linked
     accounts using the authenticated Schwab Trader API with a 30s in-memory cache.
+    A failed fetch returns the last good snapshot (memory, then disk, since research jobs are separate
+    processes): an error here reads as "not held" and turns a held name's manage report into an entry plan.
     """
     global _SCHWAB_POSITIONS_CACHE
     now_ts = time.time()
@@ -723,11 +741,7 @@ def get_schwab_positions(force_refresh: bool = False) -> dict:
         client = get_schwab_client()
         resp = client.get_accounts(fields=client.Account.Fields.POSITIONS)
         if resp.status_code != 200:
-            return {
-                "status": "error",
-                "error": f"Schwab API returned HTTP {resp.status_code}: {resp.text}",
-                "accounts": []
-            }
+            raise RuntimeError(f"Schwab API returned HTTP {resp.status_code}: {resp.text}")
 
         data = resp.json()
         accounts_out = []
@@ -780,9 +794,23 @@ def get_schwab_positions(force_refresh: bool = False) -> dict:
             "accounts": accounts_out
         }
         _SCHWAB_POSITIONS_CACHE = (now_ts, result)
+        try:
+            with open(_POSITIONS_SNAPSHOT, "w", encoding="utf-8") as f:
+                json.dump(result, f)
+        except OSError:
+            pass
         return result
     except Exception as e:
         logger.error(f"Failed to fetch Schwab positions: {e}")
+        if cached_data:
+            return cached_data
+        try:
+            with open(_POSITIONS_SNAPSHOT, encoding="utf-8") as f:
+                snap = json.load(f)
+            logger.warning("Using last saved Schwab positions snapshot")
+            return snap
+        except (OSError, ValueError):
+            pass
         return {
             "status": "error",
             "error": str(e),

@@ -140,30 +140,45 @@ def _find(t: str, is_date: bool, sections: List[Tuple[str, str]], dw: Dict[str, 
     return next((f"L:{k}" for k, v in reg.items() if _matches(t, [v["price"]])), None)
 
 
+def _specific(seg: str, m: "re.Match[str]") -> bool:
+    """Decimals, 3+-digit figures and $/%/B-scale amounts must live in the section they cite;
+    small structural numbers (21-bar, 200SMA) keep the cross-section fallback."""
+    tok = m.group(1)
+    i, j = m.start(), m.end()
+    return ("." in tok or len(re.sub(r"\D", "", tok)) >= 3
+            or (i < len(seg) and seg[i] == "$")
+            or (j < len(seg) and seg[j] in "%BMKT"))
+
+
 def trace(field: str, text: str, sections: List[Tuple[str, str]], dw: Dict[str, Any],
           reg: Dict[str, Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Every number and ISO date must appear in a source. The writer's citation is checked first; if the number is not
-    there, every other source is searched and the real one is recorded. A number in no source fails."""
+    """Every number and ISO date must appear in a source. The writer's citation is checked first; a specific number
+    (decimals, 3+ digits, $/%/B-scale) not in the cited source fails outright — it cannot drift-match a coincidental
+    figure elsewhere. Small structural numbers keep the every-source fallback, recorded as fell_back=True."""
     rows: List[Dict[str, Any]] = []
     fails: List[str] = []
     pos = 0
     for m in [*_CITE.finditer(text), None]:
         seg = text[pos:m.start() if m else len(text)]
         dates = _DATE.findall(seg)
-        toks = numbers(seg) + dates
+        masked = _MASK.sub(lambda x: " " * len(x.group(0)), seg)
+        toks = [(x.group(1).replace(",", ""), False, _specific(masked, x)) for x in _NUM.finditer(masked)]
+        toks += [(d, True, False) for d in dates]
         pos = m.end() if m else len(text)
         cited = m.group(1) if m else None
         vals = _cite_values(cited, sections, dw, reg) if cited else None
         raw = (sections[int(cited[1:])][1] if cited.startswith("S") and int(cited[1:]) < len(sections) else
                str(dw.get(cited[3:].strip())) if cited.startswith("DW:") else "") if cited else ""
-        for t in toks:
-            is_date = t in dates
+        for t, is_date, specific in toks:
             ok = vals is not None and ((t in raw) if is_date else _matches(t, vals))
+            if not ok and specific and cited is not None and vals is not None:
+                fails.append(f"{field}: {t} not in cited {cited}")
+                continue
             src = cited if ok else _find(t, is_date, sections, dw, reg)
             if src is None:
                 fails.append(f"{field}: {t} appears in no source")
                 continue
-            rows.append({"field": field, "number": t, "cite": src,
+            rows.append({"field": field, "number": t, "cite": src, "fell_back": bool(cited) and not ok,
                          "source": sections[int(src[1:])][0] if src.startswith("S") else src})
     return rows, fails
 
@@ -310,7 +325,8 @@ def code_facts(dw: Dict[str, Any], reg: Dict[str, Dict[str, Any]], atr: Optional
             "Action Long Code", "Stage")
     lines = [f"Bar {dw.get('bar_date') or dw.get('time')} ({'forming' if forming else 'closed'})",
              f"ATR14 {atr:.2f}" if atr else "ATR14 unavailable", f"Pine state {ts.get('label')}"]
-    lines += [f"{k} {_fmt(dw.get(k))}" for k in keys if dw.get(k) is not None]
+    lines += [f"{k} {_fmt(dw.get(k))}" + (" (HV-derived rank from the Pine export, not market IV)" if k == "Energy IV Rank Pct" else "")
+              for k in keys if dw.get(k) is not None]
     if not forming and dw.get("RVOL Vs Avg") is not None:
         lines.append(f"RVOL Vs Avg {_fmt(dw.get('RVOL Vs Avg'))}")
     if e_date:
@@ -389,7 +405,7 @@ daily highs/lows) and write the reasoning. Output one JSON object and nothing el
               "1M": {{"stance": "...", "why": "..."}}, "3M": {{"stance": "...", "why": "..."}},
               "6M": {{"stance": "...", "why": "..."}}, "1Y": {{"stance": "...", "why": "..."}},
               "MULTI_YEAR": {{"stance": "...", "why": "..."}}}},
- "market_context": ["sector and macro context for this name, 2-4 lines; every line states the link to THIS ticker, at most one line may be generic macro"],
+ "market_context": ["sector, macro and sell-side context for this name, 2-5 lines (analyst targets and rating changes, guidance commentary, insider and institutional flow); every line states the link to THIS ticker, at most one line may be generic macro"],
  "transmission": [{{"event": "dated event with [S<n>]", "status": "VERIFIED|SCENARIO",
                    "channel": "a CHANNEL name from the table below",
                    "chain": [{{"step": "one link of the causal path", "kind": "FACT|INFERENCE"}}],
@@ -397,11 +413,11 @@ daily highs/lows) and write the reasoning. Output one JSON object and nothing el
                    "horizon": "1W|1M|3M|6M|1Y|MULTI_YEAR",
                    "confirm": [{{"symbol": "a proxy from the channel", "move": "UP|DOWN"}}],
                    "invalidate": "one line"}}],
- "risks": ["named risks with dates where known, 3-5 lines"],
+ "risks": ["external, dated events and exposures (macro prints, legal, financing), 3-5 lines"],
  "wrong_if": "the single clearest falsifier of this thesis, 1-2 lines",
  "vs_alternatives": "versus doing nothing or holding SPY, weighing the quant base rates, 1-2 lines",
- "fundamentals": ["business and financial health from the Fundamentals, Earnings, Institutional and news sources, 5-8 lines: revenue and earnings growth, margins, valuation, balance sheet or liquidity, guidance, analyst targets and rating changes, insider and institutional flow"],
- "thesis": ["the case FOR the trade, 3-5 lines, weighing fundamentals and news together with the technicals"], "case_against": ["the case AGAINST, traps and risks, 3-5 lines, fundamental and news risks as well as technical"],
+ "fundamentals": ["reported actuals, 4-6 lines, every figure cited to an SEC XBRL, SEC 8-K or Broker fundamentals section: revenue and earnings growth, margins, free cash flow (OCF minus capex), balance sheet, P/E and EPS; analyst targets, ratings, guidance commentary and insider flow go in market_context"],
+ "thesis": ["the case FOR the trade, 3-5 lines, weighing fundamentals and news together with the technicals"], "case_against": ["the argument that this thesis is wrong: interpretation, positioning and valuation, 3-5 lines; never restate a figure already given in `risks`"],
  "news_synthesis": ["dated company, sector and macro news that moves the stock, 4-8 lines, each with an ISO date"],
  "concurrence": ["what Report A and Report B agree on, 1-2 lines"],
  "conflicts": ["where Report A and Report B disagree and which side the sources support, 0-4 lines"]}}
@@ -457,7 +473,10 @@ HARD RULES (code asserts every one; a violation in a level or plan field discard
     NONE|THIRD|HALF|ALL: TRIM needs THIRD or HALF, EXIT needs ALL (or a named fraction), HOLD takes
     NONE. EXIT needs a cited reason in veto_fact or wrong_if. Entry geometry and the R:R floor do
     not apply — this is not an entry. When HAS_ENTRY_PLAN is yes you may instead write a normal
-    ENTER/ARMED add plan under rules 3-8."""
+    ENTER/ARMED add plan under rules 3-8.
+    HOLD means no sale today: if your why_now or edge argues for selling part now, the verdict is TRIM, and the
+    named trim levels are future triggers. HOLD, TRIM and EXIT carry an empty `scenarios` list; adding shares is a
+    separate decision."""
 
 ADVERSARY_SYS = (
     "You audit a trade plan for {ticker}. Read the SOURCES and the PLAN. Answer FAIL if any source fact contradicts the "
@@ -467,14 +486,15 @@ ADVERSARY_SYS = (
 )
 
 
-def _llm(system: str, user: str, model_env: str, json_mode: bool, max_tokens: int) -> str:
+def _llm(system: str, user: str, model_env: str, json_mode: bool, max_tokens: int,
+         reasoning: Optional[str] = None) -> str:
     from src.clients.llm_client import query_local_llm
 
     model = os.getenv(model_env) or os.getenv("CHAT_MODEL") or None
     try:
         return query_local_llm(system_prompt=system, user_prompt=user, json_mode=json_mode, use_openrouter=True,
                                model=model, use_tools=False, max_tokens=max_tokens,
-                               reasoning_effort=os.getenv("JUDGE_REASONING", "high")) or ""
+                               reasoning_effort=reasoning or os.getenv("JUDGE_REASONING", "high")) or ""
     except Exception as e:
         logger.warning(f"{model_env} call failed: {e}")
         return ""
@@ -516,6 +536,7 @@ def _writer(system: str, user: str, ticker: str, sections: List[Tuple[str, str]]
 
     try:
         client, model, provider = _build_client_and_model(True, model=os.getenv("WRITER_MODEL") or os.getenv("CHAT_MODEL"))
+        client.max_retries = 0  # SDK's two slow retries become one fast manual retry below
     except Exception as e:
         logger.warning(f"writer client unavailable: {e}")
         return ""
@@ -531,8 +552,13 @@ def _writer(system: str, user: str, ticker: str, sections: List[Tuple[str, str]]
             choice = client.chat.completions.create(**kw).choices[0]
             msg = choice.message
         except Exception as e:
-            logger.warning(f"[{ticker}] writer call failed: {e}")
-            return ""
+            logger.warning(f"[{ticker}] writer call failed ({type(e).__name__}: {e}); one fast retry")
+            try:
+                choice = client.chat.completions.create(**kw).choices[0]
+                msg = choice.message
+            except Exception as e2:
+                logger.warning(f"[{ticker}] writer retry failed: {e2}")
+                return ""
         calls = getattr(msg, "tool_calls", None) or []
         if not calls:
             if getattr(choice, "finish_reason", None) != "stop":
@@ -636,6 +662,25 @@ def _prose_fields(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
     return [(k, str(v)) for k, v in out if v]
 
 
+def _figures(t: Any) -> set:
+    t = _CITE.sub("", str(t or ""))
+    return {d for d in _DATE.findall(t)} | {m.group(1).replace(",", "") for m in _NUM.finditer(_DATE.sub("", t))}
+
+
+def _drop_repeated_case(obj: Dict[str, Any], withheld: List[str]) -> None:
+    """A case_against line whose every figure `risks` already states adds nothing new: drop it."""
+    seen = set().union(*[_figures(t) for t in obj.get("risks") or []]) if obj.get("risks") else set()
+    items = list(obj.get("case_against") or [])
+    keep = []
+    for i, t in enumerate(items):
+        f = _figures(t)
+        if f and f <= seen:
+            withheld.append(f"case_against[{i}] repeats figures already in risks")
+        else:
+            keep.append(t)
+    obj["case_against"] = keep or items[:1]
+
+
 def _withholdable(k: str) -> bool:
     if k == "earnings_rationale" or k in SOFT_SCALAR_KEYS:
         return True
@@ -667,6 +712,11 @@ def _scrub_bad(obj: Dict[str, Any], bad: set) -> None:
     for k, v in (obj.get("horizons") or {}).items():
         if isinstance(v, dict) and f"horizons.{k}.why" in bad:
             v["why"] = ""
+
+
+_NOT_PRICE = re.compile(r"\s*(?:days?|weeks?|months?|bars?|sessions?|trading|[sd]?ma|ema|sma|hours?|times|x)\b", re.I)
+_SEC_FEED = re.compile(r"^(SEC |Broker fundamentals|Judge research \(fetch_sec|Judge research \(fetch_earnings_release)", re.I)
+_UNVERIFIED_TITLE = re.compile(r"grounded|search|news|dossier|^macro", re.I)
 
 
 def check(obj: Optional[Dict[str, Any]], *, side: str, reg: Dict[str, Dict[str, Any]], atr: Optional[float],
@@ -703,15 +753,29 @@ def check(obj: Optional[Dict[str, Any]], *, side: str, reg: Dict[str, Dict[str, 
     traces: List[Dict[str, Any]] = []
     withheld: List[str] = []
     bad: set = set()
+    unverified: set = set()
+    fell_back = 0
     for k, v in _prose_fields(obj):
         rows, why = trace(k, v, sections, dw, reg)
+        fell_back += sum(1 for r in rows if r.get("fell_back"))
+        for r in rows:
+            src_t = str(r.get("source") or "")
+            if _UNVERIFIED_TITLE.search(src_t):
+                unverified.add(k)
+            if k.startswith("fundamentals[") and not _DATE.fullmatch(str(r.get("number") or "")) \
+                    and not _SEC_FEED.search(src_t):
+                why.append(f"{k}: {r['number']} traces to {src_t or 'no SEC feed'} — "
+                           "fundamentals actuals must cite an SEC XBRL/8-K or broker section")
         if why and _withholdable(k):
             withheld += why
             bad.add(k)
             continue
         traces += rows
         fails += why
+    if fell_back:
+        logger.info(f"[check] {fell_back} non-specific number(s) landed outside their citation (fallback allowed)")
     _scrub_bad(obj, bad)
+    _drop_repeated_case(obj, withheld)
     if veto != "NONE" and not str(obj.get("veto_fact") or "").strip():
         fails.append(f"veto {veto} without veto_fact")
     if veto == "HARD_FUNDAMENTAL" and (verdict != "CASH_SKIP" or obj.get("scenarios")) and not manage_v:
@@ -731,7 +795,7 @@ def check(obj: Optional[Dict[str, Any]], *, side: str, reg: Dict[str, Dict[str, 
     if verdict == "CASH_SKIP" and has_plan:
         fails.append(f"CASH_SKIP with entry kind {kind}")
     res: Dict[str, Any] = {"verdict": verdict, "veto": veto, "stance": stance, "entry_kind": kind, "levels": {},
-                           "traces": traces, "withheld": withheld}
+                           "traces": traces, "withheld": withheld, "unverified_fields": sorted(unverified)}
     L = res["levels"]
     if kind in ("ZONE", "LIMIT"):
         L["entry_low"] = _level(reg, entry.get("low") if kind == "ZONE" else (entry.get("low") or entry.get("high")), "entry.low", fails, True)
@@ -742,7 +806,9 @@ def check(obj: Optional[Dict[str, Any]], *, side: str, reg: Dict[str, Dict[str, 
         L["entry_high"] = _level(reg, entry.get("high") or "RSI2_CEILING", "entry.high", fails, True)
     L["stop"] = _level(reg, obj.get("stop"), "stop", fails, has_plan or manage_v)
     L["target_1"] = _level(reg, obj.get("target_1"), "target_1", fails, has_plan or manage_v)
-    L["target_2"] = _level(reg, obj.get("target_2"), "target_2", fails, False)
+    t2_fails: List[str] = []
+    L["target_2"] = _level(reg, obj.get("target_2"), "target_2", t2_fails, False)
+    withheld += [f"{f}: target_2 dropped (optional)" for f in t2_fails]
     p = {k: (v or {}).get("price") for k, v in L.items()}
     plan_stop_name = (L.get("stop") or {}).get("level")
     bad_stop = _stop_ref_bad(str(obj.get("vs_alternatives") or ""), plan_stop_name, reg)
@@ -750,6 +816,18 @@ def check(obj: Optional[Dict[str, Any]], *, side: str, reg: Dict[str, Dict[str, 
         obj["vs_alternatives"] = ""
         withheld.append(f"vs_alternatives withheld (cites {level_label(bad_stop)} but the plan stop is "
                         f"{level_label(plan_stop_name) if plan_stop_name else 'none'})")
+    zlo_px = p.get("entry_low")
+    if kind in ("ZONE", "LIMIT") and zlo_px is not None:
+        wi_masked = _MASK.sub(lambda x: " " * len(x.group(0)), str(obj.get("wrong_if") or ""))
+        for m in _NUM.finditer(wi_masked):
+            if (m.end() < len(wi_masked) and wi_masked[m.end()] in "%BMKT-") \
+                    or _NOT_PRICE.match(wi_masked, m.end()):
+                continue
+            n = float(m.group(1).replace(",", ""))
+            if n >= zlo_px - PRICE_TOL:
+                fails.append(f"wrong_if {n} sits inside or above the buy zone "
+                             f"{zlo_px}-{p['entry_high']}: the falsifier must sit below the zone")
+                break
 
     if kind == "NEXT_OPEN":
         if not rsi2_ready:
@@ -850,22 +928,27 @@ def check(obj: Optional[Dict[str, Any]], *, side: str, reg: Dict[str, Dict[str, 
             fails.append(f"scenarios[{i}].kind {s.get('kind')!r} not in {SCENARIO_KINDS}")
             continue
         sl = {k: _level(reg, s.get(k), f"scenarios[{i}].{k}", fails, k != "zone_low") for k in ("trigger", "zone_low", "stop", "target")}
-        if any(sl[k] is None for k in ("trigger", "stop", "target")):
+        trig, zlo, sc_stop, tgt = sl["trigger"], sl["zone_low"], sl["stop"], sl["target"]
+        if trig is None or sc_stop is None or tgt is None:
             continue
         if sk == "PULLBACK":
-            if sl["zone_low"] is None:
+            if zlo is None:
                 fails.append(f"scenarios[{i}]: PULLBACK needs zone_low")
                 continue
-            if atr and not sl["trigger"]["price"] - 1.5 * atr < sl["zone_low"]["price"] < sl["trigger"]["price"]:
+            if atr and not trig["price"] - 1.5 * atr < zlo["price"] < trig["price"]:
                 fails.append(f"scenarios[{i}]: zone_low not within one and a half ATR below the trigger")
+            if p.get("entry_low") and p.get("stop") and abs(zlo["price"] - p["entry_low"]) <= PRICE_TOL \
+                    and abs(sc_stop["price"] - p["stop"]) > PRICE_TOL:
+                fails.append(f"scenarios[{i}]: a PULLBACK in the plan's zone uses the plan's stop "
+                             f"{(L.get('stop') or {}).get('level') or 'n/a'}, not {sc_stop['level']}")
         try:
             end = date.fromisoformat(str(s.get("window_end"))[:10])
             if end <= today:
                 fails.append(f"scenarios[{i}]: window_end {end} not after {today}")
         except ValueError:
             fails.append(f"scenarios[{i}]: window_end {s.get('window_end')!r} not an ISO date")
-        flat = {"kind": sk, "trigger": sl["trigger"]["price"], "stop": sl["stop"]["price"], "target": sl["target"]["price"],
-                "zone_low": (sl["zone_low"] or {}).get("price"), "window_end": s.get("window_end"),
+        flat = {"kind": sk, "trigger": trig["price"], "stop": sc_stop["price"], "target": tgt["price"],
+                "zone_low": (zlo or {}).get("price"), "window_end": s.get("window_end"),
                 "confirm": s.get("confirm") or [], "thesis": s.get("thesis") or "", "origin": "contract",
                 "provenance": {k: v["level"] for k, v in sl.items() if v}}
         sc, why = normalize(flat, close or 0, atr or 0, em_pct, today, earnings_date,
@@ -1157,6 +1240,14 @@ def _check_style(obj: Dict[str, Any], fails: List[str]) -> Dict[str, str]:
             "reason": str(st.get("reason") or "")}
 
 
+def _manage_why(px: Optional[float], stop: Optional[float], t1: Optional[float]) -> List[str]:
+    """Where price sits between the protective exit and the first trim level: the only fact the levels list below does not state."""
+    if not (px and stop and t1):
+        return []
+    return [f"Price ${px:.2f} sits {100 * (px - stop) / px:.1f}% above the protective exit ${stop:.2f} "
+            f"and {100 * (t1 - px) / px:.1f}% below the first trim level ${t1:.2f}."]
+
+
 def decision_label(watch: Dict[str, Any], res: Dict[str, Any], facts: Dict[str, Any]) -> Dict[str, Any]:
     """Code picks the trader-facing label; the writer never does, so it cannot contradict the evidence.
     The short side is shown as levels only — no measured edge — and is never the verdict."""
@@ -1186,15 +1277,16 @@ def decision_label(watch: Dict[str, Any], res: Dict[str, Any], facts: Dict[str, 
         if veto == "HARD_FUNDAMENTAL":
             return d("EXIT", "EXIT", ["Hard fundamental veto on a held name."])
         if verdict == "EXIT":
-            return d("EXIT", "EXIT", ["The manage review says exit the position; the price has not hit the stop or the target yet."])
+            return d("EXIT", "EXIT", ["Exit the position; price has not hit the protective exit or a trim level yet.",
+                                      *_manage_why(px, stop, t1)])
         if verdict == "TRIM":
             amt = str(res.get("trim") or "").upper()
-            return d("TRIM", "TRIM", [f"The manage review says trim{f' {amt.lower()}' if amt in TRIM_AMOUNTS and amt != 'NONE' else ''} "
-                                      f"at the targets; the stop ${stop:.2f} protects the rest." if stop else
-                                      "The manage review says trim at the targets."])
+            amt = f" {amt.lower()}" if amt in TRIM_AMOUNTS and amt != "NONE" else ""
+            return d("TRIM", "TRIM", [f"Trim{amt} now; the protective exit ${stop:.2f} covers the rest." if stop else f"Trim{amt} now.",
+                                      *_manage_why(px, stop, t1)])
         # ENTER/ARMED/WATCH on a held name are add plans: fall through to the normal label logic.
         if verdict in MANAGE_VERDICTS or verdict == "CASH_SKIP":
-            return d("HOLD", "HOLD", ["Position open; neither the stop nor the target has been hit."])
+            return d("HOLD", "HOLD", ["No sale today.", *_manage_why(px, stop, t1)])
     if live and stop and live <= stop:
         return d("AVOID", "AVOID", [f"Live ${live:.2f} is at or below the stop ${stop:.2f}; the plan is broken."])
     if live and t1 and live >= t1:
@@ -1239,7 +1331,9 @@ LEVEL_LABELS = {
 }
 _CITE_GROUP = re.compile(r"(?:\s*\[(?:S\d+|DW:[^\]]+|L:[A-Z0-9_]+)\])+")
 _NAME_TAG = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*\[L:\1\]")
-_BARE_NAME = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+_BARE_NAME = re.compile(r"\b[A-Z][A-Z0-9_]+\b")
+_LEVEL_FAMILY = re.compile(
+    r"(?:GAP|KEY|SWING|HTF|VP|OPT|CONF|RSI2|PINE|ATR|RR|AVWAP|DARVAS|PREV|HIGH_52W|LOW_52W|CLOSE|MA\d|EMA\d)[A-Z0-9_]*")
 
 
 def level_label(name: str) -> str:
@@ -1288,9 +1382,17 @@ def humanize(text: str, reg: Dict[str, Dict[str, Any]], sections: List[Tuple[str
                 names.append(n)
         return f" ({', '.join(names)})" if names else ""
 
+    def bare(m: "re.Match[str]") -> str:
+        n = m.group(0)
+        if n in reg:
+            return f"{level_label(n)} ${reg[n]['price']:.2f}"
+        if _LEVEL_FAMILY.fullmatch(n) and ("_" in n or re.fullmatch(r"(?:MA|EMA)\d+|CLOSE", n)):
+            return level_label(n)
+        return n
+
     text = _NAME_TAG.sub(lambda m: level(m) if m.group(1) in reg else m.group(0), text)
     text = _CITE_GROUP.sub(cite, text)
-    return _BARE_NAME.sub(lambda m: level(m) if m.group(0) in reg else m.group(0), text)
+    return _BARE_NAME.sub(bare, text)
 
 
 def _fmt(v: Any, nd: int = 2) -> str:
@@ -1322,7 +1424,9 @@ def _decision(watch: Dict[str, Any], res: Dict[str, Any], facts: Dict[str, Any],
     if watch.get("veto") not in (None, "NONE"):
         why.append(f"{str(watch['veto']).replace('_', ' ').capitalize()}: {h(watch.get('veto_fact'))}")
     for f in fails:
-        if f.startswith("adversarial pass"):
+        if f == "adversarial pass: reviewer returned no verdict":
+            why.append("The independent review did not complete (no PASS/FAIL verdict); the plan is unreviewed.")
+        elif f.startswith("adversarial pass"):
             r = watch.get("adversary_reason")
             why.append("An independent reviewer rejected the plan" + (f": {h(r)}" if r else "."))
         elif not f.startswith("live quote"):
@@ -1422,21 +1526,30 @@ def render(ticker: str, date_str: str, side: Optional[str], watch: Dict[str, Any
            quant: Optional[Dict[str, Any]] = None, source_links: Optional[List[Dict[str, Any]]] = None,
            include_transmission: bool = True) -> str:
     def h(t: Any) -> str:
-        return html.escape(humanize(str(t), *display) if display else str(t), quote=False)
+        s = humanize(str(t), *display) if display else str(t)
+        return html.escape(s, quote=False)
+
+    uv = set(res.get("unverified_fields") or [])
+
+    def hk(k: str, t: Any) -> str:
+        """Narrative items whose numbers trace only to a search/news summary get the unverified tag."""
+        return h(t) + " *(search summary, unverified)*" if k in uv else h(t)
 
     earn = (f"Earnings reported {facts['earnings_reported']} (next date unknown)" if facts.get("earnings_reported")
             else f"Earnings {facts.get('earnings_date') or 'unknown'}"
             + (f" ({facts['earnings_days']} trading days away)" if facts.get("earnings_days") is not None else ""))
     bar = (f"- Bar {facts.get('bar_date')} ({'still forming' if facts.get('forming') else 'closed'}) · close {_fmt(facts.get('close'))}"
            + (f" · Pine state {facts.get('state_label')}" if facts.get("state_label") else ""))
-    stats = (f"- ATR14 {_fmt(facts.get('atr'))} · expected 21-day move {_fmt(facts.get('em_pct'))}% · IV rank {_fmt(facts.get('iv_rank'), 0)} · "
+    stats = (f"- ATR14 {_fmt(facts.get('atr'))} · expected 21-day move {_fmt(facts.get('em_pct'))}% · "
+             + (f"IV rank {_fmt(facts.get('iv_rank'), 0)} (broker) · " if facts.get("iv_rank") is not None else "")
+             + f"HV rank {_fmt(facts.get('hv_rank'), 0)} · "
              f"extension Z {_fmt(facts.get('ext_z'))} · action code {facts.get('action')}"
              + ("" if facts.get("forming") else f" · relative volume {_fmt(facts.get('rvol'))}"))
     if side is None:
         return "\n".join([f"# {ticker} | ⚖️ SENIOR PM ARBITRATION ({date_str})", "", "## 🧭 DECISION: NO TRADE", "",
                           "No long plan exists on this bar (Pine's stop and target do not bracket the close, and there is no RSI2 order). "
                           "Everything below is context, not an order.", "", "## Facts", bar, stats, f"- {earn}",
-                          *_position_md(facts), *(["", extra_md] if extra_md else [])])
+                          *_position_md(facts), *(["", humanize(extra_md, *display) if display else extra_md] if extra_md else [])])
     o = obj or {}
     lv = res.get("levels") or {}
     q = quant if quant is not None else (facts.get("quant") or {})
@@ -1446,11 +1559,12 @@ def render(ticker: str, date_str: str, side: Optional[str], watch: Dict[str, Any
              *_decision({**watch, "_obj": o}, res, facts, fails, h, dec, display[0] if display else None)]
 
     if o.get("thesis") or o.get("why_now") or o.get("edge"):
-        lines += ["## 💡 INVESTMENT THESIS", *[f"- {h(t)}" for t in (o.get("thesis") or [])]]
+        lines += ["## 💡 INVESTMENT THESIS",
+                  *[f"- {hk(f'thesis[{i}]', t)}" for i, t in enumerate(o.get("thesis") or [])]]
         if o.get("why_now"):
-            lines.append(f"- **Why now:** {h(o['why_now'])}")
+            lines.append(f"- **Why now:** {hk('why_now', o['why_now'])}")
         if o.get("edge"):
-            lines.append(f"- **The edge:** {h(o['edge'])}")
+            lines.append(f"- **The edge:** {hk('edge', o['edge'])}")
         lines.append("")
 
     bbb = res.get("scenarios_bbb") or []
@@ -1492,12 +1606,12 @@ def render(ticker: str, date_str: str, side: Optional[str], watch: Dict[str, Any
 
     for key, title in (("fundamentals", "## 📊 FUNDAMENTALS"), ("technicals", "## 📈 TECHNICALS"),
                        ("market_context", "## 🌐 MARKET CONTEXT")):
-        items = [h(t) for t in (o.get(key) or [])]
+        items = [hk(f"{key}[{i}]", t) for i, t in enumerate(o.get(key) or [])]
         if items:
             lines += [title, *[f"- {t}" for t in items], ""]
     if include_transmission:
         lines += _transmission_lines(res, facts, h)
-    items = [h(t) for t in (o.get("news_synthesis") or [])]
+    items = [hk(f"news_synthesis[{i}]", t) for i, t in enumerate(o.get("news_synthesis") or [])]
     if items:
         lines += ["## 📰 NEWS", *[f"- {t}" for t in items], ""]
     if q:
@@ -1512,36 +1626,41 @@ def render(ticker: str, date_str: str, side: Optional[str], watch: Dict[str, Any
             lines += ["- **Code quant:** " + " · ".join(qbits), ""]
 
     if o.get("risks") or o.get("wrong_if") or o.get("case_against"):
-        lines += ["## ⚠️ RISKS & THE CASE AGAINST", *[f"- {h(t)}" for t in (o.get("risks") or [])]]
+        lines += ["## ⚠️ RISKS & THE CASE AGAINST",
+                  *[f"- {hk(f'risks[{i}]', t)}" for i, t in enumerate(o.get("risks") or [])]]
         if o.get("wrong_if"):
-            lines.append(f"- **This thesis is wrong if:** {h(o['wrong_if'])}")
-        lines += [f"- {h(t)}" for t in (o.get("case_against") or [])]
+            lines.append(f"- **This thesis is wrong if:** {hk('wrong_if', o['wrong_if'])}")
+        lines += [f"- {hk(f'case_against[{i}]', t)}" for i, t in enumerate(o.get("case_against") or [])]
         lines.append("")
 
     if not fails and any(lv.values()):
         lines += _directives(watch, res, facts, lv)
     if o.get("vs_alternatives"):
-        lines += [f"- **Versus doing nothing or holding SPY:** {h(o['vs_alternatives'])}", ""]
+        lines += [f"- **Versus doing nothing or holding SPY:** {hk('vs_alternatives', o['vs_alternatives'])}", ""]
     if extra_md:
-        lines += [extra_md, ""]
+        lines += [humanize(extra_md, *display) if display else extra_md, ""]
 
-    ruling = [(t, [h(x) for x in v]) for t, v in (("Where both reports agree", o.get("concurrence")),
-                                                    ("Where they disagree", o.get("conflicts"))) if v]
+    ruling = [(t, [hk(f"{key}[{i}]", x) for i, x in enumerate(v)])
+              for t, v, key in (("Where both reports agree", o.get("concurrence"), "concurrence"),
+                                ("Where they disagree", o.get("conflicts"), "conflicts")) if v]
     lines += ["## ⚖️ THE JUDGE'S FINAL RULING"]
     for title, items in ruling:
         lines += [f"* **{title}:**", *[f"    * {t}" for t in items]]
     dec_why = "; ".join(dec.get("why") or [])
     lines += [f"* **Final ruling:** **{dec.get('label') or 'AVOID'}**" + (f" — {h(dec_why)}" if dec_why else "")]
-    lines += [f"* writer proposed **{res.get('verdict') or '—'}**"
-              + (f"; code rejected: {h(fails[0])}" if fails else "")
-              + (f" · veto {watch.get('veto')}: {h(watch.get('veto_fact'))}" if watch.get("veto") not in (None, "NONE") else ""), ""]
+    proposed = str(res.get("verdict") or "—")
+    if fails or proposed != str(dec.get("label") or "") or watch.get("veto") not in (None, "NONE"):
+        lines += [f"* writer proposed **{proposed}**"
+                  + (f"; code rejected: {h(fails[0])}" if fails else "")
+                  + (f" · veto {watch.get('veto')}: {h(watch.get('veto_fact'))}" if watch.get("veto") not in (None, "NONE") else "")]
+    lines += [""]
     if links:
         lines += ["## 📚 SOURCES", ""]
         for i, c in enumerate(links, 1):
-            t = html.escape(str(c.get("title") or _domain(c.get("url")) or c.get("url") or ""), quote=False)
-            u = html.escape(str(c.get("url") or ""), quote=True)
-            topic = f" — {html.escape(str(c.get('topic') or ''), quote=False)}".rstrip()
-            lines.append(f"{i}. [{t}]({u}){topic}")
+            t = str(c.get("title") or _domain(c.get("url")) or c.get("url") or "").replace("[", "(").replace("]", ")")
+            u = str(c.get("url") or "")
+            topic = f" — {h(c.get('topic'))}".rstrip() if c.get("topic") else ""
+            lines.append(f"{i}. [{h(t)}]({html.escape(u)}){topic}")
         lines.append("")
     lines += ["---", "", "## 🔒 Audit trail (how every number was checked)", "",
               f"Code checks {'passed' if not fails else 'failed'} · independent review {adversary.lower()}", "", bar, stats, f"- {earn}"]
@@ -1633,7 +1752,7 @@ def _directives(watch: Dict[str, Any], res: Dict[str, Any], facts: Dict[str, Any
     menu = watch.get("options_menu") or {}
     tiers = [(t, menu.get(k)) for t, k in (("Tactical spread (30-50 DTE)", "tactical_spread"), ("LEAPS (6-12 months)", "leaps"),
                                            ("Income / CSP (20-50 DTE)", "income_or_csp"),
-                                           ("Covered call (30-60 DTE)", "covered_call"))
+                                           ("Covered call (monthly income)", "covered_call"))
              if (menu.get(k) or {}).get("structure") not in (None, "NONE")]
     out += [f"* **{t}:** {m.get('structure')} - {m.get('summary')}" for t, m in tiers]
     legs = menu.get("existing_legs") or []
@@ -1645,7 +1764,7 @@ def _directives(watch: Dict[str, Any], res: Dict[str, Any], facts: Dict[str, Any
 def _facts(dw: Dict[str, Any], forming: bool, atr: Optional[float], state_label: str,
            earnings_days: Optional[int], earnings_date: Optional[str], position: str) -> Dict[str, Any]:
     return {"bar_date": dw.get("bar_date") or dw.get("time"), "forming": forming, "close": dw.get("close") or dw.get("Close"),
-            "atr": atr, "em_pct": _f(dw.get("Exp Move Pct 21b")) or 0.0, "iv_rank": dw.get("Energy IV Rank Pct"),
+            "atr": atr, "em_pct": _f(dw.get("Exp Move Pct 21b")) or 0.0, "iv_rank": dw.get("tastytrade_iv_rank"), "hv_rank": dw.get("Energy IV Rank Pct"),
             "ext_z": dw.get("Ext Z Self Relative"), "action": dw.get("Action Long Code"), "rvol": dw.get("RVOL Vs Avg"),
             "state_label": state_label, "earnings_days": earnings_days, "earnings_date": earnings_date,
             "position": position if _has_position(position) else ""}
@@ -1765,6 +1884,7 @@ def build_report_obj(ticker: str, date_str: str, side: Optional[str], watch: Dic
         "audit": {"checks_passed": not fails, "fails": [esc(f) for f in fails], "adversary": adversary,
                   "withheld": [esc(w) for w in (res.get("withheld") or [])],
                   "transmission_withheld": [esc(w) for w in (res.get("transmission_withheld") or [])],
+                  "unverified_fields": res.get("unverified_fields") or [],
                   "traces": res.get("traces") or []},
     }
 
@@ -1922,6 +2042,10 @@ def _run_contract(ticker: str, date_str: str, dw: Dict[str, Any], *, side: Optio
             res2, fails2 = _check(obj2) if obj2 else (res, fails)
             if obj2 and (len(fails2) * 10 + len(res2.get("withheld") or [])) < (len(fails) * 10 + len(res.get("withheld") or [])):
                 obj, res, fails = obj2, res2, fails2
+    if ((position or {}).get("has_position") or _has_position(position_block)) and not manage:
+        logger.error(f"[{ticker}] position block shows shares but kind={kind}: failing the document — "
+                     "held names must run in MANAGE, not publish an entry plan")
+        fails.append(f"position held but kind {kind} (expected MANAGE): document closed rather than publish a new-entry plan")
     lv = res.get("levels") or {}
     price = lambda k: (lv.get(k) or {}).get("price") or 0.0
     sp = {"side": SIDE_LONG, "entry_type": {"ZONE": "LIMIT", "LIMIT": "LIMIT", "BREAKOUT": "BREAKOUT", "NEXT_OPEN": "NEXT_OPEN"}.get(res.get("entry_kind"), "NO_ENTRY"),
@@ -1964,15 +2088,21 @@ def _run_contract(ticker: str, date_str: str, dw: Dict[str, Any], *, side: Optio
                          quant=quant, source_links=source_links, include_transmission=False)
         sources_md = "\n\n".join(f"[S{i}] {t}\n{b.strip()}" for i, (t, b) in enumerate(sections))
         adv_user = f"SOURCES\n{sources_md}\n\nPLAN\n{plan_md}"
-        adv_text = _llm(ADVERSARY_SYS.format(ticker=ticker), adv_user, "ADVERSARY_MODEL", False, 8000)
+        adv_text = _llm(ADVERSARY_SYS.format(ticker=ticker), adv_user, "ADVERSARY_MODEL", False, 8000,
+                        reasoning=os.getenv("ADVERSARY_REASONING", "none"))
         if not adversary_has_verdict(adv_text):
-            logger.warning(f"[{ticker}] adversary gave no verdict ({len(adv_text)} chars); retrying once")
+            # A reasoning model can spend the whole budget thinking and return its thoughts as content.
+            logger.warning(f"[{ticker}] adversary gave no verdict ({len(adv_text)} chars); retrying")
             adv_text = _llm(ADVERSARY_SYS.format(ticker=ticker), adv_user + "\n\nYour reply must be exactly PASS, or FAIL: plus one sentence. No other text.",
-                            "ADVERSARY_MODEL", False, 8000)
+                            "ADVERSARY_MODEL", False, 16000, reasoning="none")
         adversary = adversary_verdict(adv_text)
         if adversary != "PASS":
-            fails.append("adversarial pass: FAIL")
-            watch["adversary_reason"] = adversary_reason(adv_text)
+            if adversary_has_verdict(adv_text):
+                fails.append("adversarial pass: FAIL")
+                watch["adversary_reason"] = adversary_reason(adv_text)
+            else:
+                fails.append("adversarial pass: reviewer returned no verdict")
+                watch["adversary_reason"] = "the reviewer model returned no PASS/FAIL verdict; the plan is unreviewed"
     watch.update(contract_failures=fails, adversary=adversary)
 
     extra = ""
@@ -1988,9 +2118,10 @@ def _run_contract(ticker: str, date_str: str, dw: Dict[str, Any], *, side: Optio
 
         watch["verdict"] = {"ENTER": "ENTER (Next Open)" if res["entry_kind"] == "NEXT_OPEN" else "ENTER (Limit @ Floor)",
                             "ARMED": "STALK"}.get(res["verdict"], res["verdict"])
-        watch["scenarios"] = res["scenarios"]
-        spot = float(facts["close"] or 0)
         manage_v = res.get("verdict") in MANAGE_VERDICTS
+        # Add-on triggers would arm a buy order against a held name: a manage verdict never carries them.
+        watch["scenarios"] = [] if manage_v else res["scenarios"]
+        spot = float(facts["close"] or 0)
         if sp["tactical_stop"] and sp["target_1"] and not manage_v:
             fill = sp["entry_zone_high"] or sp["breakout_level"] or spot
             sp["recommended_shares"] = compute_position_shares(fill, sp["tactical_stop"])

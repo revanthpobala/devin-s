@@ -60,7 +60,11 @@ def _yf_download(symbol: str, period: str = "10y") -> List[Dict[str, Any]]:
     import pandas as pd
     import yfinance as yf
 
-    hist = yf.download(symbol, period=period, auto_adjust=True, progress=False)
+    try:
+        hist = yf.download(symbol, period=period, auto_adjust=True, progress=False, timeout=5)
+    except Exception as e:
+        logger.debug(f"{symbol} yf.download error: {e}")
+        return []
     if hist is None or hist.empty:
         return []
     if isinstance(hist.columns, pd.MultiIndex):
@@ -90,7 +94,7 @@ def bars_settled(now: Optional[datetime] = None) -> bool:
             or (now.hour, now.minute) >= (config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE))
 
 
-def daily_bars(symbol: str, cache_dir: Path) -> Tuple[List[Dict[str, Any]], str]:
+def daily_bars(symbol: str, cache_dir: Path, allow_stale: bool = True) -> Tuple[List[Dict[str, Any]], str]:
     """Up to 10y of daily OHLCV for *symbol*, cached in *cache_dir* once per calendar day.
     A cache written before the close is refetched once the bar settles."""
     safe = symbol.replace(":", "_").replace("^", "")
@@ -104,6 +108,10 @@ def daily_bars(symbol: str, cache_dir: Path) -> Tuple[List[Dict[str, Any]], str]
                 bars = _parse_csv_bars(path)
                 if bars:
                     return bars, "yfinance cache"
+            elif allow_stale:
+                bars = _parse_csv_bars(path)
+                if bars:
+                    return bars, "yfinance cache (cached)"
         except Exception:
             pass
     try:

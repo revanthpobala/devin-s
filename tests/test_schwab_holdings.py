@@ -53,3 +53,17 @@ def test_position_block_states_total_and_covered_call_capacity(sc):
         txt = mod.format_active_position_block("AMZN")
     assert "133 units" in txt and "***9638: 10 @ $200.00" in txt and "***6929: 123 @ $140.00" in txt
     assert "1 covered-call contract(s) possible" in txt and "AMZN  270716C00285000".strip() in txt
+
+
+def test_failed_fetch_returns_last_good_snapshot(sc, tmp_path, monkeypatch):
+    monkeypatch.setattr(sc, "_POSITIONS_SNAPSHOT", str(tmp_path / "snap.json"))
+    monkeypatch.setattr(sc, "_SCHWAB_POSITIONS_CACHE", (0.0, DATA))
+    with patch.object(sc, "get_schwab_client", side_effect=TimeoutError("timed out")):
+        assert sc.get_schwab_positions() is DATA
+    (tmp_path / "snap.json").write_text(__import__("json").dumps(DATA))
+    monkeypatch.setattr(sc, "_SCHWAB_POSITIONS_CACHE", (0.0, {}))
+    with patch.object(sc, "get_schwab_client", side_effect=TimeoutError("timed out")):
+        assert sc.get_schwab_positions() == DATA
+    (tmp_path / "snap.json").unlink()
+    with patch.object(sc, "get_schwab_client", side_effect=TimeoutError("timed out")):
+        assert sc.get_schwab_positions()["status"] == "error"
