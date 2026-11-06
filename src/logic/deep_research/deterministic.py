@@ -61,7 +61,7 @@ DW_LEVELS = (
 DW_LIST_LEVELS = (("KEY_SUPPORT", "_underlying_key_supports"), ("KEY_RESISTANCE", "_overhead_key_resistances"))
 
 _FILING = r"(?:8-K|10-K|10-Q|13F|13D|13G|S-1|S-3|20-F|6-K)"
-_MASK = re.compile(rf"\b\d{{4}}-\d{{2}}-\d{{2}}\b|\b{_FILING}\b")
+_MASK = re.compile(rf"\b\d{{4}}-\d{{2}}-\d{{2}}\b|\b\d{{10}}-\d{{2}}-\d{{6}}\b|\b\d{{10,}}\b|\b{_FILING}\b")
 _DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _NUM = re.compile(r"(?<![\w.])\$?(\d[\d,]*(?:\.\d+)?|\.\d+)")
 _CITE = re.compile(r"\[(S\d+|DW:[^\]]+|L:[A-Za-z0-9_]+)\]")
@@ -90,7 +90,7 @@ def _fnum(v: Any) -> Optional[float]:
 
 
 def numbers(text: Any) -> List[str]:
-    """Numeric tokens in prose, outside ISO dates, filings (8-K) and identifiers (MA200, Q3)."""
+    """Numeric tokens in prose, outside ISO dates, filings (8-K) and identifiers (MA200, Q3, SEC accession)."""
     masked = _MASK.sub(lambda m: " " * len(m.group(0)), str(text or ""))
     return [m.group(1).replace(",", "") for m in _NUM.finditer(masked)]
 
@@ -327,6 +327,8 @@ def code_facts(dw: Dict[str, Any], reg: Dict[str, Dict[str, Any]], atr: Optional
              f"ATR14 {atr:.2f}" if atr else "ATR14 unavailable", f"Pine state {ts.get('label')}"]
     lines += [f"{k} {_fmt(dw.get(k))}" + (" (HV-derived rank from the Pine export, not market IV)" if k == "Energy IV Rank Pct" else "")
               for k in keys if dw.get(k) is not None]
+    if any(dw.get(k) is not None for k in ("DMI DI Plus", "DMI DI Minus", "ADX 14")):
+        lines.append(f"DMI: DI+ {_fmt(dw.get('DMI DI Plus'))} / DI- {_fmt(dw.get('DMI DI Minus'))} / ADX {_fmt(dw.get('ADX 14'))}")
     if not forming and dw.get("RVOL Vs Avg") is not None:
         lines.append(f"RVOL Vs Avg {_fmt(dw.get('RVOL Vs Avg'))}")
     if e_date:
@@ -527,7 +529,8 @@ def _research_tool(name: str, a: Dict[str, Any], ticker: str) -> str:
     return str(execute_tool_call(call, chat_ticker=ticker))[:TOOL_OUTPUT_CAP]
 
 
-def _writer(system: str, user: str, ticker: str, sections: List[Tuple[str, str]], max_rounds: int = 5) -> str:
+def _writer(system: str, user: str, ticker: str, sections: List[Tuple[str, str]], max_rounds: int = 5,
+            reasoning: Optional[str] = None) -> str:
     """Writer with get_candles plus research tools. Each tool result is appended to `sections` so its numbers are citable and traced."""
     from src.clients.llm_client import TOOLS, _build_client_and_model
     from src.tracking.candle_service import get_candles_tool
@@ -540,66 +543,170 @@ def _writer(system: str, user: str, ticker: str, sections: List[Tuple[str, str]]
     except Exception as e:
         logger.warning(f"writer client unavailable: {e}")
         return ""
-    extra = {"reasoning": {"effort": os.getenv("JUDGE_REASONING", "high")}} if provider == "openrouter" else {}
+    extra = {"reasoning": {"effort": reasoning or os.getenv("JUDGE_REASONING", "high")}} if provider == "openrouter" else {}
+    timeout = float(os.getenv("WRITER_TIMEOUT", "0") or 0)
+    max_out = int(os.getenv("WRITER_MAX_TOKENS", "24000"))
     msgs: List[Dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    for rnd in range(max_rounds + 1):
-        kw: Dict[str, Any] = {"model": model, "messages": msgs, "temperature": 0.0, "max_tokens": 24000, "seed": 42}
-        if extra:
-            kw["extra_body"] = extra
-        if rnd < max_rounds:
-            kw["tools"] = tools
+
+    def _call(kw: Dict[str, Any]) -> Optional[Any]:
         try:
-            choice = client.chat.completions.create(**kw).choices[0]
-            msg = choice.message
+            return client.chat.completions.create(**kw).choices[0]
         except Exception as e:
             logger.warning(f"[{ticker}] writer call failed ({type(e).__name__}: {e}); one fast retry")
             try:
-                choice = client.chat.completions.create(**kw).choices[0]
-                msg = choice.message
+                return client.chat.completions.create(**kw).choices[0]
             except Exception as e2:
-                logger.warning(f"[{ticker}] writer retry failed: {e2}")
-                return ""
+                logger.warning(f"[{ticker}] writer retry failed ({type(e2).__name__}: {e2})")
+                return None
+
+    for rnd in range(max_rounds + 1):
+        kw: Dict[str, Any] = {"model": model, "messages": msgs, "temperature": 0.0, "max_tokens": max_out, "seed": 42}
+        if extra:
+            kw["extra_body"] = extra
+        if timeout:
+            kw["timeout"] = timeout
+        if rnd < max_rounds:
+            kw["tools"] = tools
+        choice = _call(kw)
+        if choice is None:
+            return ""
+        msg = choice.message
         calls = getattr(msg, "tool_calls", None) or []
-        if not calls:
-            if getattr(choice, "finish_reason", None) != "stop":
-                logger.warning(f"[{ticker}] writer finish_reason={getattr(choice, 'finish_reason', None)} "
-                               f"content={len(msg.content or '')} chars")
-            return msg.content or ""
-        msgs.append({"role": "assistant", "content": msg.content or "",
-                     "tool_calls": [{"id": c.id, "type": "function", "function": {"name": c.function.name,
-                                                                                 "arguments": c.function.arguments}} for c in calls]})
-        for c in calls:
-            try:
-                a = json.loads(c.function.arguments or "{}")
-            except json.JSONDecodeError:
-                a = {}
-            if c.function.name in RESEARCH_TOOLS:
+        if calls:
+            msgs.append({"role": "assistant", "content": msg.content or "",
+                         "tool_calls": [{"id": c.id, "type": "function", "function": {"name": c.function.name,
+                                                                                     "arguments": c.function.arguments}} for c in calls]})
+            for c in calls:
                 try:
-                    out = _research_tool(c.function.name, a, ticker)
+                    a = json.loads(c.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    a = {}
+                if c.function.name in RESEARCH_TOOLS:
+                    try:
+                        out = _research_tool(c.function.name, a, ticker)
+                    except Exception as e:
+                        out = f"Error: {type(e).__name__}"
+                    sections.append((f"Judge research ({c.function.name} {json.dumps(a)[:120]})", out))
+                    logger.info(f"[{ticker}] writer tool {c.function.name} -> S{len(sections) - 1}")
+                    msgs.append({"role": "tool", "tool_call_id": c.id, "content": f"[S{len(sections) - 1}] cite this section as [S{len(sections) - 1}]\n{out}"})
+                    continue
+                levels = [float(x) for x in a.get("levels") or [] if isinstance(x, (int, float, str)) and re.fullmatch(r"\s*[\d.]+\s*", str(x))]
+                interval = a.get("interval") if a.get("interval") in ("1m", "5m") else "5m"
+                try:
+                    out = get_candles_tool(ticker=ticker, interval=interval, days=max(1, min(int(a.get("days") or 5), 60)), levels=levels)
                 except Exception as e:
                     out = f"Error: {type(e).__name__}"
-                sections.append((f"Judge research ({c.function.name} {json.dumps(a)[:120]})", out))
-                logger.info(f"[{ticker}] writer tool {c.function.name} -> S{len(sections) - 1}")
+                sections.append((f"Intraday candles (get_candles {interval}, levels {levels})", out))
+                logger.info(f"[{ticker}] writer tool get_candles({interval}, {levels}) -> S{len(sections) - 1}")
                 msgs.append({"role": "tool", "tool_call_id": c.id, "content": f"[S{len(sections) - 1}] cite this section as [S{len(sections) - 1}]\n{out}"})
-                continue
-            levels = [float(x) for x in a.get("levels") or [] if isinstance(x, (int, float, str)) and re.fullmatch(r"\s*[\d.]+\s*", str(x))]
-            interval = a.get("interval") if a.get("interval") in ("1m", "5m") else "5m"
-            try:
-                out = get_candles_tool(ticker=ticker, interval=interval, days=max(1, min(int(a.get("days") or 5), 60)), levels=levels)
-            except Exception as e:
-                out = f"Error: {type(e).__name__}"
-            sections.append((f"Intraday candles (get_candles {interval}, levels {levels})", out))
-            logger.info(f"[{ticker}] writer tool get_candles({interval}, {levels}) -> S{len(sections) - 1}")
-            msgs.append({"role": "tool", "tool_call_id": c.id, "content": f"[S{len(sections) - 1}] cite this section as [S{len(sections) - 1}]\n{out}"})
+            continue
+        content = msg.content or ""
+        finish = getattr(choice, "finish_reason", None)
+        if finish == "stop" and content.strip():
+            return content
+        logger.warning(f"[{ticker}] writer finish_reason={finish} content={len(content)} chars; "
+                       "retrying once with low reasoning and a larger budget")
+        kw2: Dict[str, Any] = {"model": model, "messages": msgs, "temperature": 0.0,
+                               "max_tokens": max_out * 2, "seed": 42}
+        if provider == "openrouter":
+            kw2["extra_body"] = {"reasoning": {"effort": "low"}}
+        if timeout:
+            kw2["timeout"] = timeout
+        choice2 = _call(kw2)
+        if choice2 is not None:
+            c2 = choice2.message.content or ""
+            finish2 = getattr(choice2, "finish_reason", None)
+            logger.info(f"[{ticker}] writer salvage retry finish_reason={finish2} content={len(c2)} chars")
+            if (finish2 == "stop" and c2.strip()) or len(c2) > len(content):
+                return c2
+        return content
     return ""
 
 
+PARSE_REQUIRED_KEYS = ("side", "verdict", "entry", "stop", "target_1")
+
+
+def _json_scan(s: str) -> Tuple[List[str], bool, List[int], Optional[int]]:
+    """(open brackets, in-string flag, structural comma indexes, index where the top-level value closed)."""
+    stack: List[str] = []
+    in_str = False
+    esc = False
+    commas: List[int] = []
+    end: Optional[int] = None
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack and ((stack[-1] == "{") == (ch == "}")):
+                stack.pop()
+                if not stack and end is None:
+                    end = i + 1
+            else:
+                break
+        elif ch == ",":
+            commas.append(i)
+    return stack, in_str, commas, end
+
+
+def _repair_json(s: str) -> Optional[str]:
+    """Salvage a truncated top-level object: drop trailing junk or the incomplete tail, then close open strings/arrays/objects."""
+    stack, in_str, commas, end = _json_scan(s)
+    if end:
+        return s[:end]
+    closers = {"{": "}", "[": "]"}
+    cands: List[str] = []
+    cand = s + ('"' if in_str else "")
+    st, still_str, _, _ = _json_scan(cand)
+    if not still_str:
+        cands.append(cand + "".join(closers[c] for c in reversed(st)))
+    if commas:
+        head = s[:commas[-1]]
+        st, istr, _, _ = _json_scan(head)
+        if not istr:
+            cands.append(head + "".join(closers[c] for c in reversed(st)))
+    for c in cands:
+        try:
+            json.loads(c)
+            return c
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def parse_json(text: str) -> Optional[Dict[str, Any]]:
-    m = re.search(r"\{.*\}", text or "", re.S)
-    try:
-        d = json.loads(m.group(0)) if m else None
-    except json.JSONDecodeError:
-        return None
+    t = text or ""
+    fence = re.search(r"```(?:json|JSON)?\s*(.*?)```", t, re.S)
+    body = fence.group(1) if fence else t
+    m = re.search(r"\{.*\}", body, re.S)
+    d = None
+    if m:
+        try:
+            d = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            d = None
+    if d is None:
+        i = body.find("{")
+        if i >= 0:
+            fixed = _repair_json(body[i:])
+            if fixed:
+                try:
+                    d = json.loads(fixed)
+                    if isinstance(d, dict) and not all(k in d for k in PARSE_REQUIRED_KEYS):
+                        logger.warning("repaired JSON dropped: missing required keys "
+                                       f"{[k for k in PARSE_REQUIRED_KEYS if k not in d]}")
+                        return None
+                except json.JSONDecodeError:
+                    d = None
     return d if isinstance(d, dict) else None
 
 
@@ -686,7 +793,9 @@ def _withholdable(k: str) -> bool:
         return True
     if k.startswith(tuple(f"{x}[" for x in (*LIST_KEYS, *SOFT_LIST_KEYS))):
         return True
-    return k.startswith(("scenarios_bbb[", "catalysts[", "horizons.", "style."))
+    if k.startswith(("scenarios_bbb[", "catalysts[", "horizons.", "style.")):
+        return True
+    return bool(re.fullmatch(r"scenarios\[\d+\]\.confirm\[\d+\]", k))
 
 
 def _scrub_bad(obj: Dict[str, Any], bad: set) -> None:
@@ -2024,8 +2133,12 @@ def _run_contract(ticker: str, date_str: str, dw: Dict[str, Any], *, side: Optio
         if not obj:
             _write([raw_dir / safe / f"{safe}_writer_raw.txt"], raw or "(empty)")
             logger.warning(f"[{ticker}] writer gave no parseable JSON ({len(raw or '')} chars); retrying JSON-only")
-            obj = parse_json(_writer(sys_p, user_p + "\n\nYOUR PREVIOUS ANSWER HAD NO PARSEABLE JSON OBJECT. Output ONLY the "
-                                     "JSON object, no prose before or after it.", ticker, sections, max_rounds=0))
+            raw2 = _writer(sys_p, user_p + "\n\nYOUR PREVIOUS ANSWER HAD NO PARSEABLE JSON OBJECT. Output ONLY the "
+                                         "JSON object, no prose before or after it. Keep it compact: one short line "
+                                         "per field, no long sentences.", ticker, sections, max_rounds=0, reasoning="low")
+            _write([raw_dir / safe / f"{safe}_writer_raw.txt"],
+                   (raw or "(empty)") + "\n\n=== JSON-ONLY RETRY ===\n\n" + (raw2 or "(empty)"))
+            obj = parse_json(raw2)
         def _check(o):
             return check(o, side=side, reg=reg, atr=atr, em_pct=em_pct, forming=forming, state=ts["state"],
                          rsi2_ready=rsi2_ready, earnings_days=e_days, earnings_date=e_date, block_days=block, today=today,

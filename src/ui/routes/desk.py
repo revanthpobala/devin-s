@@ -298,6 +298,21 @@ def run_universe_sweep(queue: bool = True):
     return {"started": universe_sweep.start_background(queue)}
 
 
+@router.get("/market-stress")
+def get_market_stress():
+    """Latest daily stress score/action, weekly study (VIX>25, lead signals, backtest), last intraday check."""
+    from src.tracking import market_stress
+    return market_stress.latest()
+
+
+@router.post("/market-stress/study")
+def rebuild_market_stress_study():
+    """Rebuild the weekly study now (history download plus backtest; takes a minute)."""
+    from src.tracking import market_stress
+    from src.tracking.backend_tasks import current_session
+    return {"backtest": market_stress.study(current_session(), force=True).get("backtest")}
+
+
 @router.get("/miss-board")
 def get_miss_board(days: int = 21):
     """Every researched name since its research bar: zone touch, stop/target, and why it was not taken."""

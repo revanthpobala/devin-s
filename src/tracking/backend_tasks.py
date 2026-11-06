@@ -347,6 +347,26 @@ def tick() -> None:
                 _running.discard(job)
 
         threading.Thread(target=_work, name=f"task-{job}", daemon=True).start()
+    _tick_intraday_stress(now)
+
+
+def _tick_intraday_stress(now: datetime) -> None:
+    from src.tracking import market_stress
+
+    if "intraday_stress" in _running or not market_stress.intraday_due(now, bc.read().get("last_intraday_stress_ts")):
+        return
+    _running.add("intraday_stress")
+    bc.update(last_intraday_stress_ts=now.timestamp())
+
+    def _work():
+        try:
+            market_stress.intraday_check(now)
+        except Exception as e:
+            logger.warning("intraday stress failed: %s", e)
+        finally:
+            _running.discard("intraday_stress")
+
+    threading.Thread(target=_work, name="task-intraday-stress", daemon=True).start()
 
 
 def run_due_once() -> Dict[str, Any]:

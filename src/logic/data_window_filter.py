@@ -1335,8 +1335,38 @@ def deep_research_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, float, int, i
 
     return (is_pass, closest_to_gate, mover_score, pb_rank, rr_mkt, is_rev_buy, is_rsi2, ev_r, ext_pct, conviction)
 
+def index_stressed() -> bool:
+    """QQQ inside the measured RSI2 ENTER band (3-15% below its 252-day closing high) — an index-stress
+    day where the measured counter-trend lanes carry the edge. False when bars are unavailable."""
+    try:
+        from src.tracking.bars_store import fetch_daily
+        from src.tracking.rsi2_scan import ENTER_BAND, qqq_off_high
+
+        off = qqq_off_high(fetch_daily(["QQQ"], 400).get("QQQ") or [])
+        return off is not None and ENTER_BAND[0] < off <= ENTER_BAND[1]
+    except Exception:
+        return False
+
+
+def _measured_lane(rec: Dict[str, Any]) -> bool:
+    """A lane with a measured edge on a stress tape: code-20 REVERSAL BUY, RSI2 hits, or an
+    in-zone name whose R:R at market clears the floor. OVERSOLD/proxy-RR screen picks are not."""
+    t = rec["triage"] if isinstance(rec.get("triage"), dict) else rec
+    if t.get("action") == "REVERSAL BUY" or t.get("mode") == "RSI2_LONG":
+        return True
+    try:
+        return bool(t.get("in_zone")) and float(t.get("rr_at_market") or 0.0) >= rr_pass_floor()
+    except (TypeError, ValueError):
+        return False
+
+
 def rank_pass_tickers(pass_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Sort candidates via `deep_research_sort_key`."""
+    """Sort candidates via `deep_research_sort_key`. On index-stress days the measured lanes
+    (code 20 REVERSAL BUY, RSI2, in-zone RR@mkt>=floor) go to the head of the queue, ahead of
+    proxy-RR screen picks — the 2026-11-05 dump queued 14 OVERSOLD names over 2 code-20 passes."""
+    if index_stressed():
+        return sorted(pass_records, key=lambda r: (1 if _measured_lane(r) else 0, deep_research_sort_key(r)),
+                      reverse=True)
     return sorted(pass_records, key=deep_research_sort_key, reverse=True)
 
 

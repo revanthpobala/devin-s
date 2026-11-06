@@ -421,6 +421,42 @@ def check_local_research_coverage(grace_minutes: int = 20) -> Tuple[bool, str]:
 _ENRICH_RETRY_ATTEMPTS = 3
 
 
+def check_backend_sweep(grace_minutes: float = 75.0) -> Tuple[bool, str]:
+    """True when the universe sweep has no result for the last completed session.
+
+    The sweep is due once per session after the close. A lag means the detached backend was
+    down or the job failed, and nothing noticed — the 2026-11-05 incident: stopped at 11:22,
+    so universe_sweep and rsi2_scan produced no signals for the day.
+    """
+    try:
+        from src.tracking import backend_control as bc, backend_tasks
+
+        ctl = bc.read()
+        session = backend_tasks.current_session()
+        now_et = backend_tasks._et_now()
+    except Exception as e:
+        return False, f"sweep state unverified ({e})"
+    if ctl.get("last_sweep_date") == session:
+        return False, f"sweep current for {session}"
+    if not bc.alive(ctl):
+        return True, (f"research backend DOWN; last_sweep_date "
+                      f"{ctl.get('last_sweep_date') or 'never'} lags session {session}")
+    try:
+        from zoneinfo import ZoneInfo
+
+        hh, mm = backend_tasks.SESSION_CLOSE
+        boundary = datetime.fromisoformat(session).replace(hour=hh, minute=mm,
+                                                           tzinfo=ZoneInfo("America/New_York"))
+        if now_et.timestamp() - boundary.timestamp() < grace_minutes * 60:
+            return False, f"sweep for {session} pending (within {grace_minutes:.0f}min grace)"
+    except Exception:
+        pass
+    attempt = ctl.get("last_sweep_attempt_ts")
+    ago = (f"; last attempt {(now_et.timestamp() - float(attempt)) / 60:.0f}min ago"
+           if attempt else "; no attempt recorded")
+    return True, f"last_sweep_date {ctl.get('last_sweep_date') or 'never'} lags session {session}{ago}"
+
+
 def run_ops_checks(
     missing_symbols: Optional[List[str]] = None,
     notify: bool = True,
@@ -436,6 +472,7 @@ def run_ops_checks(
         ("ingester", check_ingester_running),
         ("core_coverage", lambda: check_core_symbol_coverage(missing_symbols)),
         ("local_research_coverage", check_local_research_coverage),
+        ("backend_sweep", check_backend_sweep),
     ]
 
     results: Dict[str, Any] = {}

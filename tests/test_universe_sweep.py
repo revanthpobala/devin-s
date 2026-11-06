@@ -23,6 +23,7 @@ def test_run_queues_held_first_and_writes_market(tmp_path, monkeypatch):
     data = {"AAA": _bars(_pullback_series()), "BBB": _bars(_pullback_series()), "SPY": flat, "QQQ": flat, "IWM": flat}
     queued = []
     monkeypatch.setattr("src.tracking.alert_db.queue_for_research", lambda t, **k: queued.append(t) or True)
+    monkeypatch.setattr("src.tracking.market_stress.run", lambda *a, **k: {"score": 40.0, "action": "NORMAL"})
     res = us.run(True, bars_fetch=lambda names, d: data, tickers=["AAA", "BBB"], held={"BBB"})
     assert queued[0] == "BBB" and set(queued) <= {"AAA", "BBB"}
     assert res["market"]["names"] == 2 and "SPY" in res["etfs"] and (tmp_path / "s.json").exists()

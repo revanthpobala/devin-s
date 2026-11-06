@@ -150,6 +150,14 @@ def run(queue: bool = True, bars_fetch=None, tickers: Optional[List[str]] = None
            "rsi2": rsi2,
            "paper": paper,
            "note": "Screen only picks scrape order; no measured edge. The engine zone and at-market R:R decide."}
+    try:
+        from src.tracking import market_stress
+
+        st = market_stress.run(bars, res["market"], queue=queue)
+        res["market_stress"] = {k: st.get(k) for k in ("session", "score", "action", "label", "queued")}
+    except Exception as e:
+        logger.warning("market stress failed: %s", e)
+        res["market_stress"] = {"error": str(e)}
     out_path().write_text(json.dumps(res, indent=1), encoding="utf-8")
     return res
 

@@ -100,7 +100,7 @@ def main() -> None:
     if lock is None:
         logger.info("backend already running; exiting")
         return
-    bc.update(pid=os.getpid(), started_at=time.time(), stop_requested=False, heartbeat=time.time())
+    bc.update(pid=os.getpid(), started_at=time.time(), stop_requested=False, stopped_by_user=False, heartbeat=time.time())
     from src.clients import net_health
 
     net_health.install_dns_cache()

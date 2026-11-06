@@ -201,6 +201,32 @@ def stop_edge_scanner_process():
         state.EDGE_SCANNER_PROCESS = None
 
 
+def _start_backend_watchdog():
+    """Relaunch the detached backend when it dies without a user stop. The 2026-11-05 incident:
+    stop_process left it down all day (stopped_by_user set, pid null) and nothing relaunched it."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+
+    def _watch():
+        from src.tracking import backend_control as bc
+        last_launch = 0.0
+        while True:
+            time.sleep(60)
+            try:
+                data = bc.read()
+                if bc.alive(data) or data.get("stopped_by_user"):
+                    continue
+                if time.time() - last_launch < 300:
+                    continue
+                last_launch = time.time()
+                res = bc.start_process()
+                append_log(f"🧠 [Backend] down and not stopped by the user; relaunch: {res.get('status')} (PID {res.get('pid')}).")
+            except Exception as e:
+                logger.debug(f"backend watchdog tick failed: {e}")
+
+    threading.Thread(target=_watch, daemon=True, name="BackendWatchdog").start()
+
+
 def start_all_daemons():
     """Initialize and start all background daemons on UI server launch."""
     # 0. Multi-Threaded Today Desk Background Service (15s cache refresh)
@@ -259,11 +285,15 @@ def start_all_daemons():
 
             if bc.alive() and bc.code_is_newer(bc.read().get("started_at")):
                 append_log("♻️ [Startup] Research backend is on old code; restarting it.")
-                bc.stop_process()
+                try:
+                    bc.stop_process()
+                finally:
+                    bc.update(stopped_by_user=False)
             res = bc.start_process()
             append_log(f"🧠 [Startup] Research backend: {res.get('status')} (PID {res.get('pid')}).")
         except Exception as e_backend:
             logger.warning(f"Research backend failed to start: {e_backend}")
+        _start_backend_watchdog()
 
     # 5. Local LLM Server Healthcheck on port 8000
     def _bg_check_llm():
